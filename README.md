@@ -23,7 +23,7 @@ The files in `principles/`, `writing/` and `preferences/` are the sources. The s
    /plugin marketplace add erickb336/agent-kit
    /plugin install agent-kit@agent-kit
    ```
-2. Clone this repository. Then add this line to `~/.claude/CLAUDE.md`, so the preferences and the writing standard apply to every session:
+2. Clone this repository, for example to `~/agent-kit`. Then add this line to `~/.claude/CLAUDE.md`, with the path to your clone, so the preferences and the writing standard apply to every session:
    ```
    @~/agent-kit/instructions/core.md
    ```
@@ -35,7 +35,7 @@ The files in `principles/`, `writing/` and `preferences/` are the sources. The s
    codex plugin marketplace add erickb336/agent-kit
    codex plugin add agent-kit@agent-kit
    ```
-2. Clone this repository. Then link the always-on file:
+2. Link the always-on file from your clone:
    ```
    ln -s ~/agent-kit/instructions/core.md ~/.codex/AGENTS.md
    ```
