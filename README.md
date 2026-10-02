@@ -50,6 +50,10 @@ A skill uses the shared format both tools read ([agentskills.io](https://agentsk
 - `name` is the folder name: lowercase words joined by hyphens.
 - `description` says when to use the skill.
 
+## Thanks
+
+Thank you to [Lauren Tan (poteto)](https://github.com/poteto) for [pstack](https://github.com/cursor/plugins/tree/main/pstack). Its principles inspired this kit. I loved them and adopted them the day I found them. Fifteen of the principles here are adapted from pstack, with credit in each file.
+
 ## Licence
 
 MIT. The adapted principles keep pstack's MIT licence: see [principles/LICENSE-pstack](principles/LICENSE-pstack).

@@ -17,3 +17,5 @@ Short working principles for coding agents. Give an agent the principles that fi
 Fifteen principles are adapted from pstack by Lauren Tan (MIT), at commit `12d587d` of [github.com/cursor/plugins](https://github.com/cursor/plugins). The licence is in [LICENSE-pstack](LICENSE-pstack). Each file's `source` names the original. The texts are shortened and rewritten.
 
 "Contextualize and write for the reader" is this kit's own.
+
+Thank you to Lauren Tan for pstack. Its principles inspired this collection.
