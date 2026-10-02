@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT, outputs, parseSource } from "./build.mjs";
+import { MOMENTS } from "../plugins/agent-kit/hooks/principles-hook.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -33,6 +34,11 @@ for (const d of readdirSync(skillsDir)) {
   for (const key of m[1].split("\n").filter((l) => /^[A-Za-z-]+:/.test(l)).map((l) => l.split(":")[0])) {
     if (!["name", "description", "license", "allowed-tools", "metadata"].includes(key)) problems.push(`skills/${d}/SKILL.md: key "${key}" is not in the shared skill format`);
   }
+}
+
+// Every principle that the hook gives must have its skill, because the hook reads the text from it.
+for (const [moment, { principles }] of Object.entries(MOMENTS)) {
+  for (const p of principles) if (!existsSync(join(skillsDir, `principle-${p}`, "SKILL.md"))) problems.push(`hooks: moment "${moment}" names "${p}", which has no skill`);
 }
 
 for (const [rel, text] of outputs()) {
