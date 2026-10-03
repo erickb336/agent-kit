@@ -69,14 +69,19 @@ function serverState() {
 const xml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const str = (s) => `<string>${xml(s)}</string>`;
 
-/** --no-create-session-in-dir: a session appears only when the user starts one, not at each login or restart. */
+/**
+ * env -u CLAUDE_CODE_OAUTH_TOKEN: that token (from `claude setup-token`) is inference-only, and Claude Code prefers it to
+ * the full login, so the server would refuse to start. Other programs that need the token keep it.
+ * --no-create-session-in-dir: a session appears only when the user starts one, not at each login or restart.
+ */
 function plist({ folder, claude, path, log }) {
+  const command = ["/usr/bin/env", "-u", "CLAUDE_CODE_OAUTH_TOKEN", claude, "remote-control", "--no-create-session-in-dir"];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>${str(LABEL)}
-  <key>ProgramArguments</key><array>${[claude, "remote-control", "--no-create-session-in-dir"].map(str).join("")}</array>
+  <key>ProgramArguments</key><array>${command.map(str).join("")}</array>
   <key>WorkingDirectory</key>${str(folder)}
   <key>EnvironmentVariables</key><dict><key>PATH</key>${str(path)}</dict>
   <key>StandardOutPath</key>${str(log)}
@@ -101,7 +106,11 @@ function findClaude() {
   throw new Error("The claude command is not on PATH, so nothing changed.");
 }
 
-const lastLines = (n) => (existsSync(logFile()) ? readFileSync(logFile(), "utf8").trim().split("\n").slice(-n).join("\n") : "");
+/** The server draws a status screen for a terminal; the log keeps its text without the terminal's control codes. */
+const log = () => (existsSync(logFile()) ? readFileSync(logFile(), "utf8").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim() : "");
+const lastLines = (n) => log().split("\n").slice(-n).join("\n");
+/** The server writes "Ready" when claude.ai has registered it. Until then the phone cannot see it. */
+const readiness = () => (/\bReady\b/.test(log()) ? "Ready: the phone can start sessions." : `Not ready yet. Its last message:\n${lastLines(3) || "(none)"}`);
 
 function stopServer() {
   if (serverState().loaded) launchctl("bootout", service());
@@ -134,14 +143,15 @@ function startServer(folderArg) {
     stopServer();
     throw new Error(`The server stopped at once. The script removed the login item. The server's last message:\n${why || "(none)"}`);
   }
-  return `Remote Control server: running in ${folder} (pid ${state.pid}). It starts again at each login. Log: ${logFile()}`;
+  return `Remote Control server: running in ${folder} (pid ${state.pid}). It starts again at each login. Log: ${logFile()}\n${readiness()}`;
 }
 
 function serverStatus() {
   if (!existsSync(agentFile())) return "Remote Control server: not installed.";
   const folder = /<key>WorkingDirectory<\/key><string>([^<]*)<\/string>/.exec(readFileSync(agentFile(), "utf8"))?.[1];
   const s = serverState();
-  return `Remote Control server: ${s.running ? `running (pid ${s.pid})` : "installed, not running"} in ${folder}. Log: ${logFile()}\n${lastLines(5)}`.trim();
+  if (!s.running) return `Remote Control server: installed, not running, in ${folder}. Log: ${logFile()}\n${lastLines(5)}`.trim();
+  return `Remote Control server: running (pid ${s.pid}) in ${folder}. Log: ${logFile()}\n${readiness()}`;
 }
 
 function server(arg) {

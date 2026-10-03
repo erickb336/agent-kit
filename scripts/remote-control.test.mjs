@@ -90,11 +90,13 @@ function mac() {
 
 test("server adds a login item that runs claude remote-control in the folder, and starts it", () => {
   const m = mac();
-  const r = m.run(["server", "~/workspace"]);
+  const r = m.run(["server", "~/workspace"], { FAKE_SERVER_LOG: "\x1b[1A\x1b[J·✔︎· Ready · workspace · HEAD" });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.split(". ")[0], `Remote Control server: running in ${m.home}/workspace (pid 4242)`);
+  assert.match(r.stdout, /\nReady: the phone can start sessions\.\n$/);
   const item = readFileSync(m.plist, "utf8");
-  assert.ok(item.includes(`<array><string>${m.bin}/claude</string><string>remote-control</string><string>--no-create-session-in-dir</string></array>`), item);
+  const command = ["/usr/bin/env", "-u", "CLAUDE_CODE_OAUTH_TOKEN", `${m.bin}/claude`, "remote-control", "--no-create-session-in-dir"];
+  assert.ok(item.includes(`<array>${command.map((a) => `<string>${a}</string>`).join("")}</array>`), "the server starts without the inference-only token");
   assert.ok(item.includes(`<key>WorkingDirectory</key><string>${m.home}/workspace</string>`), item);
   assert.ok(item.includes(`<key>PATH</key><string>${m.bin}:`), "the server gets the user's PATH, for the sessions' tools");
   assert.ok(m.calls().includes(`bootstrap gui/${process.getuid()} ${m.plist}\n`));
@@ -107,6 +109,14 @@ test("a server that stops at once leaves no login item, and shows why", () => {
   assert.match(r.stderr, /The server stopped at once[\s\S]*Error: You must be logged in to use Remote Control\./);
   assert.equal(existsSync(m.plist), false);
   assert.match(m.run(["server", "status"]).stdout, /not installed/);
+});
+
+test("a server that runs but is not registered yet says so, with the reason", () => {
+  const m = mac();
+  const r = m.run(["server", "~/workspace"], { FAKE_SERVER_LOG: "Error: This folder is already served by another Claude Code on this device. Stop it first." });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /\nNot ready yet\. Its last message:\nError: This folder is already served by another Claude Code/);
+  assert.match(m.run(["server", "status"]).stdout, /Not ready yet/);
 });
 
 test("server status shows the folder; server off stops the server and removes the login item", () => {

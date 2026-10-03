@@ -86,10 +86,11 @@ Remote Control lets you follow, steer and start Claude Code sessions from the Cl
 
 The skill sets `remoteControlAtStartup` in `~/.claude/settings.json`, the same setting that `/config` changes. It cannot change the desktop app. There, turn on **Settings → Claude Code → Connect new sessions to Remote Control** once.
 
-Before the first `server`, do two things once, in the macOS Terminal app:
+Before the first `server`, do three things once, in the macOS Terminal app:
 
-1. Run `claude auth login`. Remote Control needs this full login. The token that the desktop app gives to its terminal does not work for it.
+1. Run `claude auth login`. Remote Control needs this full login. A `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` does not work for it. If your `~/.zshrc` sets that token, the token overrides the login in your shell, so run step 3 as `env -u CLAUDE_CODE_OAUTH_TOKEN claude remote-control`.
 2. Run `claude` in the server's folder, and answer Yes to the trust question.
+3. Run `claude remote-control` in the same folder, answer `y` to "Enable Remote Control?", then press Ctrl+C. A login item cannot answer this question.
 
 While the server runs, your claude.ai account can start sessions on your computer, and the sessions can reach everything in the folder.
 
