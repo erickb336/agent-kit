@@ -58,7 +58,7 @@
 <main>
 
 <h1>Sage mode</h1>
-<p class="sub">Design v2 · the sage repository · 4 Oct 2026 · status: <strong>decided; step 1 of the plan (the kitchen) is built and tested</strong></p>
+<p class="sub">Design v3 · the sage plugin · 4 Oct 2026 · status: <strong>the kitchen and the team are built; dry run 1 is done; the pilot is next</strong></p>
 
 <div class="lead">
   <p><strong>What this is.</strong> The design of sage mode: you say "sage mode", and the session becomes your chief of staff. The chief of staff runs a factory of specialist agents, like Orchestrator, but inside any Claude Code session, from your phone or your desktop. There is no app and no dashboard: the chat is the interface, and the state is plain files.</p>
@@ -76,7 +76,7 @@
   <li><strong>The goal.</strong> Make this your default way to design and build. You say what you want, answer the few product questions, and look at results: screens, recordings, test results. You don't read code.</li>
   <li><strong>What came before.</strong>
     <ul>
-      <li><em>agent-kit</em> gives every session its principles, the writing standard and the prove-it-works gate. Sage is a separate plugin and repository that depends on agent-kit: agent-kit is the kitchen, sage is the orchestration layer.</li>
+      <li><em>agent-kit</em> gave every session its principles, the writing standard and the prove-it-works gate. It is now the same plugin as sage mode, named sage: the kitchen and the orchestration layer in one place, with pstack's principles followed by a weekly sync.</li>
       <li><em>Orchestrator</em> proved the factory ideas: a PE, reviews running side by side, no dropped findings. It's a heavy app with fixed flows.</li>
       <li><em>The Remote Control server</em> in <code>~/workspace</code> lets you start sessions from your phone.</li>
       <li><em>A first prototype</em> showed that a folder setting can start a session as the chief of staff.</li>
@@ -138,8 +138,9 @@ flowchart TB
 <tr><td><strong>security-reviewer</strong></td><td>Input at the boundaries, injection, secrets, access, dependencies</td><td>No</td><td>boundary-discipline</td></tr>
 <tr><td><strong>ux-reviewer</strong></td><td>The flow, the states, the copy and accessibility, against the design</td><td>No</td><td>experience-first</td></tr>
 <tr><td><strong>qa</strong></td><td>Runs the checks and the real app, tries to break it. Verdict: PASS or FAIL with evidence</td><td>No</td><td>prove-it-works, test-behaviour</td></tr>
+<tr><td><strong>arena-judge</strong></td><td>Scores an arena's candidates against the rubric, picks the base, grafts the best parts of the others into it, and checks the result (Opus)</td><td>The base branch</td><td>exhaust-the-design-space, experience-first, laziness, prove-it-works</td></tr>
 </table></div>
-<p>Each agent is a file in <code>plugins/sage/agents/</code>. Their principles come from agent-kit, which sage depends on. An agent that doesn't change outcomes gets cut after the pilot. Anthropic's harness post found that each role encodes a guess about what the model can't do alone.</p>
+<p>Each agent is a file in <code>plugins/sage/agents/</code>. Each loads the plugin's own principle skills that its role needs. An agent that doesn't change outcomes gets cut after the pilot. Anthropic's harness post found that each role encodes a guess about what the model can't do alone.</p>
 
 <h2 id="routes">5. Building blocks and routes</h2>
 <p>This is where sage mode is more flexible than Orchestrator. Orchestrator has six fixed flows, and changing a task's flow starts it over. In sage mode, the chief of staff builds a route for each task from blocks. A route has a minimum for each size and risk, and the gates enforce that minimum.</p>
@@ -162,17 +163,23 @@ flowchart TB
 <h3>Design: your default way to design</h3>
 <p>The Design block is Orchestrator's Vision, made smaller. It works in rounds, one focus at a time: the experience, the data, the flows. The designer makes a prototype you can click, with sample data. The PE checks it. You mark each part keep, change or drop, as a choice with previews. The parts you keep go into the decision log. Implementers then build against it, and QA checks against it.</p>
 
-<h3 id="arena">Arena: N candidates, the PE takes the best of each</h3>
-<p>For a design with no clear answer, or for an implementation that's hard to undo, the chief can run an arena. N agents get the same brief, each with a different angle, and each works in its own worktree. The PE judges the candidates against the acceptance. It picks a base, and lists the parts to take from the others. One agent then makes the final version, and the normal route goes on from there.</p>
+<h3 id="arena">Arena: N candidates, a judge takes the best of each</h3>
+<p>For a design with no clear answer, or for an implementation that's hard to undo, the chief can run an arena. It follows pstack's arena, within Claude's models:</p>
+<ol>
+<li><strong>The rubric first.</strong> The chief writes 3 to 6 criteria that a judge can grade. The candidates don't see it.</li>
+<li><strong>N candidates</strong> (3 by default) get the same brief with a different angle each, on a mix of models (<code>arena_models</code>, by default Opus, Sonnet, Sonnet), each in its own worktree. Each ends with a rationale: what it considered and rejected.</li>
+<li><strong>The arena judge</strong> (Opus) scores each candidate, picks the base, and grafts the best parts of the others into it by hand. If all candidates converge, it keeps the shared shape. If they diverge wildly, it stops: the chief re-frames the brief once, then asks you.</li>
+<li><strong>The final version</strong> then goes through reviews and QA like any build.</li>
+</ol>
 <div class="diagram"><pre class="mermaid">
 flowchart TB
   B["One brief + N angles"] --> C1["Candidate 1 · own worktree"]
   B --> C2["Candidate 2 · own worktree"]
   B --> C3["Candidate N · own worktree"]
-  C1 --> J{"PE judges against the acceptance"}
+  C1 --> J{"The arena judge scores against the rubric"}
   C2 --> J
   C3 --> J
-  J -->|"base + parts to graft"| G["Designer or implementer makes the final version"]
+  J -->|"base + grafts, on the base branch"| G["The arena judge makes the final version"]
   G --> N["Normal route: review, QA, land"]
   J -.->|"screenshots and scores"| T[("Trail")]
 </pre><p class="cap">Candidates never merge. Only the final version goes on. Their branches are deleted after the PE's verdict, and their screenshots stay in the trail.</p></div>
@@ -181,8 +188,8 @@ flowchart TB
 <tr><td>When does it run?</td><td>When you say "arena" (for example "arena 4"), for a Design block that has no clear answer, or for an implementation the PE marks as hard to undo</td></tr>
 <tr><td>How many?</td><td>N = 3 by default, at most 5. Each candidate costs a full design or build</td></tr>
 <tr><td>How are the candidates different?</td><td>The chief gives each one an angle, for example "fewest taps", "most control", "reuse existing screens". N copies of one prompt give N similar answers</td></tr>
-<tr><td>What does the PE return?</td><td>A score per candidate against each acceptance line, the base, the parts to take from the others, and why</td></tr>
-<tr><td>For a design, who decides?</td><td>The PE makes the final version. You then keep, change or drop it, as in every design round</td></tr>
+<tr><td>What does the judge return?</td><td>A score per candidate against each rubric line, the base, each graft with its source, what it rejected, and the check of the final version</td></tr>
+<tr><td>For a design, who decides?</td><td>The arena judge makes the final version. You then keep, change or drop it, as in every design round</td></tr>
 <tr><td>Why is this safe now?</td><td>Orchestrator removed best-of copies (ORC-025) because they caused many edge-case bugs in the app's state. Here a candidate is only a throwaway branch and a report, and nothing else depends on it</td></tr>
 </table></div>
 
@@ -325,7 +332,7 @@ flowchart TB
 <tr><td>Large</td><td>8 – 16</td><td>$1 – $5</td></tr>
 <tr><td>Program</td><td>tens to hundreds</td><td>No basis yet. The pilot measures one unit</td></tr>
 </table></div>
-<p><strong>Basis.</strong> Orchestrator's real factory trial: one Feature task, 16 agent runs, $0.61–$0.83 of Claude. Anthropic's research system post: multi-agent runs use about 15× the tokens of a chat. With your subscription, this counts against your usage limits, not money. The ranges are guesses until the pilot measures real tasks, and I'll replace them with those numbers.</p>
+<p><strong>Measured in dry run 1</strong> (before its fixes): 28 agent runs for 2 tasks, $5.28 in all. A small task with a risk flag, 2 repair rounds and 2 cycles cost about $2.60, which is above the estimate. The fixes (no repair rounds for low findings, 1 cycle unless autopilot) cut that most. <strong>Earlier basis.</strong> Orchestrator's real factory trial: one Feature task, 16 agent runs, $0.61–$0.83 of Claude. Anthropic's research system post: multi-agent runs use about 15× the tokens of a chat. With your subscription, this counts against your usage limits, not money. The ranges are guesses until the pilot measures real tasks, and I'll replace them with those numbers.</p>
 
 <h2 id="options">12. The options I considered</h2>
 <div class="scroll"><table>
@@ -393,7 +400,7 @@ T2   41  a1b2c3d qa-live-pass  2</pre></div>
 <div class="scroll"><table>
 <tr><th>Step</th><th>What</th><th>The check</th></tr>
 <tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the store. The hook gates: brief fields, edits, the agent cap, the merge gate</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
-<tr><td>2. The team</td><td>The eight agents, the route rules, the brief and report shapes. Test whether a stop hook can see a subagent's report</td><td>A dry run on a demo project with sample data. You read the transcript</td></tr>
+<tr><td>2. The team <strong>(done: <a href="../runs/dry-run-1.html">dry run 1</a>)</strong></td><td>The eight agents, the route rules, the brief and report shapes. Test whether a stop hook can see a subagent's report</td><td>A dry run on a demo project with sample data. You read the transcript</td></tr>
 <tr><td>3. Pilot</td><td>One small real task on one of your projects. You watch from your phone</td><td>The task merges, or reaches a PR, with a ledger verdict on its head SHA. Measured cost</td></tr>
 <tr><td>4. Design rounds and arena</td><td>The Design block with prototypes and keep, change or drop. The arena block</td><td>One real design round with an arena of 3 that you mark</td></tr>
 <tr><td>5. Autopilot and Learn</td><td>Autopilot cycles and the merge gate. Lessons into the kitchen</td><td>One auto-merge after the set cycles. One lesson turned into a check</td></tr>
