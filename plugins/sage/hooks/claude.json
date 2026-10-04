@@ -1,10 +1,11 @@
 {
-  "description": "sage (Claude Code only): sage mode by phrase, its gates, and the cap on sage agents running at once.",
+  "description": "sage (Claude Code only): sage mode by phrase, its gates, and the caps on sage agents running at once: one per project and a total.",
   "hooks": {
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }],
-    "PreToolUse": [{ "matcher": "Edit|Write|MultiEdit|NotebookEdit|Agent|Task|Bash", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }],
+    "PreToolUse": [{ "matcher": "Edit|Write|MultiEdit|NotebookEdit|Agent|Task|TaskStop|Bash", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }],
     "PostToolUseFailure": [{ "matcher": "Agent|Task", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }],
     "SubagentStart": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }],
     "SubagentStop": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }],
     "PostCompact": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sage-hook.mjs\"", "timeout": 10 }] }]
   }

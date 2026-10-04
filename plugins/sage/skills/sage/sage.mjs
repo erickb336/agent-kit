@@ -48,9 +48,12 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
-export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet" };
+export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
-const COUNTS = { max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates" };
+const COUNTS = { max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" };
+/** One project's own agent cap, cap.<project>, with the project's name as projectName gives it. Without one, max_agents is the project's cap. */
+const CAP = /^cap\.[a-z0-9][a-z0-9-]*$/;
+const KEYS = "max_agents, cycles.small, cycles.large, cycles.risk, max_rounds, arena and cap_total as key=number, cap.<project>=number for one project's cap";
 const MODELS = ["opus", "sonnet", "haiku", "inherit"];
 const TABLES = {
   tasks: ["id", "title", "size", "risk", "route", "state", "branch", "pr", "round", "keys"],
@@ -106,10 +109,14 @@ function projectRoot(path) {
   }
 }
 
+/** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
+export function projectName(path) {
+  return basename(projectRoot(resolve(path))).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+}
+
 export function storeDir(project, env = process.env) {
   const root = projectRoot(resolve(project));
-  const name = basename(root).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
-  return join(sageRoot(env), `${name}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`);
+  return join(sageRoot(env), `${projectName(root)}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`);
 }
 
 /** A config value in its stored form, or undefined when it is not valid. Only a number or a string can be valid. */
@@ -119,7 +126,7 @@ function valid(key, value) {
     const models = list(String(value));
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
   }
-  return Object.hasOwn(COUNTS, key) && /^[1-9]\d*$/.test(String(value)) ? Number(value) : undefined;
+  return (Object.hasOwn(COUNTS, key) || CAP.test(key)) && /^[1-9]\d*$/.test(String(value)) ? Number(value) : undefined;
 }
 
 /** The refusal for a path that holds something other than a regular file: a folder, a FIFO or a device. */
@@ -168,7 +175,8 @@ export function config(env = process.env) {
   let c = { ...DEFAULTS };
   try {
     const s = saved(env);
-    c = Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]));
+    const caps = Object.entries(s).filter(([k, v]) => CAP.test(k) && valid(k, v) !== undefined);
+    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]), ...caps]);
   } catch {}
   return { ...c, autopilot_cycles: c["cycles.large"] };
 }
@@ -476,15 +484,15 @@ export function sage(argv, env = process.env) {
     const set = {};
     for (const kv of pos) {
       const [k, v = ""] = kv.split("=");
-      if (Object.hasOwn(COUNTS, k) && valid(k, v) === undefined) refuse(`${k} must be a whole number of 1 or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k]}` : `, not ${JSON.stringify(v)}`}`);
-      set[k] = valid(k, v) ?? refuse(`config takes ${Object.keys(COUNTS).join(", ")} as key=number, and arena_models as a list of ${MODELS.join(", ")}`);
+      if ((Object.hasOwn(COUNTS, k) || CAP.test(k)) && valid(k, v) === undefined) refuse(`${k} must be a whole number of 1 or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : `, not ${JSON.stringify(v)}`}`);
+      set[k] = valid(k, v) ?? refuse(`config takes ${KEYS}, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
       mkdirSync(sageRoot(env), { recursive: true });
       put(join(sageRoot(env), "config.json"), JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n"); // a key of a newer version stays
     }
-    const c = { ...config(env), ...set };
-    return Object.keys(DEFAULTS).map((k) => `${k}=${c[k]}`).join(" ");
+    const { autopilot_cycles: _alias, ...c } = { ...config(env), ...set }; // the real keys: the defaults and each cap.<project>, not the alias
+    return Object.entries(c).map(([k, v]) => `${k}=${v}`).join(" ");
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
   const dir = storeDir(project, env);
