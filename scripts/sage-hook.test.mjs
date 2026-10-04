@@ -1,7 +1,7 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -45,8 +45,9 @@ const checkout = (branch) => {
 };
 const FEATURE = checkout("claude/t1");
 const MAIN_CHECKOUT = checkout("main");
-const bash = (command, cwd = FEATURE) => tool("Bash", { command }, { cwd });
-const spawnAgent = (subagent_type, prompt, id = "tu1") => tool("Agent", { subagent_type, prompt, description: "d" }, { tool_use_id: id });
+const bash = (command, cwd = FEATURE, extra = {}) => tool("Bash", { command }, { cwd, ...extra });
+const spawnAgent = (subagent_type, prompt, id = "tu1", extra = {}) => tool("Agent", { subagent_type, prompt, description: "d" }, { tool_use_id: id, ...extra });
+const start = (agent_id, extra = {}) => ({ hook_event_name: "SubagentStart", agent_id, agent_type: "sage:qa", ...extra });
 const context = (out) => out?.hookSpecificOutput?.additionalContext ?? "";
 const denied = (out) => (out?.hookSpecificOutput?.permissionDecision === "deny" ? out.hookSpecificOutput.permissionDecisionReason : undefined);
 
@@ -87,7 +88,7 @@ test("at most max_agents sage agents run at once, also when the chief starts the
   s.send(prompt("sage mode"));
   const four = await Promise.all([1, 2, 3, 4].map((n) => s.sendAsync(spawnAgent("sage:qa", BRIEF, `tu${n}`))));
   assert.equal(four.filter((out) => !denied(out)).length, 3, "exactly 3 of 4 simultaneous spawns pass");
-  assert.match(four.map(denied).find(Boolean), /3 sage agents are running, and the cap is 3/);
+  assert.match(four.map(denied).find(Boolean), /^sage: 3 sage agents are running for other, and its cap is 3 \(3 of 12 across all projects\)\. Wait for one to finish, or raise the cap: node ".*sage\.mjs" config cap\.other=4$/, "a spawn with no cwd counts under other");
 
   const allowed = [1, 2, 3, 4].filter((n, i) => !denied(four[i]));
   allowed.forEach((n, i) => s.send({ hook_event_name: "SubagentStart", agent_id: `ag${i}`, agent_type: "sage:qa" }));
@@ -104,7 +105,64 @@ test("the cap comes from the sage config", () => {
   s.sage("config", "max_agents=1");
   s.send(prompt("sage mode"));
   assert.equal(s.send(spawnAgent("sage:pe", BRIEF, "tu1")), undefined);
-  assert.match(denied(s.send(spawnAgent("sage:pe", BRIEF, "tu2"))), /the cap is 1/);
+  assert.match(denied(s.send(spawnAgent("sage:pe", BRIEF, "tu2"))), /its cap is 1/);
+});
+
+// Acceptance (1) of T38: an agent that is stopped or dies fires no SubagentStop, and still frees its slot at once.
+test("a stopped or dead agent frees its slot without SubagentStop: TaskStop, the session's live tasks, a failed spawn, and the lease", () => {
+  const s = session();
+  s.sage("config", "max_agents=1");
+  s.send(prompt("sage mode"));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu1")), undefined);
+  s.send(start("ag1"));
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2"))), "the running agent holds the one slot");
+  s.send(tool("TaskStop", { task_id: "ag1" }));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu3")), undefined, "TaskStop frees the stopped agent's slot");
+  s.send(start("ag3"));
+  s.send({ hook_event_name: "Stop", background_tasks: [{ id: "ag3", type: "subagent", status: "running" }] });
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu4"))), "an agent among the session's live tasks keeps its slot");
+  s.send({ hook_event_name: "Stop", background_tasks: [] });
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu5")), undefined, "an agent that left the live tasks (it died) frees its slot at the chief's turn end");
+  s.send(start("ag5"));
+  s.send({ hook_event_name: "SubagentStop", agent_id: "other", agent_type: "Explore", last_assistant_message: "x", background_tasks: [{ id: "ag5", type: "subagent", status: "running" }] });
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu6"))), "another agent's stop keeps a live agent's slot");
+  s.send({ hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_use_id: "tu5" });
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu7")), undefined, "a spawn that fails after its agent started frees the slot");
+  s.send(start("ag7"));
+  const slot = join(s.vars.SAGE_HOOKS_STATE, "slots", "slot-1");
+  const old = new Date(Date.now() - 2 * 3600_000);
+  utimesSync(slot, old, old);
+  s.send(bash("npm test", FEATURE, { agent_id: "ag7", agent_type: "sage:qa" }));
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu8"))), "an agent's own event renews its lease");
+  utimesSync(slot, old, old);
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu9")), undefined, "a slot that nothing touched for an hour expires");
+});
+
+// Acceptance (2), (3) and (4) of T38: a cap per project, a total across projects that wins, and a log of refusals.
+test("each project has its own cap, the total across all projects wins, and each refusal is logged", () => {
+  const s = session();
+  const alpha = join(s.dir, "alpha");
+  const beta = join(s.dir, "beta");
+  mkdirSync(alpha);
+  mkdirSync(beta);
+  s.sage("config", "cap.alpha=5");
+  for (const [session_id, cwd] of [["sA", alpha], ["sB", beta]]) s.send({ ...prompt("sage mode"), session_id });
+  const spawnIn = (session_id, cwd, n) => s.send(spawnAgent("sage:qa", BRIEF, `${session_id}-${n}`, { session_id, cwd }));
+  for (let n = 1; n <= 5; n++) assert.equal(spawnIn("sA", alpha, n), undefined, `alpha starts agent ${n} of 5`);
+  assert.match(denied(spawnIn("sA", alpha, 6)), /^sage: 5 sage agents are running for alpha, and its cap is 5 \(5 of 12 across all projects\)\. Wait for one to finish, or raise the cap: node ".*" config cap\.alpha=6$/);
+  for (let n = 1; n <= 3; n++) assert.equal(spawnIn("sB", beta, n), undefined, `beta starts agent ${n} of 3 while alpha is full`);
+  assert.match(denied(spawnIn("sB", beta, 4)), /3 sage agents are running for beta, and its cap is 3 \(8 of 12/);
+  s.sage("config", "cap.beta=9");
+  for (let n = 4; n <= 7; n++) assert.equal(spawnIn("sB", beta, n), undefined, `beta starts agent ${n} of 9`);
+  assert.match(denied(spawnIn("sB", beta, 8)), /^sage: 12 sage agents are running across all projects, and the total cap is 12 \(beta has 7\)\. Wait for one to finish, or raise the cap: node ".*" config cap_total=13$/);
+  s.send({ ...tool("TaskStop", { task_id: "none" }), session_id: "sA" });
+  assert.ok(denied(spawnIn("sA", alpha, 7)), "a TaskStop of an unknown task frees nothing");
+  const lines = readFileSync(join(s.vars.SAGE_HOOKS_STATE, "refusals.log"), "utf8").trimEnd().split("\n");
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z alpha 5\/5 total 5\/12$/);
+  assert.equal(lines[1].slice(25), "beta 3/3 total 8/12");
+  assert.equal(lines[2].slice(25), "beta 7/9 total 12/12");
+  assert.equal(lines[3].slice(25), "alpha 5/5 total 12/12");
 });
 
 // The push rule is an allow-list (F-R89-1, F-R89-3, F-R90-2). Each refusal names the one push form.
@@ -798,7 +856,7 @@ test("1 MB of padding in an agent's text cannot time out the hook", async () => 
   const AP = "auto" + "pilot";
   const MB = 1 << 20;
   const pad = (unit) => unit.repeat(Math.ceil(MB / unit.length)).slice(0, MB);
-  const slots = { bind() {}, release() {}, drop() {}, count: () => 0 };
+  const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
   const timed = (input, state = {}) => {
     const t = performance.now();
     const out = handle(input, state, slots);

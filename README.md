@@ -166,7 +166,7 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | --- | --- |
 | The chief of staff never edits a file. | It keeps the big picture; the team does the details. |
 | Every brief has all its fields; every report has its evidence. | A vague brief fails quietly. A claim without evidence is not a result. |
-| At most 3 sage agents run at once. | Cost and focus. |
+| At most 3 sage agents run at once for a project (`config cap.<project>=n` sets one project's cap), and at most 12 across all projects (`cap_total`). A slot frees as soon as its agent ends, fails or is stopped. | Cost and focus. Several sessions share the total. |
 | One writer per branch. Nobody force-pushes or pushes to main. A push is only `git push [-u] origin <branch>`, with the branch's own name. | Parallel writers conflict. Work reaches main only through a pull request. |
 | Every finding is triaged: fix, dismiss with a reason, or ask you. | No finding is dropped. |
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
