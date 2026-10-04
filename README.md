@@ -78,7 +78,11 @@ This is one session, step by step. It is an illustration with sample data.
    - An irreversible action always gets its own yes.
    - A new fact that changes an earlier answer can bring the question back.
    - A large task's design gets your approval after the PE check.
-   - An escalation: the task is held or needs a new plan, or a finding needs a decision that the chief cannot make.
+   - An escalation: the work finds something that the chief cannot decide alone. For example:
+     - The task is held or needs a new plan.
+     - An agent stops at a new product question.
+     - A finding needs a decision.
+     - The arena candidates do not converge.
 
    Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
 4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds.
