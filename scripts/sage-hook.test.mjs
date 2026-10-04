@@ -273,140 +273,163 @@ test("a push from a checkout of main or master is refused; a push with -C or aft
 });
 
 /**
- * A blank project for the first upload of main (T24): a checkout on branch with commits commits, whose origin is a local
- * bare repository at <tmp>/owner/repo.git. The first commit holds files files (f01, f02, ...); the later ones are empty.
- * remote: "has" gives origin the branch, "missing" points origin at no repository. config: extra git config of the checkout.
+ * A fake gh on PATH for the first creation of main (T24): it answers the hook's GETs from a JSON file, so no test calls
+ * GitHub. github(answers) writes that file: { "<endpoint>": { status, body } | { sleep: true } | { fail: true } }. An
+ * endpoint with no answer is a 404. The fake answers 500 to a call without --hostname github.com or with GH_HOST set,
+ * as a GitHub Enterprise host would not know the repository.
  */
-const blank = ({ branch = "main", commits = 1, files = 0, remote = "blank", config = [] } = {}) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "sage-blank-")));
-  const bare = join(root, "owner", "repo.git");
-  const dir = join(root, "work");
-  const run = (...args) => assert.equal(spawnSync("git", args, { encoding: "utf8" }).status, 0, args.join(" "));
-  run("init", "-q", "--bare", bare);
-  run("init", "-q", "-b", branch, dir);
-  for (let n = 1; n <= files; n++) writeFileSync(join(dir, `f${String(n).padStart(2, "0")}`), `${n}\n`);
-  if (files) run("-C", dir, "add", ".");
-  for (let n = 0; n < commits; n++) run("-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", `c${n}`);
-  run("-C", dir, "remote", "add", "origin", remote === "missing" ? join(root, "none.git") : bare);
-  for (const [key, value] of config) run("-C", dir, "config", key, value);
-  if (remote === "has") run("-C", dir, "push", "-q", "origin", branch);
-  const sha = spawnSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-  return { dir, root, sha, up: (to = branch) => `git push origin ${sha}:refs/heads/${to}`, api: (rest = "") => `gh api repos/owner/repo/git/refs -f ref=refs/heads/${branch} -f sha=${sha}${rest}` };
+const FAKE_GH = (() => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-fake-gh-")));
+  writeFileSync(
+    join(dir, "gh"),
+    `#!/usr/bin/env node
+const fs = require("fs");
+const args = process.argv.slice(2);
+const answers = JSON.parse(fs.readFileSync(process.env.FAKE_GH_ANSWERS, "utf8"));
+const host = args[args.indexOf("--hostname") + 1];
+const a = host !== "github.com" || process.env.GH_HOST || process.env.GH_REPO ? { status: 500, body: { message: "wrong host" } } : answers[args.at(-1)] ?? { status: 404, body: { message: "Not Found" } };
+if (a.sleep) setTimeout(() => {}, 30000);
+else if (a.fail) process.exit(1);
+else {
+  process.stdout.write("HTTP/2.0 " + a.status + " X\\nContent-Type: application/json\\r\\n\\r\\n" + JSON.stringify(a.body, null, 2));
+  process.exitCode = a.status < 400 ? 0 : 1;
+}
+`,
+    { mode: 0o755 },
+  );
+  return dir;
+})();
+const ROOT_SHA = "1".repeat(40);
+const CHILD_SHA = "3".repeat(40);
+const TREE_SHA = "2".repeat(40);
+const blobs = (names) => names.map((path) => ({ path, type: "blob" }));
+/** GitHub for a blank repository o/r: no main, and ROOT_SHA is a root commit with the files f01 to f12. */
+const BLANK = {
+  [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: ROOT_SHA, tree: { sha: TREE_SHA }, parents: [] } },
+  [`repos/o/r/git/commits/${CHILD_SHA}`]: { status: 200, body: { sha: CHILD_SHA, tree: { sha: TREE_SHA }, parents: [{ sha: ROOT_SHA }] } },
+  [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { sha: TREE_SHA, truncated: false, tree: blobs(Array.from({ length: 12 }, (_, n) => `f${String(n + 1).padStart(2, "0")}`)) } },
 };
+/** A sage-mode session whose gh is the fake; github(answers) sets what GitHub answers, over BLANK. */
+const firstSession = (env = {}) => {
+  const answers = join(FAKE_GH, `answers-${Math.random().toString(36).slice(2)}.json`);
+  const s = session({ PATH: `${FAKE_GH}:${process.env.PATH}`, FAKE_GH_ANSWERS: answers, ...env });
+  s.github = (more = {}) => writeFileSync(answers, JSON.stringify({ ...BLANK, ...more }));
+  s.github();
+  s.send(prompt("sage mode"));
+  return s;
+};
+const CREATE = `gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`;
+const ASKED = `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 12 files: "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10" and 2 more. The user must approve it.`;
 const asked = (out) => (out?.hookSpecificOutput?.permissionDecision === "ask" ? out.hookSpecificOutput.permissionDecisionReason : undefined);
+const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
+/** The refusal of the exact form when a check on GitHub fails. */
+const NOT_FIRST = (why) => new RegExp(`^sage: this command creates main on github\\.com/o/r, and the hook asks the user only when GitHub shows that it is the first creation of main at one root commit: ${why}`);
 
-test("the first upload of one root commit to a blank main asks the user; every other upload of main is refused (T24)", () => {
-  const s = session();
-  const ASK = /^sage: this is the first upload of (main|master) to a blank remote: origin has no \1, and commit [0-9a-f]{40} is one root commit with \d+ files?(: .*)?\. The user must approve it\.$/;
-  const one = blank();
-  assert.equal(s.send(bash(one.up(), one.dir)), undefined, "outside sage mode the hook does not judge pushes");
-  assert.equal(s.send(bash(one.api(), one.dir)), undefined, "outside sage mode the hook does not judge gh api");
-  s.send(prompt("sage mode"));
-
-  // Ask: the fixed-commit push, with -C or master, and the gh api POST that creates the branch at that commit.
-  const master = blank({ branch: "master" });
-  const ask = [
-    [one.up(), one.dir],
-    [`git -C ${one.dir} push origin ${one.sha}:refs/heads/main`, FEATURE],
-    [master.up(), master.dir],
-    [one.api(), one.dir],
-    [`${one.api()} -X POST`, one.dir],
-    [`gh api --method=POST /repos/owner/repo/git/refs --raw-field ref=refs/heads/master -F sha=${master.sha}`, master.dir],
-  ];
-  assert.deepEqual(ask.flatMap(([command, cwd]) => (ASK.test(asked(s.send(bash(command, cwd))) ?? "") ? [] : [command])), []);
-  assert.equal(asked(s.send(bash(one.api(), one.dir))), `sage: this is the first upload of main to a blank remote: origin has no main, and commit ${one.sha} is one root commit with 0 files. The user must approve it.`);
-
-  // Refuse, as before: the remote has main, git ls-remote fails, or a subagent asks.
-  const has = blank({ remote: "has" });
-  const missing = blank({ remote: "missing" });
-  const refused = (command, cwd, extra = {}) => denied(s.send(tool("Bash", { command }, { cwd, ...extra }))) ?? "allowed";
-  for (const b of [has, missing]) {
-    assert.match(refused(b.up(), b.dir), TO_MAIN, b.dir);
-    assert.match(refused(b.api(), b.dir), TO_MAIN, b.dir);
-  }
-  assert.match(refused(one.up(), one.dir, { agent_id: "a1", agent_type: "sage:implementer" }), TO_MAIN, "a subagent never gets the exception");
-  assert.match(refused(one.api(), one.dir, { agent_id: "a1", agent_type: "sage:implementer" }), TO_MAIN);
-
-  // Refuse any other form for a blank remote too: force, a branch name, HEAD, a short sha, a variable, a list, or a gh api call that is not the POST.
-  assert.match(refused("git push -f origin main", one.dir), FORCE);
-  assert.match(refused(`git push origin +${one.sha}:refs/heads/main`, one.dir), FORCE);
-  for (const command of [`git push -u origin ${one.sha}:refs/heads/main`, `git push origin ${one.sha}:main`, `git push origin ${one.sha.slice(0, 12)}:refs/heads/main`, "git push origin HEAD:refs/heads/main", "git push origin refs/heads/main", `${one.up()} && echo ok`, `${one.up()} 2>&1`]) {
-    assert.match(refused(command, one.dir), TO_MAIN, command);
-  }
-  assert.match(refused("git push origin $B", one.dir), NOT_FORM);
+test("the first creation of main on GitHub, in the one gh api form, asks the user with the literal destination (T24)", () => {
+  const s = firstSession({ GH_HOST: "ghe.example.com", GH_REPO: "evil/repo" });
+  const off = session({ PATH: `${FAKE_GH}:${process.env.PATH}` });
+  assert.equal(off.send(bash(CREATE)), undefined, "outside sage mode the hook judges nothing");
+  assert.equal(asked(s.send(bash(CREATE))), ASKED, "GH_HOST and GH_REPO in the session do not change where the hook looks");
+  const bare = realpathSync(mkdtempSync(join(tmpdir(), "sage-no-repo-")));
+  assert.equal(asked(s.send(bash(CREATE, bare))), ASKED, "the folder is not read: the same answer from a folder that is not a git repo (DASH-C-SHELL-EXPANSION)");
   for (const command of [
-    one.api(" -X PATCH"),
-    one.api(" -f force=true"),
-    `gh api repos/owner/other/git/refs -f ref=refs/heads/main -f sha=${one.sha}`,
-    `gh api repos/owner/repo/git/refs -f ref=main -f sha=${one.sha}`,
+    `gh api repos/o/r/git/refs -f sha=${ROOT_SHA} -f ref=refs/heads/main --method POST --hostname github.com`,
+    `gh api --method=POST --hostname github.com repos/o/r/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`,
   ]) {
-    assert.match(refused(command, one.dir), TO_MAIN, command);
+    assert.equal(asked(s.send(bash(command))), ASKED, command);
   }
-  assert.equal(s.send(bash(`gh api repos/owner/repo/git/refs -f ref=refs/heads/feat -f sha=${one.sha}`, one.dir)), undefined, "a gh api call for another branch is not the push rule's");
+  s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: [] } } });
+  assert.equal(asked(s.send(bash(CREATE.replace("heads/main", "heads/master")))), `sage: this is the first creation of master on github.com/o/r: GitHub has no master, and commit ${ROOT_SHA} is one root commit with 0 files. The user must approve it.`);
 });
 
-test("the plain push of main to a blank remote is refused, and the refusal names the fixed-commit form (T24 ONE-COMMIT-TOCTOU)", () => {
-  const s = session();
-  s.send(prompt("sage mode"));
-  const one = blank();
-  for (const command of ["git push -u origin main", "git push origin main", "git push --set-upstream origin main"]) {
-    const reason = denied(s.send(bash(command, one.dir))) ?? "allowed";
+test("the exact form is refused when GitHub does not show a first creation at one root commit (T24 REPLACE-GRAFTS, TAG-OR-SHALLOW-AS-ROOT, UPLOAD-CONFIG-REDIRECT)", () => {
+  const s = firstSession();
+  const cases = [
+    [{ "repos/o/r/git/ref/heads/main": { status: 200, body: { ref: "refs/heads/main" } } }, "GitHub answered 200 for main, not 404"],
+    [{ "repos/o/r/git/ref/heads/main": { status: 409, body: { message: "Git Repository is empty." } } }, "GitHub answered 409 for main, not 404"],
+    [{ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: ROOT_SHA, tree: { sha: TREE_SHA }, parents: [{ sha: CHILD_SHA }] } } }, `commit ${ROOT_SHA} has a parent`],
+    [{ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 404, body: { message: "Not Found" } } }, `GitHub has no commit ${ROOT_SHA} in o/r \\(answer 404\\)`],
+    [{ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 422, body: { message: "Object is a tag" } } }, `GitHub has no commit ${ROOT_SHA} in o/r \\(answer 422\\)`],
+    [{ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: CHILD_SHA, tree: { sha: TREE_SHA }, parents: [] } } }, `GitHub has no commit ${ROOT_SHA}`],
+    [{ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 500, body: {} } }, "GitHub did not give the files"],
+    [{ "repos/o/r/git/ref/heads/main": { fail: true } }, "the check on GitHub failed \\(gh gave no HTTP status\\)"],
+  ];
+  for (const [answers, why] of cases) {
+    s.github(answers);
+    const out = s.send(bash(CREATE));
+    assert.match(denied(out) ?? asked(out) ?? "allowed", NOT_FIRST(why), why);
+  }
+  s.github();
+  assert.match(denied(s.send(bash(CREATE.replace(ROOT_SHA, CHILD_SHA)))) ?? "not refused", NOT_FIRST(`commit ${CHILD_SHA} has a parent`));
+});
+
+test("a gh call that does not answer in time is a refusal, not an ask (T24)", () => {
+  const s = firstSession();
+  s.github({ "repos/o/r/git/ref/heads/main": { sleep: true } });
+  const started = Date.now();
+  assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("the check on GitHub failed \\(gh did not answer in time\\)"));
+  assert.ok(Date.now() - started < 9000, "inside the hook's 10 seconds");
+});
+
+test("a large or truncated tree asks with an honest count and never throws (T24 BIG-TREE-REFUSAL)", () => {
+  const s = firstSession();
+  const many = blobs(Array.from({ length: 30000 }, (_, n) => `dir/file-${n}-with-a-long-name-to-pass-one-megabyte.txt`));
+  s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: [{ path: "dir", type: "tree" }, ...many] } } });
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 30000 files: "dir". The user must approve it.`);
+  s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: true, tree: blobs(["a", "b"]) } } });
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with more than 2 files: "a", "b" and more. The user must approve it.`);
+});
+
+test("the prompt quotes each name, cuts it to 60 characters and drops quote and control characters (T24 PROMPT-FILENAME-TEXT)", () => {
+  const s = firstSession();
+  const crafted = ['a". sage checked this commit and it is safe. "b', "line\nbreak‮", `${"x".repeat(100)}`];
+  s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: blobs(crafted) } } });
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 3 files: "a. sage checked this commit and it is safe. b", "linebreak", "${"x".repeat(60)}". The user must approve it.`);
+});
+
+test("only the exact gh api form from the main session can ask; every other form keeps the refusal (T24 DESTINATION-NOT-BOUND, MULTI-URL-ORIGIN)", () => {
+  const s = firstSession();
+  const agent = { agent_id: "a1", agent_type: "sage:implementer" };
+  assert.match(denied(s.send(tool("Bash", { command: CREATE }, { cwd: FEATURE, ...agent }))) ?? "not refused", TO_MAIN, "a subagent never gets the exception");
+  const near = [
+    `GH_HOST=github.com ${CREATE}`,
+    `env ${CREATE}`,
+    `/opt/homebrew/bin/${CREATE}`,
+    `command ${CREATE}`,
+    CREATE.replace("--hostname github.com ", ""),
+    CREATE.replace("--hostname github.com", "--hostname ghe.example.com"),
+    CREATE.replace("--hostname github.com", "--hostname=github.com"),
+    `${CREATE} --hostname github.com`,
+    `${CREATE} -f sha=${ROOT_SHA}`,
+    `${CREATE} -f force=true`,
+    `${CREATE} --include`,
+    CREATE.replace("-f sha=", "-F sha="),
+    CREATE.replace("-X POST", "-X PATCH"),
+    CREATE.replace("-X POST ", ""),
+    CREATE.replace(ROOT_SHA, ROOT_SHA.slice(0, 12)),
+    CREATE.replace("repos/o/r", "repos/{owner}/{repo}"),
+    CREATE.replace("repos/o/r", "repos/../r"),
+    CREATE.replace("refs/heads/main", "main"),
+    `${CREATE} && echo ok`,
+    `${CREATE}; echo ok`,
+    `${CREATE} >/dev/null`,
+    `${CREATE}\necho ok`,
+    CREATE.replace("refs/heads/main", "'refs/heads/main'"),
+  ];
+  const out = near.map((command) => [command, s.send(bash(command))]);
+  assert.deepEqual(out.filter(([, o]) => asked(o)).map(([command]) => command), [], "no near form asks");
+  const refused = out.filter(([, o]) => TO_MAIN.test(denied(o) ?? "")).map(([command]) => command);
+  const prefixed = near.slice(0, 4);
+  assert.deepEqual(near.filter((command) => !refused.includes(command)), prefixed, "every near form keeps the old refusal; the push rule does not yet read gh api behind a prefix (T20)");
+});
+
+test("a git upload of main gets the old refusal and names the gh api form (T24)", () => {
+  const s = firstSession();
+  for (const command of [`git push origin ${ROOT_SHA}:refs/heads/main`, "git push -u origin main", `git -C ~/proj push origin ${ROOT_SHA}:refs/heads/main`]) {
+    const reason = denied(s.send(bash(command))) ?? "allowed";
     assert.match(reason, TO_MAIN, command);
-    assert.ok(reason.includes("git push origin <sha>:refs/heads/main, where <sha> is a root commit"), reason);
+    assert.ok(reason.includes(FIRST_FORM), reason);
   }
-});
-
-test("the first upload asks only for a root commit that exists here (T24 ONE-COMMIT-TOCTOU)", () => {
-  const s = session();
-  s.send(prompt("sage mode"));
-  const two = blank({ commits: 2 });
-  const absent = "0123456789abcdef0123456789abcdef01234567";
-  for (const command of [two.up(), two.api(), `git push origin ${absent}:refs/heads/main`, `gh api repos/owner/repo/git/refs -f ref=refs/heads/main -f sha=${absent}`]) {
-    assert.match(denied(s.send(bash(command, two.dir))) ?? "allowed", TO_MAIN, command);
-  }
-  const root = spawnSync("git", ["-C", two.dir, "rev-list", "--max-parents=0", "HEAD"], { encoding: "utf8" }).stdout.trim();
-  assert.match(asked(s.send(bash(`git push origin ${root}:refs/heads/main`, two.dir))) ?? "refused", new RegExp(`commit ${root} is one root commit`), "the root commit of a longer branch is one commit");
-});
-
-test("a git config that sends the push elsewhere or forces it removes the exception (T24 UPLOAD-CONFIG-REDIRECT, PUSHURL-MISMATCH)", () => {
-  const s = session();
-  s.send(prompt("sage mode"));
-  const full = blank({ commits: 3, remote: "has" });
-  const bare = join(full.root, "owner", "repo.git");
-  const configs = {
-    pushurl: [["remote.origin.pushurl", bare]],
-    push: [["remote.origin.push", "+refs/heads/main:refs/heads/main"]],
-    pushInsteadOf: [[`url.${bare}.pushInsteadOf`, "/nowhere/"]],
-  };
-  for (const [name, config] of Object.entries(configs)) {
-    const b = blank({ config });
-    assert.match(denied(s.send(bash(b.up(), b.dir))) ?? "allowed", TO_MAIN, name);
-    assert.match(denied(s.send(bash(b.api(), b.dir))) ?? "allowed", TO_MAIN, name);
-  }
-  const plain = blank();
-  assert.ok(asked(s.send(bash(plain.up(), plain.dir))), "without that config, the same command asks");
-});
-
-test("the first-upload prompt names the commit's file count and up to 10 top-level names (T24 PROMPT-NO-CONTENTS)", () => {
-  const s = session();
-  s.send(prompt("sage mode"));
-  const twelve = blank({ files: 12 });
-  assert.equal(asked(s.send(bash(twelve.up(), twelve.dir))), `sage: this is the first upload of main to a blank remote: origin has no main, and commit ${twelve.sha} is one root commit with 12 files: f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, and 2 more. The user must approve it.`);
-  const three = blank({ files: 3 });
-  assert.equal(asked(s.send(bash(three.api(), three.dir))), `sage: this is the first upload of main to a blank remote: origin has no main, and commit ${three.sha} is one root commit with 3 files: f01, f02, f03. The user must approve it.`);
-});
-
-test("gh api: a repeated field removes the exception; ref=main counts only on a git refs endpoint (T24 GHAPI-REPEATED-FIELD, GHAPI-REF-OVERBROAD)", () => {
-  const s = session();
-  s.send(prompt("sage mode"));
-  const one = blank();
-  for (const command of [one.api(` -f sha=${one.sha}`), `gh api repos/owner/repo/git/refs -f ref=refs/heads/feat -f ref=refs/heads/main -f sha=${one.sha}`]) {
-    assert.match(denied(s.send(bash(command, one.dir))) ?? "allowed", TO_MAIN, command);
-  }
-  for (const command of ["gh api repos/o/r/actions/workflows/ci.yml/dispatches -f ref=main", "gh api repos/o/r/deployments -f ref=main -f environment=prod"]) {
-    assert.equal(s.send(bash(command)), undefined, command);
-  }
-  assert.match(denied(s.send(bash("gh api -X PATCH repos/o/r/git/refs/heads/main -f ref=main"))) ?? "allowed", TO_MAIN, "a git refs endpoint with a path still counts");
 });
 
 test("a push command that the hook cannot read is refused with what to do (F-R90-4)", () => {

@@ -10,12 +10,12 @@
 //     cycles that the ledger records for it (the merge check). The merge rule and the push rule are allow-lists: a
 //     command that names a merge or runs a push is refused unless it is exactly the merge form or the push form, or the
 //     merge text stands only in a harmless command's text. One case asks the user instead of a refusal: the chief's
-//     first upload of one root commit, named by its full id, to a main or master that the remote does not have
-//     (firstUpload).
+//     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
+//     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -211,7 +211,9 @@ const longOption = (word, names) => {
   return name.length > 3 && names.some((n) => n.startsWith(name));
 };
 const FORCE = "sage mode never force-pushes. Push a new commit instead.";
-const TO_MAIN = "work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first upload of a blank project asks the user, in the form git push origin <sha>:refs/heads/main, where <sha> is a root commit.)";
+/** The one command that can create main or master (firstUpload). */
+const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
+const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub.)`;
 
 /** Why the git push at words[git] is not the push form, or undefined. dir is where the command runs. */
 function pushForm(words, git, dir) {
@@ -252,14 +254,10 @@ function pushForm(words, git, dir) {
   return branch && MAIN_REF.test(branch) ? `this checkout is on ${branch}. Push from the task's worktree, on the task's branch.` : undefined;
 }
 
-/** The output of a git command in dir. It throws on an error, and after 5 seconds (git ls-remote can wait on the network). */
-const git = (dir, ...args) =>
-  execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_TERMINAL_PROMPT: "0" } }).trim();
-
 /** The branch that the checkout at dir is on, or undefined when git cannot read it. */
 function branchAt(dir) {
   try {
-    return git(dir, "rev-parse", "--abbrev-ref", "HEAD");
+    return execFileSync("git", ["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined } }).trim();
   } catch {
     return undefined;
   }
@@ -270,71 +268,93 @@ const REFS_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/git\/refs(?:\/|$)/;
 /** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
 const MAIN_FIELD = /^(?:-[fF]|--(?:raw-)?field=)?ref=(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
 
-/** git config keys that can send a push to another place than the url that git ls-remote reads, or force it. */
-const REDIRECT = /^(?:remote\.origin\.(?:pushurl|push)|url\..*\.pushinsteadof)$/i;
+/**
+ * The one exception to the push rule: the first creation of main or master on GitHub, for a blank project. The whole
+ * command is FIRST_FORM, its flags in any order, each once, with nothing before or after it. Every word in it is
+ * literal, so the user approves an immutable commit and a fixed destination. Returns { owner, repo, branch, sha }, or
+ * undefined: then the push rule refuses the command as before. firstCreation then checks it on GitHub.
+ */
+function firstUpload(command) {
+  if (!/^[\w./= -]+$/.test(command)) return undefined; // no quote, variable, newline, chain or redirection
+  const words = command.trim().split(/ +/);
+  if (words[0] !== "gh" || words[1] !== "api") return undefined; // no prefix: not env, an assignment or a path to gh
+  const f = {};
+  for (let k = 2; k < words.length; k++) {
+    const w = words[k];
+    let key;
+    let value;
+    if (w === "--hostname") [key, value] = ["host", words[++k]];
+    else if (w === "-X" || w === "--method") [key, value] = ["method", words[++k]];
+    else if (w.startsWith("--method=")) [key, value] = ["method", w.slice(9)];
+    else if (w === "-f") [, key, value] = /^(ref|sha)=(.*)$/.exec(words[++k] ?? "") ?? [];
+    else if (!w.startsWith("-")) [key, value] = ["endpoint", w];
+    if (!key || key in f || value === undefined) return undefined; // another flag or field, or one given twice
+    f[key] = value;
+  }
+  const [, owner, repo] = /^repos\/((?!\.+\/)[\w.-]+)\/((?!\.+\/)[\w.-]+)\/git\/refs$/.exec(f.endpoint ?? "") ?? [];
+  const [, branch] = /^refs\/heads\/(main|master)$/.exec(f.ref ?? "") ?? [];
+  if (!repo || !branch || f.host !== "github.com" || f.method !== "POST" || !/^[0-9a-f]{40}$/.test(f.sha ?? "")) return undefined;
+  return { owner, repo, branch, sha: f.sha };
+}
 
 /**
- * The one exception to the push rule: the first upload of main or master to a blank remote. The whole command is
- * git [-C <dir>] push origin <sha>:refs/heads/main|master, or gh api repos/<o>/<r>/git/refs -f ref=refs/heads/main|master
- * -f sha=<sha> (a POST) for the repository of origin, each field once. <sha> is the full id of a root commit (a commit
- * with no parent), so the upload is that one commit, whatever happens to the local branches later. Origin has no branch
- * of that name, and no git config sends the push elsewhere. Then the user decides in Claude Code's permission prompt,
- * which names the commit and its files. Returns the reason for that prompt, or undefined: then the push rule refuses
- * the command as before.
+ * One GET from the GitHub API through gh, by the deadline: { status, body }. The host is always github.com, whatever
+ * GH_HOST or GH_REPO say. It throws on an error, a timeout or an answer with no HTTP status.
  */
-function firstUpload(command, cwd) {
+function githubGet(path, deadline) {
+  const timeout = Math.min(5000, deadline - Date.now());
+  if (timeout <= 0) throw new Error("no time was left");
+  const env = { ...process.env, GH_HOST: undefined, GH_REPO: undefined, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" };
+  const r = spawnSync("gh", ["api", "--hostname", "github.com", "--include", path], { encoding: "utf8", timeout, maxBuffer: 256 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env });
+  if (r.error) throw new Error(r.error.code === "ETIMEDOUT" ? "gh did not answer in time" : r.error.message);
+  const status = /^HTTP\/\S+ (\d{3})/.exec(r.stdout)?.[1];
+  if (!status) throw new Error("gh gave no HTTP status");
+  const at = r.stdout.search(/\r?\n\r?\n/);
+  return { status: Number(status), body: at < 0 ? "" : r.stdout.slice(at).trim() };
+}
+
+/** A name from GitHub for the prompt: in double quotes, without control or quote characters, at most 60 characters. */
+const quoted = (name) => `"${String(name).replace(/[\p{Cc}\p{Cf}"'`‘-‟]/gu, "").slice(0, 60)}"`;
+
+/**
+ * The checks of the first creation, all on GitHub, never on the local repo: the branch is absent (404), the commit is
+ * there and has no parent, and its tree gives the file count and the top-level names. Returns { decision, reason }:
+ * "ask" with the prompt, or "deny". The deadline keeps the three calls inside the 10 seconds that Claude Code gives the hook.
+ */
+function firstCreation({ owner, repo, branch, sha }) {
+  const where = `github.com/${owner}/${repo}`;
+  const no = (why) => ({ decision: "deny", reason: `this command creates ${branch} on ${where}, and the hook asks the user only when GitHub shows that it is the first creation of ${branch} at one root commit: ${why}. ${TO_MAIN}` });
   try {
-    const commands = shellCommands(command);
-    if (commands.length !== 1 || commands[0].bodies.length) return undefined;
-    const words = commands[0].words;
-    let dir = cwd;
-    let target;
-    if (words[0] === "git") {
-      let k = 1;
-      if (words[1] === "-C") [dir, k] = [resolve(cwd, words[2]), 3];
-      if (words[k] !== "push" || words[k + 1] !== "origin" || words.length !== k + 3) return undefined;
-      target = words[k + 2];
-    } else if (words[0] === "gh" && words[1] === "api") {
-      const fields = {};
-      let endpoint;
-      let method = "POST"; // gh api sends a POST when the command has fields
-      for (let k = 2; k < words.length; k++) {
-        const eq = words[k].startsWith("--") ? words[k].indexOf("=") : -1;
-        const [flag, value] = eq > 0 ? [words[k].slice(0, eq), words[k].slice(eq + 1)] : [words[k], undefined];
-        if (/^(?:-X|--method)$/.test(flag)) method = (value ?? words[++k] ?? "").toUpperCase();
-        else if (/^(?:-[fF]|--field|--raw-field)$/.test(flag)) {
-          const field = value ?? words[++k] ?? "";
-          const name = field.split("=")[0];
-          if (name in fields) return undefined; // gh may send either value of a repeated field
-          fields[name] = field.slice(field.indexOf("=") + 1);
-        } else if (endpoint === undefined && !flag.startsWith("-")) endpoint = flag;
-        else return undefined;
-      }
-      const repo = /^\/?repos\/([\w.-]+\/[\w.-]+)\/git\/refs$/.exec(endpoint ?? "")?.[1]?.toLowerCase();
-      if (!repo || method !== "POST" || Object.keys(fields).sort().join() !== "ref,sha") return undefined;
-      const origin = git(dir, "remote", "get-url", "origin").replace(/(?:\.git)?\/*$/, "").toLowerCase();
-      if (!origin.endsWith(`/${repo}`) && !origin.endsWith(`:${repo}`)) return undefined;
-      target = `${fields.sha}:${fields.ref}`;
-    } else return undefined;
-    const [, sha, branch] = /^([0-9a-f]{40}):refs\/heads\/(main|master)$/.exec(target ?? "") ?? [];
-    if (!sha) return undefined;
-    if (git(dir, "config", "--list", "--name-only").split("\n").some((key) => REDIRECT.test(key))) return undefined;
-    if (git(dir, "rev-list", "--count", sha) !== "1") return undefined; // it throws when the commit is not here
-    if (git(dir, "ls-remote", "--heads", "origin", `refs/heads/${branch}`) !== "") return undefined;
-    const files = git(dir, "ls-tree", "-r", "--name-only", sha).split("\n").filter(Boolean).length;
-    const top = git(dir, "ls-tree", "--name-only", sha).split("\n").filter(Boolean);
-    const names = top.length ? `: ${top.slice(0, 10).join(", ")}${top.length > 10 ? `, and ${top.length - 10} more` : ""}` : "";
-    return `this is the first upload of ${branch} to a blank remote: origin has no ${branch}, and commit ${sha} is one root commit with ${files} file${files === 1 ? "" : "s"}${names}. The user must approve it.`;
-  } catch {
-    return undefined; // git failed or timed out, or the hook cannot read the command: the push rule refuses it
+    const deadline = Date.now() + 7000;
+    const api = `repos/${owner}/${repo}/git`;
+    const ref = githubGet(`${api}/ref/heads/${branch}`, deadline);
+    if (ref.status !== 404) return no(`GitHub answered ${ref.status} for ${branch}, not 404 (no such branch)`);
+    const commit = githubGet(`${api}/commits/${sha}`, deadline);
+    const c = commit.status === 200 ? JSON.parse(commit.body) : {};
+    if (c.sha !== sha || !/^[0-9a-f]{40}$/.test(c.tree?.sha ?? "")) return no(`GitHub has no commit ${sha} in ${owner}/${repo} (answer ${commit.status}). Push it on a task branch first`);
+    if (!Array.isArray(c.parents) || c.parents.length) return no(`commit ${sha} has a parent, so it is not one root commit`);
+    const tree = githubGet(`${api}/trees/${c.tree.sha}?recursive=1`, deadline);
+    const t = tree.status === 200 ? JSON.parse(tree.body) : {};
+    if (!Array.isArray(t.tree)) return no(`GitHub did not give the files of commit ${sha} (answer ${tree.status})`);
+    const files = t.tree.filter((e) => e.type === "blob").length;
+    const top = t.tree.map((e) => String(e.path)).filter((p) => !p.includes("/"));
+    const more = top.length > 10 ? ` and ${t.truncated ? "more" : `${top.length - 10} more`}` : t.truncated ? " and more" : "";
+    const names = top.length ? `: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
+    const count = `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}`;
+    return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it.` };
+  } catch (e) {
+    return no(`the check on GitHub failed (${e.message})`);
   }
 }
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
 function gitGate(event, command, state, cwd, main) {
-  const first = main ? firstUpload(command, cwd) : undefined; // an agent never gets the exception
-  if (first) return decide(event, "ask", first);
+  const first = main ? firstUpload(command) : undefined; // an agent never gets the exception
+  if (first) {
+    const { decision, reason } = firstCreation(first);
+    return decide(event, decision, reason);
+  }
   const push = pushProblem(command, cwd);
   if (push) return deny(event, push);
   const merge = mergeIn(command);
