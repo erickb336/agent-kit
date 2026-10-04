@@ -459,6 +459,17 @@ test("only the exact gh api form from the main session can ask; every other form
   assert.deepEqual(near.filter((command) => !refused.includes(command)), prefixed, "every near form keeps the old refusal; the push rule does not yet read gh api behind a prefix (T20)");
 });
 
+test("the chief's lock step, branch protection and its read-back, is in sage mode's context and the hook lets it run (T24 G15)", () => {
+  const s = session();
+  const on = context(s.send(prompt("sage mode")));
+  const put = /^ *(gh api --hostname github\.com -X PUT repos\/<owner>\/<repo>\/branches\/main\/protection --input - <<'EOF'\n[\s\S]*?\n *EOF)$/m.exec(on)?.[1];
+  const get = /`(gh api --hostname github\.com repos\/<owner>\/<repo>\/branches\/main\/protection)`/.exec(on)?.[1];
+  assert.ok(put && get, "the chief's instructions give the protection command and its read-back");
+  const body = JSON.parse(put.split("\n")[1]);
+  assert.deepEqual(body, { required_pull_request_reviews: { required_approving_review_count: 0 }, enforce_admins: true, allow_force_pushes: false, allow_deletions: false, required_status_checks: null, restrictions: null });
+  for (const command of [put, get]) assert.equal(s.send(bash(command.replaceAll("<owner>/<repo>", "o/r").replace(/^ +/gm, ""))), undefined, command);
+});
+
 test("a git upload of main gets the old refusal and names the gh api form (T24)", () => {
   const s = firstSession();
   for (const command of [`git push origin ${ROOT_SHA}:refs/heads/main`, "git push -u origin main", `git -C ~/proj push origin ${ROOT_SHA}:refs/heads/main`]) {
