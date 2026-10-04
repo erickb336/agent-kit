@@ -347,6 +347,10 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     // holds no logbook, for the writes either; one that cannot be followed refuses.
     const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
     const each = dirs.flatMap((dir) => {
+      // A folder with tasks.tsv, also a link, is a logbook. init writes tasks.tsv last, so every logbook has these tables:
+      // one that is gone, or a link to nothing, lost its rows, and an empty table would hide them.
+      const lost = lstatSync(join(dir, "tasks.tsv"), { throwIfNoEntry: false }) && ["tasks", "findings", "ledger"].map((t) => join(dir, `${t}.tsv`)).find((f) => !existsSync(f));
+      if (lost) refuse(`${lost} is missing or is a link to nothing, but every logbook has it, so its rows are lost. Ask the user to restore it, or to remove ${dir} if no project uses it.`);
       const rows = read(dir, "ledger").filter((r) => r.sha === sha);
       if (!rows.length) return [];
       const [tasks, findings] = [read(dir, "tasks"), read(dir, "findings")];
@@ -439,7 +443,8 @@ function act(cmd, pos, opt, dir, env) {
   const [sub, id, ...more] = pos;
   switch (cmd) {
     case "init":
-      for (const t of Object.keys(TABLES)) if (!existsSync(join(dir, `${t}.tsv`))) write(dir, t, []);
+      // tasks.tsv last: the merge check takes a folder with it for a whole logbook (mergeCheck).
+      for (const t of Object.keys(TABLES).reverse()) if (!existsSync(join(dir, `${t}.tsv`))) write(dir, t, []);
       if (!existsSync(join(dir, "standing.md"))) put(join(dir, "standing.md"), STANDING);
       return `logbook ${dir}`;
     case "logbook":
@@ -727,10 +732,12 @@ export function withLock(dir, fn) {
 
 /** The text that the tool prints: its lines, each with its control characters shown as \xNN. Ids, columns and paths come from files and the user. */
 const shown = (text) => text.split("\n").map(visible).join("\n");
+/** The standing orders as a person wrote them, for briefs to copy word for word: tabs stay, a CRLF or CR line end prints as a plain one, and no other control character stays. */
+const orders = (text) => text.replace(/\r\n?/g, "\n").replace(/[\0-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    console.log(shown(sage(process.argv.slice(2))));
+    console.log((process.argv[2] === "standing" ? orders : shown)(sage(process.argv.slice(2))));
   } catch (err) {
     console.error(`sage: ${shown(err instanceof Refusal ? err.message : err.stack)}`);
     process.exit(err instanceof Refusal ? 1 : 2);

@@ -926,6 +926,7 @@ test("F-R50-3: the merge check reads each table once, so 4,500 tasks on one SHA 
   const ids = Array.from({ length: 4500 }, (_, i) => `T${i + 1}`);
   writeFileSync(join(many, "ledger.tsv"), ["task\tpr\tsha\tkind\tcycle\trun\tat", ...ids.map((t) => `${t}\t\t${SHA}\tchecks-pass\t1\t\t`)].join("\n") + "\n");
   writeFileSync(join(many, "tasks.tsv"), ["id\ttitle\tsize\trisk\troute\tstate\tbranch\tpr\tround\tkeys", ...ids.map((t) => `${t}\tt\ttiny\t\tbuild\tbuilding\t\t\t0\t`)].join("\n") + "\n");
+  writeFileSync(join(many, "findings.tsv"), "task\tkey\tround\tsource\tseverity\tsummary\ttriage\treason\tstatus\n"); // a logbook has every table
   const [out, ms] = timed(() => s.ok("merge-check", "--sha", SHA));
   assert.match(out, /^4500 tasks have verdicts on a1b2c3d, and each must pass: /);
   assert.ok(ms < 3000, `${ms} ms`);
@@ -1099,6 +1100,43 @@ test("F-R64-2: a table that is a link to nothing refuses a write before any chan
   assert.deepEqual([snapshot(s.dir), rows(s.dir, "gates")[0].answer], [before, ""], "no file changed: gates.tsv has no answer");
   rmSync(decisions); // what the line says to do
   assert.equal(s.ok("gate", "answer", "G1", "y"), "G1 answered · y");
+});
+
+test("F-R73-1: a logbook whose tasks, findings or ledger table is gone, or is a link to nothing, refuses every merge; a new logbook does not", () => {
+  const a = store();
+  const b = store(a.home, "bb-");
+  b.ok("task", "add", "--title", "b", "--size", "tiny");
+  b.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  store(a.home, "cc-"); // a brand-new logbook: each table with only its header line
+  assert.equal(b.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "a new logbook is never refused");
+  a.ok("task", "add", "--title", "a", "--size", "small");
+  a.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", "m1");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) a.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  const why = /^sage: 2 tasks have verdicts on a1b2c3d, and each must pass; 1 fails\. \S+ T1 has open findings: F-T1-1\./;
+  assert.match(a.no("merge-check", "--sha", SHA, "--cycles", "1"), why);
+  const lost = (file) => `sage: the merge check refuses every merge, because ${file} is missing or is a link to nothing, but every logbook has it, so its rows are lost. Ask the user to restore it, or to remove ${a.dir} if no project uses it.`;
+  for (const table of ["findings", "ledger", "tasks"]) { // rd73 C10 (findings), C11 (ledger), and tasks.tsv, the mark of a logbook
+    const file = join(a.dir, `${table}.tsv`);
+    const kept = join(a.home, `${table}.keep`);
+    renameSync(file, kept);
+    if (table !== "tasks") assert.equal(a.no("merge-check", "--sha", SHA, "--cycles", "1"), lost(file), `${table}.tsv deleted`); // without tasks.tsv, F3's refusal
+    symlinkSync(join(a.home, "nothing-here"), file);
+    assert.equal(a.no("merge-check", "--sha", SHA, "--cycles", "1"), lost(file), `${table}.tsv a link to nothing`);
+    rmSync(file);
+    renameSync(kept, file);
+    if (table === "findings") a.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-fail"); // rd73 C11: logbook A fails on the SHA, B is clean
+  }
+  assert.match(a.no("merge-check", "--sha", SHA, "--cycles", "1"), why, "restored, the logbook counts again");
+});
+
+test("F-R73-2: the standing orders print as written: with their tabs, a CRLF file as plain lines, and no other control character", () => {
+  const s = store();
+  writeFileSync(join(s.dir, "standing.md"), "# Standing orders\r\n\r\n1. One\r\n2. Two:\tindented \x1b[31mred\x1b[0m\x85\r\n"); // cc73: a hand edit
+  // The orders keep their tab, so this output stays out of said, whose lines QA-2 checks for control characters.
+  const standing = () => spawnSync("node", [TOOL, "standing", "--project", s.project], { encoding: "utf8", env: { ...process.env, SAGE_HOME: s.home } });
+  assert.deepEqual([standing().status, standing().stdout], [0, "# Standing orders\n\n1. One\n2. Two:\tindented [31mred[0m\n"]);
+  assert.equal(s.ok("standing", "add", "three"), "standing order 3 added");
+  assert.equal(standing().stdout, "# Standing orders\n\n1. One\n2. Two:\tindented [31mred[0m\n3. three\n");
 });
 
 // Keep this test last: it reads every line that the tests above made the tool print.

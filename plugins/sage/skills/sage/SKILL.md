@@ -16,9 +16,9 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 
 | Command | Does |
 | --- | --- |
-| `init` | Makes the project's logbook and its standing orders. |
+| `init` | Makes the project's logbook and its standing orders. A new logbook has each table with only its header line. `init` writes tasks.tsv last, so a folder with tasks.tsv has every table. |
 | `logbook` | Prints the logbook's folder. |
-| `standing` · `standing add "<order>"` | Prints the standing orders, or adds one. Paste them into every brief. |
+| `standing` · `standing add "<order>"` | Prints the standing orders as written, or adds one. Paste them into every brief. Tabs stay, CRLF line ends print as plain lines, and other control characters are removed. |
 | `task add --title "<t>" --size tiny\|small\|large\|investigate [--risk auth,data,schema,money,secrets,input] [--add <blocks> --why "<reason>"]` | Frames a task and its route. The size gives the least route. A risk adds the security review. An investigation takes no build block: a build that it needs is its own task. |
 | `task <T> set state=<state> [branch=<b>] [pr=<n>]` | Moves the task. The tool refuses a move that the design does not allow, and "verifying" or "concluded" while a finding is open. A PR number is only digits. An investigation takes no PR number; `pr=` clears one. |
 | `round <T>` | Starts a repair round on the open findings marked fix. After the last round, or when a round did not fix its findings, it holds or re-plans the task. |
@@ -29,7 +29,7 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 | `gate add <T> --question "<q>" --options "<a\|b>" --recommend <a> [--default <a>]` · `gate answer <G> <answer>` | Parks a question for the user, with your recommendation and the default. |
 | `log <T\|-> "<decision>" --why "<reason>"` | Adds a line to the decision trail. |
 | `status` | Prints the status lines. Each change also writes them to `status.md`. End each report to the user with them. |
-| `merge-check --sha <sha> [--pr <n>]` | Says if the full SHA may merge. Each task that has verdicts on it, in every project's logbook, must pass on its own verdicts: no open findings, checks-pass, and its route's verdicts in enough clean cycles. A logbook that is a link to a folder counts too. With `--pr`, each task of that pull request must pass too, and the pull request must have one. A refusal lists every task that fails and its way out. A task of the pull request that is no longer part of it: clear its PR with `task <T> set pr=`. A table that is not a regular file, that it cannot read, or whose header is damaged refuses every merge and names the file. |
+| `merge-check --sha <sha> [--pr <n>]` | Says if the full SHA may merge. Each task that has verdicts on it, in every project's logbook, must pass on its own verdicts: no open findings, checks-pass, and its route's verdicts in enough clean cycles. A logbook that is a link to a folder counts too. With `--pr`, each task of that pull request must pass too, and the pull request must have one. A refusal lists every task that fails and its way out. A task of the pull request that is no longer part of it: clear its PR with `task <T> set pr=`. A table that is not a regular file, that it cannot read, or whose header is damaged refuses every merge and names the file. So does a logbook (a folder with tasks.tsv) whose tasks.tsv, findings.tsv or ledger.tsv is missing or a link to nothing: its rows are lost. |
 | `config [key=n ...]` | Prints or sets max_agents, autopilot_cycles, max_rounds and arena for all projects. Each is a whole number of 1 or more. A missing or bad value in `config.json` gives its default. A change keeps the other keys in `config.json`, also those of a newer version. |
 
 ## Cycles and merges
@@ -57,4 +57,4 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 - The sessions may run two versions of sage. A version refuses to change a logbook whose tables have columns that it does not know: its write would lose them. The refusal says to update the sage plugin and restart the session. Reading goes on.
 - A table whose first line does not name each of its columns has a damaged header: its first line was lost or changed. Every write and every merge check refuses it, and names the file and the columns that its first line needs. A BOM and CRLF line ends from an editor are read as a plain file.
 - A command refuses, before any change, when a file of the logbook is not a regular file, also a link to nothing.
-- The tool keeps no control character in a cell, and prints each one in an id, a column or a path as `\xNN`. For a project path with a control character, it prints no command to paste.
+- The tool keeps no control character in a cell, and prints each one in an id, a column or a path as `\xNN`. The standing orders print as written, with their tabs. For a project path with a control character, it prints no command to paste.
