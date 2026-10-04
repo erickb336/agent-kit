@@ -20,7 +20,7 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 | `logbook` · `logbook repair --accept-loss <table>[,<table>...]` | Prints the logbook's folder. `repair` starts each named table that fails the logbook check again, without rows. Run it only after the user accepts the loss of their rows. Name every damaged table in one command, joined by commas (`--accept-loss tasks,ledger`): a repair refuses when another table fails too, and names the command with both. The old file stays beside each as `<table>.tsv.lost-<n>`, and the decision trail records each repair before the table starts again. A named table that passes the check refuses the whole command. |
 | `standing` · `standing add "<order>"` | Prints the standing orders as written, or adds one. Paste them into every brief. Tabs stay, CRLF line ends print as plain lines, and hidden characters are removed (see "Hidden characters"). |
 | `task add --title "<t>" --size tiny\|small\|large\|investigate [--risk auth,data,schema,money,secrets,input] [--add <blocks> --why "<reason>"]` | Frames a task and its route. The size gives the least route. A risk adds the security review. An investigation takes no build block: a build that it needs is its own task. |
-| `task <T> set state=<state> [branch=<b>] [pr=<n>]` | Moves the task. The tool refuses a move that the design does not allow, and "verifying" or "concluded" while a finding is open. A PR number is only digits. An investigation takes no PR number; `pr=` clears one. |
+| `task <T> set state=<state> [branch=<b>] [pr=<n>]` | Moves the task. The tool refuses a move that the design does not allow, and "verifying" or "concluded" while a finding is open. A PR number is only digits. An investigation takes no PR number; `pr=` clears one. A move to merged, concluded or abandoned also removes the task's worktree and branch when it is safe, and prints one more line that starts with `worktree` (see "Worktrees"). |
 | `round <T>` | Starts a repair round on the open findings marked fix, and names the roles to re-run on the repair's diff: the sources of those findings. After the last round, or when a round did not fix its findings, it holds or re-plans the task. |
 | `run add <T> --role <role> [--branch <b>] [--candidate <k>]` · `run done <R> --status done\|blocked\|question\|failed [--tokens <n>] [--report <path>]` | Records an agent run. One writer (implementer, designer) per branch: finish the running one first, or use another branch. |
 | `finding add <T> --source <role> --severity high\|medium\|low --summary "<s>" [--key <K>]` | Records a finding. A known key opens it again, with the new severity, source and summary; the decision trail keeps the old summary. Without `--summary`, a known key keeps its summary; an empty one is refused. Without `--key`, the finding gets a new key. |
@@ -31,6 +31,7 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 | `log <T\|-> "<decision>" --why "<reason>"` | Adds a line to the decision trail. |
 | `status` | Prints the status lines. Each change also writes them to `status.md`. End each report to the user with them. |
 | `merge-check --sha <sha> [--pr <n>] [--cycles <n>]` | Says if the full SHA may merge. Each task that has verdicts on it, in every project's logbook, must pass on its own verdicts: no open findings, checks-pass, and its route's verdicts in the clean cycles of its size and risk (see "Cycles and merges"). `--cycles` asks the same count of every task. A logbook that is a link to a folder counts too. With `--pr`, each task of that pull request must pass too, and the pull request must have one. A refusal lists every task that fails and its way out. A task of the pull request that is no longer part of it: clear its PR with `task <T> set pr=`. A logbook (a folder with tasks.tsv) that fails the logbook check refuses every merge and names the file. |
+| `worktrees [--dry-run]` | Removes the worktrees and local branches of finished work in every project's logbook, and prints one line for each: removed, or kept and why. `--dry-run` only lists them. See "Worktrees". |
 | `config [key=n ...]` | Prints or sets max_agents, cycles.small, cycles.large, cycles.risk, max_rounds, arena and cap_total for all projects, and `cap.<project>=n` for one project's agent cap (the project's name is its main checkout's folder name, as a slug: `cap.sage=5`). Each is a whole number of 1 or more. max_agents is the cap of a project without its own; cap_total (default 12) caps the agents of all projects together, and it wins. A missing or bad value in `config.json` gives its default. A change keeps the other keys in `config.json`, also those of a newer version. |
 
 ## Cycles and merges
@@ -44,6 +45,20 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 - With autopilot on, merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`. The sage hook runs `merge-check` first and refuses a SHA that is not ready.
 - A new commit is a new SHA. Its verdicts start again from cycle 1.
 - Every task with verdicts on a SHA counts, also an abandoned one. When two tasks share a pull request, record each verdict under both. To leave an old task's verdicts behind, push a new commit.
+
+## Worktrees
+
+A worktree goes beside the main checkout, never inside the repository: `<project folder>-<task id>`, for example `~/workspace/sage-t45`. Its branch is `<area>/<task id>-<slug>`, in lowercase. Set the branch on the task: `task <T> set branch=<b>`.
+
+A worktree or a local branch is stale when its task is merged, concluded or abandoned, or its pull request is merged or closed. It is never stale while its pull request is open or a run of its task or branch is running. sage removes a stale one only when all of these are true:
+
+- It has no changes that are not committed, also no new file (`git status --porcelain` prints nothing).
+- Its last commit is on the remote: it is the head of its pull request on GitHub, or a remote branch contains it. A squash merge puts other commits on main, so main does not prove it.
+- GitHub gives the state of the pull requests. When `gh` fails, sage keeps the worktree: the state of its pull request is unknown.
+
+Then sage runs `git worktree remove` without `--force`, deletes the local branch only at that commit, and runs `git worktree prune`. It never touches the main checkout, or a folder that git does not list as a worktree. Otherwise it keeps the worktree and says why. A second run gives the same lines and removes nothing more.
+
+Each command that changes a logbook records the project's main checkout in `checkout.txt`, so `sage worktrees` finds every project. A logbook without it is skipped: run `sage worktrees` in that project once.
 
 ## How an investigation ends
 

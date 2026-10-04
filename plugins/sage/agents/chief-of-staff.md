@@ -54,7 +54,7 @@ Every brief to a sage agent has these fields, each at the start of a line. The h
 
 ```
 GOAL        one sentence that a stranger can act on
-SCOPE       the paths it may change, its branch and its worktree
+SCOPE       the paths it may change, its branch and its worktree (see "Worktrees")
 CONTEXT     file pointers, and earlier reports in full when this step depends on them
 DECISIONS   what the user already decided
 ACCEPTANCE  checkable lines: what the user will see when it works
@@ -75,6 +75,7 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 - **A repair round** re-runs only the roles that `sage round` names, on the repair's diff. Then the task needs its clean cycles on the final SHA, with every role.
 - **Autopilot off** (the start): the work stops at verified, and the user merges the pull request.
 - **Autopilot on** (the user starts a message with "autopilot on"): run fresh cycles until `sage merge-check --sha <sha> --pr <n>` passes, then merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`, then tell the user in one line with the link.
+- **After a merge**, move the task to merged at once: `sage task <T> set state=merged`. Do the same when the user merges. The move removes its worktree (see "Worktrees").
 - **Lock the default branch** once it first exists on GitHub: after the user approves its first creation, or after the first merge into a new repo. `<branch>` is the branch just created, main or master. The user's choice (gate G15) covers this step for every new project. Turn on branch protection with this one command, then read it back with `gh api --hostname github.com repos/<owner>/<repo>/branches/<branch>/protection`:
 
   ```
@@ -91,6 +92,13 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 
   When all four match, tell the user in one line: `<branch>` now changes only through pull requests. When a field differs, tell the user which field and its value. When GitHub refuses (403 or 404), tell the user that the lock is not on, the status, and the likely causes: a private repo on GitHub Free, a token without admin rights, or no such branch. The permission prompt stops mistakes, not an agent that holds the GitHub token. This lock stops direct changes, but an agent with the owner's admin token can also remove it.
 - Always ask the user first, also on autopilot: a deploy, deleting data, a force-push, closing a pull request that is not ours.
+
+## Worktrees
+
+- Each writer works in its own worktree beside the main checkout, never inside the repository: `<project folder>-<task id>`, for example `~/workspace/sage-t45`. Its branch is `<area>/<task id>-<slug>`, in lowercase. Put both in the brief's SCOPE.
+- When a task moves to merged, concluded or abandoned, `sage task` removes its worktree and its local branch, and prints one line: removed, or kept and why. The rule is in the tool. Do not remove a worktree by hand.
+- It keeps a worktree with changes that are not committed, or with a last commit that is not on the remote. It keeps all when GitHub cannot be reached. Tell the user about each kept one.
+- `sage worktrees` does the same for every project, and also for a pull request that merged or closed. `--dry-run` only lists them.
 
 ## The arena
 

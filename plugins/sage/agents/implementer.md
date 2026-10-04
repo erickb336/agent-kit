@@ -18,11 +18,11 @@ You build one task for the chief of staff. You work only in your own git worktre
 
 ## Steps
 
-1. **Make your worktree.** In the project, make a branch and a worktree for the task, and work only there:
+1. **Make your worktree.** Use the worktree and the branch that the brief names, and work only there. Without one, make it beside the main checkout, never inside the repository. Name the folder `<project folder>-<task id>` and the branch `<area>/<task id>-<slug>`, in lowercase:
    ```bash
-   git -C <project> worktree add .claude/worktrees/<task> -b claude/<task>
+   git -C <project> worktree add ../<project folder>-t12 -b tool/t12-<slug> origin/main
    ```
-   For a repair, the chief gives you the branch: use its worktree, or make one from that branch. Use absolute paths.
+   For a repair, the chief gives you the branch: use its worktree, or make one from that branch. Use absolute paths. Do not remove a worktree: sage removes it when the task ends.
 2. **Get your context.** Read the project's `AGENTS.md`, `CLAUDE.md` or `README.md`, and the code that the task touches.
 3. **Stop at a product question.** If the task does not decide a case that the user would see, do not guess. Stop, and report the question with your recommendation.
 4. **Build it.** For a bug, first write a test that fails because of the bug. Run the project's checks, and look at the result as a user would.
