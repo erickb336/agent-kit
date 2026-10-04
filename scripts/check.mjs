@@ -104,14 +104,14 @@ for (const [f, svg] of drawn) {
   if ((small * PHONE) / width < 7) problems.push(`docs/assets/${f}: a ${small} px text is ${((small * PHONE) / width).toFixed(1)} px on a phone; make it ${Math.ceil((7 * width) / PHONE)} px or more`);
 }
 for (const f of readdirSync(join(ROOT, "docs/assets")).filter((f) => f.endsWith(".svg") && !drawn.has(f))) problems.push(`docs/assets/${f}: scripts/graphics.mjs does not draw it; draw it there, or delete it`);
-// The README shows each graphic in the reader's theme, with an alt text, inside a link to the full-size SVG, so that a tap
-// on a phone opens it. The <a> line stands alone: on the same line as <picture>, GitHub makes it a paragraph and drops
-// the dark version.
+// The README shows each graphic in the reader's theme, with an alt text, inside a link to the raw SVG ("?raw=true"), so
+// that a tap opens it at full size, not on GitHub's file page. The <a> line stands alone: on the same line as <picture>,
+// GitHub makes it a paragraph and drops the dark version.
 const readme = readFileSync(join(ROOT, "README.md"), "utf8");
 for (const name of new Set([...drawn.keys()].map((f) => f.replace(/-(light|dark)\.svg$/, "")))) {
   const svg = (theme) => `docs/assets/${name}-${theme}\\.svg`;
-  const shown = new RegExp(`<a href="${svg("light")}">\\n<picture>\\n\\s*<source media="\\(prefers-color-scheme: dark\\)" srcset="${svg("dark")}">\\n\\s*<img alt="[^"]+" src="${svg("light")}"[^>]*>\\n</picture>\\n</a>\\n`);
-  if (!shown.test(readme)) problems.push(`README.md: show ${name} as <a href="docs/assets/${name}-light.svg">, then <picture> with its dark <source> and an <img> with alt text, each on its own line`);
+  const shown = new RegExp(`<a href="${svg("light")}\\?raw=true">\\n<picture>\\n\\s*<source media="\\(prefers-color-scheme: dark\\)" srcset="${svg("dark")}">\\n\\s*<img alt="[^"]+" src="${svg("light")}"[^>]*>\\n</picture>\\n</a>\\n`);
+  if (!shown.test(readme)) problems.push(`README.md: show ${name} as <a href="docs/assets/${name}-light.svg?raw=true">, then <picture> with its dark <source> and an <img> with alt text, each on its own line`);
 }
 
 for (const [rel, text] of outputs()) {

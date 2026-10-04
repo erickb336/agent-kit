@@ -1,4 +1,4 @@
-<a href="docs/assets/hero-light.svg">
+<a href="docs/assets/hero-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
   <img alt="sage: your chief of staff for Claude Code. Start a message with “sage mode”. A hooded toad sage with glowing gold eyes, the chief of staff, meditates in front of a big moon in a misty mountain world. Around it, its team on an arrowed loop: designer, PE, implementer, arena judge, code reviewer, security reviewer, UX reviewer and QA." src="docs/assets/hero-light.svg" width="100%">
@@ -52,7 +52,7 @@ In the desktop app, run `claude plugin marketplace add erickb336/sage` and then 
 sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 ```
 
-<a href="docs/assets/tip-start-light.svg">
+<a href="docs/assets/tip-start-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-start-dark.svg">
   <img alt="The toad sage's tip: start a message with “sage mode” to switch it on, and with “sage mode off” to switch it off. In the middle of a sentence, it does nothing." src="docs/assets/tip-start-light.svg" width="100%">
@@ -65,7 +65,7 @@ That's all. The chief of staff asks you at most one question per task, then come
 
 This is one session, step by step. It is an illustration with sample data.
 
-<a href="docs/assets/walkthrough-light.svg">
+<a href="docs/assets/walkthrough-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/walkthrough-dark.svg">
   <img alt="Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with sample data. You: “sage mode. Ramen Finder: add a favourites list, and fix this week's crash.” The chief frames T1, favourites, as large with the data flag, and T2, the crash, as small with the input flag, and starts T2. It asks one question for T1: sync favourites across devices? Recommended, and the default if you don't answer: not now. You answer “not now”. T2 goes through build, code review, security review and QA; repair round 1 fixes an empty search that still crashed. T2 is verified: QA ran the app and passed. Not checked: the tablet layout. Pull request #41 is ready for you. Five numbered notes match the steps below." src="docs/assets/walkthrough-light.svg" width="100%">
@@ -80,7 +80,7 @@ This is one session, step by step. It is an illustration with sample data.
 
 **Try it yourself.** Pick one small, real bug in a project that has tests and a GitHub remote. Start a session from your phone, start your message with "sage mode", and describe the bug. Then look at the result, not the code.
 
-<a href="docs/assets/tip-try-light.svg">
+<a href="docs/assets/tip-try-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-try-dark.svg">
   <img alt="The toad sage's tip: try it on one small, real bug, from your phone. Then look at the result, not the code." src="docs/assets/tip-try-light.svg" width="100%">
@@ -89,7 +89,7 @@ This is one session, step by step. It is an illustration with sample data.
 
 ## How it works
 
-<a href="docs/assets/loop-light.svg">
+<a href="docs/assets/loop-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/loop-dark.svg">
   <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the store, and the outer loop that seals each lesson." src="docs/assets/loop-light.svg" width="100%">
@@ -101,7 +101,7 @@ There are two loops:
 - **The inner loop** turns a request into verified work. The chief briefs the team. The team designs, builds, reviews and tests. Findings go back to the build. A clean result becomes a pull request.
 - **The outer loop** [seals the lesson](#concepts): it gives a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes [the dojo](#concepts) stronger. The dojo is everything that makes the agents good: the principles, checks, tests and skills.
 
-<a href="docs/assets/tip-seal-light.svg">
+<a href="docs/assets/tip-seal-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-seal-dark.svg">
   <img alt="The toad sage's tip: seal the lesson. Give a mistake that comes back twice a lasting fix: a test or a check in code first; a principle or a standing order only when code cannot hold it. That is how the dojo gets stronger." src="docs/assets/tip-seal-light.svg" width="100%">
@@ -130,7 +130,7 @@ Only one agent writes on a branch at a time. Reviewers start fresh, so they don'
 
 Each task gets the least route for its size. The chief can add steps, never remove these.
 
-<a href="docs/assets/routes-light.svg">
+<a href="docs/assets/routes-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/routes-dark.svg">
   <img alt="Routes by size. Tiny: build. Small: build, code review, QA. Large: design, PE check, you approve, build, code review, security review, UX review, QA. Investigate: gather evidence, evidence review, a proposal to you. A risk flag adds the security review to every size except investigate, which changes no code." src="docs/assets/routes-light.svg" width="100%">
@@ -139,7 +139,7 @@ Each task gets the least route for its size. The chief can add steps, never remo
 
 ### A task's life
 
-<a href="docs/assets/lifecycle-light.svg">
+<a href="docs/assets/lifecycle-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lifecycle-dark.svg">
   <img alt="A task's states: framed, briefed, building, reviewing, verifying, verified, merged. A product question moves a building task to held until your answer. Findings to fix, or a QA fail, move it from verifying to repairing, and the next round goes back to reviewing, at most 3 rounds. Verified needs 1 clean cycle; autopilot merges after 2 in a row." src="docs/assets/lifecycle-light.svg" width="100%">
@@ -166,7 +166,7 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 
 When a design has no clear answer, the chief can run an **arena**. You can also ask for one: "arena" or "arena 4".
 
-<a href="docs/assets/arena-light.svg">
+<a href="docs/assets/arena-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/arena-dark.svg">
   <img alt="The arena: one brief and a hidden rubric, three candidates on a mix of Claude models, an arena judge, one final version." src="docs/assets/arena-light.svg" width="100%">
@@ -276,7 +276,7 @@ The hook also has **one gate**. When the agent tries to finish, the code changed
 
 pstack changes often. sage follows it so that you don't have to.
 
-<a href="docs/assets/pstack-light.svg">
+<a href="docs/assets/pstack-light.svg?raw=true">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pstack-dark.svg">
   <img alt="Following pstack: a weekly sync into upstream/pstack, local versions in principles/ that win, one build, the sage plugin. If pstack changed a local version, the update waits for review; otherwise it merges." src="docs/assets/pstack-light.svg" width="100%">
