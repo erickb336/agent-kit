@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, uptime } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -497,15 +497,16 @@ test("S4: every store that has verdicts on a SHA must pass, so a second store ca
   const decoy = store(real.home, "aa-"); // its name comes first
   decoy.ok("task", "add", "--title", "decoy", "--size", "tiny");
   decoy.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
-  const [d, r] = [basename(decoy.dir), basename(real.dir)];
-  assert.equal(real.no("merge-check", "--sha", SHA), `sage: 2 tasks have verdicts on a1b2c3d (${d} T1, ${r} T1), and each must pass. ${r} T1 has open findings: F-T1-1. Triage and close them first.`);
+  const [d, r] = [decoy.dir, real.dir];
+  const todo = "To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.";
+  assert.equal(real.no("merge-check", "--sha", SHA), `sage: 2 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${r} T1 has open findings: F-T1-1. Triage and close them first. ${todo}`);
   real.ok("finding", "triage", "T1", "F-T1-1", "fix");
   real.ok("finding", "close", "T1", "F-T1-1");
   for (const kind of ["review-clean", "qa-pass"]) real.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
-  assert.equal(real.ok("merge-check", "--sha", SHA, "--cycles", "1"), `2 tasks have verdicts on a1b2c3d (${d} T1, ${r} T1), and each must pass: ${d} T1 may merge: 1 clean cycle on this SHA; ${r} T1 may merge: 1 clean cycle on this SHA`);
+  assert.equal(real.ok("merge-check", "--sha", SHA, "--cycles", "1"), `2 tasks have verdicts on a1b2c3d, and each must pass: ${d} T1 may merge: 1 clean cycle on this SHA; ${r} T1 may merge: 1 clean cycle on this SHA`);
   decoy.ok("task", "add", "--title", "decoy", "--size", "small");
   decoy.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass");
-  assert.match(real.no("merge-check", "--sha", SHA, "--cycles", "1"), new RegExp(`^sage: 3 tasks have verdicts on a1b2c3d .*\\. ${d} T2: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass\\.$`), "a store that fails closes the gate");
+  assert.equal(real.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: 3 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${d} T2: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass. Run the next cycle of its reviews on this SHA and record each verdict. ${todo}`, "a store that fails closes the gate");
 });
 
 test("S5: verdicts and the merge gate take only a full SHA, and each task counts only its own verdicts", () => {
@@ -521,7 +522,7 @@ test("S5: verdicts and the merge gate take only a full SHA, and each task counts
   const other = "0123456789abcdef0123456789abcdef01234567";
   s.ok("verdict", "T1", "--sha", other, "--kind", "checks-pass");
   for (const kind of ["review-clean", "qa-pass"]) s.ok("verdict", "T2", "--sha", other, "--kind", kind); // T2's reviews are not T1's
-  assert.equal(s.no("merge-check", "--sha", other, "--cycles", "1"), `sage: 2 tasks have verdicts on 0123456 (${basename(s.dir)} T1, ${basename(s.dir)} T2), and each must pass. ${basename(s.dir)} T1: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass.`);
+  assert.equal(s.no("merge-check", "--sha", other, "--cycles", "1"), `sage: 2 tasks have verdicts on 0123456, and each must pass; 2 fail. ${s.dir} T1: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass. Run the next cycle of its reviews on this SHA and record each verdict. ${s.dir} T2: no checks-pass on this SHA. Run the checks on it and record checks-pass. To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.`);
 });
 
 test("S6: an investigation takes no build block; a build that it needs is its own task", () => {
@@ -545,5 +546,115 @@ test("S7: config and the merge gate read only regular files and never throw, so 
   const file = join(s.home, "a-file");
   writeFileSync(file, "");
   const r = spawnSync("node", [TOOL, "merge-check", "--sha", SHA], { encoding: "utf8", env: { ...process.env, SAGE_HOME: file }, timeout });
-  assert.deepEqual([r.status, r.stderr], [1, `sage: the merge gate could not read the stores in ${file}: ENOTDIR: not a directory, scandir '${file}'\n`]);
+  assert.deepEqual([r.status, r.stderr], [1, `sage: the merge gate cannot read ${file} (ENOTDIR), so it refuses every merge. Ask the user to fix or remove ${file}.\n`]);
+});
+
+test("F1: no config.json makes config() or the merge gate throw: a value that is not a number or a string gives its default", async () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  const deep = `${"[".repeat(20000)}${"]".repeat(20000)}`; // String() of this overflows the stack
+  writeFileSync(join(s.home, "config.json"), `{"autopilot_cycles": ${deep}, "max_agents": [5], "max_rounds": 4}`);
+  const { config, mergeCheck } = await import(LIB);
+  const env = { SAGE_HOME: s.home };
+  assert.deepEqual(config(env), { max_agents: 3, autopilot_cycles: 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet" });
+  const none = "9".repeat(40);
+  assert.deepEqual(mergeCheck(none, env), { ok: false, reason: `no verdicts recorded for ${none}. Record the reviews and QA with sage verdict first.` }, "the hook's call: no cycles given");
+  assert.equal(mergeCheck(SHA, env).ok, false);
+  assert.equal(s.ok("config"), "max_agents=3 autopilot_cycles=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet");
+  assert.match(s.no("merge-check", "--sha", SHA), /^sage: T1: 0 of 2 clean cycles on this SHA; never recorded: review-clean, qa-pass\./);
+});
+
+test("F2: with --pr, every task of that pull request must pass on the SHA, so a lighter task cannot decide it alone", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "the PR's task", "--size", "small");
+  s.ok("task", "add", "--title", "a typo", "--size", "tiny");
+  const old = "0123456789abcdef0123456789abcdef01234567";
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", old, "--kind", kind, "--pr", "5");
+  s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass"); // the head after a repair push, recorded under the tiny task
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T2 may merge: 1 clean cycle on this SHA", "without --pr, as the hook calls it until T4");
+  const todo = "To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.";
+  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass; 1 fails. ${s.dir} T1: no checks-pass on this SHA. Run the checks on it and record checks-pass. ${todo}`);
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "6"), `sage: no task of PR 6 has verdicts on a1b2c3d: only ${s.dir} T2 has. Record PR 6's verdicts under its own task (sage verdict <T> --sha <sha> --pr 6), or set its PR: sage task <T> set pr=6.`);
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "#5"), "sage: --pr is the pull request's number, for example --pr 5");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass: ${s.dir} T2 may merge: 1 clean cycle on this SHA; ${s.dir} T1 may merge: 1 clean cycle on this SHA`);
+});
+
+test("F-R44-2: a refusal lists every failing task, marks an abandoned one, which still counts, and names the new-commit way out", () => {
+  const s = store();
+  for (const title of ["a", "b", "an old try"]) s.ok("task", "add", "--title", title, "--size", "small");
+  s.ok("task", "T3", "set", "state=abandoned");
+  const clean = (t, sha) => {
+    for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", t, "--sha", sha, "--kind", kind, "--pr", "4");
+  };
+  clean("T1", SHA);
+  s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass", "--pr", "4");
+  s.ok("verdict", "T3", "--sha", SHA, "--kind", "findings");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: 3 tasks have verdicts on a1b2c3d, and each must pass; 2 fail. ${s.dir} T2: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass. Run the next cycle of its reviews on this SHA and record each verdict. ${s.dir} T3 (abandoned): cycle 1 found problems on this SHA (findings). Repair, then review the new SHA. To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.`);
+  const next = "0123456789abcdef0123456789abcdef01234567"; // the new commit
+  clean("T1", next);
+  clean("T2", next);
+  assert.equal(s.ok("merge-check", "--sha", next, "--cycles", "1", "--pr", "4"), `2 tasks have verdicts on 0123456 or belong to PR 4, and each must pass: ${s.dir} T1 may merge: 1 clean cycle on this SHA; ${s.dir} T2 may merge: 1 clean cycle on this SHA`);
+});
+
+test("F3: a ledger of blank lines blocks nothing, and a refusal names the full path at fault and what to do", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  const blank = join(s.home, "zz-blank");
+  mkdirSync(blank);
+  writeFileSync(join(blank, "ledger.tsv"), "\n\n");
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "a ledger of blank lines has no verdicts");
+  const planted = join(s.home, "0-plant");
+  mkdirSync(planted);
+  writeFileSync(join(planted, "ledger.tsv"), `task\tpr\tsha\tkind\tcycle\trun\tat\nT404\t\t${SHA}\tchecks-pass\t1\t\t\n`);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: 2 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${planted} T404 is in ${join(planted, "ledger.tsv")} but not in its tasks.tsv: a stray or damaged logbook. If no project uses it, ask the user to remove ${planted}. To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.`);
+  rmSync(planted, { recursive: true });
+  const shut = join(s.home, "zz-shut", "ledger.tsv");
+  mkdirSync(dirname(shut));
+  writeFileSync(shut, "x");
+  chmodSync(shut, 0);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${shut} (EACCES), so it refuses every merge. Ask the user to fix or remove ${shut}.`);
+});
+
+test("F4: a finding opened again takes the new summary and source, and the decision trail keeps the old summary", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  s.ok("finding", "add", "T1", "--source", "code-reviewer", "--severity", "low", "--summary", "the date is off by one");
+  s.ok("finding", "triage", "T1", "F-T1-1", "dismiss", "--reason", "rare");
+  assert.equal(s.ok("finding", "add", "T1", "--key", "F-T1-1", "--source", "qa", "--severity", "high", "--summary", "every date is off by one day"), "F-T1-1 open again · high · T1");
+  assert.deepEqual(rows(s.dir, "findings").map((f) => `${f.key} ${f.source} ${f.severity} ${f.status} ${f.summary}`), ["F-T1-1 qa high open every date is off by one day"]);
+  assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /\tT1\tF-T1-1 opened again: every date is off by one day\tthe summary before: the date is off by one\n$/);
+});
+
+test("F-R44-1: a link in the sage folder is read and written through, so its values and rows stay and it stays a link", () => {
+  const s = store();
+  const elsewhere = mkdtempSync(join(tmpdir(), "sage-dotfiles-"));
+  writeFileSync(join(elsewhere, "config.json"), JSON.stringify({ autopilot_cycles: 3, max_agents: 5 }));
+  symlinkSync(join(elsewhere, "config.json"), join(s.home, "config.json"));
+  assert.equal(s.ok("config"), "max_agents=5 autopilot_cycles=3 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet");
+  assert.equal(s.ok("config", "max_rounds=4"), "max_agents=5 autopilot_cycles=3 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet");
+  assert.deepEqual([lstatSync(join(s.home, "config.json")).isSymbolicLink(), JSON.parse(readFileSync(join(elsewhere, "config.json"), "utf8")).max_rounds], [true, 4]);
+
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("task", "add", "--title", "b", "--size", "small");
+  renameSync(join(s.dir, "tasks.tsv"), join(elsewhere, "tasks.tsv"));
+  symlinkSync(join(elsewhere, "tasks.tsv"), join(s.dir, "tasks.tsv"));
+  assert.equal(s.ok("status").split("\n")[1], "tasks   2 · framed 2");
+  assert.match(s.ok("task", "add", "--title", "c", "--size", "small"), /^T3 framed/);
+  assert.deepEqual([lstatSync(join(s.dir, "tasks.tsv")).isSymbolicLink(), rows(elsewhere, "tasks").map((t) => t.id)], [true, ["T1", "T2", "T3"]]);
+});
+
+test("F-R44-3: verified counts only the task's own verdicts on the SHA, not another task's", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("task", "add", "--title", "b", "--size", "small");
+  toReviewing(s, "T1");
+  s.ok("task", "T1", "set", "state=verifying");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  for (const kind of ["review-clean", "qa-pass"]) s.ok("verdict", "T2", "--sha", SHA, "--kind", kind); // T2's reviews are not T1's
+  assert.match(s.no("task", "T1", "set", "state=verified"), /^sage: T1 is not verified on a1b2c3d: T1: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass\./);
+  for (const kind of ["review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.match(s.ok("task", "T1", "set", "state=verified"), /^T1 verified/);
 });

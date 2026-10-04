@@ -20,13 +20,13 @@ Run it as `node "${CLAUDE_SKILL_DIR}/sage.mjs" <command> --project <path to the 
 | `task <T> set state=<state> [branch=<b>] [pr=<n>]` | Moves the task. The tool refuses a move that the design does not allow, and "verifying" or "concluded" while a finding is open. |
 | `round <T>` | Starts a repair round on the open findings marked fix. After the last round, or when a round did not fix its findings, it holds or re-plans the task. |
 | `run add <T> --role <role> [--branch <b>] [--candidate <k>]` · `run done <R> --status done\|blocked\|question\|failed [--tokens <n>] [--report <path>]` | Records an agent run. One writer (implementer, designer) per branch. |
-| `finding add <T> --source <role> --severity high\|medium\|low --summary "<s>" [--key <K>]` | Records a finding. A known key opens it again, with the new severity. Without `--key`, the finding gets a new key. |
+| `finding add <T> --source <role> --severity high\|medium\|low --summary "<s>" [--key <K>]` | Records a finding. A known key opens it again, with the new severity, source and summary; the decision trail keeps the old summary. Without `--key`, the finding gets a new key. |
 | `finding triage <T> <K> fix\|dismiss\|ask [--reason "<r>"]` · `finding close <T> <K>` | Triage every finding. A dismissal needs its reason. Close a fix after a review confirms it. |
 | `verdict <T> --sha <sha> --kind <kind> [--cycle <n>] [--pr <n>] [--run <R>]` | Records a verdict on a head SHA. Give the full 40-character SHA (`git rev-parse <branch>`): a short one is refused. A task without a build block records its verdicts without `--sha`. Kinds: checks-pass, review-clean, security-clean, ux-clean, qa-pass, evidence-clean, checks-fail, findings, qa-fail. |
 | `gate add <T> --question "<q>" --options "<a\|b>" --recommend <a> [--default <a>]` · `gate answer <G> <answer>` | Parks a question for the user, with your recommendation and the default. |
 | `log <T\|-> "<decision>" --why "<reason>"` | Adds a line to the decision trail. |
 | `status` | Prints the status lines. Each change also writes them to `status.md`. End each report to the user with them. |
-| `merge-check --sha <sha>` | Says if the full SHA may merge. Each task that has verdicts on it, in every project's store, must pass on its own verdicts: no open findings, checks-pass, and its route's verdicts in enough clean cycles. |
+| `merge-check --sha <sha> [--pr <n>]` | Says if the full SHA may merge. Each task that has verdicts on it, in every project's logbook, must pass on its own verdicts: no open findings, checks-pass, and its route's verdicts in enough clean cycles. With `--pr`, each task of that pull request must pass too, and the pull request must have one. A refusal lists every task that fails. |
 | `config [key=n ...]` | Prints or sets max_agents, autopilot_cycles, max_rounds and arena for all projects. Each is a whole number of 1 or more. A missing or bad value in `config.json` gives its default. |
 
 ## Cycles and merges
@@ -34,6 +34,7 @@ Run it as `node "${CLAUDE_SKILL_DIR}/sage.mjs" <command> --project <path to the 
 - A cycle is one full set of fresh reviews and QA on one head SHA. Record each verdict with `--cycle <n>`.
 - With autopilot on, merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`. The sage hook runs `merge-check` first and refuses a SHA that is not ready.
 - A new commit is a new SHA. Its verdicts start again from cycle 1.
+- Every task with verdicts on a SHA counts, also an abandoned one. When two tasks share a pull request, record each verdict under both. To leave an old task's verdicts behind, push a new commit.
 
 ## How an investigation ends
 

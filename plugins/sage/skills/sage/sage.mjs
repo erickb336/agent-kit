@@ -7,7 +7,7 @@
 // Several chief sessions may share one store: each command that changes it holds the store's lock (withLock).
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,8 +91,9 @@ export function storeDir(project, env = process.env) {
   return join(sageRoot(env), `${name}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`);
 }
 
-/** A config value in its stored form, or undefined when it is not valid. */
+/** A config value in its stored form, or undefined when it is not valid. Only a number or a string can be valid. */
 function valid(key, value) {
+  if (typeof value !== "number" && typeof value !== "string") return undefined;
   if (key === "arena_models") {
     const models = list(String(value));
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
@@ -101,15 +102,15 @@ function valid(key, value) {
 }
 
 /**
- * The text of a regular file, or undefined when nothing is there or something else is: a FIFO, a device, a folder or a
- * link. It never blocks: the open does not wait for a FIFO's writer, and the check is on the open file, not on the path.
+ * The text of a regular file, also through a link, or undefined when nothing is there or something else is: a FIFO, a
+ * device or a folder. It never blocks: the open does not wait for a FIFO's writer, and the check is on the open file.
  */
 function readRegular(path) {
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (e) {
-    if (e.code === "ENOENT" || e.code === "ELOOP") return undefined; // ELOOP: a link
+    if (e.code === "ENOENT") return undefined;
     throw e;
   }
   try {
@@ -121,25 +122,28 @@ function readRegular(path) {
 
 /** The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, or a config.json that is not a regular file, gives the defaults. */
 export function config(env = process.env) {
-  let saved = {};
   try {
-    saved = JSON.parse(readRegular(join(sageRoot(env), "config.json"))) ?? {}; // undefined does not parse: the defaults
-  } catch {}
-  return Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, saved[k]) ?? d]));
+    const saved = JSON.parse(readRegular(join(sageRoot(env), "config.json"))) ?? {}; // undefined does not parse: the defaults
+    return Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, saved[k]) ?? d]));
+  } catch {
+    return { ...DEFAULTS };
+  }
 }
 
-/** Writes a whole file or nothing: readers take no lock, so they must never see half a file. */
+/** Writes a whole file or nothing: readers take no lock, so they must never see half a file. A link stays a link: its target gets the text. */
 function put(file, text) {
-  writeFileSync(`${file}.${process.pid}`, text);
-  renameSync(`${file}.${process.pid}`, file);
+  let real = file;
+  try {
+    real = realpathSync(file);
+  } catch {} // nothing there yet
+  writeFileSync(`${real}.${process.pid}`, text);
+  renameSync(`${real}.${process.pid}`, real);
 }
 
 const cell = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ").trim();
 
 function read(dir, table) {
-  const text = readRegular(join(dir, `${table}.tsv`));
-  if (!text) return [];
-  const [head, ...lines] = text.split("\n").filter(Boolean);
+  const [head = "", ...lines] = (readRegular(join(dir, `${table}.tsv`)) ?? "").split("\n").filter(Boolean); // blank: no rows
   const cols = head.split("\t");
   return lines.map((line) => {
     const v = line.split("\t");
@@ -194,43 +198,51 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/.test(sha) ? "" : `${JSON.stringify(sh
 /** Does one task have the clean cycles its route needs on one SHA? rows are only that task's ledger rows for the SHA. */
 function judge(dir, id, rows, cycles) {
   const task = read(dir, "tasks").find((t) => t.id === id);
-  if (!task) return { ok: false, reason: `the ledger names task ${id}, which does not exist` };
+  if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.` };
+  const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the gate fails closed
   const open = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
-  if (open.length) return { ok: false, reason: `${task.id} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
+  if (open.length) return { ok: false, reason: `${who} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
   const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
-  if (bad) return { ok: false, reason: `${task.id}: cycle ${bad.cycle} found problems on this SHA (${bad.kind}). Repair, then review the new SHA.` };
-  if (!rows.some((r) => r.kind === "checks-pass")) return { ok: false, reason: `${task.id}: no checks-pass on this SHA.` };
+  if (bad) return { ok: false, reason: `${who}: cycle ${bad.cycle} found problems on this SHA (${bad.kind}). Repair, then review the new SHA.` };
+  if (!rows.some((r) => r.kind === "checks-pass")) return { ok: false, reason: `${who}: no checks-pass on this SHA. Run the checks on it and record checks-pass.` };
   const perCycle = list(task.route).map((b) => VERDICT[b]).filter((k) => k && k !== "checks-pass");
   const want = perCycle.length ? cycles : 1;
   const clean = perCycle.length ? [...new Set(rows.map((r) => r.cycle))].filter((c) => perCycle.every((k) => rows.some((r) => r.cycle === c && r.kind === k))).length : 1;
   if (clean < want) {
     const missing = perCycle.filter((k) => !rows.some((r) => r.kind === k));
-    return { ok: false, reason: `${task.id}: ${clean} of ${want} clean cycles on this SHA${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}.` };
+    return { ok: false, reason: `${who}: ${clean} of ${want} clean cycles on this SHA${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}. Run the next cycle of its reviews on this SHA and record each verdict.` };
   }
   return { ok: true, reason: `${task.id} may merge: ${clean} clean cycle${clean === 1 ? "" : "s"} on this SHA` };
 }
 
 /**
  * The judgment of the merge gate: may this head SHA merge? Every task that has verdicts on the full SHA, in every
- * project's store, must pass on its own rows, so no other store or task can lend its verdicts. An autopilot merge wants
- * autopilot_cycles clean cycles. The hook calls this, so it never throws: a store that it cannot read refuses the merge.
+ * project's logbook, must pass on its own rows, also an abandoned one, so no other logbook or task can lend its verdicts.
+ * With pr, the tasks of that pull request in those logbooks must pass too, and there must be one. An autopilot merge
+ * wants autopilot_cycles clean cycles. The hook calls this, so it never throws: what it cannot read refuses the merge.
  */
-export function mergeCheck(sha, env = process.env, cycles = config(env).autopilot_cycles) {
-  if (notFull(sha)) return { ok: false, reason: notFull(sha) };
+export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
+  const root = sageRoot(env);
   try {
-    const root = sageRoot(env);
+    if (notFull(sha)) return { ok: false, reason: notFull(sha) };
+    cycles ??= config(env).autopilot_cycles;
+    pr &&= String(pr); // the tasks table holds it as text
     const dirs = existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(root, d.name)).sort() : [];
     const each = dirs.flatMap((dir) => {
       const rows = read(dir, "ledger").filter((r) => r.sha === sha);
-      return [...new Set(rows.map((r) => r.task))].map((id) => ({ store: basename(dir), id, ...judge(dir, id, rows.filter((r) => r.task === id), cycles) }));
+      const ofPr = rows.length && pr ? read(dir, "tasks").filter((t) => t.pr === pr).map((t) => t.id) : [];
+      return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => ({ dir, id, ofPr: ofPr.includes(id), ...judge(dir, id, rows.filter((r) => r.task === id), cycles) }));
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
-    if (each.length === 1) return each[0];
-    const all = `${each.length} tasks have verdicts on ${sha.slice(0, 7)} (${each.map((r) => `${r.store} ${r.id}`).join(", ")}), and each must pass`;
-    const bad = each.find((r) => !r.ok);
-    return bad ? { ok: false, reason: `${all}. ${bad.store} ${bad.reason}` } : { ok: true, reason: `${all}: ${each.map((r) => `${r.store} ${r.reason}`).join("; ")}` };
+    if (pr && !each.some((r) => r.ofPr)) return { ok: false, reason: `no task of PR ${pr} has verdicts on ${sha.slice(0, 7)}: only ${each.map((r) => `${r.dir} ${r.id}`).join(", ")} ${each.length === 1 ? "has" : "have"}. Record PR ${pr}'s verdicts under its own task (sage verdict <T> --sha <sha> --pr ${pr}), or set its PR: sage task <T> set pr=${pr}.` };
+    if (each.length === 1) return { ok: each[0].ok, reason: each[0].reason };
+    const all = `${each.length} tasks have verdicts on ${sha.slice(0, 7)}${pr ? ` or belong to PR ${pr}` : ""}, and each must pass`;
+    const bad = each.filter((r) => !r.ok);
+    if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${r.dir} ${r.reason}`).join("; ")}` };
+    return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.` };
   } catch (e) {
-    return { ok: false, reason: `the merge gate could not read the stores in ${sageRoot(env)}: ${e.message}` };
+    const at = e?.path ?? root;
+    return { ok: false, reason: `the merge gate cannot read ${at} (${e?.code ?? e?.message ?? e}), so it refuses every merge. Ask the user to fix or remove ${at}.` };
   }
 }
 
@@ -259,7 +271,8 @@ export function sage(argv, env = process.env) {
   const { pos, opt } = parse(rest);
   if (cmd === "merge-check") {
     const cycles = opt.cycles === undefined ? undefined : (valid("autopilot_cycles", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more"));
-    const r = mergeCheck(need(opt.sha, "--sha"), env, cycles);
+    if (opt.pr !== undefined && !/^\d+$/.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
+    const r = mergeCheck(need(opt.sha, "--sha"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
   }
   if (cmd === "config") {
@@ -409,7 +422,8 @@ function act(cmd, pos, opt, dir, env) {
         if (!["high", "medium", "low"].includes(severity)) refuse("severity is high, medium or low");
         const key = opt.key ?? nextId(findings.filter((f) => f.task === task.id).map((f) => f.key), `F-${task.id}-`);
         const again = findings.find((f) => f.task === task.id && f.key === key);
-        if (again) Object.assign(again, { status: "open", triage: "", round: task.round, severity }); // it came back
+        if (again && opt.summary && cell(opt.summary) !== again.summary) write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: task.id, decision: `${key} opened again: ${opt.summary}`, why: `the summary before: ${again.summary}` }]);
+        if (again) Object.assign(again, { status: "open", triage: "", round: task.round, severity, source: opt.source ?? again.source, summary: opt.summary ?? again.summary }); // it came back
         else findings.push({ task: task.id, key, round: task.round, source: need(opt.source, "--source"), severity, summary: need(opt.summary, "--summary"), status: "open" });
         write(dir, "findings", findings);
         return `${key} open${again ? " again" : ""} · ${severity} · ${task.id}`;
