@@ -1,7 +1,7 @@
 // Draws the README's graphics as SVG, each in a light and a dark version (docs/assets/<name>-light.svg, -dark.svg).
 // The README shows the version that matches the reader's GitHub theme. Run `npm run graphics` after a change here.
 // The look is inspired by Sage Mode in Naruto (orange markings, a toad-like eye, swirling natural energy) with
-// original shapes only: no characters, logos or village symbols.
+// original shapes only: no characters, logos or village symbols. The mascot is an original toad sage.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "../docs/assets");
 
 export const THEMES = {
-  light: { bg: "#FBF7F1", panel: "#FFFFFF", ink: "#1C1410", muted: "#6E5F53", faint: "#A3927F", line: "#EADFCF", accent: "#E5600B", gold: "#E9A91B", soft: "#FDEBD9", chip: "#F6EFE6", chief: "#21160F", chiefInk: "#FFF4E8", ok: "#2F8552", bad: "#C2412D", energy: "#F0A050", white: "#FFF9F1" },
-  dark: { bg: "#100B08", panel: "#1A130F", ink: "#F6EEE6", muted: "#BCAA98", faint: "#7F6F62", line: "#3A2B21", accent: "#FF7A1F", gold: "#F6C343", soft: "#2A190D", chip: "#1E1611", chief: "#FF7A1F", chiefInk: "#140D08", ok: "#6CC28F", bad: "#F08A78", energy: "#FF8C3A", white: "#FFF6EA" },
+  light: { bg: "#FBF7F1", panel: "#FFFFFF", ink: "#1C1410", muted: "#6E5F53", faint: "#A3927F", line: "#EADFCF", accent: "#E5600B", gold: "#E9A91B", soft: "#FDEBD9", chip: "#F6EFE6", chief: "#21160F", chiefInk: "#FFF4E8", ok: "#2F8552", bad: "#C2412D", energy: "#F0A050", white: "#FFF9F1", toad: "#A0693F", toadShade: "#7E5130", toadBelly: "#F3D6AC", toadLine: "#3B2414", blush: "#F0907E" },
+  dark: { bg: "#100B08", panel: "#1A130F", ink: "#F6EEE6", muted: "#BCAA98", faint: "#7F6F62", line: "#3A2B21", accent: "#FF7A1F", gold: "#F6C343", soft: "#2A190D", chip: "#1E1611", chief: "#FF7A1F", chiefInk: "#140D08", ok: "#6CC28F", bad: "#F08A78", energy: "#FF8C3A", white: "#FFF6EA", toad: "#B47D50", toadShade: "#8A5A36", toadBelly: "#F0D2A6", toadLine: "#24150B", blush: "#F0907E" },
 };
 const SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif";
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
@@ -52,6 +52,65 @@ function energy(cx, cy, turns, step, t, opacity = 0.16) {
   return path(`M${pts.join(" L ")}`, { stroke: t.energy, sw: 2, opacity });
 }
 
+let toadCount = 0;
+const ellipse = (cx, cy, rx, ry, o = {}) => `<ellipse ${attrs({ cx, cy, rx, ry, fill: o.fill ?? "none", stroke: o.stroke, "stroke-width": o.sw, opacity: o.opacity })}/>`;
+
+/** The toad sage, the mascot: an original round toad with orange sage markings, gold toad eyes and a ✓ headband. */
+function toad(cx, cy, s, t, { wave = false } = {}) {
+  const u = (x) => +(cx + x * s).toFixed(1), v = (y) => +(cy + y * s).toFixed(1), r = (n) => +(n * s).toFixed(2);
+  const id = `toad-body-${++toadCount}`;
+  const ink = { stroke: t.toadLine, sw: r(0.035) };
+  const eyeAt = (x) => [
+    ellipse(u(x), v(-0.5), r(0.28), r(0.26), { fill: t.accent }),
+    circle(u(x), v(-0.5), r(0.2), { fill: t.white, stroke: t.toadLine, sw: r(0.02) }),
+    circle(u(x), v(-0.5), r(0.15), { fill: t.gold }),
+    rect(u(x - 0.1), v(-0.53), r(0.2), r(0.06), { rx: r(0.03), fill: "#140B06" }),
+    circle(u(x - 0.05), v(-0.57), r(0.035), { fill: "#FFFFFF" }),
+  ].join("");
+  const arm = wave
+    ? path(`M${u(0.8)} ${v(0.18)} Q ${u(1.08)} ${v(0.05)} ${u(1.12)} ${v(-0.28)}`, { stroke: t.toadLine, sw: r(0.2) }) +
+      path(`M${u(0.8)} ${v(0.18)} Q ${u(1.08)} ${v(0.05)} ${u(1.12)} ${v(-0.28)}`, { stroke: t.toad, sw: r(0.13) }) +
+      circle(u(1.12), v(-0.32), r(0.1), { fill: t.toad, ...ink })
+    : ellipse(u(0.36), v(0.84), r(0.2), r(0.09), { fill: t.toadShade, ...ink });
+  return [
+    `<defs><clipPath id="${id}"><ellipse cx="${cx}" cy="${v(0.12)}" rx="${r(0.95)}" ry="${r(0.74)}"/></clipPath></defs>`,
+    ellipse(u(-0.8), v(0.5), r(0.36), r(0.25), { fill: t.toadShade, ...ink }),
+    ellipse(u(0.8), v(0.5), r(0.36), r(0.25), { fill: t.toadShade, ...ink }),
+    circle(u(-0.44), v(-0.48), r(0.3), { fill: t.toad, ...ink }),
+    circle(u(0.44), v(-0.48), r(0.3), { fill: t.toad, ...ink }),
+    ellipse(cx, v(0.12), r(0.95), r(0.74), { fill: t.toad, ...ink }),
+    ellipse(cx, v(0.42), r(0.58), r(0.34), { fill: t.toadBelly }),
+    `<g clip-path="url(#${id})">${rect(u(-1), v(-0.3), r(2), r(0.15), { rx: 0, fill: "#2A1B12" })}</g>`,
+    path(`M${u(0.74)} ${v(-0.26)} q ${r(0.22)} ${r(0.02)} ${r(0.3)} ${r(0.2)}`, { stroke: "#2A1B12", sw: r(0.06) }),
+    path(`M${u(0.74)} ${v(-0.23)} q ${r(0.14)} ${r(0.12)} ${r(0.14)} ${r(0.3)}`, { stroke: "#2A1B12", sw: r(0.06) }),
+    rect(u(-0.2), v(-0.34), r(0.4), r(0.22), { rx: r(0.05), fill: "#CBD2DA", stroke: "#7D8794", sw: r(0.02) }),
+    path(`M${u(-0.09)} ${v(-0.23)} L ${u(-0.02)} ${v(-0.16)} L ${u(0.1)} ${v(-0.29)}`, { stroke: "#2A1B12", sw: r(0.045) }),
+    eyeAt(-0.44),
+    eyeAt(0.44),
+    circle(u(-0.62), v(0.06), r(0.09), { fill: t.blush, opacity: 0.55 }),
+    circle(u(0.62), v(0.06), r(0.09), { fill: t.blush, opacity: 0.55 }),
+    path(`M${u(-0.46)} ${v(0.04)} Q ${cx} ${v(0.3)} ${u(0.46)} ${v(0.04)}`, { stroke: t.toadLine, sw: r(0.045) }),
+    ellipse(u(-0.36), v(0.84), r(0.2), r(0.09), { fill: t.toadShade, ...ink }),
+    arm,
+  ].join("");
+}
+
+/** A speech bubble with a tail that points at (tx, ty). */
+function say(x, y, w, h, tx, ty, lines, t, o = {}) {
+  const midY = y + h / 2;
+  const fromLeft = tx < x;
+  const base = fromLeft ? x + 1 : x + w - 1;
+  return (
+    path(`M${base} ${midY - 10} L ${tx} ${ty} L ${base} ${midY + 10} Z`, { fill: t.panel, stroke: t.accent, sw: 2 }) +
+    rect(x, y, w, h, { rx: 18, fill: t.panel, stroke: t.accent, sw: 2 }) +
+    rect(fromLeft ? x + 2 : x + w - 4, midY - 9, 3, 18, { rx: 0, fill: t.panel }) +
+    text(x + (o.center ? w / 2 : 22), y + (o.size ?? 19) + (h - [].concat(lines).length * (o.size ?? 19) * 1.4) / 2 - 2, lines, { size: o.size ?? 19, weight: o.weight ?? 600, fill: t.ink, anchor: o.center ? "middle" : "start", lh: 1.4 })
+  );
+}
+
+/** A tip from the toad sage: the toad on the left, a speech bubble on the right. */
+const tip = (lines, label) => (t) => svg(1000, 170, t, [energy(95, 92, 1.6, 9, t, 0.12), toad(95, 92, 56, t), say(196, 32, 776, 104, 166, 92, lines, t)].join("\n"), label);
+
 function svg(w, h, t, body, label) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="${esc(label)}">
 <defs>
@@ -71,27 +130,27 @@ const role = (x, y, w, h, name, writes, t, sub) =>
   text(x + w / 2, y + (sub ? h / 2 - 2 : h / 2 + 6), name, { size: 16, weight: 650, fill: t.ink, anchor: "middle" }) +
   (sub ? text(x + w / 2, y + h / 2 + 18, sub, { size: 12.5, fill: t.muted, anchor: "middle" }) : "");
 
-/** The hero: the chief of staff above its team. */
+/** The hero: the toad sage, chief of staff, above its team. */
 function hero(t) {
   const cx = 944;
   const roles = [["Designer", true], ["PE", false], ["Implementer", true], ["Arena judge", true], ["Code review", false], ["Security", false], ["UX review", false], ["QA", false]];
-  const nodes = roles.map(([name, writes], i) => ({ name, writes, x: 688 + (i % 4) * 132, y: 292 + Math.floor(i / 4) * 112, w: 120, h: 54 }));
+  const nodes = roles.map(([name, writes], i) => ({ name, writes, x: 688 + (i % 4) * 132, y: 300 + Math.floor(i / 4) * 104, w: 120, h: 54 }));
   const body = [
     energy(cx, 330, 3.2, 15, t, 0.13),
     eye(130, 132, 84, t),
     text(88, 262, "sage", { size: 108, weight: 750, fill: t.ink, ls: -3 }),
     text(92, 326, ["Your chief of staff", "for Claude Code."], { size: 36, weight: 650, fill: t.ink, lh: 1.25 }),
-    text(92, 440, ["Say “sage mode”. A team of agents designs,", "builds, reviews and proves the work.", "You answer only the product questions."], { size: 20, fill: t.muted, lh: 1.45 }),
+    text(92, 440, ["Start a message with “sage mode”. A team of", "agents designs, builds, reviews and proves the", "work. You answer only the product questions."], { size: 20, fill: t.muted, lh: 1.45 }),
     rect(88, 540, 286, 40, { rx: 20, fill: t.chip, stroke: t.line, sw: 1 }),
     text(231, 566, "Claude Code plugin · MIT", { size: 16, weight: 650, fill: t.accent, anchor: "middle" }),
     text(92, 614, "Built on pstack and poteto mode, by Lauren Tan", { size: 14, fill: t.faint }),
-    ...nodes.map((n) => path(`M${cx} 206 C ${cx} 252, ${n.x + n.w / 2} ${n.y - 50}, ${n.x + n.w / 2} ${n.y}`, { stroke: t.line, sw: 2 })),
-    rect(cx - 130, 112, 260, 94, { rx: 20, fill: t.chief, stroke: t.accent, sw: 3 }),
-    eye(cx - 84, 159, 38, t),
-    text(cx + 22, 154, "Chief of staff", { size: 22, weight: 750, fill: t.chiefInk, anchor: "middle" }),
-    text(cx + 22, 180, "routes · briefs · ledger", { size: 14, fill: t.chiefInk, anchor: "middle", opacity: 0.85 }),
+    ...nodes.map((n) => path(`M${cx} 254 C ${cx} 280, ${n.x + n.w / 2} ${n.y - 36}, ${n.x + n.w / 2} ${n.y}`, { stroke: t.line, sw: 2 })),
+    toad(cx, 152, 64, t),
+    rect(cx - 82, 222, 164, 32, { rx: 16, fill: t.chief, stroke: t.accent, sw: 2 }),
+    text(cx, 243, "Chief of staff", { size: 15, weight: 750, fill: t.chiefInk, anchor: "middle" }),
+    say(1046, 82, 150, 52, 1010, 128, "sage mode!", t, { center: true, size: 19, weight: 750 }),
     ...nodes.map((n) => role(n.x, n.y, n.w, n.h, n.name, n.writes, t)),
-    ...[0, 1, 2].map((i) => circle(nodes[7].x + 34 + i * 26, nodes[7].y + 76, 7, { fill: t.ok })),
+    ...[0, 1, 2].map((i) => circle(nodes[7].x + 34 + i * 26, nodes[7].y + 74, 7, { fill: t.ok })),
     rect(688, 552, 14, 14, { rx: 4, fill: t.soft, stroke: t.accent, sw: 2 }),
     text(710, 564, "writes, in its own worktree", { size: 14, fill: t.muted }),
     rect(926, 552, 14, 14, { rx: 4, fill: t.panel, stroke: t.line, sw: 1.5 }),
@@ -99,7 +158,7 @@ function hero(t) {
     circle(1052, 559, 7, { fill: t.ok }),
     text(1066, 564, "clean verdict", { size: 14, fill: t.muted }),
   ].join("\n");
-  return svg(1280, 640, t, body, "sage: your chief of staff for Claude Code. The chief of staff above its team: designer, PE, implementer, arena judge, code review, security, UX review and QA.");
+  return svg(1280, 640, t, body, "sage: your chief of staff for Claude Code. The toad sage, chief of staff, says sage mode above its team: designer, PE, implementer, arena judge, code review, security, UX review and QA.");
 }
 
 /** How it works: the inner loop and the outer loop. */
@@ -166,7 +225,7 @@ function walkthrough(t) {
     bubble("chief", py + 550, ["T2 verified. QA ran the app: PASS.", "→ PR #41 is ready for you."], 312, 5),
   ];
   const notes = [
-    [1, "Switch it on", ["Say “sage mode” and what you want.", "Any session: desktop, terminal, phone."]],
+    [1, "Switch it on", ["Start with “sage mode”, then what you want.", "Any session: desktop, terminal, phone."]],
     [2, "The chief frames each task", ["It sizes each task and picks a route.", "A risk flag such as data or input adds", "a security review."]],
     [3, "One product question, at most", ["With a recommendation and a default.", "Engineering choices are the chief's."]],
     [4, "The team works; you don't watch code", ["Fresh agents build, review and test.", "Findings go back for repair, bounded."]],
@@ -182,6 +241,8 @@ function walkthrough(t) {
     path(`M${px} ${py + 58} L ${px + pw} ${py + 58}`, { stroke: t.line, sw: 1 }),
     ...b.map((x) => x.svg),
     text(px + pw, py + ph + 30, "Illustrative session, sample data", { size: 13, fill: t.faint, anchor: "end" }),
+    toad(1112, 652, 38, t, { wave: true }),
+    say(964, 618, 106, 42, 1072, 646, "Your turn!", t, { center: true, size: 16, weight: 750 }),
     ...notes.map(([n, title, lines], i) => {
       const y = noteY[i];
       const target = b.find((x) => x.n === n);
@@ -307,7 +368,12 @@ function pstack(t) {
   return svg(1100, 400, t, out.join("\n"), "Following pstack: every week, pstack's principles come into upstream/pstack at a pinned commit. Your versions in principles/ win. The build runs the checks and tests and makes the sage plugin. If pstack changed a principle you override, the update waits for you; otherwise it merges.");
 }
 
-export const GRAPHICS = { hero, loop, walkthrough, routes, lifecycle, arena, pstack };
+export const GRAPHICS = {
+  hero, loop, walkthrough, routes, lifecycle, arena, pstack,
+  "tip-start": tip(["Start a message with “sage mode”. That's the whole hand sign.", "Say “sage mode off” when you want a normal session again."], "The toad sage's tip: start a message with sage mode; say sage mode off for a normal session."),
+  "tip-try": tip(["Your first training: one small, real bug, from your phone.", "Then look at the result, not the code."], "The toad sage's tip: try one small, real bug from your phone, then look at the result."),
+  "tip-kitchen": tip(["A mistake that comes back twice becomes a rule in code.", "That's how the kitchen gets stronger, one lesson at a time."], "The toad sage's tip: a mistake that comes back twice becomes a rule in code."),
+};
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   mkdirSync(OUT, { recursive: true });
