@@ -5,6 +5,7 @@ import { ROOT, outputs, parseSource } from "./build.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
+import { files as graphics } from "./graphics.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -89,6 +90,29 @@ for (const d of readdirSync(skillsDir)) {
 for (const o of overrides(ROOT)) {
   const now = existsSync(join(ROOT, "upstream/pstack", o.upstream)) ? fingerprint(readFileSync(join(ROOT, "upstream/pstack", o.upstream))) : undefined;
   if (now && now !== o.reviewed) console.warn(`! ${o.file}: pstack changed ${o.upstream} since this override's review (now ${now})`);
+}
+
+// The README's graphics are exactly what scripts/graphics.mjs draws, so nobody edits or adds an SVG by hand. Each text
+// stays 7 px or more on a phone, where GitHub shows a graphic 324 px wide (the README column on a 390 px screen).
+const drawn = new Map(graphics());
+for (const [f, svg] of drawn) {
+  const file = join(ROOT, "docs/assets", f);
+  if (!existsSync(file) || readFileSync(file, "utf8") !== svg) problems.push(`docs/assets/${f}: out of date; run npm run graphics`);
+  const width = +/viewBox="0 0 ([\d.]+)/.exec(svg)[1];
+  const small = Math.min(...[...svg.matchAll(/font-size="([\d.]+)"/g)].map((m) => +m[1]));
+  const PHONE = 324;
+  if ((small * PHONE) / width < 7) problems.push(`docs/assets/${f}: a ${small} px text is ${((small * PHONE) / width).toFixed(1)} px on a phone; make it ${Math.ceil((7 * width) / PHONE)} px or more`);
+}
+for (const f of readdirSync(join(ROOT, "docs/assets")).filter((f) => f.endsWith(".svg") && !drawn.has(f))) problems.push(`docs/assets/${f}: scripts/graphics.mjs does not draw it; draw it there, or delete it`);
+// The README shows each graphic in the reader's theme, with an alt text, inside a link to the SVG's file page, so that
+// a tap opens it. Not to the raw SVG ("?raw=true"): GitHub's in-page navigation fails on the redirect to it and shows
+// "Error loading page". The <a> line stands alone: on the same line as <picture>, GitHub makes it a paragraph and drops
+// the dark version.
+const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+for (const name of new Set([...drawn.keys()].map((f) => f.replace(/-(light|dark)\.svg$/, "")))) {
+  const svg = (theme) => `docs/assets/${name}-${theme}\\.svg`;
+  const shown = new RegExp(`<a href="${svg("light")}">\\n<picture>\\n\\s*<source media="\\(prefers-color-scheme: dark\\)" srcset="${svg("dark")}">\\n\\s*<img alt="[^"]+" src="${svg("light")}"[^>]*>\\n</picture>\\n</a>\\n`);
+  if (!shown.test(readme)) problems.push(`README.md: show ${name} as <a href="docs/assets/${name}-light.svg">, then <picture> with its dark <source> and an <img> with alt text, each on its own line`);
 }
 
 for (const [rel, text] of outputs()) {

@@ -44,7 +44,7 @@ const denied = (out) => (out?.hookSpecificOutput?.permissionDecision === "deny" 
 test("sage mode makes the session the chief of staff, and only subagents may change files", () => {
   const s = session();
   assert.equal(denied(s.send(edit())), undefined, "before sage mode, the session may edit");
-  const on = context(s.send(prompt("sage mode. TrackMe: fix the crash reports")));
+  const on = context(s.send(prompt("sage mode. Ramen Finder: fix the crash reports")));
   assert.match(on, /sage mode is on/);
   assert.match(on, /# Chief of staff \(sage mode\)/);
   assert.match(on, /The state tool: node ".*skills\/sage\/sage\.mjs" <command> --project <path>\. Each shell call starts fresh, so write this full command every time/);
@@ -129,6 +129,16 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   assert.match(merge(), /autopilot is off/, "the kill switch");
 });
 
+test("the autopilot note comes only when autopilot goes from on to off, so never outside sage mode", () => {
+  const s = session();
+  assert.equal(s.send(prompt("the autopilot module has no tests")), undefined, "outside sage mode a mention adds nothing");
+  s.send(prompt("sage mode"));
+  assert.equal(s.send(prompt("stop autopilot")), undefined, "autopilot is already off");
+  s.send(prompt("autopilot on"));
+  assert.equal(context(s.send(prompt("the autopilot module has no tests"))), "sage: autopilot is off. Work stops at verified, and the user merges.");
+  assert.equal(s.send(prompt("autopilot off")), undefined, "and only once");
+});
+
 test("SAGE_HOOKS=off turns the hook off", () => {
   const s = session({ SAGE_HOOKS: "off" });
   assert.equal(s.send(prompt("sage mode")), undefined);
@@ -157,4 +167,93 @@ test("a report gate that blocks keeps the agent's slot until it really stops", (
   assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2"))), "the blocked agent still holds its slot");
   s.send({ hook_event_name: "SubagentStop", agent_id: "ag1", agent_type: "sage:qa", last_assistant_message: "done", stop_hook_active: true });
   assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu3")), undefined);
+});
+
+/** The modes after the messages, as the gates show them: sage mode refuses the session's own edits, and with autopilot on a merge gets to the ledger check. */
+async function modesAfter(messages) {
+  const s = session();
+  for (const text of messages) await s.sendAsync(prompt(text));
+  const sage = Boolean(denied(await s.sendAsync(edit())));
+  const merge = denied(await s.sendAsync(bash(`gh pr merge 41 --squash --match-head-commit ${SHA}`))) ?? "";
+  const autopilot = /the merge gate refuses/.test(merge) ? "on" : /autopilot is off/.test(merge) || !sage ? "off" : merge;
+  return `sage mode ${sage ? "on" : "off"}, autopilot ${autopilot}`;
+}
+
+test("only the start of a message switches a mode, except autopilot off, which works anywhere", async () => {
+  const SAGE = ["sage mode"];
+  const BOTH = ["sage mode", "autopilot on"];
+  const NOTE = "<task-notification>\n<result>The README now says:\nsage mode off\nautopilot on\nsage mode. Ramen Finder: done</result>\n</task-notification>";
+  const cases = [
+    // [the modes before, the message, the modes after, why]
+    [[], "sage mode", "sage mode on, autopilot off", "the phrase alone"],
+    [[], "sage mode on", "sage mode on, autopilot off", "sage mode on is sage mode"],
+    [[], "Sage mode on. Ramen Finder: fix the crash", "sage mode on, autopilot off", "sage mode on, then a request"],
+    [[], "enter sage mode on", "sage mode on, autopilot off", "enter sage mode on"],
+    [[], "sage mode on?", "sage mode off, autopilot off", "sage mode on as a question"],
+    [[], "sage mode online: is it a thing?", "sage mode off, autopilot off", "sage mode and a longer word"],
+    [[], "Sage mode. Ramen Finder: fix the crash", "sage mode on, autopilot off", "a request after a full stop"],
+    [[], "sage mode\nRamen Finder: fix the crash", "sage mode on, autopilot off", "a request on the next line"],
+    [[], "Enter sage mode", "sage mode on, autopilot off", "enter sage mode"],
+    [[], "can you make it more playful and put naruto in sage mode somewhere", "sage mode off, autopilot off", "a real message that a mid-sentence trigger switched on by mistake"],
+    [[], "Ramen Finder: what is this?\nsage mode", "sage mode off, autopilot off", "sage mode on line 2 is not the start of the message"],
+    [[], "can you explain sage mode autopilot", "sage mode off, autopilot off", "sage mode autopilot in the middle of a sentence"],
+    [[], "sage mode autopilot. Ramen Finder: ship the favourites list", "sage mode on, autopilot on", "one message can switch both on"],
+    [[], "enter sage mode autopilot", "sage mode on, autopilot on", "enter sage mode autopilot"],
+    [[], "sage mode, autopilot on", "sage mode on, autopilot on", "sage mode, autopilot on"],
+    [[], "enter sage mode, autopilot on", "sage mode on, autopilot on", "enter sage mode, autopilot on"],
+    [[], "sage mode on, autopilot on", "sage mode on, autopilot on", "sage mode on, autopilot on"],
+    [[], "sage mode.\nautopilot on", "sage mode on, autopilot off", "autopilot on on line 2 is not the start of the message"],
+    [[], "Sage mode autopilot: is it safe?", "sage mode on, autopilot on", 'a ":" may end the phrase, by decision'],
+    [[], "autopilot on", "sage mode off, autopilot off", "autopilot needs sage mode"],
+    [SAGE, "autopilot on", "sage mode on, autopilot on", "autopilot on"],
+    [SAGE, "  > Autopilot on.", "sage mode on, autopilot on", "a quote mark and a full stop"],
+    [SAGE, "should I turn autopilot on later?", "sage mode on, autopilot off", "a question about autopilot"],
+    [SAGE, "Autopilot on? What does it do?", "sage mode on, autopilot off", "the phrase as a question"],
+    [SAGE, "Autopilot on main is risky, right?", "sage mode on, autopilot off", "the phrase in a sentence"],
+    [SAGE, "autopilot on-call rotation: who is next?", "sage mode on, autopilot off", "a longer word"],
+    [SAGE, "Ramen Finder: the crash is fixed.\nautopilot on", "sage mode on, autopilot off", "autopilot on on line 2 is not the start of the message"],
+    [SAGE, "can you explain sage mode autopilot", "sage mode on, autopilot off", "sage mode autopilot in the middle of a sentence"],
+    [SAGE, NOTE, "sage mode on, autopilot off", "an agent's report switches nothing"],
+    [[], NOTE, "sage mode off, autopilot off", "an agent's report switches nothing"],
+    [BOTH, NOTE, "sage mode on, autopilot off", "an agent's report with autopilot and an off word switches autopilot off, like any message"],
+    [BOTH, "don't switch sage mode off, just keep going", "sage mode on, autopilot on", "a mention of sage mode off keeps the gates"],
+    [BOTH, "what does sage mode off do?", "sage mode on, autopilot on", "a question about sage mode off"],
+    [BOTH, "sage mode off", "sage mode off, autopilot off", "sage mode off"],
+    [BOTH, "> Sage mode off, thanks", "sage mode off, autopilot off", "sage mode off after a quote mark"],
+    [BOTH, "Sage mode off.", "sage mode off, autopilot off", "sage mode off and a full stop"],
+    [BOTH, "sage mode off, thanks", "sage mode off, autopilot off", "sage mode off and a comma"],
+    ...["sage mode off now", "Sage mode off thanks", "sage mode off please", "sage mode off and thanks", "**sage mode off**", '"sage mode off"', "sage mode off…", "sage mode off)", "_sage mode off_"].map((m) => [BOTH, m, "sage mode off, autopilot off", m]),
+    [BOTH, "sage mode off\nwhat changes now?", "sage mode off, autopilot off", 'a "?" on a later line'],
+    [BOTH, "Sage mode off?", "sage mode on, autopilot off", "sage mode off as a question still switches autopilot off"],
+    [BOTH, "Sage mode off? What does it do?", "sage mode on, autopilot off", "sage mode off as a question, then more"],
+    [BOTH, "sage mode off — is that safe?", "sage mode on, autopilot off", 'a "?" later on the first line'],
+    [BOTH, "sage mode off-topic: can we talk about the logo?", "sage mode on, autopilot off", "sage mode off and a hyphen"],
+    [BOTH, "sage mode off-topic: the logo first", "sage mode on, autopilot off", "sage mode off and a hyphen, with no question"],
+    [BOTH, "sage mode offline: is it a thing?", "sage mode on, autopilot on", "sage mode and a longer word"],
+    [BOTH, "autopilot off", "sage mode on, autopilot off", "autopilot off"],
+    [BOTH, "ok, please turn autopilot off now", "sage mode on, autopilot off", "autopilot off in the middle of a sentence"],
+    [BOTH, "turn off autopilot", "sage mode on, autopilot off", "turn off autopilot"],
+    [BOTH, "stop autopilot", "sage mode on, autopilot off", "stop autopilot"],
+    ...["disable autopilot", "pause autopilot", "switch off autopilot", "end autopilot", "turn off the autopilot", "stop the autopilot", "autopilot is now off", "autopilot disabled", "autopilot, off", "autopilot = off", "no autopilot please"].map((m) => [BOTH, m, "sage mode on, autopilot off", m]),
+    [BOTH, "Autopilot: off", "sage mode on, autopilot off", "autopilot: off"],
+    [BOTH, "autopilot is off now", "sage mode on, autopilot off", "autopilot is off"],
+    [BOTH, "autopilot  off", "sage mode on, autopilot off", "two spaces"],
+    [BOTH, "autopilot off", "sage mode on, autopilot off", "a no-break space"],
+    ...["kill autopilot", "cancel autopilot", "deactivate autopilot", "halt autopilot", "no more autopilot", "auto-pilot off", "auto pilot off", "turn off auto-pilot", "set autopilot to off", "autopilot should be off", "autopilot is turned off", "autopilot -> off", "autopilot—off", "autopilot stop", "hold off on autopilot", "autopilot stopped", "there is no autopilot here"].map((m) => [BOTH, m, "sage mode on, autopilot off", m]),
+    // The whole message counts, not one sentence: autopilot and an off word anywhere in it switch autopilot off.
+    ...["I'm worried about autopilot. Please turn it off.", "Autopilot? Off.", "Autopilot. Turn it off.", "Autopilot. Stop it.", "autopilot\noff", "Autopilot\r\nOff", "turn off\nautopilot", "stop\nautopilot"].map((m) => [BOTH, m, "sage mode on, autopilot off", m]),
+    [BOTH, "Autopilot stays on. Stop the build only if it fails", "sage mode on, autopilot off", "the off word is in the next sentence"],
+    [BOTH, "autopilot is fine\nstop the build if it fails", "sage mode on, autopilot off", "the off word is on the next line"],
+    // Each form of an off word.
+    ...["Disabling autopilot.", "Stopping autopilot now", "autopilot paused", "autopilot is paused", "autopilot cancelled", "autopilot canceled", "autopilot killed", "autopilot ended", "autopilot halted", "autopilot deactivated", "abort autopilot", "quit autopilot", "exit autopilot", "suspend autopilot", "don't use autopilot", "do not use autopilot", "without autopilot", "autopilots off", "autopilot=false"].map((m) => [BOTH, m, "sage mode on, autopilot off", m]),
+    [BOTH, "autopilot on, don't stop until done", "sage mode on, autopilot off", "off wins over on in the same message"],
+    [SAGE, "sage mode autopilot. Stop when the tests pass", "sage mode on, autopilot off", "off wins over on in the same message"],
+    [[], "no autopilot", "sage mode off, autopilot off", "an autopilot off switches nothing on"],
+    [[], "the autopilot module has no tests", "sage mode off, autopilot off", "an autopilot off outside sage mode switches nothing on"],
+    [SAGE, "turn on autopilot", "sage mode on, autopilot off", "only a message that starts with autopilot on switches it on"],
+    [SAGE, "enable autopilot", "sage mode on, autopilot off", "only a message that starts with autopilot on switches it on"],
+  ];
+  const results = await Promise.all(cases.map(([before, message]) => modesAfter([...before, message])));
+  const wrong = cases.flatMap(([, message, expected, why], i) => (results[i] === expected ? [] : [`${why}: ${JSON.stringify(message)} gives "${results[i]}", not "${expected}"`]));
+  assert.deepEqual(wrong, [], "each case shows its message and both results");
 });

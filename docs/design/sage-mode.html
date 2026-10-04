@@ -116,7 +116,7 @@ flowchart TB
 <tr><td>A coordinator that owns the program, never the code</td><td>pstack orchestrate, Cursor projects</td><td>The chief of staff has no edit tools. In phrase mode, the hook blocks its edits.</td></tr>
 <tr><td>"The brief is the product." A missing field stops the spawn</td><td>pstack orchestrate</td><td>A brief template with required fields. The hook refuses an agent spawn when a field is missing.</td></tr>
 <tr><td>Verdicts recorded by head SHA. A new commit voids them</td><td>pstack ledger, Orchestrator "merge the exact checked commit"</td><td>A ledger in the store. A merge is blocked unless the current SHA has the verdicts its route needs.</td></tr>
-<tr><td>A mode switched on by name, with playbooks copied into the to-do list</td><td>poteto mode</td><td>"sage mode" in any message. Each route's blocks go into the task list.</td></tr>
+<tr><td>A mode switched on by name, with playbooks copied into the to-do list</td><td>poteto mode</td><td>"sage mode" at the start of a message. Each route's blocks go into the task list.</td></tr>
 <tr><td>Scale the ceremony to the unit</td><td>pstack, Anthropic research system</td><td>Routes come in sizes: tiny, small, large, program.</td></tr>
 <tr><td>A PE that separates "changes" from "questions for you"</td><td>Orchestrator, after the PE loop failed to converge</td><td>The same verdict shape. A later PE pass checks its earlier asks first.</td></tr>
 <tr><td>Code review and security review side by side. No dropped findings</td><td>Orchestrator ORC-021 and ORC-028</td><td>Each finding gets a triage: fix, dismiss with a reason, or ask you. A task can't finish with an open finding.</td></tr>
@@ -152,7 +152,7 @@ flowchart TB
   S -->|"large: new screens, flows, data"| T3["Design → PE → you approve → Build → code, security, UX review → repair → QA live"]
   S -->|"cause unknown"| T4["Investigate, no changes → evidence review → a proposal to you"]
   S -->|"program: many tasks, days"| T5["Plan → PE → pilot one unit → tracks in a rolling window"]
-</pre><p class="cap">Risk flags: auth, personal data, a schema or migration, money, secrets, input from outside. Any flag adds the security review and keeps the task off autopilot.</p></div>
+</pre><p class="cap">Risk flags: auth, personal data, a schema or migration, money, secrets, input from outside. Any flag adds the security review to every size except investigate, which changes no code.</p></div>
 
 <div class="grid">
   <div class="card"><h4>The blocks</h4><p>Frame · Design · Arena · PE check · Build · Code review · Security review · UX review · QA · Repair · Land · Learn</p></div>
@@ -319,7 +319,7 @@ flowchart TB
   R -->|"3 repair rounds and still findings"| S["Stop and ask you"]
 </pre><p class="cap">A cycle is a full set of fresh reviewers and QA on one head SHA. Each cycle uses new agents that didn't see the earlier verdicts.</p></div>
 <ul>
-  <li><strong>"autopilot on"</strong> and <strong>"autopilot off"</strong> switch it in a message. "autopilot off" is the kill switch, and work in flight stops at "verified".</li>
+  <li><strong>"autopilot on"</strong> at the start of a message switches it on, and <strong>"autopilot off"</strong> anywhere in a message switches it off. "autopilot off" is the kill switch, and work in flight stops at "verified".</li>
   <li><strong>Still always ask you</strong>, even on autopilot: deploys, deleting data, force-pushes, and closing pull requests that aren't sage mode's. These can't be undone. A merge can be reverted.</li>
   <li><strong>Risk flags</strong> (auth, personal data, schema, money, secrets) don't stop autopilot. They add the security review to every cycle.</li>
 </ul>
@@ -346,53 +346,54 @@ flowchart TB
 
 <h2 id="prototype">13. Prototype: a sample session</h2>
 <p><strong>Sample data. This is made up to show the experience, not a real run.</strong> You're on your phone, in a session in <code>~/workspace</code>.</p>
-<pre>You     sage mode. TrackMe: add CSV export of trips, and fix the 3 crash reports from this week.
+<pre>You     sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 
-Chief   Sage mode on. Store: ~/.claude/sage/trackme/ (new).
+Chief   Sage mode on. Store: ~/.claude/sage/ramen-finder/ (new).
         2 tasks:
-        T1  CSV export       large · personal data
+        T1  Favourites list    large · personal data
             Design (arena 3) → PE → you → Build → code, security, UX review → QA live
-        T2  3 crash reports  small · probably one cause (date parsing)
-            Build → code review → QA live
+        T2  This week's crash  small · outside input · likely cause: search input
+            Build → code, security review → QA live
         T2 starts now. One question before T1's build:
-        ▸ Should the export include deleted trips?  Recommended: no.  Default if no answer: no.
+        ▸ Sync favourites across devices?  Recommended: not now.
+          Default if you don't answer: not now.
 
-You     no
+You     not now
 
-Chief   T2: implementer started (branch claude/t2-date-crash).
-        T1: 3 designers started: one-tap export · export screen with filters · share sheet.
+Chief   T2: implementer started (branch claude/t2-search-crash).
+        T1: 3 designers started: one-tap heart · favourites tab with sort · saved lists.
         status · T1 designing · T2 building · 0 gates open
 
         … 20 minutes later …
 
-Chief   T1: the PE picked "export screen with filters" as the base, plus the
-        one-tap button from candidate 1.  [3 screenshots]  Keep, change or drop?
+Chief   T1: the PE picked "favourites tab with sort" as the base, plus the
+        one-tap heart from candidate 1.  [3 screenshots]  Keep, change or drop?
 
 You     keep
 
 Chief   T1: implementer started on the kept design.
-        T2: code review found 1 finding (F-T2-1: an empty date still crashes). Repair round 2.
+        T2: code review found 1 finding (F-T2-1: an empty search still crashes). Repair round 1.
 
         … later …
 
-Chief   T2 verified: QA live PASS on a1b2c3d, 2 clean cycles. Autopilot is on: merged PR #41.
-        T1: security review found 1 high finding (F-T1-3: the file name contains the user's
-        email). Repair round 2 of 3.
-        Lesson: date parsing caused 2 of the 3 crashes. Proposed kitchen change: a lint rule
-        against raw date parsing.  ▸ Approve?  Default: no.
-        status · T1 repairing 2/3 · T2 merged · 1 gate open</pre>
+Chief   T2: an empty search still crashed. Fixed in 4787c81.
+        T2 verified. QA ran the app: PASS. → PR #41 is ready for you.
+        T1: security review found 1 high finding (F-T1-3: one user can read another
+        user's favourites). Repair round 2 of 3.
+        Lesson: input handling caused 2 of the last 3 crashes. Proposed kitchen change:
+        a lint rule against raw search input.  ▸ Approve?  Default: no.
+        status · T1 repairing 2/3 · T2 ready for you · 1 gate open</pre>
 <div class="grid">
 <div><h3>status.md (sample)</h3>
-<pre>sage · trackme · 14:32
-tasks   2 · merged 1 · repairing 1
+<pre>sage · ramen-finder · 14:32
+tasks   2 · verified 1 · repairing 1
 gates   1 open · G-3 lint rule, default no
 agents  11 runs · about 410k tokens</pre></div>
 <div><h3>ledger.tsv (sample)</h3>
-<pre>task pr  sha     verdict       cycle
-T2   41  a1b2c3d review-clean  1
-T2   41  a1b2c3d qa-live-pass  1
-T2   41  a1b2c3d review-clean  2
-T2   41  a1b2c3d qa-live-pass  2</pre></div>
+<pre>task pr  sha     verdict         cycle
+T2   41  4787c81 review-clean    1
+T2   41  4787c81 security-clean  1
+T2   41  4787c81 qa-pass         1</pre></div>
 </div>
 
 <h2 id="plan">14. The plan</h2>

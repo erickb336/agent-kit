@@ -8,7 +8,8 @@
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test scripts/hooks.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs scripts/sync-pstack.test.mjs",
-    "sync": "node scripts/sync-pstack.mjs"
+    "sync": "node scripts/sync-pstack.mjs",
+    "graphics": "node scripts/graphics.mjs"
   },
   "engines": {
     "node": ">=20"
