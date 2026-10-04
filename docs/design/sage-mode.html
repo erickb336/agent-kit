@@ -157,7 +157,7 @@ flowchart TB
 <div class="grid">
   <div class="card"><h4>The blocks</h4><p>Frame · Design · Arena · PE check · Build · Code review · Security review · UX review · QA · Repair · Land · Learn</p></div>
   <div class="card"><h4>The chief may add</h4><p>Any block, with a one-line reason in the trail. For example: a PE check on a small task that touches a migration.</p></div>
-  <div class="card"><h4>The chief may not remove</h4><p>The minimum of the size and the risk flags. The ledger gate blocks the merge when a required verdict is missing.</p></div>
+  <div class="card"><h4>The chief may not remove</h4><p>The minimum of the size and the risk flags. The merge check blocks the merge when a required verdict is missing.</p></div>
 </div>
 
 <h3>Design: your default way to design</h3>
@@ -285,7 +285,7 @@ BRANCH      branch · head SHA · PR</pre>
 <tr><td>At most 3 repair rounds. After 2 rounds with the same finding keys, re-plan</td><td><span class="code">Code</span> the state tool counts rounds and keys</td><td>Loops must converge. attack-the-premise</td></tr>
 <tr><td>A merge needs the route's verdicts on the current head SHA</td><td><span class="code">Code</span> hook on <code>gh pr merge</code></td><td>Merge only the checked commit (Orchestrator, pstack)</td></tr>
 <tr><td>Autopilot merges only through a pull request, after the set number of clean cycles on the current head SHA</td><td><span class="code">Code</span> the same hook counts the cycles in the ledger</td><td>Your decision. Merge only the checked commit</td></tr>
-<tr><td>An arena candidate never merges, and its branch is deleted after the verdict</td><td><span class="code">Code</span> the state tool marks candidates; the merge gate refuses them</td><td>Keep best-of simple (ORC-025)</td></tr>
+<tr><td>An arena candidate never merges, and its branch is deleted after the verdict</td><td><span class="code">Code</span> the state tool marks candidates; the merge check refuses them</td><td>Keep best-of simple (ORC-025)</td></tr>
 <tr><td>A fresh agent for each round, with the consolidated brief</td><td><span class="prompt">Prompt</span></td><td>Resumed agents drop directives (pstack)</td></tr>
 <tr><td>Product questions go to you, with a default</td><td><span class="prompt">Prompt</span> + the QUESTIONS report field</td><td>Orchestrator's designer invented answers</td></tr>
 <tr><td>A PE pass checks its earlier asks first. Only new risks may add asks</td><td><span class="prompt">Prompt</span> in v1</td><td>PE loop convergence (ORC-029)</td></tr>
@@ -400,11 +400,11 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <p>Each step ends in a check. The next step starts only when that check passes.</p>
 <div class="scroll"><table>
 <tr><th>Step</th><th>What</th><th>The check</th></tr>
-<tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the logbook. The hook gates: brief fields, edits, the agent cap, the merge gate</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
+<tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the logbook. The hook gates: brief fields, edits, the agent cap, the merge check</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
 <tr><td>2. The team <strong>(done: <a href="../runs/dry-run-1.html">dry run 1</a>)</strong></td><td>The eight agents, the route rules, the brief and report shapes. Test whether a stop hook can see a subagent's report</td><td>A dry run on a demo project with sample data. You read the transcript</td></tr>
 <tr><td>3. Pilot</td><td>One small real task on one of your projects. You watch from your phone</td><td>The task merges, or reaches a PR, with a ledger verdict on its head SHA. Measured cost</td></tr>
 <tr><td>4. Design rounds and arena</td><td>The Design block with prototypes and keep, change or drop. The arena block</td><td>One real design round with an arena of 3 that you mark</td></tr>
-<tr><td>5. Autopilot and Learn</td><td>Autopilot cycles and the merge gate. Lessons into the kitchen</td><td>One auto-merge after the set cycles. One lesson turned into a check</td></tr>
+<tr><td>5. Autopilot and Learn</td><td>Autopilot cycles and the merge check. Lessons into the kitchen</td><td>One auto-merge after the set cycles. One lesson turned into a check</td></tr>
 <tr><td>6. Program size</td><td>Tracks, a rolling window, the pilot rule. Built only when a real program needs it</td><td>One program with a pilot unit</td></tr>
 </table></div>
 

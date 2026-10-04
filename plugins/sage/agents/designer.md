@@ -7,6 +7,7 @@ skills:
   - sage:principle-exhaust-the-design-space
   - sage:principle-contextualize-and-write-for-the-reader
   - sage:writing-standard
+  - sage:dictionary
 ---
 
 # Designer

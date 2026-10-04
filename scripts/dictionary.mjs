@@ -21,34 +21,68 @@ export function withWordTable(readme, table) {
   return `${readme.slice(0, i + TABLE_START.length)}\n\n${table}\n\n${readme.slice(j)}`;
 }
 
-const pattern = (w) => w.replace(/[- ]/g, "[- ]?");
+/** A flagged word as a pattern: a hyphen, a space or a line break between its parts, or none. */
+const pattern = (w) => w.replace(/[- ]/g, "(?:-|\\s+)?");
 /** The check's words: the flagged words, the allowed names, and for each flagged word the approved words to use. */
 export function checkWords(body) {
-  const list = (key) => (new RegExp(`^\\*\\*${key}:\\*\\*\\s*(.+)$`, "m").exec(body)?.[1] ?? "").split(", ").map((s) => s.replace(/ \(.*$/, "").trim()).filter(Boolean);
-  const words = list("Flagged");
-  const use = new Map(words.map((f) => [f, rows(body, "Words").filter(([, , not]) => not.split(/[,;]/).some((n) => n.trim().replace(/ \(.*$/, "") === f)).map(([w]) => w)]));
-  return { words, allowed: list("Allowed names"), use };
+  const list = (key) => (new RegExp(`^\\*\\*${key}:\\*\\*\\s*(.+)$`, "m").exec(body)?.[1] ?? "").split(", ").map((s) => /^(.+?)(?: \((.*)\))?$/.exec(s.trim())).filter(Boolean);
+  const flagged = list("Flagged");
+  const said = (f) => rows(body, "Words").filter(([, , not]) => not.split(/[,;]/).some((n) => n.trim().replace(/ \(.*$/, "") === f)).map(([w]) => w);
+  // A flagged word that no word replaces names its replacement itself: "merge gate (say merge check)".
+  const use = new Map(flagged.map(([, f, note]) => [f, note?.startsWith("say ") ? [note.slice(4)] : said(f)]));
+  return { words: flagged.map(([, f]) => f), allowed: list("Allowed names").map(([, n]) => n), use };
 }
 
-const blank = (s) => s.replace(/[^\n]/g, " ");
+/** The text of a one-line YAML value, without its quotes. It reads any escape and never throws: a double-quoted
+ * value keeps \" and \\, and each other escape becomes one space; a single-quoted value turns '' into '. */
+export function yamlText(value) {
+  const v = value.trim();
+  if (/^".*"$/.test(v) && v.length > 1) return v.slice(1, -1).replace(/\\(?:(["\\/])|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (e, c) => c ?? " ");
+  if (/^'.*'$/.test(v) && v.length > 1) return v.slice(1, -1).replace(/''/g, "'");
+  return v;
+}
+
+// A blanked part keeps its line breaks, and its other characters become NUL, not spaces, so that a two-word term
+// such as "main agent" never joins across a tag or a code span ("main</td><td>Agents").
+const blank = (s) => s.replace(/[^\n]/g, "\0");
+/** A tag, blanked except the text of its alt, title and aria-label, which a person reads. */
+const tag = (t) => t.replace(/(\s(?:alt|title|aria-label)=)(?:"([^"]*)"|'([^']*)')|[^\n]/gi, (m, key, dq, sq) => (key ? `${blank(key)}\0${dq ?? sq}\0` : "\0"));
+/** Markdown's indented code: after a blank line, lines indented 4 or more past the text before them (a list
+ * item's text starts after its marker). In a list item, "    code" is still the item's text, as GitHub shows it. */
+function indentedCode(text) {
+  let base = 0, afterBlank = true, code = false;
+  return text.split("\n").map((line) => {
+    const indent = line.replace(/\t/g, "    ").search(/\S/);
+    if (indent < 0) return (afterBlank = true), line;
+    if ((afterBlank || code) && indent >= base + 4) return (code = true), blank(line);
+    base = /^\s*(?:[-*+]|\d+[.)])\s+/.exec(line)?.[0].length ?? indent;
+    afterBlank = code = false;
+    return line;
+  }).join("\n");
+}
+
 /** The text that a person reads, with the parts a flagged word may be in blanked out, so that line numbers stay. */
 function prose(text, html) {
-  let t = text.replace(/^(description:\s*)(".*")$/m, (all, key, value) => key + JSON.parse(value)); // a YAML description, without its own quotes
-  if (html) t = t.replace(/<(script|style|code)\b[\s\S]*?<\/\1>/gi, blank).replace(/<[^>]*>/g, blank);
-  return t
-    .replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, blank) // code blocks
-    .replace(/`[^`\n]*`/g, blank) // code spans
+  const t = text.replace(/^---\n[\s\S]*?\n---(?:\n|$)/, (front) => front.replace(/^(description:)(.*)$/m, (all, key, value) => `${key} ${yamlText(value)}`));
+  return (html ? t : indentedCode(t))
+    .replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1/gm, blank) // fenced code blocks
+    .replace(/(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g, blank) // code spans, with one backtick or more
+    .replace(/<pre class="mermaid">[\s\S]*?<\/pre>/g, (m) => m.replace(/"/g, " ")) // a Mermaid label's quotes are syntax
+    .replace(/<(script|style|code)\b[\s\S]*?<\/\1>/gi, blank)
+    .replace(/<!--[\s\S]*?-->/g, blank)
+    .replace(/<[/!]?[A-Za-z](?:[^>"']|"[^"]*"|'[^']*')*>|<https?:[^>\s]*>/g, tag) // tags, and Markdown's autolinks
     .replace(/\]\([^)\n]*\)/g, blank) // link URLs
-    .replace(/\b(?:href|src|srcset)="[^"\n]*"/g, blank) // URLs in HTML
-    .replace(/(?<!=)"[^"\n]*"|“[^”\n]*”/g, blank); // quotes, but not an attribute value such as an alt text
+    // Quotes: double, but not an inch mark (5"); single, but not an apostrophe (it's, the owners'); and curly.
+    .replace(/(?<!\d)"[^"\n]*"|“[^”\n]*”|(?<![\p{L}\p{N}])'(?:[^'\n]|'(?=\p{L}))*'(?![\p{L}\p{N}])|‘(?:[^’\n]|’(?=\p{L}))*’/gu, blank);
 }
 
-/** Each flagged word, or its plural, in a text: its line, the word as written, and the approved words to use. */
+/** Each flagged word, or its plural, in a text: its line, the word as written, and the approved words to use. A word
+ * ends at a character that is not a letter or a digit, so _store_ in Markdown's italics counts and storeDir does not. */
 export function flaggedWords(text, { words, allowed, use }, { html = false } = {}) {
   const t = prose(text, html);
-  const re = new RegExp(`\\b(?:${words.map(pattern).join("|")})s?\\b`, "gi");
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])(?:${words.map(pattern).join("|")})s?(?![\\p{L}\\p{N}])`, "giu");
   return [...t.matchAll(re)].filter((m) => !allowed.includes(m[0])).map((m) => {
-    const f = words.find((w) => new RegExp(`^${pattern(w)}s?$`, "i").test(m[0]));
-    return { line: t.slice(0, m.index).split("\n").length, word: m[0], use: use.get(f) ?? [] };
+    const f = words.find((w) => new RegExp(`^${pattern(w)}s?$`, "iu").test(m[0]));
+    return { line: t.slice(0, m.index).split("\n").length, word: m[0].replace(/\s+/g, " "), use: use.get(f) ?? [] };
   });
 }

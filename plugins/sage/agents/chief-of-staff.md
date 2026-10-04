@@ -7,6 +7,7 @@ skills:
   - sage:principle-never-block-on-the-human
   - sage:principle-encode-lessons-in-structure
   - sage:principle-contextualize-and-write-for-the-reader
+  - sage:dictionary
 ---
 
 # Chief of staff (sage mode)

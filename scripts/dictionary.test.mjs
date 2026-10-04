@@ -108,3 +108,98 @@ test("the skip of a file that an open pull request fixes fails once the file is 
   c.write(rel, c.read(rel).replace(/\bstore\b(?!`)/g, "logbook"));
   assert.match(c.run("check").stderr, /✗ plugins\/sage\/skills\/sage\/SKILL\.md: has no flagged word now; remove it from WAITING/);
 });
+
+// Round 1: the findings of the first review cycle on pull request #7, each as the reviewers showed it.
+
+test("every sage agent loads the dictionary skill, and the hook tells the chief to load it", async () => {
+  const { chiefText } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  assert.match(chiefText(), /Load these skills now: [^\n]*sage:dictionary/);
+  const c = copy();
+  c.write("plugins/sage/agents/qa.md", c.read("plugins/sage/agents/qa.md").replace("  - sage:dictionary\n", ""));
+  assert.match(c.run("check").stderr, /✗ agents\/qa\.md: must preload sage:dictionary/);
+});
+
+test("the text of an alt, a title and an aria-label counts in a page and a graphic", () => {
+  assert.deepEqual(scan('<p title="the store">x</p>\n<img alt="the store" src="a.png">\n<svg aria-label="the store"><title>t</title></svg>', true), ["1:store", "2:store", "3:store"]);
+  assert.deepEqual(scan("<p title='a pipeline'>x</p>", true), ["1:pipeline"]);
+  assert.deepEqual(scan('<p class="store" data-x="store">x</p>', true), []);
+});
+
+test("a Mermaid label counts, although Mermaid puts it in double quotes", () => {
+  assert.deepEqual(scan('<pre class="mermaid">\nC --- S[("Store · tasks")]\nA -->|"handoff"| B\n</pre>\n<p>Not "store".</p>', true), ["2:Store", "3:handoff"]);
+});
+
+test("a word between underscores, which Markdown shows in italics, counts", () => {
+  assert.deepEqual(scan("_store_, __store__ and _main agent_."), ["1:store", "1:store", "1:main agent"]);
+  assert.deepEqual(scan("storeDir, restore and the store2 file."), []);
+});
+
+test("a two-word term across a line break counts, and an inch mark opens no quote", () => {
+  assert.deepEqual(scan("Ask the main\nagent."), ["1:main agent"]);
+  assert.deepEqual(scan('A 27" screen in the store, a 5" one.'), ["1:store"]);
+  assert.deepEqual(scan('A 27" screen and the "store" here.'), []);
+});
+
+test("every form of Markdown code, and single quotes, pass as the dictionary says; apostrophes do not hide a word", () => {
+  for (const [inside, outside] of [
+    ["Run ``sage store`` now.", "Run sage store now."],
+    ["~~~\nsage store\n~~~\n", "~~~\nsage\n~~~\nstore\n"],
+    ["Run this:\n\n    sage store\n", "Run this:\n    sage store\n"],
+    ["1. Run this:\n\n       sage store\n", "1. Run this:\n\n    sage store\n"],
+    ["Use <code>sage store</code> here.", "Use <b>sage store</b> here."],
+    ["See <https://example.com/store>.", "See https://example.com/ and the store."],
+    ["Do not say 'store'.", "Do not say store."],
+    ["Do not say ‘store’.", "Do not say store."],
+    ["The owner's 'store' word.", "The owner's store word."],
+  ]) {
+    assert.deepEqual(scan(inside), [], inside);
+    assert.equal(scan(outside).length, 1, outside);
+  }
+  assert.deepEqual(scan("It's the store's file, and the owner’s store."), ["1:store", "1:store"]);
+});
+
+test("a YAML-only escape in a description is read, not a crash", () => {
+  assert.deepEqual(scan('---\ndescription: "Never changes files \\_ nor the store."\n---'), ["2:store"]);
+  assert.deepEqual(scan("---\ndescription: 'It''s not the store.'\n---"), ["2:store"]);
+  const c = copy();
+  c.write("plugins/sage/agents/qa.md", c.read("plugins/sage/agents/qa.md").replace("Never changes files.", "Never changes files \\_ ok."));
+  c.write("plugins/sage/skills/report/SKILL.md", c.read("plugins/sage/skills/report/SKILL.md").replace(/^description: "/m, 'description: "\\_ '));
+  const r = c.run("check");
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test("a flagged word in a graphic says that its fix goes in scripts/graphics.mjs", () => {
+  const c = copy();
+  c.write("scripts/graphics.mjs", c.read("scripts/graphics.mjs").replace("keeps the logbook.", "keeps the store.").replace('"Logbook"', '"Store"'));
+  assert.equal(c.run("graphics").status, 0);
+  const r = c.run("check");
+  assert.match(r.stderr, /✗ docs\/assets\/loop-light\.svg:1: "store" is a flagged word; say logbook \(writing\/dictionary\.md\); fix it in scripts\/graphics\.mjs, then run npm run graphics\n/);
+  assert.match(r.stderr, /✗ docs\/assets\/loop-light\.svg:58: "Store" is a flagged word; say logbook \(writing\/dictionary\.md\); fix it in scripts\/graphics\.mjs/);
+});
+
+test("a title on the design page and a Mermaid label there fail the check", () => {
+  const c = copy();
+  const page = c.read("docs/design/sage-mode.html");
+  c.write("docs/design/sage-mode.html", page.replace('S[("Logbook', 'S[("Store').replace("<main>", '<main><p title="the store">x</p>'));
+  const r = c.run("check");
+  assert.match(r.stderr, /✗ docs\/design\/sage-mode\.html:105: "Store" is a flagged word/);
+  assert.match(r.stderr, new RegExp(`✗ docs/design/sage-mode\\.html:${page.slice(0, page.indexOf("<main>")).split("\n").length}: "store" is a flagged word`));
+});
+
+test("a README without its end marker gives one line from build and from check, not a stack trace", () => {
+  const c = copy();
+  c.write("README.md", c.read("README.md").replace("<!-- The end of the word table. -->", ""));
+  for (const script of ["build", "check"]) {
+    const r = c.run(script);
+    assert.equal(r.status, 1, script);
+    assert.match(r.stderr, /^✗ README\.md: the word table needs the lines <!-- The word table comes from writing\/dictionary\.md: edit it there, then run npm run build\. --> and <!-- The end of the word table\. -->$/m, script);
+    assert.doesNotMatch(r.stderr, /^\s+at /m, script);
+  }
+});
+
+test("a merge gate is a merge check: a gate is a question for the owner", () => {
+  assert.deepEqual(flaggedWords("The merge gate reads it.\nTwo merge-gates.", words), [
+    { line: 1, word: "merge gate", use: ["merge check"] },
+    { line: 2, word: "merge-gates", use: ["merge check"] },
+  ]);
+});

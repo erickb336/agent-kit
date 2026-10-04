@@ -8,6 +8,7 @@ skills:
   - sage:principle-exhaust-the-design-space
   - sage:principle-boundary-discipline
   - sage:principle-laziness-protocol
+  - sage:dictionary
 ---
 
 # Principal engineer

@@ -8,6 +8,7 @@ skills:
   - sage:principle-test-behavior-not-implementation
   - sage:principle-migrate-callers-then-delete-legacy-apis
   - sage:principle-minimize-reader-load
+  - sage:dictionary
 ---
 
 # Code reviewer

@@ -202,7 +202,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Logbook** | sage's local record of one project: its tasks, runs, findings, verdicts, gates and decisions, kept on the owner's Mac. |
 | **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. A message that starts with "sage mode off" turns it off. |
 | **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review to a task that changes code: every size except investigate. |
-| **Ledger** | The record of all verdicts, by commit. The merge gate reads it. |
+| **Ledger** | The record of all verdicts, by commit. The merge check reads it. |
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
 | **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. Any message that mentions autopilot with an off word turns it off. |

@@ -6,6 +6,7 @@ skills:
   - sage:report
   - sage:principle-experience-first
   - sage:writing-standard
+  - sage:dictionary
 ---
 
 # UX reviewer

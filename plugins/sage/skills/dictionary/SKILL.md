@@ -53,7 +53,7 @@ The names of sage's parts. They are not words of the list above, but the README'
 | --- | --- |
 | **sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. A message that starts with "sage mode off" turns it off. |
 | **risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review to a task that changes code: every size except investigate. |
-| **ledger** | The record of all verdicts, by commit. The merge gate reads it. |
+| **ledger** | The record of all verdicts, by commit. The merge check reads it. |
 | **standing orders** | Short rules for a project that every brief carries word for word. |
 | **arena** | N candidates for one design, scored and combined by a judge. |
 | **autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. Any message that mentions autopilot with an off word turns it off. |
@@ -62,8 +62,14 @@ The names of sage's parts. They are not words of the list above, but the README'
 
 ## The check
 
-`npm run check` fails when a flagged word, or its plural, is in an agent file, a hand-written skill, the README, the design page or a README graphic. It does not fail on a word in quotes, in code or in a link URL, so a text can name a word to say that it is wrong. An allowed name passes when it is written exactly as here. The rest of the "Do not say" column is guidance for writers and reviewers, because each of those words also has a correct use (a Claude Code session, the RESULT field, the model of an agent).
+`npm run check` fails when a flagged word, or its plural, is in an agent file, a hand-written skill, the README, the design page or a README graphic. It does not fail on a word in quotes, in code or in a link URL, so a text can name a word to say that it is wrong:
 
-**Flagged:** store, worker, orchestrator, epic, initiative, roadmap, ticket, stage, pipeline, deliverable, sign-off, blocker, checkpoint, coordinator, main agent, handoff, invocation, iteration, defect, nit, bot
+- quotes: double or single, straight or curly. An apostrophe (it's) and an inch mark (5") are not quotes.
+- code: a code span, a code block (fenced or indented) and `<code>`.
+- a link URL: `](…)`, `<https://…>` and the URLs in a tag.
+
+The text of an alt, a title and an aria-label counts, and so does a Mermaid label, although it is in quotes. A graphic's text comes from `scripts/graphics.mjs`: fix a word there, then run `npm run graphics`. An allowed name passes when it is written exactly as here. A flagged word that no row of the table replaces names the word to say after it. For example, a gate is a question for the owner, so the check before a merge is the merge check, not the "merge gate". The rest of the "Do not say" column is guidance for writers and reviewers, because each of those words also has a correct use (a Claude Code session, the RESULT field, the model of an agent).
+
+**Flagged:** store, worker, orchestrator, epic, initiative, roadmap, ticket, stage, pipeline, deliverable, sign-off, blocker, checkpoint, coordinator, main agent, handoff, invocation, iteration, defect, nit, bot, merge gate (say merge check)
 
 **Allowed names:** Orchestrator (the owner's earlier project)

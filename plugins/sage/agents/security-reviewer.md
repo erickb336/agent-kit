@@ -5,6 +5,7 @@ disallowedTools: Edit, Write, MultiEdit, NotebookEdit
 skills:
   - sage:report
   - sage:principle-boundary-discipline
+  - sage:dictionary
 ---
 
 # Security reviewer

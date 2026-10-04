@@ -76,6 +76,8 @@ export function outputs() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // A source that the build cannot read stops it before any change, with one line and no stack trace.
+  try { outputs(); } catch (e) { console.error(`✗ ${e.message}`); process.exit(1); }
   // Remove generated skill folders that no longer have a source (own skills, without the marker, are kept).
   if (existsSync(SKILLS)) for (const d of readdirSync(SKILLS)) {
     const f = join(SKILLS, d, "SKILL.md");
