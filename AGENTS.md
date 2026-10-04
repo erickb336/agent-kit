@@ -22,3 +22,4 @@
 - **Codex** gets only what is verified there. When in doubt, keep a part Claude-only.
 - **`instructions/core.md`** stays under 8 KiB, because Codex shares a 32 KiB budget with each project's AGENTS.md.
 - **Write** at 80% of Simplified Technical English (`writing/ste-80.md`).
+- **Words:** use sage's approved words from `writing/dictionary.md`. It builds the `dictionary` skill and the README's word table; `npm run check` fails on a flagged word.

@@ -9,6 +9,7 @@ skills:
   - sage:principle-migrate-callers-then-delete-legacy-apis
   - sage:principle-prove-it-works
   - sage:principle-fix-root-causes
+  - sage:dictionary
 ---
 
 # Implementer

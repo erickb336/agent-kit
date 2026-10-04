@@ -92,7 +92,7 @@ This is one session, step by step. It is an illustration with sample data.
 <a href="docs/assets/loop-light.svg">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/loop-dark.svg">
-  <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the store, and the outer loop that seals each lesson." src="docs/assets/loop-light.svg" width="100%">
+  <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the logbook, and the outer loop that seals each lesson." src="docs/assets/loop-light.svg" width="100%">
 </picture>
 </a>
 
@@ -108,7 +108,7 @@ There are two loops:
 </picture>
 </a>
 
-The state lives in the store: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
+The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
 
 ### The team
 
@@ -180,24 +180,38 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 
 ## Concepts
 
+<!-- The word table comes from writing/dictionary.md: edit it there, then run npm run build. -->
+
 | Word | Meaning |
 | --- | --- |
+| **Request** | What the owner asks for in the chat, in the owner's words, before sage frames it. |
+| **Program** | (Coming with programs.) A request that sage runs as two or more tasks for one goal, where at least one task waits for another. It has a goal, a done condition (a count of merged tasks), a breakdown that the owner approves, and one pilot task. |
+| **Task** | One unit of work in one project, with one route and at most one pull request. Coming with programs: it is in at most one program, and it may wait for other tasks ("waits for": it starts only when they are merged). |
+| **Step** | One block of a task's route, done by one agent role: design, arena, pe, build, code-review, security-review, ux-review, qa, investigate, evidence-review. |
+| **Route** | The ordered steps of one task, set by its size and risk flags. |
+| **Run** | One agent's work on one step of a task, from brief to report; it has an id such as R12. Coming with programs: also the PE check of a breakdown. |
+| **Agent** | A Claude Code subagent that does one run; the role (implementer, qa, …) says what it does. |
+| **Chief** | The chief of staff: the main session that frames tasks, writes briefs, records the state and asks the owner; it changes no files. Coming with programs: it frames programs too. |
+| **Brief** | What the chief gives an agent at the start of a run, in the ten fields (GOAL to STANDING). Coming with programs: a task that waits for others gets their final reports in full in CONTEXT. |
+| **Report** | What an agent gives back at the end of a run, in the seven fields (STATUS to BRANCH). |
+| **Artifact** | A file or record that a run takes in or gives out and sage keeps: a brief, report, steer message, transcript, branch, commit or pull request. |
+| **Finding** | One problem that a review or QA reports, with a severity (high, medium or low), a triage and a status. |
+| **Verdict** | The result of one check (checks, a review, QA) on one head commit, kept in the ledger by SHA and cycle. |
+| **Cycle** | One full set of fresh reviews and QA on one head commit; a new commit starts again from cycle 1. |
+| **Gate** | A question parked for the owner, with options, a recommendation and a default; the work behind it waits for the answer. Coming with programs: the owner approves a program's breakdown through a gate. |
+| **Logbook** | sage's local record of one project: its tasks, runs, findings, verdicts, gates and decisions, kept on the owner's Mac. |
 | **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. A message that starts with "sage mode off" turns it off. |
-| **Chief of staff** | The session's coordinator. It plans, briefs, records and asks. It never edits files. |
-| **Route** | The steps a task goes through, set by its size and risk flags. |
 | **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review to a task that changes code: every size except investigate. |
-| **Brief** | What an agent gets: goal, scope, context, decisions, acceptance, how to verify, budget, what is forbidden, the report shape, and the standing orders. |
-| **Report** | What an agent returns: status, result, evidence, findings, questions, what was not verified, and the branch. |
-| **Finding** | A problem that a review or QA found, with a severity: high, medium or low. |
-| **Cycle** | One full set of fresh reviews and QA on one commit. |
-| **Verdict** | One review's or QA's result on one commit, kept in the ledger. |
-| **Ledger** | The record of all verdicts, by commit. The merge gate reads it. |
-| **Gate** | A question parked for you, with options, a recommendation and a default. |
+| **Ledger** | The record of all verdicts, by commit. The merge check reads it. |
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
 | **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. Any message that mentions autopilot with an off word turns it off. |
 | **The dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
 | **Seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
+
+<!-- The end of the word table. -->
+
+sage uses each word in one meaning only. The [dictionary](writing/dictionary.md) also gives the words not to say; `npm run check` fails on the worst of them.
 
 ## What to say
 
@@ -344,7 +358,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 ## Credits
 
-- **[pstack](https://github.com/cursor/plugins/tree/main/pstack) and poteto mode, by [Lauren Tan (poteto)](https://github.com/poteto).** sage's principles come from pstack, and sage mode takes its main ideas from poteto mode: the coordinator that never writes code, the brief, the ledger of verdicts by commit, the arena, and the trust ladder. Thank you, Lauren. I adopted pstack the day I found it.
+- **[pstack](https://github.com/cursor/plugins/tree/main/pstack) and poteto mode, by [Lauren Tan (poteto)](https://github.com/poteto).** sage's principles come from pstack, and sage mode takes its main ideas from poteto mode: the "coordinator" that never writes code, the brief, the ledger of verdicts by commit, the arena, and the trust ladder. Thank you, Lauren. I adopted pstack the day I found it.
 - **Sage Mode in *Naruto*, by Masashi Kishimoto**, gave the name and the look: the orange markings and the toad-like eye. The graphics and the toad sage mascot are original drawings, and no character from the series appears. sage is a fan's nod and is not affiliated with *Naruto* or its owners.
 - **My [Orchestrator](https://github.com/erickb336/orchestrator)** taught the lessons that sage keeps in code.
 - **Anthropic's and Cognition's writing on multi-agent systems** shaped the rules: one writer at a time, fresh reviewers, and evidence before a claim.

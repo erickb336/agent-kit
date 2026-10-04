@@ -1,7 +1,8 @@
 // Checks the sources and that the generated files match them. Fails with a list of every problem.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, outputs, parseSource } from "./build.mjs";
+import { GENERATED, ROOT, outputs, parseSource } from "./build.mjs";
+import { checkWords, flaggedWords, yamlText } from "./dictionary.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
@@ -33,7 +34,7 @@ for (const d of readdirSync(skillsDir)) {
   if (name !== d) problems.push(`skills/${d}/SKILL.md: name "${name}" must equal the folder name`);
   if (!name || name.length > 64 || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) problems.push(`skills/${d}/SKILL.md: name must be lowercase words joined by hyphens, at most 64 characters`);
   if (!desc) problems.push(`skills/${d}/SKILL.md: missing description`);
-  else if (JSON.parse(desc.startsWith('"') ? desc : JSON.stringify(desc)).length > 1024) problems.push(`skills/${d}/SKILL.md: description over 1024 characters`);
+  else if (yamlText(desc).length > 1024) problems.push(`skills/${d}/SKILL.md: description over 1024 characters`);
   // Codex's validator accepts only these top-level keys.
   for (const key of m[1].split("\n").filter((l) => /^[A-Za-z-]+:/.test(l)).map((l) => l.split(":")[0])) {
     if (!["name", "description", "license", "allowed-tools", "metadata"].includes(key)) problems.push(`skills/${d}/SKILL.md: key "${key}" is not in the shared skill format`);
@@ -61,7 +62,8 @@ for (const f of agents) {
   for (const [, name] of m[2].matchAll(/`sage:([a-z-]+)`/g)) {
     if (!agents.includes(`${name}.md`) && !existsSync(join(skillsDir, name, "SKILL.md"))) problems.push(`agents/${f}: names sage:${name}, which is neither an agent nor a skill`);
   }
-  if (f !== "chief-of-staff.md" && !m[1].includes("  - sage:report")) problems.push(`agents/${f}: must preload sage:report`);
+  // Every agent writes for a person, in sage's words; every agent but the chief ends with the report.
+  for (const skill of f === "chief-of-staff.md" ? ["dictionary"] : ["report", "dictionary"]) if (!new RegExp(`^  - sage:${skill}$`, "m").test(m[1])) problems.push(`agents/${f}: must preload sage:${skill}`);
 }
 // The chief's brief template and the report skill list the same fields as the hook's gates, in the same order.
 const template = /## The brief[\s\S]*?```\n([\s\S]*?)```/.exec(frontmatter(join(PLUGIN, "agents/chief-of-staff.md"))?.[2] ?? "")?.[1] ?? "";
@@ -115,12 +117,32 @@ for (const name of new Set([...drawn.keys()].map((f) => f.replace(/-(light|dark)
   if (!shown.test(readme)) problems.push(`README.md: show ${name} as <a href="docs/assets/${name}-light.svg">, then <picture> with its dark <source> and an <img> with alt text, each on its own line`);
 }
 
-for (const [rel, text] of outputs()) {
-  const f = join(ROOT, rel);
-  if (!existsSync(f) || readFileSync(f, "utf8") !== text) problems.push(`${rel}: out of date; run npm run build`);
+// sage's words (writing/dictionary.md): no flagged word in the text that a person reads. The generated skills are left
+// out: their words come from the principles, pstack and the dictionary itself. Code is left out too: its names stay.
+let dictionary;
+try { dictionary = checkWords(parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8"), "writing/dictionary.md").body); } catch (e) { problems.push(e.message); }
+const readByPeople = [
+  ...agents.map((f) => `plugins/sage/agents/${f}`),
+  ...readdirSync(skillsDir).map((d) => `plugins/sage/skills/${d}/SKILL.md`).filter((f) => existsSync(join(ROOT, f)) && !readFileSync(join(ROOT, f), "utf8").includes(GENERATED)),
+  "README.md",
+  "docs/design/sage-mode.html",
+  ...readdirSync(join(ROOT, "docs/assets")).filter((f) => f.endsWith(".svg")).map((f) => `docs/assets/${f}`),
+];
+for (const f of dictionary ? readByPeople : []) {
+  const found = flaggedWords(readFileSync(join(ROOT, f), "utf8"), dictionary, { html: !f.endsWith(".md") });
+  // A graphic's text comes from scripts/graphics.mjs, and nobody edits an SVG by hand.
+  for (const h of found) problems.push(`${f}:${h.line}: "${h.word}" is a flagged word${h.use.length ? `; say ${h.use.join(" or ")}` : ""} (writing/dictionary.md)${f.startsWith("docs/assets/") ? "; fix it in scripts/graphics.mjs, then run npm run graphics" : ""}`);
 }
+
+try {
+  for (const [rel, text] of outputs()) {
+    const f = join(ROOT, rel);
+    if (!existsSync(f) || readFileSync(f, "utf8") !== text) problems.push(`${rel}: out of date; run npm run build`);
+  }
+} catch (e) { problems.push(String(e.message)); } // a source that the build cannot read, such as a README without its markers
 const core = readFileSync(join(ROOT, "instructions/core.md"), "utf8");
 if (Buffer.byteLength(core) > 8 * 1024) problems.push(`instructions/core.md: ${Buffer.byteLength(core)} bytes; keep it under 8 KiB (Codex shares a 32 KiB budget with each project's AGENTS.md)`);
 
-if (problems.length) { console.error(problems.map((p) => `✗ ${p}`).join("\n")); process.exit(1); }
+// The build reads the dictionary too, so a problem in it comes twice: report it once.
+if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }
 console.log("✓ all checks pass");

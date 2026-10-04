@@ -6,6 +6,7 @@ skills:
   - sage:report
   - sage:principle-prove-it-works
   - sage:principle-test-behavior-not-implementation
+  - sage:dictionary
 ---
 
 # QA
