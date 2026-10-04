@@ -329,8 +329,9 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
     cycles ??= config(env).autopilot_cycles;
     pr &&= String(pr); // the tasks table holds it as text
-    // A logbook may be a link to a folder: the writes go through it, so the gate reads through it too.
-    const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path).isDirectory()).sort() : [];
+    // A logbook may be a link to a folder: the writes go through it, so the gate reads through it too. A link to nothing
+    // holds no logbook, for the writes either; one that cannot be followed refuses.
+    const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
     const each = dirs.flatMap((dir) => {
       const rows = read(dir, "ledger").filter((r) => r.sha === sha);
       if (!rows.length) return [];

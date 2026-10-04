@@ -914,8 +914,9 @@ test("F-R50-2: the merge gate reads a logbook that is a link to a folder, as the
   real.ok("finding", "add", "T1", "--source", "security-reviewer", "--severity", "high", "--summary", "auth bypass");
   assert.equal(rows(join(moved, "book"), "ledger").length, 1, "the write went through the link");
   assert.equal(real.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: 2 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${real.dir} T1 has open findings: F-T1-1. Triage and close them first. To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.`);
-  rmSync(join(moved, "book"), { recursive: true }); // a link to nothing: it may have held verdicts, so the gate refuses
-  assert.equal(real.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${real.dir} (ENOENT), so it refuses every merge. Ask the user to fix or remove ${real.dir}.`);
+  rmSync(real.dir);
+  symlinkSync(real.dir, real.dir); // a link that cannot be followed may hide a logbook, so the gate refuses
+  assert.equal(real.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${real.dir} (ELOOP), so it refuses every merge. Ask the user to fix or remove ${real.dir}.`);
 });
 
 test("F-R50-3: the merge gate reads each table once, so 4,500 tasks on one SHA take well under the hook's 10 s", () => {
