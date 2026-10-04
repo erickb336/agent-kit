@@ -74,7 +74,13 @@ This is one session, step by step. It is an illustration with sample data.
 
 1. **Switch it on.** Start a message with "sage mode", then your request. sage mode stays on until you start a message with "sage mode off".
 2. **The chief frames each task.** It gives each task a size (tiny, small, large or investigate) and risk flags, such as `data` for personal data or `input` for outside input. The size and the flags give the task its [route](#routes): the steps it must go through.
-3. **One batch of questions, at most.** The chief interrupts you at most once per task. It puts all the product questions of the task in that one batch, and each part comes with a recommendation and a default. A product question is one whose answer you would notice: what you see, which data is kept, who can do what. Two exceptions: an irreversible action always gets its own yes, and a new fact that changes an earlier answer can bring the question back. Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
+3. **One batch of questions, at most.** The chief interrupts you at most once per task. It puts all the product questions of the task in that one batch, and each part comes with a recommendation and a default. A product question is one whose answer you would notice: what you see, which data is kept, who can do what. Four exceptions can interrupt you again:
+   - An irreversible action always gets its own yes.
+   - A new fact that changes an earlier answer can bring the question back.
+   - A large task's design gets your approval after the PE check.
+   - An escalation: the task is held or needs a new plan, or a finding needs a decision that the chief cannot make.
+
+   Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
 4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds.
 5. **You get results.** You get evidence (the commands that ran, screenshots), what was not checked, and a pull request. You merge it, or autopilot merges it.
 
