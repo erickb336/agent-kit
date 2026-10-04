@@ -42,6 +42,7 @@ export function setRemoteControl(file, value) {
 const label = (v) => (v === true ? "on" : v === false ? "off" : v === undefined ? "not set" : JSON.stringify(v));
 
 // The server: one launchd login item, in the user's GUI session, so that it can read the login from the keychain.
+// The label and the log keep the kit's first name, agent-kit, so that an installed login item stays under control.
 const LABEL = "io.github.erickb336.agent-kit.remote-control";
 const agentFile = () => join(homedir(), "Library/LaunchAgents", `${LABEL}.plist`);
 const logFile = () => join(homedir(), "Library/Logs/agent-kit-remote-control.log");

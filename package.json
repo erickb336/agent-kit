@@ -1,5 +1,5 @@
 {
-  "name": "agent-kit",
+  "name": "sage",
   "private": true,
   "type": "module",
   "description": "Principles, a writing standard, working preferences and skills for Claude Code and Codex agents.",

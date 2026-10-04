@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ROOT } from "./build.mjs";
 
-const HOOK = join(ROOT, "plugins/agent-kit/hooks/principles-hook.mjs");
+const HOOK = join(ROOT, "plugins/sage/hooks/principles-hook.mjs");
 
 /** A session in a new git repository with one committed code file. */
 function session(env = {}) {

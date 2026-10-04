@@ -1,5 +1,5 @@
 {
-  "description": "agent-kit: put each principle into the agent's context when it applies, and stop the agent once when the code changed and no check ran.",
+  "description": "sage: put each principle into the agent's context when it applies, and stop the agent once when the code changed and no check ran.",
   "hooks": {
     "UserPromptSubmit": [
       {

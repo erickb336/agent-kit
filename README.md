@@ -9,8 +9,8 @@ Principles, a writing standard, working preferences and skills for coding agents
 | `principles/` | 16 short working principles. Fifteen are adapted from [pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
 | `writing/ste-80.md` | A writing standard: about 80% of ASD-STE100, Simplified Technical English. |
 | `preferences/` | How I work with agents. |
-| `plugins/agent-kit/skills/` | The skills both tools load: one for each principle, one for the writing standard, and my own skills. |
-| `plugins/agent-kit/hooks/` | The hooks: they give a principle to the agent when it applies (see [Hooks](#hooks)). |
+| `plugins/sage/skills/` | The skills both tools load: one for each principle, one for the writing standard, and my own skills. |
+| `plugins/sage/hooks/` | The hooks: they give a principle to the agent when it applies (see [Hooks](#hooks)). |
 | `instructions/core.md` | The always-on file: the preferences and the writing standard. |
 
 The files in `principles/`, `writing/` and `preferences/` are the sources. The skills and `core.md` are generated from them.
@@ -28,7 +28,7 @@ The files in `principles/`, `writing/` and `preferences/` are the sources. The s
    ```
    @~/agent-kit/instructions/core.md
    ```
-3. Optional: to follow and steer your sessions from the Claude app on your phone, run `/agent-kit:remote-control`. See [Remote Control](#remote-control).
+3. Optional: to follow and steer your sessions from the Claude app on your phone, run `/sage:remote-control`. See [Remote Control](#remote-control).
 
 **Codex:**
 
@@ -77,12 +77,12 @@ Remote Control lets you follow, steer and start Claude Code sessions from the Cl
 
 | Command | What it does |
 | --- | --- |
-| `/agent-kit:remote-control` | Turns Remote Control on for every new session. |
-| `/agent-kit:remote-control off` | Turns it off again. |
-| `/agent-kit:remote-control status` | Shows the setting and changes nothing. |
-| `/agent-kit:remote-control server ~/workspace` | Runs a Remote Control server in `~/workspace`, now and at each login (macOS). From the phone, you can then start new sessions that open in that folder. |
-| `/agent-kit:remote-control server off` | Stops the server and removes its login item. |
-| `/agent-kit:remote-control server status` | Shows the server's state and folder. |
+| `/sage:remote-control` | Turns Remote Control on for every new session. |
+| `/sage:remote-control off` | Turns it off again. |
+| `/sage:remote-control status` | Shows the setting and changes nothing. |
+| `/sage:remote-control server ~/workspace` | Runs a Remote Control server in `~/workspace`, now and at each login (macOS). From the phone, you can then start new sessions that open in that folder. |
+| `/sage:remote-control server off` | Stops the server and removes its login item. |
+| `/sage:remote-control server status` | Shows the server's state and folder. |
 
 The skill sets `remoteControlAtStartup` in `~/.claude/settings.json`, the same setting that `/config` changes. It cannot change the desktop app. There, turn on **Settings → Claude Code → Connect new sessions to Remote Control** once.
 
@@ -96,9 +96,9 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 ## Change it
 
-1. Edit a source file in `principles/`, `writing/` or `preferences/`. Or add your own skill as `plugins/agent-kit/skills/<name>/SKILL.md`. To give a principle at a new moment, edit `MOMENTS` in `plugins/agent-kit/hooks/principles-hook.mjs`.
+1. Edit a source file in `principles/`, `writing/` or `preferences/`. Or add your own skill as `plugins/sage/skills/<name>/SKILL.md`. To give a principle at a new moment, edit `MOMENTS` in `plugins/sage/hooks/principles-hook.mjs`.
 2. Run `npm run build`, then `npm run check` and `npm test`.
-3. For Codex to pick up the change, increase `version` in `plugins/agent-kit/.codex-plugin/plugin.json`.
+3. For Codex to pick up the change, increase `version` in `plugins/sage/.codex-plugin/plugin.json`.
 
 A skill uses the shared format both tools read ([agentskills.io](https://agentskills.io/specification)):
 - `name` is the folder name: lowercase words joined by hyphens.

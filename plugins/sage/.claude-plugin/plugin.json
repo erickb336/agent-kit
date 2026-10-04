@@ -1,9 +1,9 @@
 {
-  "name": "agent-kit",
+  "name": "sage",
   "description": "Working principles and a writing standard (80% of Simplified Technical English) as skills, plus your own skills.",
   "author": { "name": "Erick Benitez-Ramos" },
-  "homepage": "https://github.com/erickb336/agent-kit",
-  "repository": "https://github.com/erickb336/agent-kit",
+  "homepage": "https://github.com/erickb336/sage",
+  "repository": "https://github.com/erickb336/sage",
   "license": "MIT",
   "keywords": ["principles", "writing", "simplified technical english", "skills"]
 }

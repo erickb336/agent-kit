@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT, outputs, parseSource } from "./build.mjs";
-import { MOMENTS } from "../plugins/agent-kit/hooks/principles-hook.mjs";
+import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -18,7 +18,7 @@ for (const f of readdirSync(join(ROOT, "principles")).filter((f) => f.endsWith("
 }
 
 // Every skill, generated or own, follows the shared agentskills.io core: name (= folder, ≤64, lowercase-hyphen) and description (≤1024).
-const skillsDir = join(ROOT, "plugins/agent-kit/skills");
+const skillsDir = join(ROOT, "plugins/sage/skills");
 for (const d of readdirSync(skillsDir)) {
   const f = join(skillsDir, d, "SKILL.md");
   if (!existsSync(f)) { problems.push(`skills/${d}: no SKILL.md`); continue; }

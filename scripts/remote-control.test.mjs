@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ROOT } from "./build.mjs";
 
-const SCRIPT = join(ROOT, "plugins/agent-kit/skills/remote-control/remote-control.mjs");
+const SCRIPT = join(ROOT, "plugins/sage/skills/remote-control/remote-control.mjs");
 
 function configDir() {
   const dir = mkdtempSync(join(tmpdir(), "agent-kit-config-"));

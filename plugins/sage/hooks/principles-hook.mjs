@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// The agent-kit hook, for Claude Code and Codex. Both tools send one JSON event on stdin and read one JSON answer on stdout.
+// The principles hook of sage, for Claude Code and Codex. Both tools send one JSON event on stdin and read one JSON answer on stdout.
 //   - It puts a principle's text into the agent's context at the moment the principle applies (MOMENTS), once per
 //     session. So the principle no longer depends on the agent choosing to load its skill.
 //   - It stops the agent once from finishing when the code changed and no check ran after the change (prove-it-works).
 // AGENT_KIT_HOOKS=off turns it off. Orchestrator sets it for its workers, because it gives each step its own principles.
+// The AGENT_KIT_* names stay from the kit's first name, agent-kit, so that Orchestrator's workers keep working.
 // The hook never breaks a session: on any error it answers nothing.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -84,7 +85,7 @@ export function handle(input, state) {
     return {
       decision: "block",
       reason:
-        "agent-kit stops you once here: the code changed, and no check ran after the change. " +
+        "sage stops you once here: the code changed, and no check ran after the change. " +
         "Run the check that shows that the change works. If you cannot run one, say what you did not verify. Then finish.\n\n" +
         principleText("prove-it-works"),
     };
@@ -96,7 +97,7 @@ export function handle(input, state) {
 function inject(event, state, moments) {
   const parts = moments.filter(Boolean).flatMap((m) => give(state, m).map((p) => `Why now: ${MOMENTS[m].why}.\n\n${principleText(p)}`));
   if (!parts.length) return undefined;
-  const text = `agent-kit: ${parts.length === 1 ? "a principle applies" : "these principles apply"} to what you do now. Follow ${parts.length === 1 ? "it" : "them"}.\n\n${parts.join("\n\n---\n\n")}`;
+  const text = `sage: ${parts.length === 1 ? "a principle applies" : "these principles apply"} to what you do now. Follow ${parts.length === 1 ? "it" : "them"}.\n\n${parts.join("\n\n---\n\n")}`;
   return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
 }
 
