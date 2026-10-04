@@ -1,0 +1,2561 @@
+{
+ "sample": true,
+ "//": "SAMPLE DATA: made-up projects, chief sessions, agents and files, from the approved design (T7 R21). Not real store data.",
+ "built": "2026-10-03T14:19:52",
+ "root": "/Users/owner/.claude/sage",
+ "home": "/Users/owner",
+ "chiefs": {
+  "4f2a91c0": {
+   "name": "ramen sprint",
+   "open": true,
+   "closedAt": null
+  },
+  "b71e07aa": {
+   "name": "notes triage",
+   "open": true,
+   "closedAt": null
+  },
+  "c09d3318": {
+   "name": "tide sync",
+   "open": false,
+   "closedAt": "2026-10-03T13:40:00"
+  },
+  "77e1a0d4": {
+   "name": "atlas planning",
+   "open": true,
+   "closedAt": null
+  }
+ },
+ "projects": [
+  {
+   "key": "ramen-finder",
+   "store": "ramen-finder-1c9e42",
+   "repo": "https://github.com/sample-owner/ramen-finder",
+   "created": null,
+   "olderClosed": 6,
+   "failed": null
+  },
+  {
+   "key": "tide-notes",
+   "store": "tide-notes-8a03f5",
+   "repo": "https://github.com/sample-owner/tide-notes",
+   "created": null,
+   "olderClosed": 0,
+   "failed": null
+  },
+  {
+   "key": "pocket-atlas",
+   "store": "pocket-atlas-5d71b0",
+   "repo": null,
+   "created": null,
+   "olderClosed": 2,
+   "failed": null
+  },
+  {
+   "key": "harbor-api",
+   "store": "harbor-api-e2f840",
+   "repo": null,
+   "created": "2026-10-03T14:15:00",
+   "olderClosed": 0,
+   "failed": null
+  }
+ ],
+ "tasks": [
+  {
+   "p": "ramen-finder",
+   "id": "T1",
+   "title": "Filter by broth type",
+   "size": "small",
+   "risk": [],
+   "route": [
+    "build",
+    "code-review",
+    "qa"
+   ],
+   "state": "merged",
+   "branch": "sage/t1-broth-filter",
+   "pr": 38,
+   "round": 0
+  },
+  {
+   "p": "ramen-finder",
+   "id": "T2",
+   "title": "Saved shops list",
+   "size": "large",
+   "risk": [
+    "data"
+   ],
+   "route": [
+    "design",
+    "pe",
+    "build",
+    "code-review",
+    "security-review",
+    "ux-review",
+    "qa"
+   ],
+   "state": "pr-ready",
+   "branch": "sage/t2-saved-shops",
+   "pr": 42,
+   "round": 1
+  },
+  {
+   "p": "ramen-finder",
+   "id": "T3",
+   "title": "Shop page layout",
+   "size": "large",
+   "risk": [],
+   "route": [
+    "design",
+    "arena",
+    "pe",
+    "build",
+    "code-review",
+    "ux-review",
+    "qa"
+   ],
+   "state": "designing",
+   "branch": "",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "ramen-finder",
+   "id": "T4",
+   "title": "Sign in with Apple",
+   "size": "small",
+   "risk": [
+    "auth"
+   ],
+   "route": [
+    "build",
+    "code-review",
+    "security-review",
+    "qa"
+   ],
+   "state": "repairing",
+   "branch": "sage/t4-apple-sign-in",
+   "pr": 44,
+   "round": 1
+  },
+  {
+   "p": "tide-notes",
+   "id": "T1",
+   "title": "Offline sync",
+   "size": "large",
+   "risk": [
+    "data"
+   ],
+   "route": [
+    "design",
+    "pe",
+    "build",
+    "code-review",
+    "security-review",
+    "qa"
+   ],
+   "state": "building",
+   "branch": "sage/t1-offline-sync",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "tide-notes",
+   "id": "T2",
+   "title": "Export to Markdown",
+   "size": "small",
+   "risk": [],
+   "route": [
+    "design",
+    "build",
+    "qa"
+   ],
+   "state": "awaiting-you",
+   "branch": "",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "tide-notes",
+   "id": "T3",
+   "title": "Duplicate tags on paste",
+   "size": "small",
+   "risk": [
+    "input"
+   ],
+   "route": [
+    "build",
+    "code-review",
+    "security-review",
+    "qa"
+   ],
+   "state": "verifying",
+   "branch": "sage/t3-paste-tags",
+   "pr": 17,
+   "round": 0
+  },
+  {
+   "p": "tide-notes",
+   "id": "T4",
+   "title": "Reminder times",
+   "size": "small",
+   "risk": [],
+   "route": [
+    "build",
+    "code-review",
+    "qa"
+   ],
+   "state": "framed",
+   "branch": "",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "tide-notes",
+   "id": "T5",
+   "title": "Tags table migration",
+   "size": "small",
+   "risk": [
+    "schema"
+   ],
+   "route": [
+    "build",
+    "code-review",
+    "qa"
+   ],
+   "state": "awaiting-you",
+   "branch": "sage/t5-tags-migration",
+   "pr": 16,
+   "round": 0
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "T1",
+   "title": "Trip import",
+   "size": "large",
+   "risk": [],
+   "route": [
+    "pe",
+    "design",
+    "build",
+    "code-review",
+    "qa"
+   ],
+   "state": "replan",
+   "branch": "",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "T2",
+   "title": "Country quiz copy pass",
+   "size": "tiny",
+   "risk": [],
+   "route": [
+    "build"
+   ],
+   "state": "briefed",
+   "branch": "sage/t2-quiz-copy",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "T3",
+   "title": "Legend overlaps on small screens",
+   "size": "small",
+   "risk": [],
+   "route": [
+    "build",
+    "code-review",
+    "qa"
+   ],
+   "state": "reviewing",
+   "branch": "sage/t3-legend",
+   "pr": 9,
+   "round": 0
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "T4",
+   "title": "Share a trip as a QR code",
+   "size": "tiny",
+   "risk": [],
+   "route": [
+    "build"
+   ],
+   "state": "abandoned",
+   "branch": "",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "T5",
+   "title": "Offline tile cache",
+   "size": "large",
+   "risk": [
+    "data"
+   ],
+   "route": [
+    "pe",
+    "build",
+    "code-review",
+    "security-review",
+    "qa"
+   ],
+   "state": "building",
+   "branch": "sage/t5-tile-cache",
+   "pr": null,
+   "round": 0
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "T6",
+   "title": "Why does the map load slowly?",
+   "size": "investigate",
+   "risk": [],
+   "route": [
+    "investigate",
+    "evidence-review"
+   ],
+   "state": "concluded",
+   "branch": "",
+   "pr": null,
+   "round": 0
+  }
+ ],
+ "runs": [
+  {
+   "p": "ramen-finder",
+   "id": "R1",
+   "t": "T1",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": null,
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": true,
+   "at": null,
+   "start": "2026-09-30T10:02:00",
+   "end": "2026-09-30T10:41:00",
+   "last": null,
+   "tokens": 96000,
+   "tools": null,
+   "model": "",
+   "agent": null,
+   "from": [],
+   "brief": null,
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R2",
+   "t": "T1",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": null,
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": true,
+   "at": null,
+   "start": "2026-09-30T10:45:00",
+   "end": "2026-09-30T10:58:00",
+   "last": null,
+   "tokens": 41000,
+   "tools": null,
+   "model": "",
+   "agent": null,
+   "from": [],
+   "brief": null,
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R3",
+   "t": "T1",
+   "role": "qa",
+   "k": null,
+   "round": 0,
+   "chief": null,
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": true,
+   "at": null,
+   "start": "2026-09-30T11:00:00",
+   "end": "2026-09-30T11:20:00",
+   "last": null,
+   "tokens": 38000,
+   "tools": null,
+   "model": "",
+   "agent": null,
+   "from": [],
+   "brief": null,
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R4",
+   "t": "T2",
+   "role": "designer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T09:10:00",
+   "end": "2026-10-02T09:52:00",
+   "last": null,
+   "tokens": 120000,
+   "tools": 61,
+   "model": "claude-opus-5-5",
+   "agent": "a97b656c9ff4c39a9",
+   "from": [],
+   "brief": {
+    "at": "2026-10-02T09:10:00",
+    "sha256": "b3e39e3db2e39caab1e39b17b0e39984afe397f1aee3965eade394cbace39338",
+    "head": "RUN         R4 T2 designer ramen-finder-1c9e42\nGOAL        (sample) designer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T09:52:00",
+     "status": "done",
+     "result": "Prototype at design/saved-shops/index.html; 3 options, option B recommended.",
+     "branch": "design/saved-shops",
+     "sha": null,
+     "pr": null,
+     "sha256": "b1b9c35cb2b9c4efb3b9c682b4b9c815adb9bd10aeb9bea3afb9c036b0b9c1c9",
+     "head": "STATUS        done\nRESULT        Prototype at design/saved-shops/index.html; 3 options, option B recommended.\nEVIDENCE      (sample) commands and outputs\nBRANCH        design/saved-shops"
+    }
+   ],
+   "transcript": {
+    "bytes": 1936384,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a97b656c9ff4c39a9.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R5",
+   "t": "T2",
+   "role": "pe",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T10:05:00",
+   "end": "2026-10-02T10:20:00",
+   "last": null,
+   "tokens": 58000,
+   "tools": 22,
+   "model": "claude-opus-5-5",
+   "agent": "a96b65536abbd0b36",
+   "from": [
+    "R4"
+   ],
+   "brief": {
+    "at": "2026-10-02T10:05:00",
+    "sha256": "04d6560805d6579b06d6592e07d65ac108d65c5409d65de70ad65f7a0bd6610d",
+    "head": "RUN         R5 T2 pe ramen-finder-1c9e42\nGOAL        (sample) pe for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T10:20:00",
+     "status": "done",
+     "result": "GO WITH CHANGES: store saved shops per user; 2 changes.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "d3c8f3e9d2c8f256d1c8f0c3d0c8ef30d7c8fa35d6c8f8a2d5c8f70fd4c8f57c",
+     "head": "STATUS        done\nRESULT        GO WITH CHANGES: store saved shops per user; 2 changes.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 698368,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a96b65536abbd0b36.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R6",
+   "t": "T2",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T10:30:00",
+   "end": "2026-10-02T11:48:00",
+   "last": null,
+   "tokens": 210000,
+   "tools": 143,
+   "model": "claude-opus-5-5",
+   "agent": "a95b653a33e9a0543",
+   "from": [
+    "R4",
+    "R5"
+   ],
+   "brief": {
+    "at": "2026-10-02T10:30:00",
+    "sha256": "b962f9b3b862f820bb62fcd9ba62fb46bd62ffffbc62fe6cbf630325be630192",
+    "head": "RUN         R6 T2 implementer ramen-finder-1c9e42\nGOAL        (sample) implementer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T11:48:00",
+     "status": "done",
+     "result": "PR #42 open; checks pass.",
+     "branch": "sage/t2-saved-shops",
+     "sha": "9f8e7d6",
+     "pr": 42,
+     "sha256": "9d427ed29e4280659b427bac9c427d3f994278869a427a1997427560984276f3",
+     "head": "STATUS        done\nRESULT        PR #42 open; checks pass.\nEVIDENCE      (sample) commands and outputs\nBRANCH        sage/t2-saved-shops · 9f8e7d6 · PR #42"
+    }
+   ],
+   "transcript": {
+    "bytes": 4539392,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a95b653a33e9a0543.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R7",
+   "t": "T2",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T11:55:00",
+   "end": "2026-10-02T12:10:00",
+   "last": null,
+   "tokens": 64000,
+   "tools": 40,
+   "model": "claude-opus-5-5",
+   "agent": "a94b652108b4e73a8",
+   "from": [
+    "R6"
+   ],
+   "brief": {
+    "at": "2026-10-02T11:55:00",
+    "sha256": "5f229426602295b95d2291005e22929363229a7264229c056122974c622298df",
+    "head": "RUN         R7 T2 code-reviewer ramen-finder-1c9e42\nGOAL        (sample) code-reviewer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T12:10:00",
+     "status": "done",
+     "result": "FINDINGS (1) on 9f8e7d6.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "a3b805ffa2b8046ca5b80925a4b807929fb7ffb39eb7fe20a1b802d9a0b80146",
+     "head": "STATUS        done\nRESULT        FINDINGS (1) on 9f8e7d6.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 1269760,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a94b652108b4e73a8.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R8",
+   "t": "T2",
+   "role": "security-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T11:55:00",
+   "end": "2026-10-02T12:06:00",
+   "last": null,
+   "tokens": 47000,
+   "tools": 31,
+   "model": "claude-opus-5-5",
+   "agent": "aa3b669ad8b52b9fd",
+   "from": [
+    "R6"
+   ],
+   "brief": {
+    "at": "2026-10-02T11:55:00",
+    "sha256": "758c3b39748c39a6738c3813728c3680798c4185788c3ff2778c3e5f768c3ccc",
+    "head": "RUN         R8 T2 security-reviewer ramen-finder-1c9e42\nGOAL        (sample) security-reviewer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T12:06:00",
+     "status": "done",
+     "result": "CLEAN on 9f8e7d6.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "c0a855e0c1a85773c2a85906c3a85a99c4a85c2cc5a85dbfc6a85f52c7a860e5",
+     "head": "STATUS        done\nRESULT        CLEAN on 9f8e7d6.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 984064,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/b71e07aa…/subagents/agent-aa3b669ad8b52b9fd.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R9",
+   "t": "T2",
+   "role": "implementer",
+   "k": null,
+   "round": 1,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T12:20:00",
+   "end": "2026-10-02T12:51:00",
+   "last": null,
+   "tokens": 88000,
+   "tools": 57,
+   "model": "claude-opus-5-5",
+   "agent": "aa2b6681a38cdb47a",
+   "from": [
+    "R7"
+   ],
+   "brief": {
+    "at": "2026-10-02T12:20:00",
+    "sha256": "67f2c90468f2ca9769f2cc2a6af2cdbd63f2c2b864f2c44b65f2c5de66f2c771",
+    "head": "RUN         R9 T2 implementer ramen-finder-1c9e42\nGOAL        (sample) implementer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [
+    {
+     "at": "2026-10-02T12:26:00",
+     "text": "Keep the empty-state copy from the design (R4).",
+     "sha256": "67bb493e68bb4ad165bb461866bb47ab6bbb4f8a6cbb511d69bb4c646abb4df7"
+    }
+   ],
+   "reports": [
+    {
+     "at": "2026-10-02T12:51:00",
+     "status": "done",
+     "result": "Repaired saved-empty; checks pass.",
+     "branch": "sage/t2-saved-shops",
+     "sha": "a1b2c3d",
+     "pr": 42,
+     "sha256": "4512541d4412528a431250f742124f6441124dd140124c3e3f124aab3e124918",
+     "head": "STATUS        done\nRESULT        Repaired saved-empty; checks pass.\nEVIDENCE      (sample) commands and outputs\nBRANCH        sage/t2-saved-shops · a1b2c3d · PR #42"
+    }
+   ],
+   "transcript": {
+    "bytes": 1809408,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-aa2b6681a38cdb47a.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R10",
+   "t": "T2",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T12:55:00",
+   "end": "2026-10-02T13:05:00",
+   "last": null,
+   "tokens": 39000,
+   "tools": 25,
+   "model": "claude-opus-5-5",
+   "agent": "a3f12593648127c8a",
+   "from": [
+    "R9"
+   ],
+   "brief": {
+    "at": "2026-10-02T12:55:00",
+    "sha256": "79cc7b5a7acc7ced77cc783478cc79c775cc750e76cc76a173cc71e874cc737b",
+    "head": "RUN         R10 T2 code-reviewer ramen-finder-1c9e42\nGOAL        (sample) code-reviewer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T13:05:00",
+     "status": "done",
+     "result": "CLEAN on a1b2c3d.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "74f082eb73f0815876f0861175f0847e78f0893777f087a47af08c5d79f08aca",
+     "head": "STATUS        done\nRESULT        CLEAN on a1b2c3d.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 793600,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a3f12593648127c8a.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R11",
+   "t": "T2",
+   "role": "security-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T13:00:00",
+   "end": "2026-10-02T13:08:00",
+   "last": null,
+   "tokens": 31000,
+   "tools": 19,
+   "model": "claude-opus-5-5",
+   "agent": "a40125ac9daaeb60d",
+   "from": [
+    "R9"
+   ],
+   "brief": {
+    "at": "2026-10-02T13:00:00",
+    "sha256": "afb2d247aeb2d0b4b1b2d56db0b2d3daabb2cbfbaab2ca68adb2cf21acb2cd8e",
+    "head": "RUN         R11 T2 security-reviewer ramen-finder-1c9e42\nGOAL        (sample) security-reviewer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T13:08:00",
+     "status": "done",
+     "result": "CLEAN on a1b2c3d.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "34e0bd4e35e0bee132e0ba2833e0bbbb38e0c39a39e0c52d36e0c07437e0c207",
+     "head": "STATUS        done\nRESULT        CLEAN on a1b2c3d.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 603136,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/b71e07aa…/subagents/agent-a40125ac9daaeb60d.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R12",
+   "t": "T2",
+   "role": "ux-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T13:10:00",
+   "end": "2026-10-02T13:31:00",
+   "last": null,
+   "tokens": 52000,
+   "tools": 33,
+   "model": "claude-opus-5-5",
+   "agent": "a3d125610e008e97c",
+   "from": [
+    "R4",
+    "R9"
+   ],
+   "brief": {
+    "at": "2026-10-02T13:10:00",
+    "sha256": "b041245cb14125efb2412782b3412915ac411e10ad411fa3ae412136af4122c9",
+    "head": "RUN         R12 T2 ux-reviewer ramen-finder-1c9e42\nGOAL        (sample) ux-reviewer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T13:31:00",
+     "status": "done",
+     "result": "CLEAN on a1b2c3d; 1 low finding.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "71d264d570d263426fd261af6ed2601c6dd25e896cd25cf66bd25b636ad259d0",
+     "head": "STATUS        done\nRESULT        CLEAN on a1b2c3d; 1 low finding.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 1047552,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a3d125610e008e97c.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R13",
+   "t": "T2",
+   "role": "qa",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-02T13:35:00",
+   "end": "2026-10-02T14:02:00",
+   "last": null,
+   "tokens": 71000,
+   "tools": 48,
+   "model": "claude-sonnet-5",
+   "agent": "a3e1257a3782f7947",
+   "from": [
+    "R9",
+    "R10",
+    "R11",
+    "R12"
+   ],
+   "brief": {
+    "at": "2026-10-02T13:35:00",
+    "sha256": "0bec64b10aec631e09ec618b08ec5ff80fec6afd0eec696a0dec67d70cec6644",
+    "head": "RUN         R13 T2 qa ramen-finder-1c9e42\nGOAL        (sample) qa for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-02T14:02:00",
+     "status": "done",
+     "result": "PASS on a1b2c3d.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "9cf4b1989df4b32b9ef4b4be9ff4b651a0f4b7e4a1f4b977a2f4bb0aa3f4bc9d",
+     "head": "STATUS        done\nRESULT        PASS on a1b2c3d.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 1523712,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a3e1257a3782f7947.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R14",
+   "t": "T3",
+   "role": "designer",
+   "k": 1,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:20:00",
+   "end": "2026-10-03T13:58:00",
+   "last": null,
+   "tokens": 104000,
+   "tools": 70,
+   "model": "claude-opus-5-5",
+   "agent": "a43125f824f79dfae",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T13:20:00",
+    "sha256": "07a0695608a06ae905a0663006a067c30ba06fa20ca0713509a06c7c0aa06e0f",
+    "head": "RUN         R14 T3 designer ramen-finder-1c9e42\nGOAL        (sample) designer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T13:58:00",
+     "status": "done",
+     "result": "Layout: map first.",
+     "branch": "design/shop-k1",
+     "sha": null,
+     "pr": null,
+     "sha256": "cb239eafca239d1ccd23a1d5cc23a042c7239863c62396d0c9239b89c82399f6",
+     "head": "STATUS        done\nRESULT        Layout: map first.\nEVIDENCE      (sample) commands and outputs\nBRANCH        design/shop-k1"
+    }
+   ],
+   "transcript": {
+    "bytes": 2222080,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/b71e07aa…/subagents/agent-a43125f824f79dfae.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R15",
+   "t": "T3",
+   "role": "designer",
+   "k": 2,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "running",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:20:00",
+   "end": null,
+   "last": "2026-10-03T14:17:10",
+   "tokens": null,
+   "tools": null,
+   "model": "claude-sonnet-5",
+   "agent": "a4412611522d12461",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T13:20:00",
+    "sha256": "9333b6e39233b5509533ba099433b8769733bd2f9633bb9c9933c0559833bec2",
+    "head": "RUN         R15 T3 designer ramen-finder-1c9e42\nGOAL        (sample) designer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R16",
+   "t": "T3",
+   "role": "designer",
+   "k": 3,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "stopped",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:20:00",
+   "end": "2026-10-03T13:41:00",
+   "last": null,
+   "tokens": 44000,
+   "tools": 29,
+   "model": "claude-sonnet-5",
+   "agent": "a41125c5c619863c0",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T13:20:00",
+    "sha256": "1b2b0ff81c2b118b1d2b131e1e2b14b11f2b1644202b17d7212b196a222b1afd",
+    "head": "RUN         R16 T3 designer ramen-finder-1c9e42\nGOAL        (sample) designer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [],
+   "transcript": {
+    "bytes": 920576,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/b71e07aa…/subagents/agent-a41125c5c619863c0.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R21",
+   "t": "T3",
+   "role": "arena-judge",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "waiting",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": "2026-10-03T13:42:00",
+   "start": null,
+   "end": null,
+   "last": null,
+   "tokens": null,
+   "tools": null,
+   "model": "",
+   "agent": null,
+   "from": [
+    "R14",
+    "R15"
+   ],
+   "brief": null,
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R17",
+   "t": "T4",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T11:02:00",
+   "end": "2026-10-03T11:50:00",
+   "last": null,
+   "tokens": 142000,
+   "tools": 96,
+   "model": "claude-opus-5-5",
+   "agent": "a42125deffd76f4bb",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T11:02:00",
+    "sha256": "1da8462d1ca8449a1ba843071aa8417419a83fe118a83e4e17a83cbb16a83b28",
+    "head": "RUN         R17 T4 implementer ramen-finder-1c9e42\nGOAL        (sample) implementer for T4\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T11:50:00",
+     "status": "done",
+     "result": "PR #44 open; checks pass.",
+     "branch": "sage/t4-apple-sign-in",
+     "sha": "5c4b3a2",
+     "pr": 44,
+     "sha256": "06023dcc07023f5f080240f209024285020237800302391304023aa605023c39",
+     "head": "STATUS        done\nRESULT        PR #44 open; checks pass.\nEVIDENCE      (sample) commands and outputs\nBRANCH        sage/t4-apple-sign-in · 5c4b3a2 · PR #44"
+    }
+   ],
+   "transcript": {
+    "bytes": 3047424,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a42125deffd76f4bb.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R18",
+   "t": "T4",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T11:55:00",
+   "end": "2026-10-03T12:12:00",
+   "last": null,
+   "tokens": 51000,
+   "tools": 34,
+   "model": "claude-opus-5-5",
+   "agent": "a471265cebf667182",
+   "from": [
+    "R17"
+   ],
+   "brief": {
+    "at": "2026-10-03T11:55:00",
+    "sha256": "0606fb720706fd050406f84c0506f9df0206f5260306f6b90006f2000106f393",
+    "head": "RUN         R18 T4 code-reviewer ramen-finder-1c9e42\nGOAL        (sample) code-reviewer for T4\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T12:12:00",
+     "status": "done",
+     "result": "CLEAN on 5c4b3a2.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "6b2556a36a2555106d2559c96c2558366f255cef6e255b5c7125601570255e82",
+     "head": "STATUS        done\nRESULT        CLEAN on 5c4b3a2.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 1079296,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/4f2a91c0…/subagents/agent-a471265cebf667182.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R19",
+   "t": "T4",
+   "role": "security-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T11:56:00",
+   "end": "2026-10-03T12:20:00",
+   "last": null,
+   "tokens": 66000,
+   "tools": 45,
+   "model": "claude-opus-5-5",
+   "agent": "a4812676176a1e7e5",
+   "from": [
+    "R17"
+   ],
+   "brief": {
+    "at": "2026-10-03T11:56:00",
+    "sha256": "589bc57f579bc3ec5a9bc8a5599bc712549bbf33539bbda0569bc259559bc0c6",
+    "head": "RUN         R19 T4 security-reviewer ramen-finder-1c9e42\nGOAL        (sample) security-reviewer for T4\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T12:20:00",
+     "status": "done",
+     "result": "FINDINGS (1) on 5c4b3a2.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "fab31a26fbb31bb9f8b31700f9b31893feb32072ffb32205fcb31d4cfdb31edf",
+     "head": "STATUS        done\nRESULT        FINDINGS (1) on 5c4b3a2.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 1428480,
+    "src": "~/.claude/projects/-Users-owner-workspace-ramen-finder/b71e07aa…/subagents/agent-a4812676176a1e7e5.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R20",
+   "t": "T4",
+   "role": "implementer",
+   "k": null,
+   "round": 1,
+   "chief": "4f2a91c0",
+   "status": "running",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T14:01:00",
+   "end": null,
+   "last": "2026-10-03T14:19:31",
+   "tokens": null,
+   "tools": null,
+   "model": "claude-opus-5-5",
+   "agent": "ad90f7a0d4fa5f3a5",
+   "from": [
+    "R19"
+   ],
+   "brief": {
+    "at": "2026-10-03T14:01:00",
+    "sha256": "b687693fb58767acb8876c65b7876ad2b28762f3b1876160b4876619b3876486",
+    "head": "RUN         R20 T4 implementer ramen-finder-1c9e42\nGOAL        (sample) implementer for T4\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [
+    {
+     "at": "2026-10-03T14:00:00",
+     "text": "Use an httpOnly cookie, as in T2.",
+     "sha256": "475e2b87465e29f4495e2ead485e2d1a435e253b425e23a8455e2861445e26ce"
+    }
+   ],
+   "reports": [],
+   "transcript": null,
+   "children": [
+    {
+     "type": "Explore",
+     "description": "Find the cookie helpers in src/",
+     "agent": "aa5a5417a",
+     "model": "claude-haiku-5",
+     "start": "2026-10-03T14:03:00",
+     "end": "2026-10-03T14:05:00"
+    },
+    {
+     "type": "general-purpose",
+     "description": "Run the auth tests and list failures",
+     "agent": "aa4a53fe7",
+     "model": "claude-sonnet-5",
+     "start": "2026-10-03T14:16:00",
+     "end": null
+    }
+   ]
+  },
+  {
+   "p": "ramen-finder",
+   "id": "R22",
+   "t": "T4",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "4f2a91c0",
+   "status": "waiting",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": "2026-10-03T14:02:00",
+   "start": null,
+   "end": null,
+   "last": null,
+   "tokens": null,
+   "tools": null,
+   "model": "",
+   "agent": null,
+   "from": [
+    "R20"
+   ],
+   "brief": null,
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R1",
+   "t": "T1",
+   "role": "designer",
+   "k": null,
+   "round": 0,
+   "chief": "c09d3318",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-01T15:00:00",
+   "end": "2026-10-01T15:40:00",
+   "last": null,
+   "tokens": 98000,
+   "tools": 66,
+   "model": "claude-opus-5-5",
+   "agent": "a11b066d08a419fac",
+   "from": [],
+   "brief": {
+    "at": "2026-10-01T15:00:00",
+    "sha256": "0369f7360469f8c90169f4100269f5a30769fd820869ff150569fa5c0669fbef",
+    "head": "RUN         R1 T1 designer tide-notes-8a03f5\nGOAL        (sample) designer for T1\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-01T15:40:00",
+     "status": "done",
+     "result": "Sync flow prototype; conflict screen added.",
+     "branch": "design/sync",
+     "sha": null,
+     "pr": null,
+     "sha256": "39dfa80f38dfa67c3bdfab353adfa9a235dfa1c334dfa03037dfa4e936dfa356",
+     "head": "STATUS        done\nRESULT        Sync flow prototype; conflict screen added.\nEVIDENCE      (sample) commands and outputs\nBRANCH        design/sync"
+    }
+   ],
+   "transcript": {
+    "bytes": 2095104,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/c09d3318…/subagents/agent-a11b066d08a419fac.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R2",
+   "t": "T1",
+   "role": "pe",
+   "k": null,
+   "round": 0,
+   "chief": "c09d3318",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-01T16:00:00",
+   "end": "2026-10-01T16:22:00",
+   "last": null,
+   "tokens": 61000,
+   "tools": 28,
+   "model": "claude-opus-5-5",
+   "agent": "a14b06b89584045c9",
+   "from": [
+    "R1"
+   ],
+   "brief": {
+    "at": "2026-10-01T16:00:00",
+    "sha256": "6cf7de8d6bf7dcfa6af7db6769f7d9d468f7d84167f7d6ae66f7d51b65f7d388",
+    "head": "RUN         R2 T1 pe tide-notes-8a03f5\nGOAL        (sample) pe for T1\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-01T16:22:00",
+     "status": "done",
+     "result": "GO: last-write-wins per field.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "9d89e32c9e89e4bf9f89e652a089e7e59989dce09a89de739b89e0069c89e199",
+     "head": "STATUS        done\nRESULT        GO: last-write-wins per field.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 888832,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/c09d3318…/subagents/agent-a14b06b89584045c9.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R3",
+   "t": "T1",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "c09d3318",
+   "status": "lost",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:05:00",
+   "end": null,
+   "last": "2026-10-03T13:39:12",
+   "tokens": null,
+   "tools": null,
+   "model": "claude-opus-5-5",
+   "agent": "a13b069f646bb8d46",
+   "from": [
+    "R1",
+    "R2"
+   ],
+   "brief": {
+    "at": "2026-10-03T13:05:00",
+    "sha256": "c332e558c432e6ebc532e87ec632ea11c732eba4c832ed37c932eecaca32f05d",
+    "head": "RUN         R3 T1 implementer tide-notes-8a03f5\nGOAL        (sample) implementer for T1\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R4",
+   "t": "T2",
+   "role": "designer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "question",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T12:30:00",
+   "end": "2026-10-03T13:02:00",
+   "last": null,
+   "tokens": 59000,
+   "tools": 37,
+   "model": "claude-opus-5-5",
+   "agent": "a16b06eaf3d4a1bd3",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T12:30:00",
+    "sha256": "ff026aa7fe02691401026dcd00026c3afb02645bfa0262c8fd026781fc0265ee",
+    "head": "RUN         R4 T2 designer tide-notes-8a03f5\nGOAL        (sample) designer for T2\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T13:02:00",
+     "status": "question",
+     "result": "Two export shapes; needs a product answer.",
+     "branch": "design/export",
+     "sha": null,
+     "pr": null,
+     "sha256": "279c3d2e289c3ec1259c3a08269c3b9b2b9c437a2c9c450d299c40542a9c41e7",
+     "head": "STATUS        question\nRESULT        Two export shapes; needs a product answer.\nEVIDENCE      (sample) commands and outputs\nBRANCH        design/export"
+    }
+   ],
+   "transcript": {
+    "bytes": 1174528,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/b71e07aa…/subagents/agent-a16b06eaf3d4a1bd3.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R5",
+   "t": "T3",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T12:40:00",
+   "end": "2026-10-03T13:01:00",
+   "last": null,
+   "tokens": 34000,
+   "tools": 21,
+   "model": "claude-sonnet-5",
+   "agent": "a15b06d1c1bd9fed0",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T12:40:00",
+    "sha256": "1c89eb3a1d89eccd1a89e8141b89e9a71889e4ee1989e6811689e1c81789e35b",
+    "head": "RUN         R5 T3 implementer tide-notes-8a03f5\nGOAL        (sample) implementer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T13:01:00",
+     "status": "done",
+     "result": "PR #17 open; checks pass.",
+     "branch": "sage/t3-paste-tags",
+     "sha": "77ab01e",
+     "pr": 17,
+     "sha256": "7e74d34b7d74d1b88074d6717f74d4de8274d9978174d8048474dcbd8374db2a",
+     "head": "STATUS        done\nRESULT        PR #17 open; checks pass.\nEVIDENCE      (sample) commands and outputs\nBRANCH        sage/t3-paste-tags · 77ab01e · PR #17"
+    }
+   ],
+   "transcript": {
+    "bytes": 666624,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/b71e07aa…/subagents/agent-a15b06d1c1bd9fed0.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R6",
+   "t": "T3",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:05:00",
+   "end": "2026-10-03T13:14:00",
+   "last": null,
+   "tokens": 22000,
+   "tools": 15,
+   "model": "claude-opus-5-5",
+   "agent": "a18b071d56b2f01fd",
+   "from": [
+    "R5"
+   ],
+   "brief": {
+    "at": "2026-10-03T13:05:00",
+    "sha256": "2efcec112dfcea7e2cfce8eb2bfce75832fcf25d31fcf0ca30fcef372ffceda4",
+    "head": "RUN         R6 T3 code-reviewer tide-notes-8a03f5\nGOAL        (sample) code-reviewer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T13:14:00",
+     "status": "done",
+     "result": "CLEAN on 77ab01e.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "edfcc078eefcc20beffcc39ef0fcc531f1fcc6c4f2fcc857f3fcc9eaf4fccb7d",
+     "head": "STATUS        done\nRESULT        CLEAN on 77ab01e.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 476160,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/b71e07aa…/subagents/agent-a18b071d56b2f01fd.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R11",
+   "t": "T3",
+   "role": "security-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:05:00",
+   "end": "2026-10-03T13:17:00",
+   "last": null,
+   "tokens": 27000,
+   "tools": 18,
+   "model": "claude-opus-5-5",
+   "agent": "ab9b1f4336586c3f7",
+   "from": [
+    "R5"
+   ],
+   "brief": {
+    "at": "2026-10-03T13:05:00",
+    "sha256": "cb7ab52dca7ab39ac97ab207c87ab074c77aaee1c67aad4ec57aabbbc47aaa28",
+    "head": "RUN         R11 T3 security-reviewer tide-notes-8a03f5\nGOAL        (sample) security-reviewer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T13:17:00",
+     "status": "done",
+     "result": "CLEAN on 77ab01e.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "7837c4cc7937c65f7a37c7f27b37c9857437be807537c0137637c1a67737c339",
+     "head": "STATUS        done\nRESULT        CLEAN on 77ab01e.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 571392,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/b71e07aa…/subagents/agent-ab9b1f4336586c3f7.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R7",
+   "t": "T3",
+   "role": "qa",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "running",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:20:00",
+   "end": null,
+   "last": "2026-10-03T14:05:40",
+   "tokens": null,
+   "tools": null,
+   "model": "claude-sonnet-5",
+   "agent": "a17b07042a96f492a",
+   "from": [
+    "R5",
+    "R6",
+    "R11"
+   ],
+   "brief": {
+    "at": "2026-10-03T13:20:00",
+    "sha256": "2accb43c2bccb5cf2cccb7622dccb8f526ccadf027ccaf8328ccb11629ccb2a9",
+    "head": "RUN         R7 T3 qa tide-notes-8a03f5\nGOAL        (sample) qa for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R8",
+   "t": "T5",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T10:10:00",
+   "end": "2026-10-03T10:44:00",
+   "last": null,
+   "tokens": 81000,
+   "tools": 52,
+   "model": "claude-opus-5-5",
+   "agent": "a1ab074fb79a759c7",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T10:10:00",
+    "sha256": "9315a57b9215a3e89515a8a19415a70e9715abc79615aa349915aeed9815ad5a",
+    "head": "RUN         R8 T5 implementer tide-notes-8a03f5\nGOAL        (sample) implementer for T5\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T10:44:00",
+     "status": "done",
+     "result": "PR #16 open; migration 0007 drops tags_csv.",
+     "branch": "sage/t5-tags-migration",
+     "sha": "3e9d2f0",
+     "pr": 16,
+     "sha256": "10838c9a11838e2d0e8389740f838b070c83864e0d8387e10a8383280b8384bb",
+     "head": "STATUS        done\nRESULT        PR #16 open; migration 0007 drops tags_csv.\nEVIDENCE      (sample) commands and outputs\nBRANCH        sage/t5-tags-migration · 3e9d2f0 · PR #16"
+    }
+   ],
+   "transcript": {
+    "bytes": 1650688,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/b71e07aa…/subagents/agent-a1ab074fb79a759c7.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R9",
+   "t": "T5",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T10:50:00",
+   "end": "2026-10-03T11:02:00",
+   "last": null,
+   "tokens": 27000,
+   "tools": 16,
+   "model": "claude-opus-5-5",
+   "agent": "a19b0736822b113a4",
+   "from": [
+    "R8"
+   ],
+   "brief": {
+    "at": "2026-10-03T10:50:00",
+    "sha256": "f95f13cefa5f1561f75f10a8f85f123bfd5f1a1afe5f1badfb5f16f4fc5f1887",
+    "head": "RUN         R9 T5 code-reviewer tide-notes-8a03f5\nGOAL        (sample) code-reviewer for T5\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T11:02:00",
+     "status": "done",
+     "result": "CLEAN on 3e9d2f0.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "2b267dc72a267c342d2680ed2c267f5a2726777b262675e829267aa12826790e",
+     "head": "STATUS        done\nRESULT        CLEAN on 3e9d2f0.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 507904,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/b71e07aa…/subagents/agent-a19b0736822b113a4.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "tide-notes",
+   "id": "R10",
+   "t": "T5",
+   "role": "qa",
+   "k": null,
+   "round": 0,
+   "chief": "b71e07aa",
+   "status": "blocked",
+   "noReport": false,
+   "resumed": true,
+   "resumedAt": "2026-10-03T11:32:00",
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T11:05:00",
+   "end": "2026-10-03T11:33:00",
+   "last": null,
+   "tokens": 47000,
+   "tools": 33,
+   "model": "claude-sonnet-5",
+   "agent": "ab8b1f2a0833ac614",
+   "from": [
+    "R8",
+    "R9"
+   ],
+   "brief": {
+    "at": "2026-10-03T11:05:00",
+    "sha256": "c8fd7ef8c9fd808bcafd821ecbfd83b1ccfd8544cdfd86d7cefd886acffd89fd",
+    "head": "RUN         R10 T5 qa tide-notes-8a03f5\nGOAL        (sample) qa for T5\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T11:31:00",
+     "status": "done",
+     "result": "PASS on 3e9d2f0, on a copy of staging.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "4563b8d94463b7464363b5b34263b4204963bf254863bd924763bbff4663ba6c",
+     "head": "STATUS        done\nRESULT        PASS on 3e9d2f0, on a copy of staging.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    },
+    {
+     "at": "2026-10-03T11:33:00",
+     "status": "blocked",
+     "result": "A message came after my end. I did not act on it.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "5b16dd5c5c16deef5d16e0825e16e2155716d7105816d8a35916da365a16dbc9",
+     "head": "STATUS        blocked\nRESULT        A message came after my end. I did not act on it.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 1047552,
+    "src": "~/.claude/projects/-Users-owner-workspace-tide-notes/b71e07aa…/subagents/agent-ab8b1f2a0833ac614.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R1",
+   "t": "T1",
+   "role": "pe",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T09:00:00",
+   "end": "2026-10-03T09:24:00",
+   "last": null,
+   "tokens": 70000,
+   "tools": 30,
+   "model": "claude-opus-5-5",
+   "agent": "a96f2090449a2ce00",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T09:00:00",
+    "sha256": "b8718cb2b9718e45b671898cb7718b1fb4718666b57187f9b2718340b37184d3",
+    "head": "RUN         R1 T1 pe pocket-atlas-5d71b0\nGOAL        (sample) pe for T1\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T09:24:00",
+     "status": "done",
+     "result": "Email import needs Gmail scope review; 1 finding.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "f9db0963f8db07d0fbdb0c89fadb0af6fddb0faffcdb0e1cffdb12d5fedb1142",
+     "head": "STATUS        done\nRESULT        Email import needs Gmail scope review; 1 finding.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 952320,
+    "src": "~/.claude/projects/-Users-owner-workspace-pocket-atlas/77e1a0d4…/subagents/agent-a96f2090449a2ce00.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R2",
+   "t": "T3",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T12:15:00",
+   "end": "2026-10-03T12:58:00",
+   "last": null,
+   "tokens": 75000,
+   "tools": 51,
+   "model": "claude-opus-5-5",
+   "agent": "a99f20dbda292815d",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T12:15:00",
+    "sha256": "6a116ae969116956681167c3671166306e1171356d116fa26c116e0f6b116c7c",
+    "head": "RUN         R2 T3 implementer pocket-atlas-5d71b0\nGOAL        (sample) implementer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T12:58:00",
+     "status": "done",
+     "result": "PR #9 open; checks pass.",
+     "branch": "sage/t3-legend",
+     "sha": "4d5e6f7",
+     "pr": 9,
+     "sha256": "1fcb3a5020cb3be321cb3d7622cb3f0923cb409c24cb422f25cb43c226cb4555",
+     "head": "STATUS        done\nRESULT        PR #9 open; checks pass.\nEVIDENCE      (sample) commands and outputs\nBRANCH        sage/t3-legend · 4d5e6f7 · PR #9"
+    }
+   ],
+   "transcript": {
+    "bytes": 1618944,
+    "src": "~/.claude/projects/-Users-owner-workspace-pocket-atlas/77e1a0d4…/subagents/agent-a99f20dbda292815d.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R3",
+   "t": "T3",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "running",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T14:11:00",
+   "end": null,
+   "last": "2026-10-03T14:19:02",
+   "tokens": null,
+   "tools": null,
+   "model": "claude-opus-5-5",
+   "agent": "a98f20c2a1f5a0916",
+   "from": [
+    "R2"
+   ],
+   "brief": {
+    "at": "2026-10-03T14:11:00",
+    "sha256": "3fbbe1f440bbe38741bbe51a42bbe6ad3bbbdba83cbbdd3b3dbbdece3ebbe061",
+    "head": "RUN         R3 T3 code-reviewer pocket-atlas-5d71b0\nGOAL        (sample) code-reviewer for T3\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R4",
+   "t": "T5",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "failed",
+   "noReport": true,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T12:50:00",
+   "end": "2026-10-03T13:24:00",
+   "last": null,
+   "tokens": 118000,
+   "tools": 77,
+   "model": "claude-opus-5-5",
+   "agent": "a93f2044b2c7eff2b",
+   "from": [
+    "T1/R1"
+   ],
+   "brief": {
+    "at": "2026-10-03T12:50:00",
+    "sha256": "af7fd6dbae7fd548b17fda01b07fd86eb37fdd27b27fdb94b57fe04db47fdeba",
+    "head": "RUN         R4 T5 implementer pocket-atlas-5d71b0\nGOAL        (sample) implementer for T5\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [],
+   "transcript": {
+    "bytes": 2444288,
+    "src": "~/.claude/projects/-Users-owner-workspace-pocket-atlas/77e1a0d4…/subagents/agent-a93f2044b2c7eff2b.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R5",
+   "t": "T5",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "running",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T13:30:00",
+   "end": null,
+   "last": "2026-10-03T14:18:47",
+   "tokens": null,
+   "tools": null,
+   "model": "claude-opus-5-5",
+   "agent": "a92f202b841ff6864",
+   "from": [
+    "T1/R1"
+   ],
+   "brief": {
+    "at": "2026-10-03T13:30:00",
+    "sha256": "94cf6fae95cf714192cf6c8893cf6e1b98cf75fa99cf778d96cf72d497cf7467",
+    "head": "RUN         R5 T5 implementer pocket-atlas-5d71b0\nGOAL        (sample) implementer for T5\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R6",
+   "t": "T2",
+   "role": "implementer",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "waiting",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": "2026-10-03T14:12:00",
+   "start": null,
+   "end": null,
+   "last": null,
+   "tokens": null,
+   "tools": null,
+   "model": "",
+   "agent": null,
+   "from": [],
+   "brief": null,
+   "steers": [],
+   "reports": [],
+   "transcript": null,
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R7",
+   "t": "T6",
+   "role": "pe",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T10:30:00",
+   "end": "2026-10-03T11:15:00",
+   "last": null,
+   "tokens": 132000,
+   "tools": 88,
+   "model": "claude-opus-5-5",
+   "agent": "a94f205de152c5d3a",
+   "from": [],
+   "brief": {
+    "at": "2026-10-03T10:30:00",
+    "sha256": "4627fd104727fea348280036492801c94a28035c4b2804ef4c2806824d280815",
+    "head": "RUN         R7 T6 pe pocket-atlas-5d71b0\nGOAL        (sample) pe for T6\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T11:15:00",
+     "status": "done",
+     "result": "Cause: 3 tile requests run one after another. Proposal: fetch in parallel (new task).",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "da16a3d1d916a23ed816a0abd7169f18de16aa1ddd16a88adc16a6f7db16a564",
+     "head": "STATUS        done\nRESULT        Cause: 3 tile requests run one after another. Proposal: fetch in parallel (new task).\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 2793472,
+    "src": "~/.claude/projects/-Users-owner-workspace-pocket-atlas/77e1a0d4…/subagents/agent-a94f205de152c5d3a.jsonl"
+   },
+   "children": []
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "R8",
+   "t": "T6",
+   "role": "code-reviewer",
+   "k": null,
+   "round": 0,
+   "chief": "77e1a0d4",
+   "status": "done",
+   "noReport": false,
+   "resumed": false,
+   "resumedAt": null,
+   "legacy": false,
+   "at": null,
+   "start": "2026-10-03T11:20:00",
+   "end": "2026-10-03T11:41:00",
+   "last": null,
+   "tokens": 55000,
+   "tools": 36,
+   "model": "claude-opus-5-5",
+   "agent": "a8ff1fdffc4aa1aef",
+   "from": [
+    "R7"
+   ],
+   "brief": {
+    "at": "2026-10-03T11:20:00",
+    "sha256": "3283108731830ef4348313ad3383121a2e830a3b2d8308a830830d612f830bce",
+    "head": "RUN         R8 T6 code-reviewer pocket-atlas-5d71b0\nGOAL        (sample) code-reviewer for T6\nSCOPE       the task branch only\nACCEPTANCE  (sample) see the task\nSTANDING    7 standing orders"
+   },
+   "steers": [],
+   "reports": [
+    {
+     "at": "2026-10-03T11:41:00",
+     "status": "done",
+     "result": "evidence-clean: each claim has its command and output.",
+     "branch": "",
+     "sha": null,
+     "pr": null,
+     "sha256": "aaf8420eabf843a1a8f83ee8a9f8407baef8485aaff849edacf84534adf846c7",
+     "head": "STATUS        done\nRESULT        evidence-clean: each claim has its command and output.\nEVIDENCE      (sample) commands and outputs\nBRANCH        none"
+    }
+   ],
+   "transcript": {
+    "bytes": 1142784,
+    "src": "~/.claude/projects/-Users-owner-workspace-pocket-atlas/77e1a0d4…/subagents/agent-a8ff1fdffc4aa1aef.jsonl"
+   },
+   "children": []
+  }
+ ],
+ "ledger": [
+  {
+   "p": "ramen-finder",
+   "task": "T1",
+   "kind": "checks-pass",
+   "sha": "e41d0a2",
+   "cycle": 1,
+   "run": "R1"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T1",
+   "kind": "review-clean",
+   "sha": "e41d0a2",
+   "cycle": 1,
+   "run": "R2"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T1",
+   "kind": "qa-pass",
+   "sha": "e41d0a2",
+   "cycle": 1,
+   "run": "R3"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "checks-pass",
+   "sha": "9f8e7d6",
+   "cycle": 1,
+   "run": "R6"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "findings",
+   "sha": "9f8e7d6",
+   "cycle": 1,
+   "run": "R7"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "security-clean",
+   "sha": "9f8e7d6",
+   "cycle": 1,
+   "run": "R8"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "checks-pass",
+   "sha": "a1b2c3d",
+   "cycle": 2,
+   "run": "R9"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "review-clean",
+   "sha": "a1b2c3d",
+   "cycle": 2,
+   "run": "R10"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "security-clean",
+   "sha": "a1b2c3d",
+   "cycle": 2,
+   "run": "R11"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "ux-clean",
+   "sha": "a1b2c3d",
+   "cycle": 2,
+   "run": "R12"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "kind": "qa-pass",
+   "sha": "a1b2c3d",
+   "cycle": 2,
+   "run": "R13"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T4",
+   "kind": "checks-pass",
+   "sha": "5c4b3a2",
+   "cycle": 1,
+   "run": "R17"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T4",
+   "kind": "review-clean",
+   "sha": "5c4b3a2",
+   "cycle": 1,
+   "run": "R18"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T4",
+   "kind": "findings",
+   "sha": "5c4b3a2",
+   "cycle": 1,
+   "run": "R19"
+  },
+  {
+   "p": "tide-notes",
+   "task": "T3",
+   "kind": "checks-pass",
+   "sha": "77ab01e",
+   "cycle": 1,
+   "run": "R5"
+  },
+  {
+   "p": "tide-notes",
+   "task": "T3",
+   "kind": "review-clean",
+   "sha": "77ab01e",
+   "cycle": 1,
+   "run": "R6"
+  },
+  {
+   "p": "tide-notes",
+   "task": "T3",
+   "kind": "security-clean",
+   "sha": "77ab01e",
+   "cycle": 1,
+   "run": "R11"
+  },
+  {
+   "p": "tide-notes",
+   "task": "T5",
+   "kind": "checks-pass",
+   "sha": "3e9d2f0",
+   "cycle": 1,
+   "run": "R8"
+  },
+  {
+   "p": "tide-notes",
+   "task": "T5",
+   "kind": "review-clean",
+   "sha": "3e9d2f0",
+   "cycle": 1,
+   "run": "R9"
+  },
+  {
+   "p": "tide-notes",
+   "task": "T5",
+   "kind": "qa-pass",
+   "sha": "3e9d2f0",
+   "cycle": 1,
+   "run": "R10"
+  },
+  {
+   "p": "pocket-atlas",
+   "task": "T3",
+   "kind": "checks-pass",
+   "sha": "4d5e6f7",
+   "cycle": 1,
+   "run": "R2"
+  },
+  {
+   "p": "pocket-atlas",
+   "task": "T6",
+   "kind": "evidence-clean",
+   "sha": null,
+   "cycle": 1,
+   "run": "R8"
+  }
+ ],
+ "findings": [
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "key": "saved-empty",
+   "round": 0,
+   "source": "code-reviewer",
+   "run": "R7",
+   "severity": "medium",
+   "summary": "The saved list shows a blank screen when the user has no saved shops.",
+   "triage": "fix",
+   "reason": "",
+   "status": "closed"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T2",
+   "key": "save-label",
+   "round": 1,
+   "source": "ux-reviewer",
+   "run": "R12",
+   "severity": "low",
+   "summary": "The button says “Save” after the shop is saved. “Saved” is clearer.",
+   "triage": "dismiss",
+   "reason": "The approved design (R4) uses “Save” with a filled icon, as iOS does.",
+   "status": "dismissed"
+  },
+  {
+   "p": "ramen-finder",
+   "task": "T4",
+   "key": "token-in-localstorage",
+   "round": 0,
+   "source": "security-reviewer",
+   "run": "R19",
+   "severity": "high",
+   "summary": "The session token is in localStorage, so any script on the page can read it.",
+   "triage": "fix",
+   "reason": "",
+   "status": "open"
+  },
+  {
+   "p": "pocket-atlas",
+   "task": "T1",
+   "key": "gmail-scope",
+   "round": 0,
+   "source": "pe",
+   "run": "R1",
+   "severity": "medium",
+   "summary": "Email import needs read access to each user’s Gmail. Google’s review of that access takes weeks.",
+   "triage": "ask",
+   "reason": "",
+   "status": "closed"
+  },
+  {
+   "p": "tide-notes",
+   "task": "T3",
+   "key": "paste-html",
+   "round": 0,
+   "source": "security-reviewer",
+   "run": null,
+   "severity": "low",
+   "summary": "Pasted HTML keeps inline styles. Strip them before the tag parser runs.",
+   "triage": null,
+   "reason": "",
+   "status": "open"
+  }
+ ],
+ "gates": [
+  {
+   "p": "tide-notes",
+   "id": "G1",
+   "task": "T2",
+   "question": "Export one Markdown file per note, or one .zip with all notes?",
+   "options": [
+    "One Markdown file per note",
+    "One .zip with all notes"
+   ],
+   "recommendation": "One .zip with all notes",
+   "default": "One .zip with all notes",
+   "answer": "",
+   "at": "2026-10-03T13:04:00"
+  },
+  {
+   "p": "tide-notes",
+   "id": "G2",
+   "task": "T5",
+   "question": "Drop the old column tags_csv on staging now? This cannot be undone.",
+   "options": [
+    "Drop it now",
+    "Keep it 7 more days, then drop it"
+   ],
+   "recommendation": "Keep it 7 more days: QA passed on a copy of staging, and a week of real use costs nothing",
+   "default": "none: the migration waits",
+   "answer": "",
+   "at": "2026-10-03T11:34:00"
+  },
+  {
+   "p": "pocket-atlas",
+   "id": "G1",
+   "task": "T1",
+   "question": "Email import needs a Gmail scope review that takes weeks. Keep it?",
+   "options": [
+    "Keep email import",
+    "Import from a shared link instead"
+   ],
+   "recommendation": "Import from a shared link instead",
+   "default": "Import from a shared link instead",
+   "answer": "Import from a shared link instead",
+   "at": "2026-10-03T09:26:00"
+  }
+ ],
+ "decisions": [
+  {
+   "p": "ramen-finder",
+   "at": "2026-09-30T10:00:00",
+   "task": "T1",
+   "decision": "framed small; route build, code-review, qa",
+   "why": ""
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-01T09:10:00",
+   "task": "T1",
+   "decision": "state merged",
+   "why": "the user merged PR #38"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-02T09:05:00",
+   "task": "T2",
+   "decision": "framed large, risk data",
+   "why": "a new table for saved shops"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-02T12:15:00",
+   "task": "T2",
+   "decision": "saved-empty: fix; round 1",
+   "why": "a real bug on first use"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-02T13:32:00",
+   "task": "T2",
+   "decision": "save-label: dismiss",
+   "why": "the approved design says “Save”"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-02T14:03:00",
+   "task": "T2",
+   "decision": "state pr-ready",
+   "why": "every verdict passes on a1b2c3d"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-03T13:15:00",
+   "task": "T3",
+   "decision": "added arena",
+   "why": "the layout depends on feel"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-03T13:41:00",
+   "task": "T3",
+   "decision": "stopped R16 (candidate 3)",
+   "why": "it redesigned the map, which is out of scope"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-03T12:22:00",
+   "task": "T4",
+   "decision": "token-in-localstorage: fix; round 1",
+   "why": "high severity, auth"
+  },
+  {
+   "p": "ramen-finder",
+   "at": "2026-10-03T14:00:00",
+   "task": "T4",
+   "decision": "steer to R20: httpOnly cookie",
+   "why": "same pattern as T2"
+  },
+  {
+   "p": "tide-notes",
+   "at": "2026-10-01T14:55:00",
+   "task": "T1",
+   "decision": "framed large, risk data",
+   "why": ""
+  },
+  {
+   "p": "tide-notes",
+   "at": "2026-10-03T13:04:00",
+   "task": "T2",
+   "decision": "gate G1 opened",
+   "why": "R4 asked a product question"
+  },
+  {
+   "p": "tide-notes",
+   "at": "2026-10-03T12:38:00",
+   "task": "T3",
+   "decision": "framed small, risk input",
+   "why": "paste is user input"
+  },
+  {
+   "p": "tide-notes",
+   "at": "2026-10-03T14:10:00",
+   "task": "T4",
+   "decision": "framed small",
+   "why": "no free slot yet"
+  },
+  {
+   "p": "tide-notes",
+   "at": "2026-10-03T11:34:00",
+   "task": "T5",
+   "decision": "gate G2 opened",
+   "why": "the next step cannot be undone"
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T09:26:00",
+   "task": "T1",
+   "decision": "gate G1 opened",
+   "why": "gmail-scope needs the user"
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T10:03:00",
+   "task": "T1",
+   "decision": "state replan",
+   "why": "the user chose import from a shared link"
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T14:12:00",
+   "task": "T2",
+   "decision": "brief ready for R6",
+   "why": "waits for a free slot"
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T12:10:00",
+   "task": "T3",
+   "decision": "framed small",
+   "why": ""
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-01T09:12:00",
+   "task": "T4",
+   "decision": "state abandoned",
+   "why": "the shared link in T1 replaces it"
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T13:28:00",
+   "task": "T5",
+   "decision": "framed large, risk data",
+   "why": ""
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T13:29:00",
+   "task": "T5",
+   "decision": "R4 ended with no report; started R5",
+   "why": "the transcript ends in a test loop"
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T10:25:00",
+   "task": "T6",
+   "decision": "framed investigate",
+   "why": "the map takes 6 s on 4G"
+  },
+  {
+   "p": "pocket-atlas",
+   "at": "2026-10-03T11:42:00",
+   "task": "T6",
+   "decision": "state concluded",
+   "why": "evidence review clean; the fix is a new task"
+  }
+ ]
+}
