@@ -1351,6 +1351,17 @@ test("F-R86-3: after an accepted tasks repair, the merge check on an old SHA nam
   assert.equal(s.ok("merge-check", "--sha", next), "T2 may merge: 1 clean cycle on this SHA");
 });
 
+test("F-T46-1: a task id in a path or a title is not an id, so the next task after a tasks repair is T2, not T10", () => {
+  const home = mkdtempSync(join(tmpdir(), "h-T9-"));
+  const s = store(home, "p-T9-");
+  s.ok("task", "add", "--title", "fix T7", "--size", "tiny");
+  s.ok("run", "add", "T1", "--role", "qa"); // a row that still names T1 after the loss
+  writeFileSync(join(s.dir, "tasks.tsv"), "");
+  s.ok("logbook", "repair", "--accept-loss", "tasks");
+  assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /-T9-/, "a decision row holds the logbook path");
+  assert.equal(s.ok("task", "add", "--title", "u T8", "--size", "tiny"), "T2 framed · tiny · route build");
+});
+
 test("F-R86-2: a zero-width joiner or non-joiner between two letters stays, so Persian and Indic text keeps its shape; elsewhere it goes", () => {
   const s = store();
   const kept = "می‌خواهم क्‍ष क्‌ष 👩‍💻"; // ZWNJ in a Persian word, ZWJ and ZWNJ after a virama, ZWJ between emoji
