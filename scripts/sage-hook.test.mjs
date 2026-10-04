@@ -320,7 +320,7 @@ const firstSession = (env = {}) => {
   return s;
 };
 const CREATE = `gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`;
-const LOCK = "After this, sage turns on branch protection so that main changes only through pull requests.";
+const LOCK = "After this, sage tries to turn on branch protection for main (GitHub offers it for public repos, and for private repos on paid plans).";
 const ASKED = `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 12 files: "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10" and 2 more. The user must approve it. ${LOCK}`;
 const asked = (out) => (out?.hookSpecificOutput?.permissionDecision === "ask" ? out.hookSpecificOutput.permissionDecisionReason : undefined);
 const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
@@ -341,7 +341,7 @@ test("the first creation of main on GitHub, in the one gh api form, asks the use
     assert.equal(asked(s.send(bash(command))), ASKED, command);
   }
   s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: [] } } });
-  assert.equal(asked(s.send(bash(CREATE.replace("heads/main", "heads/master")))), `sage: this is the first creation of master on github.com/o/r: GitHub has no master, and commit ${ROOT_SHA} is one root commit with 0 files. The user must approve it. After this, sage turns on branch protection so that master changes only through pull requests.`);
+  assert.equal(asked(s.send(bash(CREATE.replace("heads/main", "heads/master")))), `sage: this is the first creation of master on github.com/o/r: GitHub has no master, and commit ${ROOT_SHA} is one root commit with 0 files. The user must approve it. After this, sage tries to turn on branch protection for master (GitHub offers it for public repos, and for private repos on paid plans).`);
 });
 
 test("the exact form is refused when GitHub does not show a first creation at one root commit (T24 REPLACE-GRAFTS, TAG-OR-SHALLOW-AS-ROOT, UPLOAD-CONFIG-REDIRECT)", () => {
@@ -459,15 +459,19 @@ test("only the exact gh api form from the main session can ask; every other form
   assert.deepEqual(near.filter((command) => !refused.includes(command)), prefixed, "every near form keeps the old refusal; the push rule does not yet read gh api behind a prefix (T20)");
 });
 
-test("the chief's lock step, branch protection and its read-back, is in sage mode's context and the hook lets it run (T24 G15)", () => {
+test("the chief's lock step, branch protection and its read-back for main or master, is in sage mode's context and the hook lets it run (T24 G15, T29 LOCK-MASTER, READBACK-FIELDS)", () => {
   const s = session();
   const on = context(s.send(prompt("sage mode")));
-  const put = /^ *(gh api --hostname github\.com -X PUT repos\/<owner>\/<repo>\/branches\/main\/protection --input - <<'EOF'\n[\s\S]*?\n *EOF)$/m.exec(on)?.[1];
-  const get = /`(gh api --hostname github\.com repos\/<owner>\/<repo>\/branches\/main\/protection)`/.exec(on)?.[1];
+  const put = /^ *(gh api --hostname github\.com -X PUT repos\/<owner>\/<repo>\/branches\/<branch>\/protection --input - <<'EOF'\n[\s\S]*?\n *EOF)$/m.exec(on)?.[1];
+  const get = /`(gh api --hostname github\.com repos\/<owner>\/<repo>\/branches\/<branch>\/protection)`/.exec(on)?.[1];
   assert.ok(put && get, "the chief's instructions give the protection command and its read-back");
   const body = JSON.parse(put.split("\n")[1]);
   assert.deepEqual(body, { required_pull_request_reviews: { required_approving_review_count: 0 }, enforce_admins: true, allow_force_pushes: false, allow_deletions: false, required_status_checks: null, restrictions: null });
-  for (const command of [put, get]) assert.equal(s.send(bash(command.replaceAll("<owner>/<repo>", "o/r").replace(/^ +/gm, ""))), undefined, command);
+  const fields = [...on.matchAll(/^ *- `([a-z_.]+)`: (true|false|0)$/gm)].map(([, field, value]) => [field, value]);
+  assert.deepEqual(fields, [["enforce_admins.enabled", "true"], ["allow_force_pushes.enabled", "false"], ["allow_deletions.enabled", "false"], ["required_pull_request_reviews.required_approving_review_count", "0"]], "the read-back names the four fields and their values");
+  for (const branch of ["main", "master"]) {
+    for (const command of [put, get]) assert.equal(s.send(bash(command.replaceAll("<owner>/<repo>", "o/r").replaceAll("<branch>", branch).replace(/^ +/gm, ""))), undefined, command);
+  }
 });
 
 test("a git upload of main gets the old refusal and names the gh api form (T24)", () => {

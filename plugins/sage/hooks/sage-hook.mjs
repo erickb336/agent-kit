@@ -213,7 +213,7 @@ const longOption = (word, names) => {
 const FORCE = "sage mode never force-pushes. Push a new commit instead.";
 /** The one command that can create main or master (firstUpload). */
 const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
-const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief turns on branch protection for main.)`;
+const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief tries to turn on branch protection for that branch.)`;
 
 /** Why the git push at words[git] is not the push form, or undefined. dir is where the command runs. */
 function pushForm(words, git, dir) {
@@ -357,7 +357,7 @@ function firstCreation({ owner, repo, branch, sha }) {
     const more = top.length > 10 ? ` and ${t.truncated ? "more" : `${top.length - 10} more`}` : t.truncated ? " and more" : "";
     const names = top.length ? `: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
     const count = `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}`;
-    return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it. After this, sage turns on branch protection so that ${branch} changes only through pull requests.` };
+    return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it. After this, sage tries to turn on branch protection for ${branch} (GitHub offers it for public repos, and for private repos on paid plans).` };
   } catch (e) {
     return no(`the check on GitHub failed (${e.message})`);
   }
