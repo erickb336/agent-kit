@@ -84,14 +84,14 @@ test("npm run check passes when the word is quoted, in a code span, in a code bl
 test("npm run build makes the dictionary skill and the README's word table from writing/dictionary.md", () => {
   const c = copy();
   const source = c.read("writing/dictionary.md");
-  c.write("writing/dictionary.md", source.replace("kept on the owner's Mac. |", "kept on the owner's computer. |").replace("**Flagged:** store,", "**Flagged:** store, ledger book,"));
+  c.write("writing/dictionary.md", source.replace("kept on the owner's Mac. |", "kept on the owner's computer. |").replace("**Flagged:** store,", "**Flagged:** store, ledger book (say logbook),"));
   assert.equal(c.run("check").status, 1, "the generated files are out of date before the build");
   assert.equal(c.run("build").status, 0);
   assert.match(c.read("plugins/sage/skills/dictionary/SKILL.md"), /\| \*\*logbook\*\* \| .*kept on the owner's computer\. \| store, database \|/);
   assert.match(c.read("README.md"), /\n\| \*\*Logbook\*\* \| .*kept on the owner's computer\. \|\n/);
   assert.equal(c.run("check").status, 0, c.run("check").stderr);
   c.agent("Write it in the ledger book.");
-  assert.match(c.run("check").stderr, /qa\.md:\d+: "ledger book" is a flagged word/);
+  assert.match(c.run("check").stderr, /qa\.md:\d+: "ledger book" is a flagged word; say logbook/);
 });
 
 test("npm run check fails when the README's word table is edited by hand", () => {
@@ -195,4 +195,35 @@ test("a merge gate is a merge check: a gate is a question for the owner", () => 
     { line: 1, word: "merge gate", use: ["merge check"] },
     { line: 2, word: "merge-gates", use: ["merge check"] },
   ]);
+});
+
+// Round 2: the findings of the second review cycle on pull request #7, each with the reviewers' inputs.
+
+/** The body of writing/dictionary.md with one edit. */
+const edited = (from, to) => parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8").replace(from, to), "dictionary").body;
+const NO_LIST = "writing/dictionary.md: the check needs its flagged words, on one line: **Flagged:** word, word, …";
+
+test("a flagged list that is missing or empty is refused with one line; a flagged word is matched as it is written", () => {
+  assert.throws(() => checkWords(edited(/\*\*Flagged:\*\*.*\n/, "")), { message: NO_LIST });
+  assert.throws(() => checkWords(edited(/\*\*Flagged:\*\*.*\n/, "**Flagged:**\n")), { message: NO_LIST });
+  const d = checkWords(edited("**Flagged:** store,", "**Flagged:** store, c++ (say C plus plus), a.k.a (say also), to-do (say task),"));
+  assert.deepEqual(flaggedWords("An aXkXa note; a todo; c++ and a.k.a.", d).map(({ word }) => word), ["todo", "c++", "a.k.a"]);
+});
+
+test("npm run build and npm run check refuse a dictionary that the check cannot use, with one line that names the row", () => {
+  const c = copy();
+  const source = c.read("writing/dictionary.md");
+  for (const [from, to, problem] of [
+    [/\*\*Flagged:\*\*.*\n/, "", NO_LIST.slice("writing/dictionary.md: ".length)],
+    [/\*\*Flagged:\*\*.*\n/, "**Flagged:**\n", NO_LIST.slice("writing/dictionary.md: ".length)],
+    ["| **logbook** |", "| **task** | A duplicate row. | chore |\n| **logbook** |", 'the word "task" has two rows; keep one'],
+    ["**Flagged:** store,", "**Flagged:** store, task,", 'the row "task" has a flagged word, "task"; take it out of the Flagged line'],
+    ["**Flagged:** store,", "**Flagged:** store, quux,", 'the flagged word "quux" has no word to say; put it in the "Do not say" column of a row, or write "quux (say …)" in the Flagged line'],
+  ]) {
+    c.write("writing/dictionary.md", source.replace(from, to));
+    for (const script of ["build", "check"]) {
+      const r = c.run(script);
+      assert.deepEqual([r.status, r.stderr], [1, `✗ writing/dictionary.md: ${problem}\n`], `${script}: ${to}`);
+    }
+  }
 });

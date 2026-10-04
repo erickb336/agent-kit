@@ -21,16 +21,26 @@ export function withWordTable(readme, table) {
   return `${readme.slice(0, i + TABLE_START.length)}\n\n${table}\n\n${readme.slice(j)}`;
 }
 
-/** A flagged word as a pattern: a hyphen, a space or a line break between its parts, or none. */
-const pattern = (w) => w.replace(/[- ]/g, "(?:-|\\s+)?");
-/** The check's words: the flagged words, the allowed names, and for each flagged word the approved words to use. */
+/** A flagged word as a pattern: its characters as they are, and a hyphen, a space or a line break between its parts, or none. */
+const pattern = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[- ]/g, "(?:-|\\s+)?");
+/** The check's words: the flagged words, the allowed names, and for each flagged word the approved words to use. It
+ * refuses a dictionary that the check cannot use, with one line that names the row, so that build and check stop. */
 export function checkWords(body) {
-  const list = (key) => (new RegExp(`^\\*\\*${key}:\\*\\*\\s*(.+)$`, "m").exec(body)?.[1] ?? "").split(", ").map((s) => /^(.+?)(?: \((.*)\))?$/.exec(s.trim())).filter(Boolean);
+  // A list is the rest of its one line: "**Flagged:** word, word (note), …".
+  const list = (key) => (new RegExp(`^\\*\\*${key}:\\*\\*(.*)$`, "m").exec(body)?.[1] ?? "").split(",").map((s) => /^(.+?)(?: \((.*)\))?$/.exec(s.trim())).filter(Boolean);
   const flagged = list("Flagged");
   const said = (f) => rows(body, "Words").filter(([, , not]) => not.split(/[,;]/).some((n) => n.trim().replace(/ \(.*$/, "") === f)).map(([w]) => w);
   // A flagged word that no word replaces names its replacement itself: "merge gate (say merge check)".
   const use = new Map(flagged.map(([, f, note]) => [f, note?.startsWith("say ") ? [note.slice(4)] : said(f)]));
-  return { words: flagged.map(([, f]) => f), allowed: list("Allowed names").map(([, n]) => n), use };
+  const words = { words: flagged.map(([, f]) => f), allowed: list("Allowed names").map(([, n]) => n), use };
+  const refuse = (problem) => { throw new Error(`writing/dictionary.md: ${problem}`); };
+  if (!words.words.length) refuse("the check needs its flagged words, on one line: **Flagged:** word, word, …");
+  const approved = [...rows(body, "Words"), ...rows(body, "Names")].map(([w]) => w);
+  const twice = approved.find((w, i) => approved.findIndex((v) => v.toLowerCase() === w.toLowerCase()) < i);
+  if (twice) refuse(`the word "${twice}" has two rows; keep one`);
+  for (const w of approved) for (const { word } of flaggedWords(w, words)) refuse(`the row "${w}" has a flagged word, "${word}"; take it out of the Flagged line`);
+  for (const [f, say] of use) if (!say.length) refuse(`the flagged word "${f}" has no word to say; put it in the "Do not say" column of a row, or write "${f} (say …)" in the Flagged line`);
+  return words;
 }
 
 /** The text of a one-line YAML value, without its quotes. It reads any escape and never throws: a double-quoted

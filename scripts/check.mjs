@@ -119,7 +119,8 @@ for (const name of new Set([...drawn.keys()].map((f) => f.replace(/-(light|dark)
 
 // sage's words (writing/dictionary.md): no flagged word in the text that a person reads. The generated skills are left
 // out: their words come from the principles, pstack and the dictionary itself. Code is left out too: its names stay.
-const dictionary = checkWords(parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8"), "writing/dictionary.md").body);
+let dictionary;
+try { dictionary = checkWords(parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8"), "writing/dictionary.md").body); } catch (e) { problems.push(e.message); }
 const readByPeople = [
   ...agents.map((f) => `plugins/sage/agents/${f}`),
   ...readdirSync(skillsDir).map((d) => `plugins/sage/skills/${d}/SKILL.md`).filter((f) => existsSync(join(ROOT, f)) && !readFileSync(join(ROOT, f), "utf8").includes(GENERATED)),
@@ -127,7 +128,7 @@ const readByPeople = [
   "docs/design/sage-mode.html",
   ...readdirSync(join(ROOT, "docs/assets")).filter((f) => f.endsWith(".svg")).map((f) => `docs/assets/${f}`),
 ];
-for (const f of readByPeople) {
+for (const f of dictionary ? readByPeople : []) {
   const found = flaggedWords(readFileSync(join(ROOT, f), "utf8"), dictionary, { html: !f.endsWith(".md") });
   // A graphic's text comes from scripts/graphics.mjs, and nobody edits an SVG by hand.
   for (const h of found) problems.push(`${f}:${h.line}: "${h.word}" is a flagged word${h.use.length ? `; say ${h.use.join(" or ")}` : ""} (writing/dictionary.md)${f.startsWith("docs/assets/") ? "; fix it in scripts/graphics.mjs, then run npm run graphics" : ""}`);
@@ -142,5 +143,6 @@ try {
 const core = readFileSync(join(ROOT, "instructions/core.md"), "utf8");
 if (Buffer.byteLength(core) > 8 * 1024) problems.push(`instructions/core.md: ${Buffer.byteLength(core)} bytes; keep it under 8 KiB (Codex shares a 32 KiB budget with each project's AGENTS.md)`);
 
-if (problems.length) { console.error(problems.map((p) => `✗ ${p}`).join("\n")); process.exit(1); }
+// The build reads the dictionary too, so a problem in it comes twice: report it once.
+if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }
 console.log("✓ all checks pass");

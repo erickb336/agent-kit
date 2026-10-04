@@ -9,7 +9,7 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withWordTable, wordTable } from "./dictionary.mjs";
+import { checkWords, withWordTable, wordTable } from "./dictionary.mjs";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILLS = join(ROOT, "plugins/sage/skills");
@@ -68,6 +68,7 @@ export function outputs() {
   const w = parseSource(readFileSync(join(ROOT, "writing/ste-80.md"), "utf8"), "writing/ste-80.md");
   out.set("plugins/sage/skills/writing-standard/SKILL.md", skill("writing-standard", `${w.meta.name}. Apply to ${w.meta.applyWhen}`, w.meta.source, `# ${w.meta.name}\n\n${w.body}`));
   const d = parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8"), "writing/dictionary.md");
+  checkWords(d.body); // a dictionary that the check cannot use stops the build
   out.set("plugins/sage/skills/dictionary/SKILL.md", skill("dictionary", `${d.meta.name}: sage's approved words, one meaning each, and the words not to say. Apply to ${d.meta.applyWhen} Claude Code only.`, d.meta.source, `# ${d.meta.name}\n\n${d.body}`));
   out.set("README.md", withWordTable(readFileSync(join(ROOT, "README.md"), "utf8"), wordTable(d.body)));
   const p = parseSource(readFileSync(join(ROOT, "preferences/working-preferences.md"), "utf8"), "preferences/working-preferences.md");
