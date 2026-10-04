@@ -7,7 +7,7 @@
 // Several chief sessions may share one store: each command that changes it holds the store's lock (withLock).
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,11 +100,30 @@ function valid(key, value) {
   return Object.hasOwn(COUNTS, key) && /^[1-9]\d*$/.test(String(value)) ? Number(value) : undefined;
 }
 
-/** The settings for all projects. The hooks call this, so it never throws: a missing, torn or bad value gives its default. */
+/**
+ * The text of a regular file, or undefined when nothing is there or something else is: a FIFO, a device, a folder or a
+ * link. It never blocks: the open does not wait for a FIFO's writer, and the check is on the open file, not on the path.
+ */
+function readRegular(path) {
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  } catch (e) {
+    if (e.code === "ENOENT" || e.code === "ELOOP") return undefined; // ELOOP: a link
+    throw e;
+  }
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd, "utf8") : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, or a config.json that is not a regular file, gives the defaults. */
 export function config(env = process.env) {
   let saved = {};
   try {
-    saved = JSON.parse(readFileSync(join(sageRoot(env), "config.json"), "utf8")) ?? {};
+    saved = JSON.parse(readRegular(join(sageRoot(env), "config.json"))) ?? {}; // undefined does not parse: the defaults
   } catch {}
   return Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, saved[k]) ?? d]));
 }
@@ -118,9 +137,9 @@ function put(file, text) {
 const cell = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ").trim();
 
 function read(dir, table) {
-  const f = join(dir, `${table}.tsv`);
-  if (!existsSync(f)) return [];
-  const [head, ...lines] = readFileSync(f, "utf8").split("\n").filter(Boolean);
+  const text = readRegular(join(dir, `${table}.tsv`));
+  if (!text) return [];
+  const [head, ...lines] = text.split("\n").filter(Boolean);
   const cols = head.split("\t");
   return lines.map((line) => {
     const v = line.split("\t");
@@ -134,8 +153,14 @@ function write(dir, table, rows) {
 }
 
 const now = () => new Date().toISOString().slice(0, 19) + "Z";
-/** The highest number after the prefix, plus 1. A row lost before the lock came cannot make an id that is in use. */
-const nextId = (ids, prefix) => `${prefix}${Math.max(0, ...ids.filter((i) => i.startsWith(prefix)).map((i) => Number(i.slice(prefix.length)) || 0)) + 1}`;
+/**
+ * The highest whole number after the prefix, plus 1, so a new id is never one in use, also after a lost row. Only digits
+ * count ("Infinity" does not), and BigInt keeps a long number exact.
+ */
+const nextId = (ids, prefix) => {
+  const used = ids.map((i) => i.slice(prefix.length)).filter((n, k) => ids[k].startsWith(prefix) && /^\d+$/.test(n));
+  return `${prefix}${used.reduce((max, n) => (BigInt(n) > max ? BigInt(n) : max), 0n) + 1n}`;
+};
 const list = (s) => (s ? s.split(",").map((x) => x.trim()).filter(Boolean) : []);
 
 function parse(args) {
@@ -163,34 +188,50 @@ function move(task, to) {
   task.state = to;
 }
 
+/** Why sha cannot name a commit in the ledger, or "". A short SHA could match another commit with the same prefix. */
+const notFull = (sha) => (/^[0-9a-f]{40}$/.test(sha) ? "" : `${JSON.stringify(sha)} is not a full commit SHA: a short one can match another commit. Give all 40 characters: git rev-parse <branch>.`);
+
+/** Does one task have the clean cycles its route needs on one SHA? rows are only that task's ledger rows for the SHA. */
+function judge(dir, id, rows, cycles) {
+  const task = read(dir, "tasks").find((t) => t.id === id);
+  if (!task) return { ok: false, reason: `the ledger names task ${id}, which does not exist` };
+  const open = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
+  if (open.length) return { ok: false, reason: `${task.id} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
+  const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
+  if (bad) return { ok: false, reason: `${task.id}: cycle ${bad.cycle} found problems on this SHA (${bad.kind}). Repair, then review the new SHA.` };
+  if (!rows.some((r) => r.kind === "checks-pass")) return { ok: false, reason: `${task.id}: no checks-pass on this SHA.` };
+  const perCycle = list(task.route).map((b) => VERDICT[b]).filter((k) => k && k !== "checks-pass");
+  const want = perCycle.length ? cycles : 1;
+  const clean = perCycle.length ? [...new Set(rows.map((r) => r.cycle))].filter((c) => perCycle.every((k) => rows.some((r) => r.cycle === c && r.kind === k))).length : 1;
+  if (clean < want) {
+    const missing = perCycle.filter((k) => !rows.some((r) => r.kind === k));
+    return { ok: false, reason: `${task.id}: ${clean} of ${want} clean cycles on this SHA${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}.` };
+  }
+  return { ok: true, reason: `${task.id} may merge: ${clean} clean cycle${clean === 1 ? "" : "s"} on this SHA` };
+}
+
 /**
- * The judgment of the merge gate: does this head SHA have the clean cycles its route needs? Searches every project's
- * ledger for the SHA. One clean cycle makes a task verified; an autopilot merge wants autopilot_cycles of them.
+ * The judgment of the merge gate: may this head SHA merge? Every task that has verdicts on the full SHA, in every
+ * project's store, must pass on its own rows, so no other store or task can lend its verdicts. An autopilot merge wants
+ * autopilot_cycles clean cycles. The hook calls this, so it never throws: a store that it cannot read refuses the merge.
  */
 export function mergeCheck(sha, env = process.env, cycles = config(env).autopilot_cycles) {
-  const root = sageRoot(env);
-  const same = (a) => a && (a.startsWith(sha) || sha.startsWith(a)) && Math.min(a.length, sha.length) >= 7;
-  const dirs = existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(root, d.name)) : [];
-  for (const dir of dirs) {
-    const rows = read(dir, "ledger").filter((r) => same(r.sha));
-    if (!rows.length) continue;
-    const task = read(dir, "tasks").find((t) => t.id === rows[0].task);
-    if (!task) return { ok: false, reason: `the ledger names task ${rows[0].task}, which does not exist` };
-    const open = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
-    if (open.length) return { ok: false, reason: `${task.id} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
-    const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
-    if (bad) return { ok: false, reason: `${task.id}: cycle ${bad.cycle} found problems on this SHA (${bad.kind}). Repair, then review the new SHA.` };
-    if (!rows.some((r) => r.kind === "checks-pass")) return { ok: false, reason: `${task.id}: no checks-pass on this SHA.` };
-    const perCycle = list(task.route).map((b) => VERDICT[b]).filter((k) => k && k !== "checks-pass");
-    const want = perCycle.length ? cycles : 1;
-    const clean = perCycle.length ? [...new Set(rows.map((r) => r.cycle))].filter((c) => perCycle.every((k) => rows.some((r) => r.cycle === c && r.kind === k))).length : 1;
-    if (clean < want) {
-      const missing = perCycle.filter((k) => !rows.some((r) => r.kind === k));
-      return { ok: false, reason: `${task.id}: ${clean} of ${want} clean cycles on this SHA${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}.` };
-    }
-    return { ok: true, task: task.id, reason: `${task.id} may merge: ${clean} clean cycle${clean === 1 ? "" : "s"} on this SHA` };
+  if (notFull(sha)) return { ok: false, reason: notFull(sha) };
+  try {
+    const root = sageRoot(env);
+    const dirs = existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(root, d.name)).sort() : [];
+    const each = dirs.flatMap((dir) => {
+      const rows = read(dir, "ledger").filter((r) => r.sha === sha);
+      return [...new Set(rows.map((r) => r.task))].map((id) => ({ store: basename(dir), id, ...judge(dir, id, rows.filter((r) => r.task === id), cycles) }));
+    });
+    if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
+    if (each.length === 1) return each[0];
+    const all = `${each.length} tasks have verdicts on ${sha.slice(0, 7)} (${each.map((r) => `${r.store} ${r.id}`).join(", ")}), and each must pass`;
+    const bad = each.find((r) => !r.ok);
+    return bad ? { ok: false, reason: `${all}. ${bad.store} ${bad.reason}` } : { ok: true, reason: `${all}: ${each.map((r) => `${r.store} ${r.reason}`).join("; ")}` };
+  } catch (e) {
+    return { ok: false, reason: `the merge gate could not read the stores in ${sageRoot(env)}: ${e.message}` };
   }
-  return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
 }
 
 /** The status lines. With save, also status.md: only a command that holds the lock saves, so status.md never lags. */
@@ -274,6 +315,7 @@ function act(cmd, pos, opt, dir, env) {
         const risk = list(opt.risk);
         const odd = [...risk.filter((r) => !RISKS.includes(r)), ...list(opt.add).filter((b) => !BLOCKS.includes(b))];
         if (odd.length) refuse(`unknown: ${odd.join(", ")}. Risks: ${RISKS.join(", ")}. Blocks: ${BLOCKS.join(", ")}`);
+        if (size === "investigate" && list(opt.add).includes("build")) refuse("an investigation changes no code, so it takes no build block. Frame the build as its own task: sage task add --size tiny, small or large");
         const why = opt.add ? need(opt.why, "--why for the added blocks") : ""; // refuse before anything is written
         const blocks = new Set([...SIZES[size], ...(risk.length && size !== "investigate" ? ["security-review"] : []), ...list(opt.add)]);
         const route = BLOCKS.filter((b) => blocks.has(b)); // the blocks in their order
@@ -300,8 +342,9 @@ function act(cmd, pos, opt, dir, env) {
               refuse(`${task.id} needs a clean evidence review as its latest verdict: sage verdict ${task.id} --kind evidence-clean --run <R>`);
             }
             if (v === "verified") {
-              const head = read(dir, "ledger").filter((r) => r.task === task.id).at(-1)?.sha ?? refuse(`${task.id} has no verdicts yet`);
-              const r = mergeCheck(head, env, 1);
+              const rows = read(dir, "ledger").filter((r) => r.task === task.id);
+              const head = rows.at(-1)?.sha ?? refuse(`${task.id} has no verdicts yet`);
+              const r = judge(dir, task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
           } else if (["branch", "pr", "title"].includes(k)) task[k] = v;
@@ -366,7 +409,7 @@ function act(cmd, pos, opt, dir, env) {
         if (!["high", "medium", "low"].includes(severity)) refuse("severity is high, medium or low");
         const key = opt.key ?? nextId(findings.filter((f) => f.task === task.id).map((f) => f.key), `F-${task.id}-`);
         const again = findings.find((f) => f.task === task.id && f.key === key);
-        if (again) Object.assign(again, { status: "open", triage: "", round: task.round }); // it came back
+        if (again) Object.assign(again, { status: "open", triage: "", round: task.round, severity }); // it came back
         else findings.push({ task: task.id, key, round: task.round, source: need(opt.source, "--source"), severity, summary: need(opt.summary, "--summary"), status: "open" });
         write(dir, "findings", findings);
         return `${key} open${again ? " again" : ""} · ${severity} · ${task.id}`;
@@ -391,7 +434,7 @@ function act(cmd, pos, opt, dir, env) {
       // A route without build has no commit to judge. Its rows have no SHA, so the merge gate never reads them.
       const sha = list(task.route).includes("build") ? need(opt.sha, "--sha") : "";
       if (!sha && opt.sha) refuse(`${task.id} has no build block, so its verdicts name no commit: leave out --sha`);
-      if (sha && !/^[0-9a-f]{7,40}$/.test(sha)) refuse("--sha is a git commit SHA");
+      if (sha && notFull(sha)) refuse(notFull(sha));
       if (opt.pr) task.pr = opt.pr;
       write(dir, "tasks", tasks);
       write(dir, "ledger", [...read(dir, "ledger"), { task: task.id, pr: task.pr, sha, kind, cycle: opt.cycle ?? "1", run: opt.run ?? "", at: now() }]);
@@ -436,14 +479,21 @@ function act(cmd, pos, opt, dir, env) {
 const LOCK_WAIT_MS = 3000;
 const BOOT = Date.now() - uptime() * 1000;
 const START = Date.now() - process.uptime() * 1000;
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-function holder(lock) {
+/**
+ * The owner of a lock folder (.lock, or a waiter's temp folder), with its file name from the folder, never from the
+ * record. Undefined when the folder is gone or is not a real folder, or does not hold exactly one regular <uuid>.json
+ * file: nobody removes such a lock but a person.
+ */
+function holder(folder) {
   try {
-    const [file] = readdirSync(lock);
-    return { file, ...JSON.parse(readFileSync(join(lock, file), "utf8")) };
+    const names = lstatSync(folder).isDirectory() ? readdirSync(folder) : [];
+    if (names.length !== 1 || !new RegExp(`^${UUID}\\.json$`).test(names[0])) return undefined;
+    return { ...JSON.parse(readRegular(join(folder, names[0]))), file: names[0] };
   } catch {
-    return undefined; // released between the two reads, or not an owner file
+    return undefined; // released between the reads, or not an owner record
   }
 }
 
@@ -464,49 +514,56 @@ function gone(h, checkStart) {
   }
 }
 
+/** Removes a lock folder by its owner file's name, then the folder, which must then be empty. False if either fails. */
+function clear(folder, file) {
+  try {
+    unlinkSync(join(folder, file));
+    rmdirSync(folder);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Runs fn while this process holds the store's lock. Refuses, with nothing changed, when the store stays busy. */
 export function withLock(dir, fn) {
   const lock = join(dir, ".lock");
-  const me = { pid: process.pid, host: hostname(), boot: BOOT, start: START, at: Date.now(), token: randomUUID() };
-  const tmp = `${lock}.${me.token}`;
+  const token = randomUUID();
+  const tmp = `${lock}.${token}`;
   mkdirSync(tmp);
-  writeFileSync(join(tmp, `${me.token}.json`), JSON.stringify(me));
+  writeFileSync(join(tmp, `${token}.json`), JSON.stringify({ pid: process.pid, host: hostname(), boot: BOOT, start: START, at: Date.now() }));
   const t0 = Date.now();
   for (let checked = ""; ; ) {
     try {
       renameSync(tmp, lock);
       break;
     } catch (e) {
-      if (e.code !== "ENOTEMPTY" && e.code !== "EEXIST") {
+      if (!["ENOTEMPTY", "EEXIST", "ENOTDIR"].includes(e.code)) {
         rmSync(tmp, { recursive: true, force: true });
         throw e;
       }
     }
     const h = holder(lock);
     const waited = Date.now() - t0;
-    const checkStart = h && waited > 500 && checked !== h.token; // ps once per holder, and only for a slow one
-    if (checkStart) checked = h.token;
-    if (h && gone(h, checkStart)) {
-      try {
-        unlinkSync(join(lock, h.file));
-        rmdirSync(lock);
-        continue;
-      } catch {} // another waiter removed it first, or a new holder came in: wait as for any holder
-    }
+    const checkStart = h && waited > 500 && checked !== h.file; // ps once per holder, and only for a slow one
+    if (checkStart) checked = h.file;
+    if (h && gone(h, checkStart) && clear(lock, h.file)) continue; // if clear fails, another waiter was first
     if (waited >= LOCK_WAIT_MS) {
       rmSync(tmp, { recursive: true, force: true });
-      const who = h ? `pid ${h.pid} on ${h.host} has held ${lock} for ${((Date.now() - h.at) / 1000).toFixed(1)} s` : `${lock} has no readable owner; remove it if no sage command runs`;
-      refuse(`the store is busy: ${who}. Nothing changed; run the command again.`);
+      const who = h ? `pid ${cell(h.pid)} on ${cell(h.host)} has held ${lock}${Number.isFinite(h.at) ? ` for ${((Date.now() - h.at) / 1000).toFixed(1)} s` : ""}` : `${lock} has no valid owner file`;
+      refuse(`the store is busy: ${who}. Nothing changed. Run the command again; if no sage command runs${h ? ` on ${cell(h.host)}` : ""}, remove ${lock} first.`);
     }
-    pause(h ? 5 + Math.floor(Math.random() * 20) : 1);
+    pause(5 + Math.floor(Math.random() * 20));
   }
   try {
+    // The temp folder of a waiter that was killed stays behind. Remove it by the lock's rules: owner surely gone, by name.
+    for (const name of readdirSync(dir).filter((n) => new RegExp(`^\\.lock\\.${UUID}$`).test(n))) {
+      const h = holder(join(dir, name));
+      if (h && gone(h, false)) clear(join(dir, name), h.file);
+    }
     return fn();
   } finally {
-    try {
-      unlinkSync(join(lock, `${me.token}.json`));
-      rmdirSync(lock);
-    } catch {}
+    clear(lock, `${token}.json`);
   }
 }
 

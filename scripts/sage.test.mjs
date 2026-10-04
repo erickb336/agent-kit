@@ -1,25 +1,28 @@
 // Runs the sage state tool as the chief of staff does: one command, one line out, against a temporary store.
 import assert from "node:assert/strict";
-import { execFile, spawn, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir, uptime } from "node:os";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const LIB = new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url).href;
 const TOOL = fileURLToPath(LIB);
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const BOOT = Date.now() - uptime() * 1000;
+/** A command that hangs is stopped after this, so that a test fails instead of waiting for ever. */
+const timeout = 10_000;
 
-/** A store for one made-up project. ok() expects success, no() expects a refusal; both return the output. */
-function store() {
-  const home = mkdtempSync(join(tmpdir(), "sage-home-"));
-  const project = mkdtempSync(join(tmpdir(), "sage-project-"));
+/** A store for one made-up project, in a new root or in home. ok() expects success, no() expects a refusal; both return the output. */
+function store(home = mkdtempSync(join(tmpdir(), "sage-home-")), name = "sage-project-") {
+  const project = mkdtempSync(join(tmpdir(), name));
   const env = { ...process.env, SAGE_HOME: home };
-  const run = (...args) => spawnSync("node", [TOOL, ...args, "--project", project], { encoding: "utf8", env });
+  const run = (...args) => spawnSync("node", [TOOL, ...args, "--project", project], { encoding: "utf8", env, timeout });
   /** Runs a command in its own process and does not wait for it, as a second chief session does. */
-  const go = (...args) => new Promise((done) => execFile("node", [TOOL, ...args, "--project", project], { env }, (err, stdout, stderr) => done({ status: err ? err.code : 0, stdout, stderr })));
+  const go = (...args) => new Promise((done) => execFile("node", [TOOL, ...args, "--project", project], { env, timeout }, (err, stdout, stderr) => done({ status: err ? err.code : 0, stdout, stderr })));
   const ok = (...args) => {
     const r = run(...args);
     assert.equal(r.status, 0, `sage ${args.join(" ")} failed: ${r.stderr}`);
@@ -156,7 +159,7 @@ test("the merge check needs no open findings, checks-pass, and the route's verdi
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles/);
   verdict("review-clean", 2);
   verdict("qa-pass", 2);
-  assert.equal(s.ok("merge-check", "--sha", SHA.slice(0, 12)), "T1 may merge: 2 clean cycles on this SHA");
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 2 clean cycles on this SHA");
   assert.match(s.no("merge-check", "--sha", "ffffffffffffffffffffffffffffffffffffffff"), /no verdicts recorded/, "another SHA has none of these verdicts");
 
   s.ok("finding", "add", "T1", "--source", "security-reviewer", "--severity", "high", "--summary", "token in the log");
@@ -292,7 +295,7 @@ test("a holder that may be alive keeps the lock: a waiter waits for it, or refus
   let h = await hold(s.dir, 4500);
   let [r, ms] = timed(() => s.run("task", "T1", "set", "branch=while-held"));
   assert.equal(r.status, 1);
-  assert.match(r.stderr, new RegExp(`^sage: the store is busy: pid ${h.pid} on \\S+ has held \\S+\\.lock for \\d+\\.\\d s\\. Nothing changed; run the command again\\.\\n$`));
+  assert.match(r.stderr, new RegExp(`^sage: the store is busy: pid ${h.pid} on (\\S+) has held (\\S+\\.lock) for \\d+\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on \\1, remove \\2 first\\.\\n$`));
   assert.ok(ms >= 3000 && ms < 5000, `refused after ${ms} ms; the hook timeout is 10 s`);
   assert.deepEqual(await h.exited, [0, null], "the holder finished with its lock");
   assert.equal(rows(s.dir, "tasks")[0].branch, "");
@@ -417,4 +420,130 @@ test("an investigation ends at concluded, after a clean evidence review recorded
   toReviewing(b, "T1");
   b.ok("task", "T1", "set", "state=verifying");
   assert.match(b.no("task", "T1", "set", "state=concluded"), /T1 has a build block, so it ends at verified/);
+});
+
+/** Plants an owner file in a store's lock folder, as another program or a person could. Returns the lock's path. */
+function plant(dir, name, record) {
+  const lock = join(dir, ".lock");
+  mkdirSync(lock);
+  writeFileSync(join(lock, name), JSON.stringify(record));
+  return lock;
+}
+
+test("S1: a waiter takes the owner file's name only from the lock folder, so no record makes it remove a file outside", async () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  const victim = join(s.home, "important.txt");
+  writeFileSync(victim, "keep me");
+  let lock = crash(s.dir, { file: "../../important.txt" }); // a dead holder whose record names another file
+  assert.match(s.ok("task", "T1", "set", "branch=after-plant"), /^T1 framed/, "the waiter clears the dead holder's own file");
+  assert.equal(existsSync(lock), false);
+  assert.equal(readFileSync(victim, "utf8"), "keep me");
+
+  lock = plant(s.dir, "x.json", { file: "../../important.txt", pid: spawnSync("node", ["-e", ""]).pid, host: hostname(), boot: BOOT, start: 0, at: 0 });
+  const r = await s.go("task", "T1", "set", "branch=odd-name");
+  assert.equal(r.stderr, `sage: the store is busy: ${lock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${lock} first.\n`, "an owner file not named <uuid>.json is never removed");
+  assert.equal(r.status, 1);
+  assert.deepEqual([readFileSync(victim, "utf8"), readdirSync(lock)], ["keep me", ["x.json"]]);
+});
+
+test("S2: a planted lock never hangs a command, the refusal says which folder to remove, and a killed waiter's temp folder goes", async () => {
+  const [fifo, live] = [store(), store()];
+  const fifoLock = join(fifo.dir, ".lock");
+  mkdirSync(fifoLock);
+  execFileSync("mkfifo", [join(fifoLock, `${randomUUID()}.json`)]);
+  const liveLock = plant(live.dir, `${randomUUID()}.json`, { pid: 1, host: hostname(), boot: BOOT, start: Date.now(), at: Date.now() }); // alive, and not sage
+  const [[a, b], ms] = await (async (t0) => [await Promise.all([fifo.go("log", "-", "x", "--why", "w"), live.go("log", "-", "x", "--why", "w")]), Date.now() - t0])(Date.now());
+  assert.equal(a.stderr, `sage: the store is busy: ${fifoLock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${fifoLock} first.\n`);
+  assert.match(b.stderr, new RegExp(`^sage: the store is busy: pid 1 on ${hostname()} has held ${liveLock} for \\d\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on ${hostname()}, remove ${liveLock} first\\.\\n$`));
+  assert.deepEqual([a.status, b.status], [1, 1]);
+  assert.ok(ms >= 3000 && ms < 6000, `both refused after ${ms} ms`);
+  rmSync(liveLock, { recursive: true }); // what the line says to do
+  assert.equal(live.ok("log", "-", "x", "--why", "w"), "logged");
+
+  const s = store();
+  const lock = crash(s.dir);
+  const killed = join(s.dir, `.lock.${basename(readdirSync(lock)[0], ".json")}`);
+  renameSync(lock, killed); // the temp folder of a waiter that was killed before its rename
+  const waiter = join(s.dir, `.lock.${randomUUID()}`); // the temp folder of a waiter that still runs: this process
+  mkdirSync(waiter);
+  writeFileSync(join(waiter, `${basename(waiter).slice(6)}.json`), JSON.stringify({ pid: process.pid, host: hostname(), boot: BOOT, start: Date.now() - process.uptime() * 1000, at: Date.now() }));
+  s.ok("log", "-", "x", "--why", "w");
+  assert.deepEqual([existsSync(killed), existsSync(waiter)], [false, true]);
+});
+
+test("S3: only digits count in an id, so a new finding never reopens a key that it did not name", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  s.ok("finding", "add", "T1", "--key", "F-T1-Infinity", "--severity", "low", "--source", "qa", "--summary", "old low");
+  s.ok("finding", "triage", "T1", "F-T1-Infinity", "dismiss", "--reason", "cosmetic");
+  assert.equal(s.ok("finding", "add", "T1", "--severity", "high", "--source", "sec", "--summary", "new high: auth bypass"), "F-T1-1 open · high · T1");
+  s.ok("finding", "add", "T1", "--key", "F-T1-9007199254740993", "--severity", "low", "--source", "qa", "--summary", "a long number");
+  assert.equal(s.ok("finding", "add", "T1", "--severity", "high", "--source", "qa", "--summary", "next"), "F-T1-9007199254740994 open · high · T1", "a long number stays exact");
+  assert.equal(s.ok("finding", "add", "T1", "--key", "F-T1-Infinity", "--severity", "medium"), "F-T1-Infinity open again · medium · T1", "a named key opens its finding again");
+  assert.deepEqual(rows(s.dir, "findings").map((f) => `${f.key} ${f.severity} ${f.status} ${f.summary}`), [
+    "F-T1-Infinity medium open old low",
+    "F-T1-1 high open new high: auth bypass",
+    "F-T1-9007199254740993 low open a long number",
+    "F-T1-9007199254740994 high open next",
+  ]);
+});
+
+test("S4: every store that has verdicts on a SHA must pass, so a second store cannot open the merge gate", () => {
+  const real = store();
+  real.ok("task", "add", "--title", "t", "--size", "small");
+  real.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  real.ok("finding", "add", "T1", "--source", "security-reviewer", "--severity", "high", "--summary", "auth bypass");
+  const decoy = store(real.home, "aa-"); // its name comes first
+  decoy.ok("task", "add", "--title", "decoy", "--size", "tiny");
+  decoy.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  const [d, r] = [basename(decoy.dir), basename(real.dir)];
+  assert.equal(real.no("merge-check", "--sha", SHA), `sage: 2 tasks have verdicts on a1b2c3d (${d} T1, ${r} T1), and each must pass. ${r} T1 has open findings: F-T1-1. Triage and close them first.`);
+  real.ok("finding", "triage", "T1", "F-T1-1", "fix");
+  real.ok("finding", "close", "T1", "F-T1-1");
+  for (const kind of ["review-clean", "qa-pass"]) real.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.equal(real.ok("merge-check", "--sha", SHA, "--cycles", "1"), `2 tasks have verdicts on a1b2c3d (${d} T1, ${r} T1), and each must pass: ${d} T1 may merge: 1 clean cycle on this SHA; ${r} T1 may merge: 1 clean cycle on this SHA`);
+  decoy.ok("task", "add", "--title", "decoy", "--size", "small");
+  decoy.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass");
+  assert.match(real.no("merge-check", "--sha", SHA, "--cycles", "1"), new RegExp(`^sage: 3 tasks have verdicts on a1b2c3d .*\\. ${d} T2: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass\\.$`), "a store that fails closes the gate");
+});
+
+test("S5: verdicts and the merge gate take only a full SHA, and each task counts only its own verdicts", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("task", "add", "--title", "b", "--size", "small");
+  const short = (sha) => `sage: "${sha}" is not a full commit SHA: a short one can match another commit. Give all 40 characters: git rev-parse <branch>.`;
+  assert.equal(s.no("verdict", "T1", "--sha", "9999999", "--kind", "checks-pass"), short("9999999"));
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.equal(s.no("merge-check", "--sha", SHA.slice(0, 7), "--cycles", "1"), short("a1b2c3d"));
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T1 may merge: 1 clean cycle on this SHA");
+
+  const other = "0123456789abcdef0123456789abcdef01234567";
+  s.ok("verdict", "T1", "--sha", other, "--kind", "checks-pass");
+  for (const kind of ["review-clean", "qa-pass"]) s.ok("verdict", "T2", "--sha", other, "--kind", kind); // T2's reviews are not T1's
+  assert.equal(s.no("merge-check", "--sha", other, "--cycles", "1"), `sage: 2 tasks have verdicts on 0123456 (${basename(s.dir)} T1, ${basename(s.dir)} T2), and each must pass. ${basename(s.dir)} T1: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass.`);
+});
+
+test("S6: an investigation takes no build block; a build that it needs is its own task", () => {
+  const s = store();
+  assert.equal(s.no("task", "add", "--title", "inv", "--size", "investigate", "--risk", "auth", "--add", "build", "--why", "x"), "sage: an investigation changes no code, so it takes no build block. Frame the build as its own task: sage task add --size tiny, small or large");
+  assert.deepEqual(rows(s.dir, "tasks"), [], "a refused task writes nothing");
+  assert.equal(s.ok("task", "add", "--title", "inv", "--size", "investigate", "--add", "pe", "--why", "x"), "T1 framed · investigate · route pe,investigate,evidence-review");
+});
+
+test("S7: config and the merge gate read only regular files and never throw, so the hook never waits or lets a merge through", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  execFileSync("mkfifo", [join(s.home, "config.json")]);
+  const [out, ms] = timed(() => [s.ok("config"), s.ok("merge-check", "--sha", SHA)]);
+  assert.deepEqual(out, ["max_agents=3 autopilot_cycles=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet", "T1 may merge: 1 clean cycle on this SHA"]);
+  assert.ok(ms < 3000, `${ms} ms`);
+  rmSync(join(s.dir, "ledger.tsv"));
+  execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
+  assert.match(s.no("merge-check", "--sha", SHA), /^sage: no verdicts recorded for a1b2c3d/, "a table that is not a regular file has no rows");
+  const file = join(s.home, "a-file");
+  writeFileSync(file, "");
+  const r = spawnSync("node", [TOOL, "merge-check", "--sha", SHA], { encoding: "utf8", env: { ...process.env, SAGE_HOME: file }, timeout });
+  assert.deepEqual([r.status, r.stderr], [1, `sage: the merge gate could not read the stores in ${file}: ENOTDIR: not a directory, scandir '${file}'\n`]);
 });
