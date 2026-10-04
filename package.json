@@ -2,12 +2,14 @@
   "name": "sage",
   "private": true,
   "type": "module",
-  "description": "Principles, a writing standard, working preferences and skills for Claude Code and Codex agents.",
+  "description": "Principles, a writing standard and sage mode for Claude Code (and the principles for Codex).",
   "license": "MIT",
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
-    "test": "node --test scripts/hooks.test.mjs scripts/remote-control.test.mjs"
+    "test": "node --test scripts/hooks.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { ROOT, outputs, parseSource } from "./build.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
+import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -40,6 +41,40 @@ for (const d of readdirSync(skillsDir)) {
 for (const [moment, { principles }] of Object.entries(MOMENTS)) {
   for (const p of principles) if (!existsSync(join(skillsDir, `principle-${p}`, "SKILL.md"))) problems.push(`hooks: moment "${moment}" names "${p}", which has no skill`);
 }
+
+// Sage mode (Claude Code only). Agents: name equals the file, a description, preloaded skills that exist, sage names that exist.
+const PLUGIN = join(ROOT, "plugins/sage");
+const frontmatter = (file) => /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(readFileSync(file, "utf8"));
+const agents = readdirSync(join(PLUGIN, "agents")).filter((f) => f.endsWith(".md"));
+for (const f of agents) {
+  const m = frontmatter(join(PLUGIN, "agents", f));
+  if (!m) { problems.push(`agents/${f}: no frontmatter`); continue; }
+  if (/^name:\s*(.+)$/m.exec(m[1])?.[1].trim() !== f.slice(0, -3)) problems.push(`agents/${f}: name must equal the file name`);
+  if (!/^description:\s*\S/m.test(m[1])) problems.push(`agents/${f}: missing description`);
+  for (const [, skill] of m[1].matchAll(/^\s+-\s+(\S+)\s*$/gm)) {
+    const [ns, name] = skill.split(":");
+    if (ns !== "sage" || !existsSync(join(skillsDir, name ?? "", "SKILL.md"))) problems.push(`agents/${f}: preloads ${skill}, which is not a sage skill`);
+  }
+  for (const [, name] of m[2].matchAll(/`sage:([a-z-]+)`/g)) {
+    if (!agents.includes(`${name}.md`) && !existsSync(join(skillsDir, name, "SKILL.md"))) problems.push(`agents/${f}: names sage:${name}, which is neither an agent nor a skill`);
+  }
+  if (f !== "chief-of-staff.md" && !m[1].includes("  - sage:report")) problems.push(`agents/${f}: must preload sage:report`);
+}
+// The chief's brief template and the report skill list the same fields as the hook's gates, in the same order.
+const template = /## The brief[\s\S]*?```\n([\s\S]*?)```/.exec(frontmatter(join(PLUGIN, "agents/chief-of-staff.md"))?.[2] ?? "")?.[1] ?? "";
+const briefFields = template.split("\n").map((l) => l.split(/\s+/)[0]).filter(Boolean);
+if (briefFields.join(" ") !== BRIEF_FIELDS.join(" ")) problems.push(`agents/chief-of-staff.md: the brief template has ${briefFields.join(" ")}, the hook checks ${BRIEF_FIELDS.join(" ")}`);
+const report = /```\n([\s\S]*?)```/.exec(readFileSync(join(skillsDir, "report/SKILL.md"), "utf8"))?.[1] ?? "";
+const reportFields = report.split("\n").map((l) => l.split(/\s{2,}/)[0].trim()).filter(Boolean);
+if (reportFields.join("|") !== REPORT_FIELDS.join("|")) problems.push(`skills/report: the template has ${reportFields.join(", ")}, the hook checks ${REPORT_FIELDS.join(", ")}`);
+// Every hook command runs a script that exists, in the shared hooks and in Claude's own.
+for (const cfg of ["hooks.json", "claude.json"]) {
+  for (const [event, groups] of Object.entries(JSON.parse(readFileSync(join(PLUGIN, "hooks", cfg), "utf8")).hooks)) for (const g of groups) for (const h of g.hooks) {
+    const script = /\$\{CLAUDE_PLUGIN_ROOT\}\/([^"]+)"/.exec(h.command)?.[1];
+    if (!script || !existsSync(join(PLUGIN, script))) problems.push(`hooks/${cfg} ${event}: runs ${script ?? h.command}, which does not exist`);
+  }
+}
+if (JSON.parse(readFileSync(join(PLUGIN, ".claude-plugin/plugin.json"), "utf8")).hooks !== "./hooks/claude.json") problems.push("plugin.json: Claude Code must load hooks/claude.json, the sage mode hook");
 
 for (const [rel, text] of outputs()) {
   const f = join(ROOT, rel);
