@@ -163,9 +163,10 @@ export function handle(input, state, slots) {
   const ours = OURS.test(input.agent_type ?? "");
   if (!main && ours) slots.touch(input.agent_id); // the agent's lease: a slot that no event touched for an hour expires
   if (event === "SubagentStart") return void (ours && slots.bind(input.agent_id));
-  // The session's live tasks, at a Stop or a SubagentStop: a slot whose agent is not among them is free. An agent that
+  // The session's live tasks at the main session's Stop: a slot whose agent is not among them is free. An agent that
   // dies (for one, on a usage limit) fires no SubagentStop, but it leaves the registry, and the chief's next turn ends.
-  if (Array.isArray(input.background_tasks)) slots.reconcile(input.background_tasks.map((t) => t?.id));
+  // Only then: at a SubagentStop, a foreground agent of the session may be running and not listed.
+  if (event === "Stop" && main && Array.isArray(input.background_tasks)) slots.reconcile(input.background_tasks.map((t) => t?.id));
   if (event === "SubagentStop") {
     // A sage agent finishes only with the full report. The second stop goes through, so this cannot loop.
     if (ours && !input.stop_hook_active && typeof input.last_assistant_message === "string") {
@@ -584,10 +585,13 @@ const deny = (event, reason) => ({ hookSpecificOutput: { hookEventName: event, p
  * The agent cap. All sessions share one slot directory. Each running sage agent holds one slot: a numbered directory
  * that mkdir creates atomically, so agents that the chief starts in one message cannot take the same slot, and the
  * slot numbers are the total cap. A slot's marks name its project, its session and its tool use; it is pending from
- * the spawn until SubagentStart names the agent. A project's cap is a count of its slots: a spawn passes when fewer
- * than the cap of its project's slots have a lower number (a slot with no marks yet counts), so simultaneous spawns
- * get the same answer as spawns in a row. A slot is free again at SubagentStop, at a TaskStop, when the spawn fails,
- * when the session's live tasks no longer name the agent, or when nothing touched it for an hour.
+ * the spawn until SubagentStart names the agent, and a spawn that passed marks its slot ok. A project's cap is a true
+ * count of its other slots: every one with a lower number (a slot with no marks yet counts as the project's), and every
+ * higher one that passed. A higher slot that has not passed yet is a simultaneous spawn, and it counts this slot in its
+ * turn, so simultaneous spawns get the same answer as spawns in a row. A slot is free again at SubagentStop, at a
+ * TaskStop of its session, when the spawn fails before its agent started, when the session's live tasks no longer name
+ * the agent at the session's Stop, or when nothing touched it for an hour. Each release looks only among the session's
+ * own slots.
  */
 export function slotsFor(dir, session, now = Date.now()) {
   const STALE = { pending: 10 * 60_000, agent: 60 * 60_000 };
@@ -607,8 +611,8 @@ export function slotsFor(dir, session, now = Date.now()) {
     }
   };
   const mark = (slot, prefix) => marks(slot).find((m) => m.startsWith(prefix))?.slice(prefix.length);
-  const withMark = (name) => list().find((slot) => marks(slot).includes(name));
   const ofSession = () => list().filter((slot) => mark(slot, "session-") === session);
+  const withMark = (name) => ofSession().find((slot) => marks(slot).includes(name));
   const free = (slot) => slot && rmSync(join(dir, slot), { recursive: true, force: true });
   const expire = () => {
     for (const slot of list()) {
@@ -640,8 +644,11 @@ export function slotsFor(dir, session, now = Date.now()) {
       }
       if (!mine) return { refused: "total", ...counts(project) };
       for (const m of [`project-${project}`, `session-${session}`, `tool-${toolUseId}`, `pending-${toolUseId}`]) writeFileSync(join(dir, mine, m), "");
-      const below = list().filter((slot) => num(slot) < num(mine) && (mark(slot, "project-") ?? project) === project).length;
-      if (below < cap) return { ok: true };
+      const counted = (slot) => slot !== mine && (mark(slot, "project-") ?? project) === project && (num(slot) < num(mine) || marks(slot).includes("ok"));
+      if (list().filter(counted).length < cap) {
+        writeFileSync(join(dir, mine, "ok"), "");
+        return { ok: true };
+      }
       free(mine);
       return { refused: "project", ...counts(project) };
     },
@@ -658,7 +665,8 @@ export function slotsFor(dir, session, now = Date.now()) {
       }
     },
     release: (agentId) => free(withMark(`agent-${agentId}`)),
-    drop: (toolUseId) => free(withMark(`tool-${toolUseId}`)),
+    /** A failed spawn frees its slot while it is pending. A bound slot stays: SubagentStart names no tool use, so the agent may be another spawn's. */
+    drop: (toolUseId) => free(withMark(`pending-${toolUseId}`)),
     touch(agentId) {
       try {
         utimesSync(join(dir, withMark(`agent-${agentId}`)), new Date(now), new Date(now));

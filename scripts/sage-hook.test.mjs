@@ -127,7 +127,9 @@ test("a stopped or dead agent frees its slot without SubagentStop: TaskStop, the
   s.send({ hook_event_name: "SubagentStop", agent_id: "other", agent_type: "Explore", last_assistant_message: "x", background_tasks: [{ id: "ag5", type: "subagent", status: "running" }] });
   assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu6"))), "another agent's stop keeps a live agent's slot");
   s.send({ hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_use_id: "tu5" });
-  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu7")), undefined, "a spawn that fails after its agent started frees the slot");
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu7"))), "a spawn that fails after an agent started keeps the bound slot: the agent may be another spawn's");
+  s.send({ hook_event_name: "Stop", background_tasks: [] });
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu7")), undefined, "the Stop sweep frees it");
   s.send(start("ag7"));
   const slot = join(s.vars.SAGE_HOOKS_STATE, "slots", "slot-1");
   const old = new Date(Date.now() - 2 * 3600_000);
@@ -136,6 +138,57 @@ test("a stopped or dead agent frees its slot without SubagentStop: TaskStop, the
   assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu8"))), "an agent's own event renews its lease");
   utimesSync(slot, old, old);
   assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu9")), undefined, "a slot that nothing touched for an hour expires");
+});
+
+// Repair round 1 of T38: the cap is a true count, and a release frees only the agent that is really gone.
+test("the project cap counts every live agent of the project, also those in higher slots", () => {
+  const s = session();
+  const x = join(s.dir, "x");
+  const y = join(s.dir, "y");
+  mkdirSync(x);
+  mkdirSync(y);
+  for (const [session_id, cwd] of [["sA", x], ["sB", y]]) s.send({ ...prompt("sage mode"), session_id, cwd });
+  const spawnIn = (session_id, cwd, id) => s.send(spawnAgent("sage:qa", BRIEF, id, { session_id, cwd }));
+  const startIn = (session_id, agent_id) => s.send({ ...start(agent_id), session_id });
+  assert.equal(spawnIn("sA", x, "t1"), undefined);
+  startIn("sA", "ax1");
+  assert.equal(spawnIn("sA", x, "t2"), undefined);
+  startIn("sA", "ax2");
+  assert.equal(spawnIn("sB", y, "t3"), undefined, "y takes slot 3");
+  startIn("sB", "by3");
+  assert.equal(spawnIn("sA", x, "t4"), undefined, "x takes slot 4: its third agent");
+  startIn("sA", "ax4");
+  assert.match(denied(spawnIn("sA", x, "t5")), /3 sage agents are running for x/);
+  s.send({ hook_event_name: "SubagentStop", session_id: "sB", agent_id: "by3", agent_type: "sage:qa", last_assistant_message: "x", stop_hook_active: true });
+  assert.match(denied(spawnIn("sA", x, "t6")), /3 sage agents are running for x/, "slot 3 is free, but x still runs 3 agents in slots 1, 2 and 4");
+  s.send({ hook_event_name: "SubagentStop", session_id: "sA", agent_id: "ax4", agent_type: "sage:qa", last_assistant_message: "x", stop_hook_active: true });
+  assert.equal(spawnIn("sA", x, "t7"), undefined, "an x agent ended, so x may start one");
+});
+
+test("a TaskStop frees a slot only among the calling session's agents", () => {
+  const s = session();
+  s.sage("config", "max_agents=1");
+  s.send({ ...prompt("sage mode"), session_id: "sA" });
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu1", { session_id: "sA" })), undefined);
+  s.send({ ...start("ag1"), session_id: "sA" });
+  s.send({ ...tool("TaskStop", { task_id: "ag1" }), session_id: "sB" });
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2", { session_id: "sA" }))), "another session's TaskStop does not free the agent's slot");
+  s.send({ ...tool("TaskStop", { task_id: "ag1" }), session_id: "sA" });
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu3", { session_id: "sA" })), undefined, "the session's own TaskStop frees it");
+});
+
+test("the sweep of the session's live tasks runs only at the main session's Stop", () => {
+  const s = session();
+  s.sage("config", "max_agents=1");
+  s.send(prompt("sage mode"));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu1")), undefined);
+  s.send(start("ag1"));
+  s.send({ hook_event_name: "SubagentStop", agent_id: "other", agent_type: "Explore", last_assistant_message: "x", background_tasks: [] });
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2"))), "a SubagentStop whose live tasks lack a foreground agent keeps its slot");
+  s.send({ hook_event_name: "Stop", agent_id: "other", agent_type: "Explore", background_tasks: [] });
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu3"))), "a Stop inside a subagent keeps it too");
+  s.send({ hook_event_name: "Stop", background_tasks: [] });
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu4")), undefined, "the main session's Stop frees the agent that is gone");
 });
 
 // Acceptance (2), (3) and (4) of T38: a cap per project, a total across projects that wins, and a log of refusals.
