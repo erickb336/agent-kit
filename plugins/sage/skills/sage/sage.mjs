@@ -187,11 +187,14 @@ function put(file, text) {
 
 /**
  * The characters that a person does not see but a terminal or an agent acts on: the controls but tab and line feed (C0,
- * DEL and C1), the bidi embeddings, overrides and isolates (U+202A-202E, U+2066-2069), the zero-width characters (U+200B-200D,
- * U+2060, U+FEFF) and the tag characters (U+E0000-E007F, text that only an agent reads). A zero-width joiner between two
- * emoji stays, so a joined emoji stays whole. Other text, also emoji and every script, stays; a subdivision flag shows as a black flag.
+ * DEL and C1), the bidi embeddings, overrides, isolates and marks (U+202A-202E, U+2066-2069, U+200E, U+200F, U+061C), the
+ * zero-width characters (U+200B-200D, U+2060, U+FEFF), the variation selectors (U+FE00-FE0F, U+E0100-E01EF) and the tag
+ * characters (U+E0000-E007F, text that only an agent reads). A joiner or non-joiner (U+200C, U+200D) between two letters
+ * stays, as Persian and Indic text needs it; a joiner between two emoji stays, so a joined emoji stays whole; the emoji
+ * selector (U+FE0F) stays after an emoji or a keycap base. Other text, also emoji and every script, stays; a subdivision
+ * flag shows as a black flag.
  */
-const HIDDEN = /[\0-\x08\x0b-\x1f\x7f-\x9f\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069\u{e0000}-\u{e007f}]|(?<![\p{Extended_Pictographic}\p{Emoji_Modifier}]\ufe0f?)\u200d|\u200d(?!\p{Extended_Pictographic})/gu;
+const HIDDEN = /[\0-\x08\x0b-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u2060\ufeff\ufe00-\ufe0e\u202a-\u202e\u2066-\u2069\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]|(?<![\p{Extended_Pictographic}0-9#*])\ufe0f|(?<![\p{L}\p{M}](?=[\u200c\u200d]\p{L})|[\p{Extended_Pictographic}\p{Emoji_Modifier}]\ufe0f?(?=\u200d\p{Extended_Pictographic}))[\u200c\u200d]/gu;
 /** A cell as the tables hold it: on one line, without a hidden character. */
 const cell = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ").replace(HIDDEN, "").trim();
 /** Text with each hidden character, tab and line feed shown as \xNN or \u{N}, so that a printed line never drives the terminal or hides text. */
@@ -200,9 +203,12 @@ const visible = (s) => String(s).replace(new RegExp(`[\\t\\n]|${HIDDEN.source}`,
 /** What to ask the user about a file that cannot be read: never to remove the root, which holds every logbook, nor a file that a permission keeps shut, whose rows are there. */
 const fixIt = (at, why, root) => `Ask the user to ${["EACCES", "EPERM"].includes(why) ? "fix the permissions of " : at === root ? "fix " : "fix or remove "}${at}.`;
 
-/** The refusal for a table of a logbook that lost its rows: it is missing, or has no header line. It names both ways out. */
-const lost = (dir, table, what) =>
-  new Refusal(`${join(dir, `${table}.tsv`)} ${what}, but every table of a logbook has at least its header line, so its rows are lost. Ask the user to restore it from a copy. If the user accepts the loss, run: sage logbook repair --accept-loss ${table} --project <the project>. If no project uses ${dir}, ask the user to remove it.`);
+/**
+ * The refusal for a table of a logbook that lost its rows: it is missing, or has no header line. It names both ways out,
+ * and the repair names also the tables that the refused command already repairs (also), so one command repairs them all.
+ */
+const lost = (dir, table, what, also = []) =>
+  new Refusal(`${join(dir, `${table}.tsv`)} ${what}, but every table of a logbook has at least its header line, so its rows are lost. Ask the user to restore it from a copy. If the user accepts the loss, run: sage logbook repair --accept-loss ${[...also, table].join(",")} --project <the project>. If no project uses ${dir}, ask the user to remove it.`);
 
 /**
  * A table of a logbook as its header's columns and its data lines. It refuses, with the path, a table that is missing or
@@ -211,7 +217,7 @@ const lost = (dir, table, what) =>
  * header-only table is a table without rows: a cut that keeps only the header cannot be told from it. An editor's BOM
  * and CRLF line ends read as a plain file.
  */
-function sheet(dir, table) {
+function sheet(dir, table, also = []) {
   const file = join(dir, `${table}.tsv`);
   let text;
   try {
@@ -220,9 +226,9 @@ function sheet(dir, table) {
     if (e instanceof Refusal || !e.code) throw e;
     refuse(`${file} cannot be read (${e.code}). ${fixIt(file, e.code)}`);
   }
-  if (text === undefined) throw lost(dir, table, "is missing or is a link to nothing");
+  if (text === undefined) throw lost(dir, table, "is missing or is a link to nothing", also);
   const [head, ...lines] = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
-  if (!head) throw lost(dir, table, text ? "has only blank lines" : "is empty (0 bytes)");
+  if (!head) throw lost(dir, table, text ? "has only blank lines" : "is empty (0 bytes)", also);
   const cols = head.split("\t");
   if (!TABLES[table].every((c) => cols.includes(c))) refuse(`the header of ${file} is damaged: its first line must be the column names ${TABLES[table].join(", ")}, separated by tabs. Ask the user to fix or add that line.`);
   return { cols, lines };
@@ -236,11 +242,11 @@ const rowsOf = ({ cols, lines }) =>
 const read = (dir, table) => rowsOf(sheet(dir, table));
 
 /**
- * The integrity check of a logbook: every table (but skip, the one that a repair starts again) is there, is a regular
+ * The integrity check of a logbook: every table (but skip, the ones that a repair starts again) is there, is a regular
  * file that it can read, is not empty, and has its header line. It refuses the first that fails and names its file. The
  * merge check runs it on every logbook, and every write on its own, so no command hides a lost table or makes a new one.
  */
-const check = (dir, skip) => Object.fromEntries(Object.keys(TABLES).filter((t) => t !== skip).map((t) => [t, sheet(dir, t)]));
+const check = (dir, skip = []) => Object.fromEntries(Object.keys(TABLES).filter((t) => !skip.includes(t)).map((t) => [t, sheet(dir, t, skip)]));
 
 /**
  * Refuses, before any change, a logbook that a command could not change whole: one that fails the integrity check, or a
@@ -248,15 +254,15 @@ const check = (dir, skip) => Object.fromEntries(Object.keys(TABLES).filter((t) =
  * chief session's values would be lost in silence. Reading a newer logbook is safe. A folder without tasks.tsv is init's
  * new logbook (init writes tasks.tsv last), and it may have only tables without rows: rows without their tasks are a loss.
  */
-function ready(dir, skip) {
+function ready(dir, skip = []) {
   for (const file of ["status.md", "standing.md"]) target(join(dir, file));
-  if (skip !== "tasks" && !lstatSync(join(dir, "tasks.tsv"), { throwIfNoEntry: false })) {
-    if (skip || Object.keys(TABLES).some((t) => (readRegular(join(dir, `${t}.tsv`)) ?? "").trim().split(/\r?\n/).length > 1)) throw lost(dir, "tasks", "is missing");
+  if (!skip.includes("tasks") && !lstatSync(join(dir, "tasks.tsv"), { throwIfNoEntry: false })) {
+    if (skip.length || Object.keys(TABLES).some((t) => (readRegular(join(dir, `${t}.tsv`)) ?? "").trim().split(/\r?\n/).length > 1)) throw lost(dir, "tasks", "is missing", skip);
     return;
   }
   for (const [table, { cols }] of Object.entries(check(dir, skip))) {
     const extra = cols.filter((c) => c && !TABLES[table].includes(c));
-    if (extra.length) refuse(`${join(dir, `${table}.tsv`)} has columns that this version of sage does not know (${extra.join(", ")}): a newer sage wrote this logbook. Update the sage plugin and restart this session. Nothing changed.`);
+    if (extra.length) refuse(`${join(dir, `${table}.tsv`)} has columns that this version of sage does not know (${extra.join(", ")}): a newer sage wrote this logbook, and a write of this version would lose them. Update the sage plugin and restart this session. Nothing changed; status, logbook, standing and merge-check still work.`);
   }
 }
 
@@ -294,10 +300,13 @@ function parse(cmd, args) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (!a.startsWith("--")) pos.push(a);
-    else if (a.includes("=")) opt[a.slice(2, a.indexOf("="))] = a.slice(a.indexOf("=") + 1);
     else {
-      spaced.push(a.slice(2));
-      opt[a.slice(2)] = args[++i];
+      const eq = a.includes("=");
+      const o = a.slice(2, eq ? a.indexOf("=") : undefined);
+      const v = eq ? a.slice(a.indexOf("=") + 1) : args[++i];
+      if (!eq) spaced.push(o);
+      if (o in opt) refuse(`--${o} is given twice. Give it once${o === "accept-loss" ? `, with the tables joined by a comma: --accept-loss ${opt[o]},${v}` : ""}.`);
+      opt[o] = v;
     }
   }
   const name = OPTIONS[`${cmd} ${pos[0]}`] ? `${cmd} ${pos[0]}` : cmd;
@@ -343,9 +352,9 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
  * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
  * its PR number.
  */
-function judge(dir, tasks, findings, id, rows, cycles) {
+function judge(dir, tasks, findings, id, rows, cycles, repaired) {
   const task = tasks.find((t) => t.id === id);
-  if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.` };
+  if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
   const clear = `clear its PR (sage task ${task.id} set pr=)`;
   if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: ${clear}.` };
@@ -389,10 +398,11 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       const rows = rowsOf(book ? book.ledger : sheet(dir, "ledger")).filter((r) => r.sha === sha);
       if (!rows.length) return [];
       const [tasks, findings] = book ? [rowsOf(book.tasks), rowsOf(book.findings)] : [[], []];
+      const repaired = book && rowsOf(book.decisions).some((d) => d.decision.startsWith("tasks.tsv started again without rows"));
       const ofPr = pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : [];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const own = rows.filter((r) => r.task === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, cycles) };
+        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, cycles, repaired) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -457,7 +467,9 @@ export function sage(argv, env = process.env) {
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
   const dir = storeDir(project, env);
   const repair = cmd === "logbook" && pos[0] === "repair";
-  const skip = repair ? (Object.hasOwn(TABLES, opt["accept-loss"] ?? "") ? opt["accept-loss"] : refuse(`logbook repair needs --accept-loss with the table whose rows the user accepts to lose: ${Object.keys(TABLES).join(", ")}.`)) : undefined;
+  const skip = repair ? [...new Set(list(opt["accept-loss"]))] : [];
+  const odd = skip.filter((t) => !Object.hasOwn(TABLES, t));
+  if (repair && (odd.length || !skip.length)) refuse(`logbook repair needs --accept-loss with the tables whose rows the user accepts to lose, joined by a comma: ${Object.keys(TABLES).join(", ")}.${odd.length ? ` Not ${odd.join(", ")}.` : ""}`);
   if (cmd !== "init" && !(repair && existsSync(dir)) && !existsSync(join(dir, "tasks.tsv"))) {
     const printed = visible(project); // a path with control characters prints otherwise than it is, so it gets no line to paste
     refuse(`no logbook for the project ${printed}. ${printed === project ? `Run: sage init --project ${shell(project)}` : "Its path has control characters, so no command is printed to paste. Rename the folder, or run sage init from inside it."}`);
@@ -470,13 +482,13 @@ export function sage(argv, env = process.env) {
   }
   return withLock(dir, () => {
     ready(dir, skip);
-    const out = act(cmd, pos, opt, dir, env);
+    const out = act(cmd, pos, opt, dir, env, skip);
     status(dir, true);
     return out;
   });
 }
 
-function act(cmd, pos, opt, dir, env) {
+function act(cmd, pos, opt, dir, env, skip) {
   const [sub, id, ...more] = pos;
   switch (cmd) {
     case "init":
@@ -487,20 +499,30 @@ function act(cmd, pos, opt, dir, env) {
       return `logbook ${dir}`;
     case "logbook": {
       if (sub !== "repair") return dir;
-      // The user accepts the loss of a table's rows: its old file goes aside, never away, and the table starts again.
-      const table = opt["accept-loss"];
-      const file = join(dir, `${table}.tsv`);
-      try {
-        sheet(dir, table);
-      } catch {
-        const aside = lstatSync(file, { throwIfNoEntry: false }) ? `${file}.lost-${Date.now()}` : "";
+      // The user accepts the loss of the rows of each table in skip: its old file goes aside, never away, and the table
+      // starts again. The decisions come first, so a write that fails or is stopped leaves no table reset without its
+      // decision; a table reset without the others leaves the check failing, so nothing passes before the repair is whole.
+      const tables = skip.map((table) => {
+        const file = join(dir, `${table}.tsv`);
+        try {
+          sheet(dir, table);
+        } catch {
+          const aside = lstatSync(file, { throwIfNoEntry: false }) ? `${file}.lost-${Date.now()}` : "";
+          return { table, file, aside, was: aside ? `; its old file is ${aside}` : "" };
+        }
+        return refuse(`${file} passes the logbook check, so it has nothing to repair. Nothing changed.`);
+      });
+      const decided = tables.map(({ table, was }) => ({ at: now(), task: "", decision: `${table}.tsv started again without rows${was}`, why: "the user accepts the loss of its rows" }));
+      const trail = tables.find((t) => t.table === "decisions");
+      if (trail?.aside) renameSync(trail.file, trail.aside);
+      write(dir, "decisions", [...(trail ? [] : read(dir, "decisions")), ...decided]);
+      for (const { table, file, aside } of tables.filter((t) => t !== trail)) {
         if (aside) renameSync(file, aside);
         write(dir, table, []);
-        const was = aside ? `; its old file is ${aside}` : "";
-        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: "", decision: `${table}.tsv started again without rows${was}`, why: "the user accepts the loss of its rows" }]);
-        return `${table}.tsv started again without rows${was}. The decision is in decisions.tsv.`;
       }
-      refuse(`${file} passes the logbook check, so it has nothing to repair. Nothing changed.`);
+      const kept = tables.filter((t) => t.aside);
+      const old = kept.length === 1 ? (tables.length === 1 ? `; its old file is ${kept[0].aside}` : `; the old file of ${kept[0].table}.tsv is ${kept[0].aside}`) : kept.length ? `; the old files are ${kept.map((t) => t.aside).join(" and ")}` : "";
+      return `${tables.map((t) => `${t.table}.tsv`).join(" and ")} started again without rows${old}. The decision${tables.length === 1 ? " is" : "s are"} in decisions.tsv.`;
     }
     case "standing": {
       if (sub === "add") {
