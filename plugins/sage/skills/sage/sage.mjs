@@ -158,14 +158,20 @@ function write(dir, table, rows) {
 
 const now = () => new Date().toISOString().slice(0, 19) + "Z";
 /**
- * The highest whole number after the prefix, plus 1, so a new id is never one in use, also after a lost row. Only digits
- * count ("Infinity" does not), and BigInt keeps a long number exact.
+ * A new id: the highest whole number after the prefix that any row of the logbook names, plus 1. So an id never comes
+ * back, also when its own row is lost while another row (a verdict's run, a decision, a round's keys) still names it.
+ * Only digits count ("Infinity" does not), and BigInt keeps a long number exact.
  */
-const nextId = (ids, prefix) => {
-  const used = ids.map((i) => i.slice(prefix.length)).filter((n, k) => ids[k].startsWith(prefix) && /^\d+$/.test(n));
-  return `${prefix}${used.reduce((max, n) => (BigInt(n) > max ? BigInt(n) : max), 0n) + 1n}`;
-};
+function nextId(dir, prefix) {
+  let max = 0n;
+  for (const table of Object.keys(TABLES)) {
+    for (const [, n] of (readRegular(join(dir, `${table}.tsv`)) ?? "").matchAll(new RegExp(`(?<![A-Za-z0-9])${prefix}(\\d+)`, "g"))) if (BigInt(n) > max) max = BigInt(n);
+  }
+  return `${prefix}${max + 1n}`;
+}
 const list = (s) => (s ? s.split(",").map((x) => x.trim()).filter(Boolean) : []);
+/** Does a task build code? Only a route with build has commits, a pull request and a merge. */
+const builds = (task) => list(task.route).includes("build");
 
 function parse(args) {
   const pos = [];
@@ -192,14 +198,26 @@ function move(task, to) {
   task.state = to;
 }
 
-/** Why sha cannot name a commit in the ledger, or "". A short SHA could match another commit with the same prefix. */
-const notFull = (sha) => (/^[0-9a-f]{40}$/.test(sha) ? "" : `${JSON.stringify(sha)} is not a full commit SHA: a short one can match another commit. Give all 40 characters: git rev-parse <branch>.`);
+/** Gives a task its pull request, or clears it with "". An investigation changes no code, so it may only clear one. */
+function setPr(task, pr) {
+  if (pr && !builds(task)) refuse(`${task.id} is an investigation: it changes no code, so it has no pull request. A build is its own task: sage task add --size tiny, small or large, then give that task the PR.`);
+  task.pr = pr;
+}
 
-/** Does one task have the clean cycles its route needs on one SHA? rows are only that task's ledger rows for the SHA. */
+/** Why sha cannot name a commit in the ledger, or "". A short SHA could match another commit with the same prefix. Case does not matter. */
+const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(sha)} is not a full commit SHA: a short one can match another commit. Give all 40 characters: git rev-parse <branch>.`);
+
+/**
+ * Does one task have the clean cycles its route needs on one SHA? rows are only that task's ledger rows for the SHA.
+ * A task without rows is in the merge gate only through its PR number.
+ */
 function judge(dir, id, rows, cycles) {
   const task = read(dir, "tasks").find((t) => t.id === id);
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the gate fails closed
+  const clear = `clear its PR (sage task ${task.id} set pr=)`;
+  if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: ${clear}.` };
+  if (!rows.length) return { ok: false, reason: `${who} is a task of PR ${task.pr} but has no verdicts on this SHA. Record them, or, if it is no longer part of PR ${task.pr}, ${clear}.` };
   const open = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
   if (open.length) return { ok: false, reason: `${who} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
   const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
@@ -225,13 +243,17 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
   const root = sageRoot(env);
   try {
     if (notFull(sha)) return { ok: false, reason: notFull(sha) };
+    sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
     cycles ??= config(env).autopilot_cycles;
     pr &&= String(pr); // the tasks table holds it as text
     const dirs = existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(root, d.name)).sort() : [];
     const each = dirs.flatMap((dir) => {
       const rows = read(dir, "ledger").filter((r) => r.sha === sha);
       const ofPr = rows.length && pr ? read(dir, "tasks").filter((t) => t.pr === pr).map((t) => t.id) : [];
-      return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => ({ dir, id, ofPr: ofPr.includes(id), ...judge(dir, id, rows.filter((r) => r.task === id), cycles) }));
+      return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
+        const own = rows.filter((r) => r.task === id);
+        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, id, own, cycles) };
+      });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
     if (pr && !each.some((r) => r.ofPr)) return { ok: false, reason: `no task of PR ${pr} has verdicts on ${sha.slice(0, 7)}: only ${each.map((r) => `${r.dir} ${r.id}`).join(", ")} ${each.length === 1 ? "has" : "have"}. Record PR ${pr}'s verdicts under its own task (sage verdict <T> --sha <sha> --pr ${pr}), or set its PR: sage task <T> set pr=${pr}.` };
@@ -239,7 +261,8 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     const all = `${each.length} tasks have verdicts on ${sha.slice(0, 7)}${pr ? ` or belong to PR ${pr}` : ""}, and each must pass`;
     const bad = each.filter((r) => !r.ok);
     if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${r.dir} ${r.reason}`).join("; ")}` };
-    return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.` };
+    const out = bad.some((r) => r.own) ? ", or push a new commit and record its verdicts under the live tasks only" : ""; // a new commit leaves behind only verdicts
+    return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass${out}.` };
   } catch (e) {
     const at = e?.path ?? root;
     return { ok: false, reason: `the merge gate cannot read ${at} (${e?.code ?? e?.message ?? e}), so it refuses every merge. Ask the user to fix or remove ${at}.` };
@@ -272,14 +295,14 @@ export function sage(argv, env = process.env) {
   if (cmd === "merge-check") {
     const cycles = opt.cycles === undefined ? undefined : (valid("autopilot_cycles", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more"));
     if (opt.pr !== undefined && !/^\d+$/.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
-    const r = mergeCheck(need(opt.sha, "--sha"), env, { cycles, pr: opt.pr });
+    const r = mergeCheck(opt.sha ?? refuse("merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
   }
   if (cmd === "config") {
     const cfg = config(env);
     for (const kv of pos) {
       const [k, v = ""] = kv.split("=");
-      if (Object.hasOwn(COUNTS, k) && valid(k, v) === undefined) refuse(`${k} must be a whole number of 1 or more: with 0, ${COUNTS[k]}`);
+      if (Object.hasOwn(COUNTS, k) && valid(k, v) === undefined) refuse(`${k} must be a whole number of 1 or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k]}` : `, not ${JSON.stringify(v)}`}`);
       cfg[k] = valid(k, v) ?? refuse(`config takes max_agents, autopilot_cycles, max_rounds and arena as key=number, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
@@ -288,10 +311,11 @@ export function sage(argv, env = process.env) {
     }
     return Object.entries(cfg).map(([k, v]) => `${k}=${v}`).join(" ");
   }
-  const dir = storeDir(opt.project ?? env.SAGE_PROJECT ?? process.cwd(), env);
-  if (cmd !== "init" && !existsSync(join(dir, "tasks.tsv"))) refuse(`no store for this project. Run: sage init --project <path>`);
+  const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
+  const dir = storeDir(project, env);
+  if (cmd !== "init" && !existsSync(join(dir, "tasks.tsv"))) refuse(`no logbook for the project ${project}. Run: sage init --project ${project}`);
   // A read takes no lock: every file is replaced whole, so it sees the store before or after a change, never half of one.
-  if (["store", "status"].includes(cmd) || (cmd === "standing" && pos[0] !== "add")) return act(cmd, pos, opt, dir, env);
+  if (["logbook", "status"].includes(cmd) || (cmd === "standing" && pos[0] !== "add")) return act(cmd, pos, opt, dir, env);
   if (cmd === "init") {
     mkdirSync(join(dir, "briefs"), { recursive: true });
     mkdirSync(join(dir, "reports"), { recursive: true });
@@ -309,8 +333,8 @@ function act(cmd, pos, opt, dir, env) {
     case "init":
       for (const t of Object.keys(TABLES)) if (!existsSync(join(dir, `${t}.tsv`))) write(dir, t, []);
       if (!existsSync(join(dir, "standing.md"))) put(join(dir, "standing.md"), STANDING);
-      return `store ${dir}`;
-    case "store":
+      return `logbook ${dir}`;
+    case "logbook":
       return dir;
     case "standing": {
       if (sub === "add") {
@@ -333,7 +357,7 @@ function act(cmd, pos, opt, dir, env) {
         const blocks = new Set([...SIZES[size], ...(risk.length && size !== "investigate" ? ["security-review"] : []), ...list(opt.add)]);
         const route = BLOCKS.filter((b) => blocks.has(b)); // the blocks in their order
         const tasks = read(dir, "tasks");
-        const task = { id: nextId(tasks.map((t) => t.id), "T"), title: need(opt.title, "--title"), size, risk: risk.join(","), route: route.join(","), state: "framed", round: 0 };
+        const task = { id: nextId(dir, "T"), title: need(opt.title, "--title"), size, risk: risk.join(","), route: route.join(","), state: "framed", round: 0 };
         write(dir, "tasks", [...tasks, task]);
         if (opt.add) write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: task.id, decision: `added ${opt.add}`, why }]);
         return `${task.id} framed · ${size}${risk.length ? ` · risk ${risk.join(",")}` : ""} · route ${task.route}`;
@@ -345,7 +369,7 @@ function act(cmd, pos, opt, dir, env) {
           if (k === "state") {
             if (v === "repairing") refuse("start a repair with: sage round <task>");
             move(task, v); // the design's states first; the table is written only if every check below passes
-            const build = list(task.route).includes("build");
+            const build = builds(task);
             if ((v === "verified" && !build) || (v === "concluded" && build)) refuse(`${task.id} ${build ? "has a build block, so it ends at verified" : "has no build block, so it ends at concluded"}`);
             if (v === "verifying" || v === "concluded") {
               const open = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
@@ -360,7 +384,8 @@ function act(cmd, pos, opt, dir, env) {
               const r = judge(dir, task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
-          } else if (["branch", "pr", "title"].includes(k)) task[k] = v;
+          } else if (k === "pr") setPr(task, v);
+          else if (["branch", "title"].includes(k)) task[k] = v;
           else refuse(`task set takes state=, branch=, pr= or title=`);
         }
         write(dir, "tasks", tasks);
@@ -398,9 +423,9 @@ function act(cmd, pos, opt, dir, env) {
         if (WRITERS.includes(role)) {
           if (!branch) refuse(`a ${role} run needs --branch`);
           const other = runs.find((r) => r.branch === branch && r.status === "running" && WRITERS.includes(r.role));
-          if (other) refuse(`${other.id} (${other.role}) still writes ${branch}. One writer per branch.`);
+          if (other) refuse(`${other.id} (${other.role}) still writes ${branch}, and a branch has one writer. Finish that run first (sage run done ${other.id} --status done, blocked, question or failed), or give this run another branch.`);
         }
-        const run = { id: nextId(runs.map((r) => r.id), "R"), task: task.id, role, round: task.round, candidate: opt.candidate ?? "", branch, status: "running", started: now() };
+        const run = { id: nextId(dir, "R"), task: task.id, role, round: task.round, candidate: opt.candidate ?? "", branch, status: "running", started: now() };
         write(dir, "runs", [...runs, run]);
         return `${run.id} running · ${role} on ${task.id}${branch ? ` · ${branch}` : ""}${run.candidate ? ` · candidate ${run.candidate}` : ""}`;
       }
@@ -420,11 +445,13 @@ function act(cmd, pos, opt, dir, env) {
         const { task } = taskOf(dir, need(id, "the task id"));
         const severity = need(opt.severity, "--severity");
         if (!["high", "medium", "low"].includes(severity)) refuse("severity is high, medium or low");
-        const key = opt.key ?? nextId(findings.filter((f) => f.task === task.id).map((f) => f.key), `F-${task.id}-`);
+        const key = opt.key ?? nextId(dir, `F-${task.id}-`);
         const again = findings.find((f) => f.task === task.id && f.key === key);
-        if (again && opt.summary && cell(opt.summary) !== again.summary) write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: task.id, decision: `${key} opened again: ${opt.summary}`, why: `the summary before: ${again.summary}` }]);
-        if (again) Object.assign(again, { status: "open", triage: "", round: task.round, severity, source: opt.source ?? again.source, summary: opt.summary ?? again.summary }); // it came back
-        else findings.push({ task: task.id, key, round: task.round, source: need(opt.source, "--source"), severity, summary: need(opt.summary, "--summary"), status: "open" });
+        // Without --summary, a known key keeps its summary. An empty one is refused, so no summary is ever lost.
+        const summary = opt.summary === undefined ? again?.summary : cell(opt.summary) || refuse(`${key} on ${task.id}: --summary is empty. Give the finding in a few words${again ? ", or leave out --summary to keep its summary" : ""}.`);
+        if (again && summary !== again.summary) write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: task.id, decision: `${key} opened again: ${summary}`, why: `the summary before: ${again.summary}` }]);
+        if (again) Object.assign(again, { status: "open", triage: "", round: task.round, severity, source: opt.source ?? again.source, summary }); // it came back
+        else findings.push({ task: task.id, key, round: task.round, source: need(opt.source, "--source"), severity, summary: need(summary, "--summary"), status: "open" });
         write(dir, "findings", findings);
         return `${key} open${again ? " again" : ""} · ${severity} · ${task.id}`;
       }
@@ -446,10 +473,11 @@ function act(cmd, pos, opt, dir, env) {
       const kind = need(opt.kind, "--kind");
       if (!KINDS.includes(kind)) refuse(`kind is one of ${KINDS.join(", ")}`);
       // A route without build has no commit to judge. Its rows have no SHA, so the merge gate never reads them.
-      const sha = list(task.route).includes("build") ? need(opt.sha, "--sha") : "";
-      if (!sha && opt.sha) refuse(`${task.id} has no build block, so its verdicts name no commit: leave out --sha`);
-      if (sha && notFull(sha)) refuse(notFull(sha));
-      if (opt.pr) task.pr = opt.pr;
+      if (builds(task) && !opt.sha) refuse(`${task.id} has a build block, so each verdict names its commit: add --sha with the full 40-character SHA (git rev-parse <branch>)`);
+      if (!builds(task) && opt.sha) refuse(`${task.id} has no build block, so its verdicts name no commit: leave out --sha`);
+      if (opt.sha && notFull(opt.sha)) refuse(notFull(opt.sha));
+      const sha = opt.sha?.toLowerCase() ?? ""; // as git prints it
+      if (opt.pr) setPr(task, opt.pr);
       write(dir, "tasks", tasks);
       write(dir, "ledger", [...read(dir, "ledger"), { task: task.id, pr: task.pr, sha, kind, cycle: opt.cycle ?? "1", run: opt.run ?? "", at: now() }]);
       const open = NOT_CLEAN.includes(kind) ? [] : read(dir, "findings").filter((f) => f.task === task.id && f.status === "open" && f.triage === "fix");
@@ -458,7 +486,7 @@ function act(cmd, pos, opt, dir, env) {
     case "gate": {
       const gates = read(dir, "gates");
       if (sub === "add") {
-        const g = { id: nextId(gates.map((x) => x.id), "G"), task: id ?? "", question: need(opt.question, "--question"), options: need(opt.options, "--options"), recommendation: need(opt.recommend, "--recommend"), default: opt.default ?? "", at: now() };
+        const g = { id: nextId(dir, "G"), task: id ?? "", question: need(opt.question, "--question"), options: need(opt.options, "--options"), recommendation: need(opt.recommend, "--recommend"), default: opt.default ?? "", at: now() };
         write(dir, "gates", [...gates, g]);
         return `${g.id} open · ${g.question}`;
       }
@@ -478,7 +506,7 @@ function act(cmd, pos, opt, dir, env) {
     case "status":
       return status(dir);
     default:
-      refuse(`unknown command "${cmd ?? ""}". Commands: init, store, standing, task, round, run, finding, verdict, gate, log, status, merge-check, config`);
+      refuse(`unknown command "${cmd ?? ""}". Commands: init, logbook, standing, task, round, run, finding, verdict, gate, log, status, merge-check, config`);
   }
 }
 
@@ -565,7 +593,7 @@ export function withLock(dir, fn) {
     if (waited >= LOCK_WAIT_MS) {
       rmSync(tmp, { recursive: true, force: true });
       const who = h ? `pid ${cell(h.pid)} on ${cell(h.host)} has held ${lock}${Number.isFinite(h.at) ? ` for ${((Date.now() - h.at) / 1000).toFixed(1)} s` : ""}` : `${lock} has no valid owner file`;
-      refuse(`the store is busy: ${who}. Nothing changed. Run the command again; if no sage command runs${h ? ` on ${cell(h.host)}` : ""}, remove ${lock} first.`);
+      refuse(`the logbook is busy: ${who}. Nothing changed. Run the command again; if no sage command runs${h ? ` on ${cell(h.host)}` : ""}, remove ${lock} first.`);
     }
     pause(5 + Math.floor(Math.random() * 20));
   }

@@ -15,14 +15,26 @@ const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const BOOT = Date.now() - uptime() * 1000;
 /** A command that hangs is stopped after this, so that a test fails instead of waiting for ever. */
 const timeout = 10_000;
+/** Every line that the tool printed in this file's tests: the last test reads them. */
+const said = [];
 
 /** A store for one made-up project, in a new root or in home. ok() expects success, no() expects a refusal; both return the output. */
 function store(home = mkdtempSync(join(tmpdir(), "sage-home-")), name = "sage-project-") {
   const project = mkdtempSync(join(tmpdir(), name));
   const env = { ...process.env, SAGE_HOME: home };
-  const run = (...args) => spawnSync("node", [TOOL, ...args, "--project", project], { encoding: "utf8", env, timeout });
+  const run = (...args) => {
+    const r = spawnSync("node", [TOOL, ...args, "--project", project], { encoding: "utf8", env, timeout });
+    said.push(r.stdout, r.stderr);
+    return r;
+  };
   /** Runs a command in its own process and does not wait for it, as a second chief session does. */
-  const go = (...args) => new Promise((done) => execFile("node", [TOOL, ...args, "--project", project], { env, timeout }, (err, stdout, stderr) => done({ status: err ? err.code : 0, stdout, stderr })));
+  const go = (...args) =>
+    new Promise((done) =>
+      execFile("node", [TOOL, ...args, "--project", project], { env, timeout }, (err, stdout, stderr) => {
+        said.push(stdout, stderr);
+        done({ status: err ? err.code : 0, stdout, stderr });
+      }),
+    );
   const ok = (...args) => {
     const r = run(...args);
     assert.equal(r.status, 0, `sage ${args.join(" ")} failed: ${r.stderr}`);
@@ -33,14 +45,20 @@ function store(home = mkdtempSync(join(tmpdir(), "sage-home-")), name = "sage-pr
     assert.equal(r.status, 1, `sage ${args.join(" ")} should be refused, printed: ${r.stdout}`);
     return r.stderr.trim();
   };
-  ok("init");
-  return { home, run, go, ok, no, dir: ok("store") };
+  return { home, project, run, go, ok, no, dir: ok("init").replace(/^\S+ /, "") }; // init prints "logbook <folder>"
 }
 
 /** The rows of one table in a store. */
 function rows(dir, table) {
   const [head, ...lines] = readFileSync(join(dir, `${table}.tsv`), "utf8").split("\n").filter(Boolean);
   return lines.map((line) => Object.fromEntries(line.split("\t").map((v, i) => [head.split("\t")[i], v])));
+}
+
+/** Changes one row of a table by hand, as a person or a lost write could: edit returns the new cells, or null to remove the row. */
+function byHand(dir, table, col, id, edit) {
+  const f = join(dir, `${table}.tsv`);
+  const lines = readFileSync(f, "utf8").split("\n").map((line) => (line.split("\t")[col] === id ? edit(line.split("\t")) : line.split("\t")));
+  writeFileSync(f, lines.filter(Boolean).map((cells) => cells.join("\t")).join("\n"));
 }
 
 /** The output of fn and the milliseconds it took. */
@@ -195,11 +213,12 @@ test("config, gates, standing orders and status", () => {
   assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /Include deleted trips\? → no\tthe user's answer/);
 });
 
-test("a command without a store tells how to make one", () => {
+test("a command without a logbook tells how to make one", () => {
   const home = mkdtempSync(join(tmpdir(), "sage-home-"));
   const r = spawnSync("node", [TOOL, "status", "--project", tmpdir()], { encoding: "utf8", env: { ...process.env, SAGE_HOME: home } });
+  said.push(r.stderr);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /no store for this project\. Run: sage init/);
+  assert.equal(r.stderr, `sage: no logbook for the project ${tmpdir()}. Run: sage init --project ${tmpdir()}\n`);
   assert.equal(existsSync(join(home, "config.json")), false);
   writeFileSync(join(home, "x"), ""); // the root holds only stores and config.json; a stray file is ignored
   assert.match(spawnSync("node", [TOOL, "merge-check", "--sha", SHA], { encoding: "utf8", env: { ...process.env, SAGE_HOME: home } }).stderr, /no verdicts recorded/);
@@ -261,7 +280,7 @@ test("two implementer runs on one branch at once: exactly one is refused, every 
   for (let k = 1; k <= 10; k++) {
     const out = await Promise.all([1, 2].map(() => s.go("run", "add", "T1", "--role", "implementer", "--branch", `feat-${k}`)));
     outcomes.push(out.map((r) => r.status).sort().join(" and "));
-    assert.match(out.find((r) => r.status === 1)?.stderr ?? "", new RegExp(`still writes feat-${k}\\. One writer per branch\\.`));
+    assert.match(out.find((r) => r.status === 1)?.stderr ?? "", new RegExp(`still writes feat-${k}, and a branch has one writer\\.`));
   }
   assert.deepEqual(outcomes, Array(10).fill("0 and 1"));
 });
@@ -295,7 +314,7 @@ test("a holder that may be alive keeps the lock: a waiter waits for it, or refus
   let h = await hold(s.dir, 4500);
   let [r, ms] = timed(() => s.run("task", "T1", "set", "branch=while-held"));
   assert.equal(r.status, 1);
-  assert.match(r.stderr, new RegExp(`^sage: the store is busy: pid ${h.pid} on (\\S+) has held (\\S+\\.lock) for \\d+\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on \\1, remove \\2 first\\.\\n$`));
+  assert.match(r.stderr, new RegExp(`^sage: the logbook is busy: pid ${h.pid} on (\\S+) has held (\\S+\\.lock) for \\d+\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on \\1, remove \\2 first\\.\\n$`));
   assert.ok(ms >= 3000 && ms < 5000, `refused after ${ms} ms; the hook timeout is 10 s`);
   assert.deepEqual(await h.exited, [0, null], "the holder finished with its lock");
   assert.equal(rows(s.dir, "tasks")[0].branch, "");
@@ -309,19 +328,19 @@ test("a holder that may be alive keeps the lock: a waiter waits for it, or refus
   const lock = crash(s.dir, { host: "other-host", boot: 1 }); // this machine cannot check a process on another one
   [r, ms] = timed(() => s.run("task", "T1", "set", "branch=other-host"));
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /^sage: the store is busy: pid \d+ on other-host has held \S+\.lock for/);
+  assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on other-host has held \S+\.lock for/);
   assert.ok(ms >= 3000 && ms < 5000, `refused after ${ms} ms`);
   assert.equal(existsSync(lock), true);
   rmSync(lock, { recursive: true });
   assert.match(s.ok("task", "T1", "set", "branch=after-removal"), /^T1 framed/);
 });
 
-test("merge-check, status, store and standing take no lock: they work while another command holds it", async () => {
+test("merge-check, status, logbook and standing take no lock: they work while another command holds it", async () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   const h = await hold(s.dir, 4000);
-  const [out, ms] = timed(() => [s.ok("merge-check", "--sha", SHA), s.ok("status").split("\n")[1], s.ok("store"), s.ok("standing").split("\n")[0]]);
+  const [out, ms] = timed(() => [s.ok("merge-check", "--sha", SHA), s.ok("status").split("\n")[1], s.ok("logbook"), s.ok("standing").split("\n")[0]]);
   assert.deepEqual(out, ["T1 may merge: 1 clean cycle on this SHA", "tasks   1 · framed 1", s.dir, "# Standing orders"]);
   assert.ok(ms < 3000, `${ms} ms: a command that waited for the lock would refuse at 3 s`);
   await h.exited;
@@ -329,11 +348,7 @@ test("merge-check, status, store and standing take no lock: they work while anot
 
 test("ids after a gap are new: a lost row never gives its id again, and a new finding never reopens an old one", () => {
   const s = store();
-  /** Removes one row, as a write lost before the lock did. */
-  const lose = (table, col, id) => {
-    const f = join(s.dir, `${table}.tsv`);
-    writeFileSync(f, readFileSync(f, "utf8").split("\n").filter((line) => line.split("\t")[col] !== id).join("\n"));
-  };
+  const lose = (table, col, id) => byHand(s.dir, table, col, id, () => null); // as a write lost before the lock did
   s.ok("task", "add", "--title", "a", "--size", "small");
   s.ok("task", "add", "--title", "b", "--size", "small");
   lose("tasks", 0, "T1");
@@ -416,7 +431,7 @@ test("an investigation ends at concluded, after a clean evidence review recorded
 
   const b = store();
   b.ok("task", "add", "--title", "t", "--size", "small");
-  assert.match(b.no("verdict", "T1", "--kind", "checks-pass"), /missing --sha/);
+  assert.equal(b.no("verdict", "T1", "--kind", "checks-pass"), "sage: T1 has a build block, so each verdict names its commit: add --sha with the full 40-character SHA (git rev-parse <branch>)");
   toReviewing(b, "T1");
   b.ok("task", "T1", "set", "state=verifying");
   assert.match(b.no("task", "T1", "set", "state=concluded"), /T1 has a build block, so it ends at verified/);
@@ -442,7 +457,7 @@ test("S1: a waiter takes the owner file's name only from the lock folder, so no 
 
   lock = plant(s.dir, "x.json", { file: "../../important.txt", pid: spawnSync("node", ["-e", ""]).pid, host: hostname(), boot: BOOT, start: 0, at: 0 });
   const r = await s.go("task", "T1", "set", "branch=odd-name");
-  assert.equal(r.stderr, `sage: the store is busy: ${lock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${lock} first.\n`, "an owner file not named <uuid>.json is never removed");
+  assert.equal(r.stderr, `sage: the logbook is busy: ${lock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${lock} first.\n`, "an owner file not named <uuid>.json is never removed");
   assert.equal(r.status, 1);
   assert.deepEqual([readFileSync(victim, "utf8"), readdirSync(lock)], ["keep me", ["x.json"]]);
 });
@@ -454,8 +469,8 @@ test("S2: a planted lock never hangs a command, the refusal says which folder to
   execFileSync("mkfifo", [join(fifoLock, `${randomUUID()}.json`)]);
   const liveLock = plant(live.dir, `${randomUUID()}.json`, { pid: 1, host: hostname(), boot: BOOT, start: Date.now(), at: Date.now() }); // alive, and not sage
   const [[a, b], ms] = await (async (t0) => [await Promise.all([fifo.go("log", "-", "x", "--why", "w"), live.go("log", "-", "x", "--why", "w")]), Date.now() - t0])(Date.now());
-  assert.equal(a.stderr, `sage: the store is busy: ${fifoLock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${fifoLock} first.\n`);
-  assert.match(b.stderr, new RegExp(`^sage: the store is busy: pid 1 on ${hostname()} has held ${liveLock} for \\d\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on ${hostname()}, remove ${liveLock} first\\.\\n$`));
+  assert.equal(a.stderr, `sage: the logbook is busy: ${fifoLock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${fifoLock} first.\n`);
+  assert.match(b.stderr, new RegExp(`^sage: the logbook is busy: pid 1 on ${hostname()} has held ${liveLock} for \\d\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on ${hostname()}, remove ${liveLock} first\\.\\n$`));
   assert.deepEqual([a.status, b.status], [1, 1]);
   assert.ok(ms >= 3000 && ms < 6000, `both refused after ${ms} ms`);
   rmSync(liveLock, { recursive: true }); // what the line says to do
@@ -573,8 +588,7 @@ test("F2: with --pr, every task of that pull request must pass on the SHA, so a 
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", old, "--kind", kind, "--pr", "5");
   s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass"); // the head after a repair push, recorded under the tiny task
   assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T2 may merge: 1 clean cycle on this SHA", "without --pr, as the hook calls it until T4");
-  const todo = "To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.";
-  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass; 1 fails. ${s.dir} T1: no checks-pass on this SHA. Run the checks on it and record checks-pass. ${todo}`);
+  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass; 1 fails. ${s.dir} T1 is a task of PR 5 but has no verdicts on this SHA. Record them, or, if it is no longer part of PR 5, clear its PR (sage task T1 set pr=). To merge, make each one pass.`);
   assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "6"), `sage: no task of PR 6 has verdicts on a1b2c3d: only ${s.dir} T2 has. Record PR 6's verdicts under its own task (sage verdict <T> --sha <sha> --pr 6), or set its PR: sage task <T> set pr=6.`);
   assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "#5"), "sage: --pr is the pull request's number, for example --pr 5");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
@@ -657,4 +671,101 @@ test("F-R44-3: verified counts only the task's own verdicts on the SHA, not anot
   assert.match(s.no("task", "T1", "set", "state=verified"), /^sage: T1 is not verified on a1b2c3d: T1: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass\./);
   for (const kind of ["review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.match(s.ok("task", "T1", "set", "state=verified"), /^T1 verified/);
+});
+
+test("QA-1: an investigation takes no PR number, and the gate names the way out for one that has it", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "why is the hook slow", "--size", "investigate");
+  s.ok("task", "add", "--title", "make the hook fast", "--size", "tiny");
+  const none = "sage: T1 is an investigation: it changes no code, so it has no pull request. A build is its own task: sage task add --size tiny, small or large, then give that task the PR.";
+  assert.equal(s.no("task", "T1", "set", "pr=7"), none);
+  assert.equal(s.no("verdict", "T1", "--kind", "evidence-clean", "--pr", "7"), none);
+  assert.deepEqual([rows(s.dir, "tasks")[0].pr, rows(s.dir, "ledger")], ["", []], "a refused command writes nothing");
+  s.ok("task", "T2", "set", "pr=7");
+  s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass");
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--pr", "7"), "T2 may merge: 1 clean cycle on this SHA");
+
+  byHand(s.dir, "tasks", 0, "T1", (cells) => cells.with(7, "7")); // an investigation that got PR 7 before this check
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "7"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 7, and each must pass; 1 fails. ${s.dir} T1 is an investigation, so it has no pull request, but it has PR 7: clear its PR (sage task T1 set pr=). To merge, make each one pass.`);
+  assert.equal(s.ok("task", "T1", "set", "pr="), "T1 framed · investigate · round 0 · route investigate,evidence-review", "what the line says to do");
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--pr", "7"), "T2 may merge: 1 clean cycle on this SHA");
+});
+
+test("F-R49-2: with --pr, a task of the PR without verdicts on the SHA, also an abandoned one, is named with its way out", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "old", "--size", "tiny");
+  s.ok("task", "add", "--title", "new", "--size", "tiny");
+  s.ok("verdict", "T1", "--sha", "0123456789abcdef0123456789abcdef01234567", "--kind", "checks-pass", "--pr", "9");
+  s.ok("task", "T1", "set", "state=abandoned");
+  s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass", "--pr", "9");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "9"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 9, and each must pass; 1 fails. ${s.dir} T1 (abandoned) is a task of PR 9 but has no verdicts on this SHA. Record them, or, if it is no longer part of PR 9, clear its PR (sage task T1 set pr=). To merge, make each one pass.`, "a new commit is no way out here");
+  s.ok("task", "T1", "set", "pr=");
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--pr", "9"), "T2 may merge: 1 clean cycle on this SHA");
+});
+
+test("QA-3: a bad count gives the reason for its value, and a SHA in capitals names the same commit", () => {
+  const s = store();
+  assert.equal(s.no("config", "max_agents=-1"), 'sage: max_agents must be a whole number of 1 or more, not "-1"');
+  assert.equal(s.no("config", "arena=abc"), 'sage: arena must be a whole number of 1 or more, not "abc"');
+  assert.equal(s.no("config", "max_rounds=1.5"), 'sage: max_rounds must be a whole number of 1 or more, not "1.5"');
+  assert.equal(s.no("config", "autopilot_cycles=00"), "sage: autopilot_cycles must be a whole number of 1 or more: with 0, a merge would need no review");
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  assert.equal(s.ok("verdict", "T1", "--sha", SHA.toUpperCase(), "--kind", "checks-pass"), "T1 checks-pass · a1b2c3d · cycle 1");
+  assert.equal(rows(s.dir, "ledger")[0].sha, SHA, "the ledger holds it as git prints it");
+  assert.deepEqual([s.ok("merge-check", "--sha", SHA.toUpperCase()), s.ok("merge-check", "--sha", SHA)], Array(2).fill("T1 may merge: 1 clean cycle on this SHA"));
+});
+
+test("QA-4: an id never comes back while a row of the logbook still names it", () => {
+  const s = store();
+  const lose = (table, col, id) => byHand(s.dir, table, col, id, () => null);
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("task", "add", "--title", "b", "--size", "small");
+  s.ok("run", "add", "T2", "--role", "qa");
+  s.ok("run", "add", "T2", "--role", "qa");
+  s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass", "--run", "R2");
+  lose("runs", 0, "R2"); // the highest run, which the ledger still names
+  assert.match(s.ok("run", "add", "T2", "--role", "qa"), /^R3 running/);
+  s.ok("finding", "add", "T2", "--source", "qa", "--severity", "low", "--summary", "first");
+  s.ok("finding", "add", "T2", "--key", "F-T2-1", "--severity", "medium", "--summary", "first, worse");
+  lose("findings", 1, "F-T2-1"); // the decision trail still names it
+  assert.equal(s.ok("finding", "add", "T2", "--source", "qa", "--severity", "low", "--summary", "second"), "F-T2-2 open · low · T2");
+  s.ok("gate", "add", "T2", "--question", "a?", "--options", "yes|no", "--recommend", "no");
+  s.ok("log", "T2", "G1 was answered by phone", "--why", "the user was away");
+  lose("gates", 0, "G1");
+  assert.match(s.ok("gate", "add", "T2", "--question", "b?", "--options", "yes|no", "--recommend", "no"), /^G2 open/);
+  lose("tasks", 0, "T2"); // the highest task, which runs, verdicts and findings still name
+  assert.match(s.ok("task", "add", "--title", "c", "--size", "small"), /^T3 framed/);
+});
+
+test("QA-5: a refusal says what to do: finish the other writer or use another branch, and give the full SHA", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  s.ok("run", "add", "T1", "--role", "implementer", "--branch", "feat-json");
+  assert.equal(s.no("run", "add", "T1", "--role", "designer", "--branch", "feat-json"), "sage: R1 (implementer) still writes feat-json, and a branch has one writer. Finish that run first (sage run done R1 --status done, blocked, question or failed), or give this run another branch.");
+  assert.equal(s.no("verdict", "T1", "--kind", "checks-pass"), "sage: T1 has a build block, so each verdict names its commit: add --sha with the full 40-character SHA (git rev-parse <branch>)");
+  assert.equal(s.no("merge-check"), "sage: merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>");
+  s.ok("run", "done", "R1", "--status", "done");
+  assert.match(s.ok("run", "add", "T1", "--role", "designer", "--branch", "feat-json"), /^R2 running · designer/, "what the line says to do");
+});
+
+test("F-R49-1: an empty --summary is refused, so a finding opened again never loses its summary", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "the first summary");
+  assert.equal(s.no("finding", "add", "T1", "--key", "F-T1-1", "--source", "code", "--severity", "medium", "--summary", ""), "sage: F-T1-1 on T1: --summary is empty. Give the finding in a few words, or leave out --summary to keep its summary.");
+  assert.equal(s.no("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", " \t "), "sage: F-T1-2 on T1: --summary is empty. Give the finding in a few words.");
+  const findings = () => rows(s.dir, "findings").map((f) => `${f.key} ${f.source} ${f.severity} ${f.status} ${f.summary}`);
+  assert.deepEqual(findings(), ["F-T1-1 qa low open the first summary"]);
+  assert.equal(s.ok("finding", "add", "T1", "--key", "F-T1-1", "--source", "code", "--severity", "medium"), "F-T1-1 open again · medium · T1");
+  assert.deepEqual([findings(), rows(s.dir, "decisions")], [["F-T1-1 code medium open the first summary"], []], "the summary stays, so the trail has nothing to keep");
+});
+
+// Keep this test last: it reads every line that the tests above made the tool print.
+test("QA-2: every line the tool prints calls a project's record its logbook, never its store", () => {
+  const s = store();
+  assert.equal(s.ok("init"), `logbook ${s.dir}`);
+  assert.equal(s.ok("logbook"), s.dir);
+  assert.match(s.no("store"), /^sage: unknown command "store"\. Commands: init, logbook, standing, /);
+  assert.ok(said.length > 500, `${said.length} lines: run the whole file, so this test reads the lines of every test`);
+  assert.deepEqual(said.filter((line) => /\bstores?\b/i.test(line) && !line.startsWith('sage: unknown command "store"')), []);
 });
