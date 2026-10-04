@@ -61,7 +61,7 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 - A cycle is one full set of fresh reviews and QA on one head SHA. A new commit starts again from cycle 1.
 - **Verified** needs one clean cycle: `sage task <T> set state=verified` checks it. Do not run more cycles unless autopilot is on.
 - **Autopilot off** (the start): the work stops at verified, and the user merges the pull request.
-- **Autopilot on** (the user says "autopilot on"): run fresh cycles until `sage merge-check --sha <sha>` passes (2 clean cycles by default), then merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`, then tell the user in one line with the link.
+- **Autopilot on** (the user starts a message with "autopilot on"): run fresh cycles until `sage merge-check --sha <sha>` passes (2 clean cycles by default), then merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`, then tell the user in one line with the link.
 - Always ask the user first, also on autopilot: a deploy, deleting data, a force-push, closing a pull request that is not ours.
 
 ## The arena

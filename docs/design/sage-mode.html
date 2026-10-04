@@ -116,7 +116,7 @@ flowchart TB
 <tr><td>A coordinator that owns the program, never the code</td><td>pstack orchestrate, Cursor projects</td><td>The chief of staff has no edit tools. In phrase mode, the hook blocks its edits.</td></tr>
 <tr><td>"The brief is the product." A missing field stops the spawn</td><td>pstack orchestrate</td><td>A brief template with required fields. The hook refuses an agent spawn when a field is missing.</td></tr>
 <tr><td>Verdicts recorded by head SHA. A new commit voids them</td><td>pstack ledger, Orchestrator "merge the exact checked commit"</td><td>A ledger in the store. A merge is blocked unless the current SHA has the verdicts its route needs.</td></tr>
-<tr><td>A mode switched on by name, with playbooks copied into the to-do list</td><td>poteto mode</td><td>"sage mode" in any message. Each route's blocks go into the task list.</td></tr>
+<tr><td>A mode switched on by name, with playbooks copied into the to-do list</td><td>poteto mode</td><td>"sage mode" at the start of a message. Each route's blocks go into the task list.</td></tr>
 <tr><td>Scale the ceremony to the unit</td><td>pstack, Anthropic research system</td><td>Routes come in sizes: tiny, small, large, program.</td></tr>
 <tr><td>A PE that separates "changes" from "questions for you"</td><td>Orchestrator, after the PE loop failed to converge</td><td>The same verdict shape. A later PE pass checks its earlier asks first.</td></tr>
 <tr><td>Code review and security review side by side. No dropped findings</td><td>Orchestrator ORC-021 and ORC-028</td><td>Each finding gets a triage: fix, dismiss with a reason, or ask you. A task can't finish with an open finding.</td></tr>
@@ -319,7 +319,7 @@ flowchart TB
   R -->|"3 repair rounds and still findings"| S["Stop and ask you"]
 </pre><p class="cap">A cycle is a full set of fresh reviewers and QA on one head SHA. Each cycle uses new agents that didn't see the earlier verdicts.</p></div>
 <ul>
-  <li><strong>"autopilot on"</strong> and <strong>"autopilot off"</strong> switch it in a message. "autopilot off" is the kill switch, and work in flight stops at "verified".</li>
+  <li><strong>"autopilot on"</strong> at the start of a message switches it on, and <strong>"autopilot off"</strong> anywhere in a message switches it off. "autopilot off" is the kill switch, and work in flight stops at "verified".</li>
   <li><strong>Still always ask you</strong>, even on autopilot: deploys, deleting data, force-pushes, and closing pull requests that aren't sage mode's. These can't be undone. A merge can be reverted.</li>
   <li><strong>Risk flags</strong> (auth, personal data, schema, money, secrets) don't stop autopilot. They add the security review to every cycle.</li>
 </ul>

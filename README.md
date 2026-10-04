@@ -52,7 +52,7 @@ sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-start-dark.svg">
-  <img alt="The toad sage's tip: start a message with “sage mode”. That is the whole hand sign. In the middle of a sentence, it does nothing. “sage mode off” works anywhere." src="docs/assets/tip-start-light.svg" width="100%">
+  <img alt="The toad sage's tip: start a message with “sage mode”. That is the whole hand sign. In the middle of a sentence, it does nothing. Start a message with “sage mode off” to switch it off." src="docs/assets/tip-start-light.svg" width="100%">
 </picture>
 
 That's all. The chief of staff asks you at most one question per task, then comes back with results and pull requests. From your phone, it works the same through [Remote Control](#remote-control).
@@ -66,7 +66,7 @@ This is one session, step by step. It is an illustration with sample data.
   <img alt="Your first training: an illustrative sage mode session with five numbered notes." src="docs/assets/walkthrough-light.svg" width="100%">
 </picture>
 
-1. **Switch it on.** Start a message with "sage mode", then your request. sage mode stays on until you say "sage mode off", anywhere in a message.
+1. **Switch it on.** Start a message with "sage mode", then your request. sage mode stays on until you start a message with "sage mode off".
 2. **The chief frames each task.** It gives each task a size (tiny, small, large or investigate) and risk flags, such as `data` for personal data or `input` for outside input. The size and the flags give the task its [route](#routes): the steps it must go through.
 3. **One product question, at most.** A product question is one whose answer you would notice: what you see, which data is kept, who can do what. Each comes with a recommendation and a default. Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
 4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds.
@@ -164,10 +164,10 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 
 | Word | Meaning |
 | --- | --- |
-| **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. "sage mode off", anywhere in a message, turns it off. |
+| **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. A message that starts with "sage mode off" turns it off. |
 | **Chief of staff** | The session's coordinator. It plans, briefs, records and asks. It never edits files. |
 | **Route** | The steps a task goes through, set by its size and risk flags. |
-| **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review. |
+| **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review to a task that changes code: every size except investigate. |
 | **Brief** | What an agent gets: goal, scope, context, decisions, acceptance, how to verify, budget, what is forbidden, the report shape, and the standing orders. |
 | **Report** | What an agent returns: status, result, evidence, findings, questions, what was not verified, and the branch. |
 | **Finding** | A problem that a review or QA found, with a severity: high, medium or low. |
@@ -184,15 +184,15 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 
 | Say | What happens |
 | --- | --- |
-| `sage mode` + a request, at the start of a message | The session becomes your chief of staff and starts the work. |
+| `sage mode.` + a request, at the start of a message | The session becomes your chief of staff and starts the work. |
 | Your answer to a question, for example `no` | The chief applies your decision and goes on. |
 | `status` | Where each task is: running, waiting for you, verified. |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
 | `autopilot on` at the start of a message, or `sage mode autopilot` | Verified pull requests merge by themselves after 2 clean cycles. |
-| `autopilot off`, anywhere in a message | Verified pull requests wait for you again. |
-| `sage mode off`, anywhere in a message | A normal session again. |
+| `autopilot off` or `stop autopilot`, anywhere in a message | Verified pull requests wait for you again. |
+| `sage mode off` at the start of a message | A normal session again. |
 
-Only the start of a message switches something on: "sage mode" or "autopilot on" in the middle of a sentence switches nothing, so you can talk about them freely. "sage mode off" and "autopilot off" work anywhere in a message, because a wrong "off" is safe.
+Only the start of a message switches a mode: "sage mode", "sage mode off" and "autopilot on". A mention in the middle of a sentence, or in an agent's report, switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after the phrase: "autopilot on?" and "autopilot on main" switch nothing. Only "autopilot off" works anywhere in a message, because a missed "off" lets merges go on.
 
 To make every session in a folder start in sage mode, put this in the folder's `.claude/settings.json`:
 
