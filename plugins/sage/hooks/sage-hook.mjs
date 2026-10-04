@@ -9,7 +9,8 @@
 //     once, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
 //     cycles that the ledger records for it (the merge check). The merge rule and the push rule are allow-lists: a
 //     command that names a merge or runs a push is refused unless it is exactly the merge form or the push form, or the
-//     merge text stands only in a harmless command's text.
+//     merge text stands only in a harmless command's text. One case asks the user instead of a refusal: the chief's
+//     first upload of a one-commit main or master to a remote that has no such branch (firstUpload).
 //   - A sage agent may finish only with the full report of the sage:report skill.
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
@@ -161,7 +162,7 @@ export function handle(input, state, slots) {
     const cap = stateTool.config().max_agents;
     if (!slots.take(cap, input.tool_use_id ?? String(Date.now()))) return deny(event, `${cap} sage agents are running, and the cap is ${cap}. Wait for one to finish, then start this one.`);
   }
-  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd());
+  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
   return undefined;
 }
 
@@ -186,7 +187,7 @@ function pushProblem(command, cwd) {
   for (const { cmd, words, bodies } of runnable(commands)) {
     if (cmd.words[0] === "cd" && cmd.words.length === 2) dir = resolve(dir, cmd.words[1]);
     const git = words.findIndex((w, k) => /(?:^|\/)git$/.test(w) && /^push$/i.test(subcommand(words, k + 1)));
-    const why = git >= 0 ? pushForm(words, git, dir) : [...words, ...bodies].some((w) => /\s/.test(w) && PUSH_TEXT.test(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
+    const why = git >= 0 ? pushForm(words, git, dir) : words[0] === "gh" && words[1] === "api" && words.some((w) => MAIN_FIELD.test(w)) ? TO_MAIN : [...words, ...bodies].some((w) => /\s/.test(w) && PUSH_TEXT.test(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
     if (why) return refuse(why);
   }
   return undefined;
@@ -250,18 +251,80 @@ function pushForm(words, git, dir) {
   return branch && MAIN_REF.test(branch) ? `this checkout is on ${branch}. Push from the task's worktree, on the task's branch.` : undefined;
 }
 
+/** The output of a git command in dir. It throws on an error, and after 5 seconds (git ls-remote can wait on the network). */
+const git = (dir, ...args) =>
+  execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_TERMINAL_PROMPT: "0" } }).trim();
+
 /** The branch that the checkout at dir is on, or undefined when git cannot read it. */
 function branchAt(dir) {
   try {
-    return execFileSync("git", ["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined } }).trim();
+    return git(dir, "rev-parse", "--abbrev-ref", "HEAD");
   } catch {
     return undefined;
   }
 }
 
+/** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
+const MAIN_FIELD = /^(?:-[fF]|--(?:raw-)?field=)?ref=(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
+
+/**
+ * The one exception to the push rule: the first upload of main or master to a blank remote. The whole command is
+ * git [-C <dir>] push [-u] origin main|master, or gh api repos/<o>/<r>/git/refs -f ref=refs/heads/main|master
+ * -f sha=<sha> (a POST) for the repository of origin. Origin has no branch of that name, and the local branch holds
+ * exactly one commit (for gh api, the commit <sha>). Then the user decides in Claude Code's permission prompt.
+ * Returns the reason for that prompt, or undefined: then the push rule refuses the command as before.
+ */
+function firstUpload(command, cwd) {
+  try {
+    const commands = shellCommands(command);
+    if (commands.length !== 1 || commands[0].bodies.length) return undefined;
+    const words = commands[0].words;
+    let dir = cwd;
+    let branch;
+    let sha;
+    if (words[0] === "git") {
+      let k = 1;
+      if (words[1] === "-C") [dir, k] = [resolve(cwd, words[2]), 3];
+      if (words[k++] !== "push") return undefined;
+      if (words[k] === "-u" || words[k] === "--set-upstream") k++;
+      if (words[k] !== "origin" || words.length !== k + 2) return undefined;
+      branch = words[k + 1];
+    } else if (words[0] === "gh" && words[1] === "api") {
+      const fields = {};
+      let endpoint;
+      let method = "POST"; // gh api sends a POST when the command has fields
+      for (let k = 2; k < words.length; k++) {
+        const eq = words[k].startsWith("--") ? words[k].indexOf("=") : -1;
+        const [flag, value] = eq > 0 ? [words[k].slice(0, eq), words[k].slice(eq + 1)] : [words[k], undefined];
+        if (/^(?:-X|--method)$/.test(flag)) method = (value ?? words[++k] ?? "").toUpperCase();
+        else if (/^(?:-[fF]|--field|--raw-field)$/.test(flag)) {
+          const field = value ?? words[++k] ?? "";
+          fields[field.split("=")[0]] = field.slice(field.indexOf("=") + 1);
+        } else if (endpoint === undefined && !flag.startsWith("-")) endpoint = flag;
+        else return undefined;
+      }
+      const repo = /^\/?repos\/([\w.-]+\/[\w.-]+)\/git\/refs$/.exec(endpoint ?? "")?.[1]?.toLowerCase();
+      if (!repo || method !== "POST" || Object.keys(fields).sort().join() !== "ref,sha" || !/^[0-9a-f]{40}$/.test(fields.sha)) return undefined;
+      const origin = git(dir, "remote", "get-url", "origin").replace(/(?:\.git)?\/*$/, "").toLowerCase();
+      if (!origin.endsWith(`/${repo}`) && !origin.endsWith(`:${repo}`)) return undefined;
+      branch = /^refs\/heads\/(main|master)$/.exec(fields.ref)?.[1];
+      sha = fields.sha;
+    } else return undefined;
+    if (!/^(?:main|master)$/.test(branch ?? "")) return undefined;
+    if (git(dir, "ls-remote", "--heads", "origin", `refs/heads/${branch}`) !== "") return undefined;
+    if (git(dir, "rev-list", "--count", `refs/heads/${branch}`) !== "1") return undefined;
+    if (sha && git(dir, "rev-parse", `refs/heads/${branch}`) !== sha) return undefined;
+    return `this is the first upload of ${branch} to a blank remote: origin has no ${branch}, and the local ${branch} holds one commit. The user must approve it.`;
+  } catch {
+    return undefined; // git failed or timed out, or the hook cannot read the command: the push rule refuses it
+  }
+}
+
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
-function gitGate(event, command, state, cwd) {
+function gitGate(event, command, state, cwd, main) {
+  const first = main ? firstUpload(command, cwd) : undefined; // an agent never gets the exception
+  if (first) return decide(event, "ask", first);
   const push = pushProblem(command, cwd);
   if (push) return deny(event, push);
   const merge = mergeIn(command);
@@ -542,8 +605,9 @@ export function chiefText() {
 }
 
 const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
-/** A refusal. Its reason can quote the command, so its control characters are escaped: they can change what a terminal shows. */
-const deny = (event, reason) => ({ hookSpecificOutput: { hookEventName: event, permissionDecision: "deny", permissionDecisionReason: `sage: ${String(reason).replace(/\p{Cc}/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}` } });
+/** A refusal, or a question to the user. Its reason can quote the command, so its control characters are escaped: they can change what a terminal shows. */
+const decide = (event, decision, reason) => ({ hookSpecificOutput: { hookEventName: event, permissionDecision: decision, permissionDecisionReason: `sage: ${String(reason).replace(/\p{Cc}/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}` } });
+const deny = (event, reason) => decide(event, "deny", reason);
 
 /**
  * The agent cap. Each running sage agent holds one slot: a directory that mkdir creates atomically, so agents that
