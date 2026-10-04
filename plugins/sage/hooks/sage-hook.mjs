@@ -15,13 +15,20 @@ import { fileURLToPath } from "node:url";
 import { config, mergeCheck } from "../skills/sage/sage.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-// A phrase that switches something on must start the message, so that a mention ("Naruto in sage mode", "should I
-// turn autopilot on?") switches nothing. A phrase that switches something off works anywhere: a wrong "off" is safe.
+// The mode phrases. "sage mode", "sage mode off" and "autopilot on" count only at the start of the message, so that a
+// mention, a quote or an agent's report ("<task-notification>…") switches nothing: "sage mode off" also drops the git
+// gates. An on-phrase must stand alone or end at ".", ",", ":", ";", "!" or the end of its line, so "autopilot on?"
+// and "autopilot on main" switch nothing. Only "autopilot off" works anywhere, because a missed off is the unsafe one.
+// No mode-phrase regex has the m flag: with it, "^" would also match the start of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
-const SAGE_ON = new RegExp(`${START}(?:enter\\s+)?sage mode\\b(?!\\s+off\\b)`, "i");
-const SAGE_OFF = /\bsage mode off\b/i;
-const AUTOPILOT_ON = new RegExp(`${START}(?:sage mode[\\s.,:;!-]+)?autopilot on\\b|${START}sage mode autopilot\\b`, "i");
-const AUTOPILOT_OFF = /\bautopilot off\b/i;
+const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
+const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
+const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode`;
+const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
+const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
+const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off\\b`, "i");
+const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
+const AUTOPILOT_OFF = /\b(?:autopilot(?:\s*:\s*|\s+is\s+|\s+)off|(?:turn\s+off|stop)\s+autopilot)\b/i;
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
@@ -92,7 +99,7 @@ function gitGate(event, command, state) {
   if (new RegExp(`${PUSH}[^;&|]*\\s(--force\\S*|-f)(?=\\s|$)`).test(command)) return deny(event, "sage mode never force-pushes. Push a new commit instead.");
   if (new RegExp(`${PUSH}[^;&|]*[\\s:](main|master)(?=\\s|$|[;&|])`).test(command)) return deny(event, "work reaches main only through a pull request. Push the task's branch and open a pull request.");
   if (!/\bgh\s+pr\s+merge\b/.test(command)) return undefined;
-  if (!state.autopilot) return deny(event, 'autopilot is off, so the user merges. Report the pull request as ready. The user turns it on with "autopilot on".');
+  if (!state.autopilot) return deny(event, 'autopilot is off, so the user merges. Report the pull request as ready. The user turns it on with a message that starts with "autopilot on".');
   const sha = /--match-head-commit(?:=|\s+)([0-9a-f]{7,40})\b/.exec(command)?.[1];
   if (!sha) return deny(event, "merge only the checked commit: add --match-head-commit <the head SHA that the ledger verified>.");
   const verdict = mergeCheck(sha);
