@@ -59,7 +59,7 @@ sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 </picture>
 </a>
 
-That's all. The chief of staff asks you at most one question per task, then comes back with results and pull requests. From your phone, it works the same through [Remote Control](#remote-control).
+That's all. The chief of staff interrupts you at most once per task: one batch of product questions, each with its recommendation and a default. Irreversible actions still get their own yes. Then the chief comes back with results and pull requests. From your phone, it works the same through [Remote Control](#remote-control).
 
 ## Learn sage in 5 minutes
 
@@ -74,7 +74,17 @@ This is one session, step by step. It is an illustration with sample data.
 
 1. **Switch it on.** Start a message with "sage mode", then your request. sage mode stays on until you start a message with "sage mode off".
 2. **The chief frames each task.** It gives each task a size (tiny, small, large or investigate) and risk flags, such as `data` for personal data or `input` for outside input. The size and the flags give the task its [route](#routes): the steps it must go through.
-3. **One product question, at most.** A product question is one whose answer you would notice: what you see, which data is kept, who can do what. Each comes with a recommendation and a default. Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
+3. **One batch of questions, at most.** The chief interrupts you at most once per task. It puts all the product questions of the task in that one batch, and each part comes with a recommendation and a default. A product question is one whose answer you would notice: what you see, which data is kept, who can do what. Four exceptions can interrupt you again:
+   - An irreversible action always gets its own yes.
+   - A new fact that changes an earlier answer can bring the question back.
+   - A large task's design gets your approval after the PE check.
+   - An escalation: the work finds something that the chief cannot decide alone. For example:
+     - The task is held or needs a new plan.
+     - An agent stops at a new product question.
+     - A finding needs a decision.
+     - The arena candidates do not converge.
+
+   Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
 4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds.
 5. **You get results.** You get evidence (the commands that ran, screenshots), what was not checked, and a pull request. You merge it, or autopilot merges it.
 
