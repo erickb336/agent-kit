@@ -15,9 +15,12 @@ import { fileURLToPath } from "node:url";
 import { config, mergeCheck } from "../skills/sage/sage.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SAGE_ON = /\bsage mode\b(?!\s+off\b)/i;
+// A phrase that switches something on must start the message, so that a mention ("Naruto in sage mode", "should I
+// turn autopilot on?") switches nothing. A phrase that switches something off works anywhere: a wrong "off" is safe.
+const START = String.raw`^[\s"'“‘*_>-]*`;
+const SAGE_ON = new RegExp(`${START}(?:enter\\s+)?sage mode\\b(?!\\s+off\\b)`, "i");
 const SAGE_OFF = /\bsage mode off\b/i;
-const AUTOPILOT_ON = /\bautopilot on\b|\bsage mode autopilot\b/i;
+const AUTOPILOT_ON = new RegExp(`${START}(?:sage mode[\\s.,:;!-]+)?autopilot on\\b|${START}sage mode autopilot\\b`, "i");
 const AUTOPILOT_OFF = /\bautopilot off\b/i;
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
