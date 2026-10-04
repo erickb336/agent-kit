@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="sage: your chief of staff for Claude Code. The chief of staff above its team: designer, PE, implementer, arena judge, code review, security, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
+  <img alt="sage: your chief of staff for Claude Code. The toad sage, the chief of staff, says “sage mode!” above its team: designer, PE, implementer, arena judge, code review, security, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
 </picture>
 
 <p align="center">
@@ -9,13 +9,13 @@
   <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-21160F">
 </p>
 
-**sage is a Claude Code plugin that turns any session into your chief of staff.** Say "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
+**sage is a Claude Code plugin that turns any session into your chief of staff.** Start a message with "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
 
 It also gives every session, in Claude Code and in Codex, 25 short working principles at the moment they apply.
 
 > **Built on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by [Lauren Tan (poteto)](https://github.com/poteto).** sage follows pstack's principles by itself, every week, and sage mode takes its ideas from poteto mode. The name is a nod to Sage Mode in *Naruto*. See [Credits](#credits).
 
-**Contents:** [Why "sage"?](#why-sage) · [Quick start](#quick-start) · [Learn sage in 5 minutes](#learn-sage-in-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say](#what-to-say) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
+**Contents:** [Why "sage"?](#why-sage) · [Enter sage mode (quick start)](#enter-sage-mode-quick-start) · [Your first training (5 minutes)](#your-first-training-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say (the hand signs)](#what-to-say-the-hand-signs) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
 
 ## Why "sage"?
 
@@ -29,7 +29,9 @@ sage mode works the same way:
 
 The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
 
-## Quick start
+And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing, with a ✓ on its headband, because it trusts only what it can check.
+
+## Enter sage mode (quick start)
 
 **1. Install** (in a Claude Code terminal):
 
@@ -42,30 +44,40 @@ In the desktop app, run `claude plugin marketplace add erickb336/sage` and then 
 
 **2. Start a new session** in a project folder, or in a folder of projects such as `~/workspace`.
 
-**3. Say what you want:**
+**3. Make the hand sign:** start a message with "sage mode", then say what you want.
 
 ```
 sage mode. TrackMe: add CSV export of trips, and fix this week's crash.
 ```
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-start-dark.svg">
+  <img alt="The toad sage's tip: start a message with “sage mode”. That is the whole hand sign. In the middle of a sentence, it does nothing. “sage mode off” works anywhere." src="docs/assets/tip-start-light.svg" width="100%">
+</picture>
+
 That's all. The chief of staff asks you at most one question per task, then comes back with results and pull requests. From your phone, it works the same through [Remote Control](#remote-control).
 
-## Learn sage in 5 minutes
+## Your first training (5 minutes)
 
 This is one session, step by step. It is an illustration with sample data.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/walkthrough-dark.svg">
-  <img alt="An illustrative sage mode session with five numbered notes." src="docs/assets/walkthrough-light.svg" width="100%">
+  <img alt="Your first training: an illustrative sage mode session with five numbered notes." src="docs/assets/walkthrough-light.svg" width="100%">
 </picture>
 
-1. **Switch it on.** "sage mode" and your request, in one message. sage mode stays on until you say "sage mode off".
+1. **Switch it on.** Start a message with "sage mode", then your request. sage mode stays on until you say "sage mode off", anywhere in a message.
 2. **The chief frames each task.** It gives each task a size (tiny, small, large or investigate) and risk flags, such as `data` for personal data or `input` for outside input. The size and the flags give the task its [route](#routes): the steps it must go through.
 3. **One product question, at most.** A product question is one whose answer you would notice: what you see, which data is kept, who can do what. Each comes with a recommendation and a default. Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
 4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds.
 5. **You get results.** You get evidence (the commands that ran, screenshots), what was not checked, and a pull request. You merge it, or autopilot merges it.
 
-**Try it yourself.** Pick one small, real bug in a project that has tests and a GitHub remote. Start a session from your phone, say "sage mode" and describe the bug. Then look at the result.
+**Try it yourself.** Pick one small, real bug in a project that has tests and a GitHub remote. Start a session from your phone, start your message with "sage mode", and describe the bug. Then look at the result, not the code.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-try-dark.svg">
+  <img alt="The toad sage's tip: your first training is one small, real bug, from your phone. Then look at the result, not the code." src="docs/assets/tip-try-light.svg" width="100%">
+</picture>
 
 ## How it works
 
@@ -78,6 +90,11 @@ There are two loops:
 
 - **The inner loop** turns a request into verified work. The chief briefs the team. The team designs, builds, reviews and tests. Findings go back to the build. A clean result becomes a pull request.
 - **The outer loop** improves the kitchen. When the same kind of problem comes back twice, the chief proposes a change that stops it for good: a test, a lint, a check, a principle, or a standing order.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-kitchen-dark.svg">
+  <img alt="The toad sage's tip: a mistake that comes back twice gets a test, a check or a rule. That is how the kitchen gets stronger, one lesson at a time." src="docs/assets/tip-kitchen-light.svg" width="100%">
+</picture>
 
 The state lives in plain files, in `~/.claude/sage/<project>-<hash>/`: the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
 
@@ -147,7 +164,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 
 | Word | Meaning |
 | --- | --- |
-| **Sage mode** | The mode in which a session is your chief of staff. "sage mode" turns it on, "sage mode off" turns it off. |
+| **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. "sage mode off", anywhere in a message, turns it off. |
 | **Chief of staff** | The session's coordinator. It plans, briefs, records and asks. It never edits files. |
 | **Route** | The steps a task goes through, set by its size and risk flags. |
 | **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review. |
@@ -160,19 +177,22 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Gate** | A question parked for you, with options, a recommendation and a default. |
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
-| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. |
+| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. "autopilot off" works anywhere. |
 | **The kitchen** | Everything that makes the agents good: principles, checks, tests, skills. A lesson that comes back twice improves it. |
 
-## What to say
+## What to say (the hand signs)
 
 | Say | What happens |
 | --- | --- |
-| `sage mode` + a request | The session becomes your chief of staff and starts the work. |
+| `sage mode` + a request, at the start of a message | The session becomes your chief of staff and starts the work. |
 | Your answer to a question, for example `no` | The chief applies your decision and goes on. |
 | `status` | Where each task is: running, waiting for you, verified. |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
-| `autopilot on` / `autopilot off` | Verified pull requests merge by themselves, or wait for you. |
-| `sage mode off` | A normal session again. |
+| `autopilot on` at the start of a message, or `sage mode autopilot` | Verified pull requests merge by themselves after 2 clean cycles. |
+| `autopilot off`, anywhere in a message | Verified pull requests wait for you again. |
+| `sage mode off`, anywhere in a message | A normal session again. |
+
+Only the start of a message switches something on: "sage mode" or "autopilot on" in the middle of a sentence switches nothing, so you can talk about them freely. "sage mode off" and "autopilot off" work anywhere in a message, because a wrong "off" is safe.
 
 To make every session in a folder start in sage mode, put this in the folder's `.claude/settings.json`:
 
@@ -271,7 +291,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 **What does it cost?** It uses your Claude plan's usage limits, or API credits. Every agent is a separate run. In [the first dry run](docs/runs/dry-run-1.html), a small bug fix with a security risk took 15 agent runs, about $2.60 at API prices, before the fixes that came from that run. I don't have numbers from real projects yet.
 
-**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
+**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on, and only a message that starts with "autopilot on" or "sage mode autopilot" does that. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
 
 **Which projects fit?** A project with tests and a GitHub remote. Without tests, QA can only check by running the app. Without a remote, the work stops at a verified branch.
 
@@ -291,7 +311,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
 | `preferences/`, `instructions/core.md` | How I work with agents, and the always-on file made from it. |
 | `docs/` | The design, the dry run reports, and the README's graphics. |
-| `scripts/graphics.mjs` | Draws the graphics in this README, in light and dark. |
+| `scripts/graphics.mjs` | Draws the graphics in this README, the toad sage too, in light and dark. |
 
 **Change it:**
 
@@ -304,7 +324,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 ## Credits
 
 - **[pstack](https://github.com/cursor/plugins/tree/main/pstack) and poteto mode, by [Lauren Tan (poteto)](https://github.com/poteto).** sage's principles come from pstack, and sage mode takes its main ideas from poteto mode: the coordinator that never writes code, the brief, the ledger of verdicts by commit, the arena, and the trust ladder. Thank you, Lauren. I adopted pstack the day I found it.
-- **Sage Mode in *Naruto*, by Masashi Kishimoto**, gave the name and the look: the orange markings and the toad-like eye. The graphics are original drawings. sage is a fan's nod and is not affiliated with *Naruto* or its owners.
+- **Sage Mode in *Naruto*, by Masashi Kishimoto**, gave the name and the look: the orange markings and the toad-like eye. The graphics and the toad sage mascot are original drawings, and no character from the series appears. sage is a fan's nod and is not affiliated with *Naruto* or its owners.
 - **My [Orchestrator](https://github.com/erickb336/orchestrator)** taught the lessons that sage keeps in code.
 - **Anthropic's and Cognition's writing on multi-agent systems** shaped the rules: one writer at a time, fresh reviewers, and evidence before a claim.
 
