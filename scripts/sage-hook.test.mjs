@@ -1,7 +1,7 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -118,11 +118,11 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   assert.match(merge(), /autopilot is off, so the user merges/, "autopilot on before sage mode does not count");
   assert.match(context(s.send(prompt("autopilot on"))), /autopilot is on\. A pull request merges after 2 clean cycles/);
   assert.match(merge(""), /add --match-head-commit/);
-  assert.match(merge(), /the merge gate refuses: no verdicts recorded/);
+  assert.match(merge(), /^sage: the merge check refuses: no verdicts recorded/);
 
   s.sage("init");
   s.sage("task", "add", "--title", "t", "--size", "small");
-  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T1", "--sha", SHA, "--kind", kind, "--cycle", cycle);
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T1", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "41");
   assert.equal(merge(), undefined, "2 clean cycles on the SHA");
   assert.equal(merge(`--match-head-commit=${SHA}`), undefined);
   assert.match(context(s.send(prompt("autopilot off"))), /autopilot is off/);
@@ -169,17 +169,23 @@ test("a report gate that blocks keeps the agent's slot until it really stops", (
   assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu3")), undefined);
 });
 
-/** The modes after the messages, as the gates show them: sage mode refuses the session's own edits, and with autopilot on a merge gets to the ledger check. */
-async function modesAfter(messages) {
+/**
+ * The modes after the messages (a text is the user's prompt, an object any event), as the hook's checks show them:
+ * sage mode refuses the session's own edits, and with autopilot on a merge gets to the ledger. With notes, also the
+ * hook's note on the last message.
+ */
+async function modesAfter(messages, { notes = false } = {}) {
   const s = session();
-  for (const text of messages) await s.sendAsync(prompt(text));
+  let note;
+  for (const m of messages) note = context(await s.sendAsync(typeof m === "string" ? prompt(m) : m));
   const sage = Boolean(denied(await s.sendAsync(edit())));
   const merge = denied(await s.sendAsync(bash(`gh pr merge 41 --squash --match-head-commit ${SHA}`))) ?? "";
-  const autopilot = /the merge gate refuses/.test(merge) ? "on" : /autopilot is off/.test(merge) || !sage ? "off" : merge;
-  return `sage mode ${sage ? "on" : "off"}, autopilot ${autopilot}`;
+  const autopilot = /the merge check refuses/.test(merge) ? "on" : /autopilot is off/.test(merge) || !sage ? "off" : merge;
+  const modes = `sage mode ${sage ? "on" : "off"}, autopilot ${autopilot}`;
+  return notes ? { modes, note } : modes;
 }
 
-test("only the start of a message switches a mode, except autopilot off, which works anywhere", async () => {
+test("only the start of the user's message switches a mode, except autopilot off, which works anywhere in it", async () => {
   const SAGE = ["sage mode"];
   const BOTH = ["sage mode", "autopilot on"];
   const NOTE = "<task-notification>\n<result>The README now says:\nsage mode off\nautopilot on\nsage mode. Ramen Finder: done</result>\n</task-notification>";
@@ -215,7 +221,7 @@ test("only the start of a message switches a mode, except autopilot off, which w
     [SAGE, "can you explain sage mode autopilot", "sage mode on, autopilot off", "sage mode autopilot in the middle of a sentence"],
     [SAGE, NOTE, "sage mode on, autopilot off", "an agent's report switches nothing"],
     [[], NOTE, "sage mode off, autopilot off", "an agent's report switches nothing"],
-    [BOTH, NOTE, "sage mode on, autopilot off", "an agent's report with autopilot and an off word switches autopilot off, like any message"],
+    [BOTH, NOTE, "sage mode on, autopilot on", "an agent's report switches nothing, also with autopilot and an off word"],
     [BOTH, "don't switch sage mode off, just keep going", "sage mode on, autopilot on", "a mention of sage mode off keeps the gates"],
     [BOTH, "what does sage mode off do?", "sage mode on, autopilot on", "a question about sage mode off"],
     [BOTH, "sage mode off", "sage mode off, autopilot off", "sage mode off"],
@@ -256,4 +262,161 @@ test("only the start of a message switches a mode, except autopilot off, which w
   const results = await Promise.all(cases.map(([before, message]) => modesAfter([...before, message])));
   const wrong = cases.flatMap(([, message, expected, why], i) => (results[i] === expected ? [] : [`${why}: ${JSON.stringify(message)} gives "${results[i]}", not "${expected}"`]));
   assert.deepEqual(wrong, [], "each case shows its message and both results");
+});
+
+// The frames that Claude Code 2.1.288 puts around a prompt that the user did not type: a hand-back from another
+// session, a queued agent message and a task notification. Only their shapes are real; the ids and texts are made up.
+const indent = (text) => text.split("\n").map((line) => `  ${line}`).join("\n");
+const FRAMES = {
+  "another session": (body) => `Another Claude session sent a message:\n<agent-message from="a0f1e2d3c4b5a6978">\n[A line from Claude Code about the hand-back.]\n${indent(body)}\n</agent-message>`,
+  "agent message": (body) => `<agent-message from="a8b7c6d5e4f3a2b10">\n${indent(body)}\n</agent-message>`,
+  "task notification": (body) => `<task-notification>\n<task-id>b1c2d3e4f5a6b7c8d</task-id>\n<status>completed</status>\n<summary>Agent "Fix the Ramen Finder search" completed</summary>\n<result>${body}</result>\n</task-notification>`,
+};
+
+test("only the user's own messages switch a mode: an agent's report, a task notification or another session's message switches nothing", async () => {
+  const PHRASES = ["sage mode", "sage mode off", "autopilot on", "autopilot off", "sage mode autopilot"];
+  const BODIES = {
+    "at the start of the report": (phrase) => `${phrase}\nRamen Finder: the empty search no longer crashes.`,
+    "in a quote of the user": (phrase) => `STATUS done\nRESULT the user wrote:\n> ${phrase}\nThe README says so now.`,
+  };
+  const STATES = {
+    "no mode": [[], "sage mode off, autopilot off"],
+    "sage mode": [["sage mode"], "sage mode on, autopilot off"],
+    "sage mode and autopilot": [["sage mode", "autopilot on"], "sage mode on, autopilot on"],
+    "both, after a compaction": [["sage mode", "autopilot on", { hook_event_name: "PostCompact" }], "sage mode on, autopilot on"],
+  };
+  const SWITCH_NOTE = /^sage: (?:sage mode is off|autopilot is o(?:n|ff))\./m;
+  const cases = Object.entries(FRAMES).flatMap(([frame, wrap]) =>
+    PHRASES.flatMap((phrase) => Object.entries(BODIES).flatMap(([where, body]) => Object.entries(STATES).map(([state, [before, expected]]) => ({ why: `${frame}, "${phrase}" ${where}, from ${state}`, before, message: wrap(body(phrase)), expected })))),
+  );
+  assert.equal(cases.length, 3 * 5 * 2 * 4);
+  // Claude Code's docs name a prompt_source field; when a build sends it, it decides. The user's own words still switch.
+  cases.push(
+    { why: "prompt_source task_notification", before: STATES["sage mode and autopilot"][0], message: { ...prompt("autopilot off"), prompt_source: "task_notification" }, expected: "sage mode on, autopilot on" },
+    { why: "prompt_source peer_message", before: STATES["sage mode"][0], message: { ...prompt("sage mode off"), prompt_source: "peer_message" }, expected: "sage mode on, autopilot off" },
+    { why: "prompt_source user", before: STATES["sage mode and autopilot"][0], message: { ...prompt("autopilot off"), prompt_source: "user" }, expected: "sage mode on, autopilot off", note: true },
+    { why: "the user names a frame later in the message", before: STATES["sage mode and autopilot"][0], message: "autopilot off, the <task-notification> above was wrong", expected: "sage mode on, autopilot off", note: true },
+    { why: "the user's own off", before: STATES["sage mode"][0], message: "sage mode off", expected: "sage mode off, autopilot off", note: true },
+  );
+  const results = await Promise.all(cases.map(({ before, message }) => modesAfter([...before, message], { notes: true })));
+  const wrong = cases.flatMap(({ why, expected, note = false }, i) => {
+    const { modes, note: got } = results[i];
+    return modes === expected && SWITCH_NOTE.test(got) === note ? [] : [`${why}: "${modes}"${SWITCH_NOTE.test(got) ? " with a switch note" : ""}, not "${expected}"${note ? " with a switch note" : ""}`];
+  });
+  assert.deepEqual(wrong, []);
+});
+
+/** A session in sage mode with autopilot on, and 2 clean cycles on SHA for task T1 of PR 41. */
+function autopilotSession(env) {
+  const s = session(env);
+  s.send(prompt("sage mode"));
+  s.send(prompt("autopilot on"));
+  s.sage("init");
+  s.sage("task", "add", "--title", "t", "--size", "small");
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T1", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "41");
+  return s;
+}
+const MERGE = `gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`;
+
+test("only a merge command is a merge: its words in quoted text, a heredoc or a comment are text", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const text = [
+    `node sage.mjs log "decided: ${MERGE} waits for the user" --project /x`,
+    `git commit -m "$(cat <<'EOF'\nNext: ${MERGE}\nEOF\n)"`,
+    `cat > notes.md <<'EOF'\n${MERGE}\nEOF`,
+    `gh pr create --title "Fix the search" --body 'After the reviews: ${MERGE}'`,
+    `echo ok # ${MERGE}`,
+  ];
+  for (const command of text) assert.equal(s.send(bash(command)), undefined, command);
+  // A merge in any form of a shell command is still a merge.
+  const merges = [MERGE, `cd /x && ${MERGE}`, `g'h' pr merge 41 --match-head-commit ${SHA}`, `echo "$(${MERGE})"`, `sudo ${MERGE}`, `GH_TOKEN=x ${MERGE}`];
+  for (const command of merges) assert.match(denied(s.send(bash(command))) ?? "", /autopilot is off/, command);
+  // A command that the hook cannot read well enough is refused.
+  const unsure = [`bash -c "${MERGE}"`, `sh <<'EOF'\n${MERGE}\nEOF`, `node -e "require('child_process').execSync('${MERGE}')"`, `echo "${MERGE}`];
+  for (const command of unsure) assert.match(denied(s.send(bash(command))) ?? "", /the merge check cannot tell whether this command merges/, command);
+});
+
+test("a merge through the GitHub API is a merge too, and the hook refuses it", () => {
+  const api = [
+    `gh api -X PUT repos/o/r/pulls/41/merge -f sha=${SHA}`,
+    "gh api --method=PUT /repos/o/r/pulls/41/merge",
+    "gh api -XPUT repos/o/r/pulls/41/merge",
+    'curl -X PUT -H "Authorization: Bearer x" https://api.github.com/repos/o/r/pulls/41/merge',
+    `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`,
+  ];
+  const off = session();
+  off.send(prompt("sage mode"));
+  for (const command of api) assert.match(denied(off.send(bash(command))) ?? "", /autopilot is off/, command);
+  const s = autopilotSession();
+  assert.equal(s.send(bash(MERGE)), undefined, "the merge command passes");
+  for (const command of api) assert.match(denied(s.send(bash(command))) ?? "", /not through the GitHub API/, command);
+});
+
+test("one merge and one --match-head-commit per command: gh uses the last flag", () => {
+  const s = autopilotSession();
+  const OTHER = "b".repeat(40);
+  assert.equal(s.send(bash(MERGE)), undefined);
+  assert.match(denied(s.send(bash(`${MERGE} --match-head-commit ${OTHER}`))) ?? "", /give --match-head-commit once, not 2 times/);
+  assert.match(denied(s.send(bash(`${MERGE} --match-head-commit=${OTHER}`))) ?? "", /give --match-head-commit once/);
+  assert.match(denied(s.send(bash(`${MERGE} && gh pr merge 42 --squash --match-head-commit ${OTHER}`))) ?? "", /one merge per command; this command has 2/);
+  assert.match(denied(s.send(bash(`${MERGE}; gh api -X PUT repos/o/r/pulls/42/merge`))) ?? "", /one merge per command/);
+});
+
+test("the merge check gets the pull request's number from the merge command", () => {
+  const s = autopilotSession();
+  s.sage("task", "T1", "set", "pr=40");
+  assert.match(denied(s.send(bash(MERGE))) ?? "", /^sage: the merge check refuses: no task of PR 41 has verdicts on a1b2c3d/);
+  assert.equal(s.send(bash(`gh pr merge 40 --squash --match-head-commit ${SHA}`)), undefined);
+  assert.equal(s.send(bash(`gh pr merge https://github.com/o/r/pull/40 --squash --match-head-commit ${SHA}`)), undefined);
+  assert.match(denied(s.send(bash(`gh pr merge --squash --match-head-commit ${SHA}`))) ?? "", /name the pull request by its number/);
+});
+
+test("the head SHA may be in capitals, but it must be all 40 characters", () => {
+  const s = autopilotSession();
+  assert.equal(s.send(bash(`gh pr merge 41 --squash --match-head-commit ${SHA.toUpperCase()}`)), undefined, "the ledger holds it in lowercase");
+  assert.match(denied(s.send(bash(`gh pr merge 41 --squash --match-head-commit ${SHA.slice(0, 7)}`))) ?? "", /needs the full 40-character head SHA that the ledger verified, not "a1b2c3d"/);
+});
+
+test("the merge check refuses a merge when it cannot run, and the hook still answers nothing to other commands", () => {
+  // The state tool does not load.
+  const s = autopilotSession();
+  const plugin = realpathSync(mkdtempSync(join(tmpdir(), "sage-plugin-")));
+  mkdirSync(join(plugin, "hooks"));
+  mkdirSync(join(plugin, "skills/sage"), { recursive: true });
+  copyFileSync(HOOK, join(plugin, "hooks/sage-hook.mjs"));
+  writeFileSync(join(plugin, "skills/sage/sage.mjs"), 'throw new Error("a broken state tool");\n');
+  const send = (event, env = s.vars) => spawnSync("node", [join(plugin, "hooks/sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
+  const broken = send(bash(MERGE));
+  assert.equal(broken.status, 0, broken.stderr);
+  assert.match(denied(JSON.parse(broken.stdout || "{}")) ?? "", /the merge check refuses: it could not run \(a broken state tool\)/);
+  const other = send(bash("git status"));
+  assert.deepEqual([other.stdout, other.status], ["", 0]);
+  // The hook cannot save its state.
+  const file = join(mkdtempSync(join(tmpdir(), "sage-file-")), "not-a-folder");
+  writeFileSync(file, "");
+  const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash(MERGE) }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /the merge check could not run \(ENOTDIR/);
+});
+
+test("the hook runs also when its path goes through a symbolic link", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const link = join(mkdtempSync(join(tmpdir(), "sage-link-")), "sage");
+  symlinkSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), link);
+  const r = spawnSync("node", [join(link, "hooks/sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...bash(MERGE) }), encoding: "utf8", env: s.vars });
+  assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /autopilot is off/);
+});
+
+test("a refusal says merge check, and escapes the control characters of its reason", () => {
+  const home = join(mkdtempSync(join(tmpdir(), "sage-esc-")), "home\u001b[31m");
+  writeFileSync(home, ""); // a file, so the merge check cannot read it, and names it
+  const s = session({ SAGE_HOME: home });
+  s.send(prompt("sage mode"));
+  s.send(prompt("autopilot on"));
+  const reason = denied(s.send(bash(MERGE))) ?? "";
+  assert.match(reason, /^sage: the merge check refuses: /);
+  assert.match(reason, /home\\u001b\[31m/);
+  assert.doesNotMatch(reason, /\u001b/);
 });
