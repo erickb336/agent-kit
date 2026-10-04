@@ -427,7 +427,7 @@ test("an investigation ends at concluded, after a clean evidence review recorded
   assert.match(s.ok("task", "T1", "set", "state=concluded"), /^T1 concluded/);
   assert.match(s.no("task", "T1", "set", "state=reviewing"), /cannot go from concluded to reviewing\. Next: none/);
   assert.equal(s.ok("status").split("\n")[1], "tasks   1 · concluded 1");
-  assert.deepEqual(rows(s.dir, "ledger").map((r) => `${r.kind}:${r.sha}`), ["evidence-clean:", "findings:", "evidence-clean:"], "the merge gate reads no row without a SHA");
+  assert.deepEqual(rows(s.dir, "ledger").map((r) => `${r.kind}:${r.sha}`), ["evidence-clean:", "findings:", "evidence-clean:"], "the merge check reads no row without a SHA");
 
   const b = store();
   b.ok("task", "add", "--title", "t", "--size", "small");
@@ -504,7 +504,7 @@ test("S3: only digits count in an id, so a new finding never reopens a key that 
   ]);
 });
 
-test("S4: every store that has verdicts on a SHA must pass, so a second store cannot open the merge gate", () => {
+test("S4: every store that has verdicts on a SHA must pass, so a second store cannot open the merge check", () => {
   const real = store();
   real.ok("task", "add", "--title", "t", "--size", "small");
   real.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
@@ -521,10 +521,10 @@ test("S4: every store that has verdicts on a SHA must pass, so a second store ca
   assert.equal(real.ok("merge-check", "--sha", SHA, "--cycles", "1"), `2 tasks have verdicts on a1b2c3d, and each must pass: ${d} T1 may merge: 1 clean cycle on this SHA; ${r} T1 may merge: 1 clean cycle on this SHA`);
   decoy.ok("task", "add", "--title", "decoy", "--size", "small");
   decoy.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass");
-  assert.equal(real.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: 3 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${d} T2: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass. Run the next cycle of its reviews on this SHA and record each verdict. ${todo}`, "a store that fails closes the gate");
+  assert.equal(real.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: 3 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${d} T2: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass. Run the next cycle of its reviews on this SHA and record each verdict. ${todo}`, "a store that fails closes the merge check");
 });
 
-test("S5: verdicts and the merge gate take only a full SHA, and each task counts only its own verdicts", () => {
+test("S5: verdicts and the merge check take only a full SHA, and each task counts only its own verdicts", () => {
   const s = store();
   s.ok("task", "add", "--title", "a", "--size", "small");
   s.ok("task", "add", "--title", "b", "--size", "small");
@@ -547,7 +547,7 @@ test("S6: an investigation takes no build block; a build that it needs is its ow
   assert.equal(s.ok("task", "add", "--title", "inv", "--size", "investigate", "--add", "pe", "--why", "x"), "T1 framed · investigate · route pe,investigate,evidence-review");
 });
 
-test("S7: config and the merge gate read only regular files and never throw, so the hook never waits or lets a merge through", () => {
+test("S7: config and the merge check read only regular files and never throw, so the hook never waits or lets a merge through", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
@@ -557,14 +557,14 @@ test("S7: config and the merge gate read only regular files and never throw, so 
   assert.ok(ms < 3000, `${ms} ms`);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
-  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${join(s.dir, "ledger.tsv")} (not a regular file), so it refuses every merge. Ask the user to fix or remove ${join(s.dir, "ledger.tsv")}.`, "F-R50-1: a table that is not a regular file refuses, and does not hang");
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${join(s.dir, "ledger.tsv")} is not a regular file. Ask the user to fix or remove it.`, "F-R50-1: a table that is not a regular file refuses, and does not hang");
   const file = join(s.home, "a-file");
   writeFileSync(file, "");
   const r = spawnSync("node", [TOOL, "merge-check", "--sha", SHA], { encoding: "utf8", env: { ...process.env, SAGE_HOME: file }, timeout });
-  assert.deepEqual([r.status, r.stderr], [1, `sage: the merge gate cannot read ${file} (ENOTDIR), so it refuses every merge. Ask the user to fix ${file}.\n`], "F-R50-4: the root holds every logbook, so the advice never removes it");
+  assert.deepEqual([r.status, r.stderr], [1, `sage: the merge check cannot read ${file} (ENOTDIR), so it refuses every merge. Ask the user to fix ${file}.\n`], "F-R50-4: the root holds every logbook, so the advice never removes it");
 });
 
-test("F1: no config.json makes config() or the merge gate throw: a value that is not a number or a string gives its default", async () => {
+test("F1: no config.json makes config() or the merge check throw: a value that is not a number or a string gives its default", async () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
@@ -631,7 +631,7 @@ test("F3: a ledger of blank lines blocks nothing, and a refusal names the full p
   mkdirSync(dirname(shut));
   writeFileSync(shut, "x");
   chmodSync(shut, 0);
-  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${shut} (EACCES), so it refuses every merge. Ask the user to fix or remove ${shut}.`);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check cannot read ${shut} (EACCES), so it refuses every merge. Ask the user to fix or remove ${shut}.`);
 });
 
 test("F4: a finding opened again takes the new summary and source, and the decision trail keeps the old summary", () => {
@@ -675,7 +675,7 @@ test("F-R44-3: verified counts only the task's own verdicts on the SHA, not anot
   assert.match(s.ok("task", "T1", "set", "state=verified"), /^T1 verified/);
 });
 
-test("QA-1: an investigation takes no PR number, and the gate names the way out for one that has it", () => {
+test("QA-1: an investigation takes no PR number, and the merge check names the way out for one that has it", () => {
   const s = store();
   s.ok("task", "add", "--title", "why is the hook slow", "--size", "investigate");
   s.ok("task", "add", "--title", "make the hook fast", "--size", "tiny");
@@ -838,8 +838,8 @@ test("clean-rule: a cycle is clean when no medium or high finding is open, and e
   for (const kind of ["checks-pass", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   s.ok("finding", "add", "T1", "--source", "code-reviewer", "--severity", "low", "--summary", "a typo");
   s.ok("finding", "add", "T1", "--source", "code-reviewer", "--severity", "low", "--summary", "a vague name");
-  const clean = "sage: T1 has no open medium or high finding, so this review's cycle is clean. Record its clean verdict (review-clean, security-clean, ux-clean, qa-pass, evidence-clean); fix, move or dismiss each low finding before the merge. For a medium or high problem, record the finding first: sage finding add T1.";
-  assert.deepEqual([s.no("verdict", "T1", "--sha", SHA, "--kind", "findings"), s.no("verdict", "T1", "--sha", SHA, "--kind", "qa-fail")], [clean, clean]);
+  const clean = (kind, ok) => `sage: T1 has no open medium or high finding, so ${kind} is refused. If this review found a medium or high problem, record it first: sage finding add T1 --source <role> --severity <medium or high> --summary "<the problem>", then ${kind} again. If it found only low ones, its cycle is clean: record ${ok}, and fix, move or dismiss each low finding before the merge.`;
+  assert.deepEqual([s.no("verdict", "T1", "--sha", SHA, "--kind", "findings"), s.no("verdict", "T1", "--sha", SHA, "--kind", "qa-fail")], [clean("findings", "review-clean"), clean("qa-fail", "qa-pass")]);
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "review-clean");
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "1"), /^sage: T1 has open findings: F-T1-1, F-T1-2\./, "an open low finding blocks the merge");
   s.ok("finding", "triage", "T1", "F-T1-1", "fix");
@@ -865,7 +865,7 @@ test("F-R50-1: a table that is not a regular file refuses with its path, never h
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "open one");
   const [ledger, findings] = [join(s.dir, "ledger.tsv"), join(s.dir, "findings.tsv")];
-  const gate = (path) => `sage: the merge gate cannot read ${path} (not a regular file), so it refuses every merge. Ask the user to fix or remove ${path}.`;
+  const gate = (path) => `sage: the merge check refuses every merge, because ${path} is not a regular file. Ask the user to fix or remove it.`;
   renameSync(findings, `${findings}.keep`);
   mkdirSync(findings); // atk50b C8: the folder hid the open finding, so the merge passed
   const [out, ms] = timed(() => [s.no("merge-check", "--sha", SHA), s.no("log", "-", "x", "--why", "y")]);
@@ -901,7 +901,7 @@ test("F-R50-1: a table that is not a regular file refuses with its path, never h
   assert.deepEqual([readdirSync(elsewhere), rows(s.dir, "decisions")], [["fdir"], []], "refused before any change");
 });
 
-test("F-R50-2: the merge gate reads a logbook that is a link to a folder, as the writes do", () => {
+test("F-R50-2: the merge check reads a logbook that is a link to a folder, as the writes do", () => {
   const real = store();
   real.ok("task", "add", "--title", "real", "--size", "small");
   const decoy = store(real.home, "aa-");
@@ -915,11 +915,11 @@ test("F-R50-2: the merge gate reads a logbook that is a link to a folder, as the
   assert.equal(rows(join(moved, "book"), "ledger").length, 1, "the write went through the link");
   assert.equal(real.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: 2 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${real.dir} T1 has open findings: F-T1-1. Triage and close them first. To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.`);
   rmSync(real.dir);
-  symlinkSync(real.dir, real.dir); // a link that cannot be followed may hide a logbook, so the gate refuses
-  assert.equal(real.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${real.dir} (ELOOP), so it refuses every merge. Ask the user to fix or remove ${real.dir}.`);
+  symlinkSync(real.dir, real.dir); // a link that cannot be followed may hide a logbook, so the merge check refuses
+  assert.equal(real.no("merge-check", "--sha", SHA), `sage: the merge check cannot read ${real.dir} (ELOOP), so it refuses every merge. Ask the user to fix or remove ${real.dir}.`);
 });
 
-test("F-R50-3: the merge gate reads each table once, so 4,500 tasks on one SHA take well under the hook's 10 s", () => {
+test("F-R50-3: the merge check reads each table once, so 4,500 tasks on one SHA take well under the hook's 10 s", () => {
   const s = store();
   const many = join(s.home, "zz-many"); // atk50b C7'
   mkdirSync(many);
@@ -938,11 +938,11 @@ test("F-R50-4: a refusal names the file at fault, and never asks to remove the r
   const big = join(s.home, "zz-big", "ledger.tsv");
   mkdirSync(dirname(big));
   execFileSync("truncate", ["-s", "600m", big]); // too long for a string: the error has no path of its own
-  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${big} (ERR_STRING_TOO_LONG), so it refuses every merge. Ask the user to fix or remove ${big}.`);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check cannot read ${big} (ERR_STRING_TOO_LONG), so it refuses every merge. Ask the user to fix or remove ${big}.`);
   rmSync(dirname(big), { recursive: true });
   chmodSync(s.home, 0o300); // atk50 B2: the root cannot be listed
   try {
-    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge gate cannot read ${s.home} (EACCES), so it refuses every merge. Ask the user to fix ${s.home}.`);
+    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check cannot read ${s.home} (EACCES), so it refuses every merge. Ask the user to fix ${s.home}.`);
   } finally {
     chmodSync(s.home, 0o700);
   }
@@ -989,12 +989,125 @@ test("F-R57-2: a PR is only digits, so a typo never hides a task from merge-chec
   assert.match(s.ok("task", "T1", "set", "pr="), /^T1 framed · tiny · round 0 · route build$/);
 });
 
+/** The refusal for a table whose first line is not its header, with the columns that the header must name. */
+const damaged = (file, cols) => `the header of ${file} is damaged: its first line must be the column names ${cols}, separated by tabs. Ask the user to fix or add that line.`;
+/** Changes the lines of a table as a person's shell command could: edit gets the lines that are not blank. */
+const reshape = (file, edit) => writeFileSync(file, edit(readFileSync(file, "utf8").split("\n").filter(Boolean)).join("\n") + "\n");
+
+test("F-R65-1: a table that lost its header line fails the merge check closed and names the file, in one logbook or two", () => {
+  // hdr65b: T1 has clean verdicts on the SHA and two open low findings; then findings.tsv loses its first line.
+  const s = store();
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "l1");
+  s.ok("finding", "add", "T1", "--source", "code-review", "--severity", "low", "--summary", "l2");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "1"), /^sage: T1 has open findings: F-T1-1, F-T1-2\./);
+  const findings = join(s.dir, "findings.tsv");
+  reshape(findings, (lines) => lines.slice(1)); // sed 1d, or tail -n +2
+  const why = damaged(findings, "task, key, round, source, severity, summary, triage, reason, status");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: the merge check refuses every merge, because ${why}`);
+  assert.equal(s.no("log", "-", "x", "--why", "y"), `sage: ${why}`, "a write says that the header is damaged, not that a newer sage wrote it");
+
+  // hdr65: one SHA in two logbooks. A has an open medium and checks-fail; B (tiny) is clean. A's ledger loses its header.
+  const a = store();
+  a.ok("task", "add", "--title", "a", "--size", "tiny");
+  a.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", "m");
+  for (const kind of ["checks-pass", "checks-fail"]) a.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  const b = store(a.home);
+  b.ok("task", "add", "--title", "b", "--size", "tiny");
+  b.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  assert.match(b.no("merge-check", "--sha", SHA, "--cycles", "1"), new RegExp(`; 1 fails\\. ${a.dir} T1 has open findings: F-T1-1\\.`));
+  const ledger = join(a.dir, "ledger.tsv");
+  const text = readFileSync(ledger, "utf8");
+  for (const edit of [(lines) => lines.slice(1), (lines) => lines.sort()]) { // sed 1d, and sort: "T1" sorts before "task"
+    writeFileSync(ledger, text);
+    reshape(ledger, edit);
+    assert.equal(b.no("merge-check", "--sha", SHA, "--cycles", "1"), `sage: the merge check refuses every merge, because ${damaged(ledger, "task, pr, sha, kind, cycle, run, at")}`);
+  }
+});
+
+test("F-R64-1: a refused findings or qa-fail verdict names the finding first, so a verdict recorded too early never hides a medium", () => {
+  // probe P2: the chief records the verdict before the finding.
+  const s = store();
+  s.ok("task", "add", "--title", "t4", "--size", "tiny");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "a typo");
+  assert.equal(s.no("verdict", "T1", "--sha", SHA, "--kind", "qa-fail"), `sage: T1 has no open medium or high finding, so qa-fail is refused. If this review found a medium or high problem, record it first: sage finding add T1 --source <role> --severity <medium or high> --summary "<the problem>", then qa-fail again. If it found only low ones, its cycle is clean: record qa-pass, and fix, move or dismiss each low finding before the merge.`);
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", "a lost write"); // the first advice
+  assert.equal(s.ok("verdict", "T1", "--sha", SHA, "--kind", "qa-fail"), "T1 qa-fail · a1b2c3d · cycle 1");
+  s.ok("finding", "triage", "T1", "F-T1-1", "dismiss", "--reason", "cosmetic");
+  s.ok("finding", "triage", "T1", "F-T1-2", "fix");
+  s.ok("finding", "close", "T1", "F-T1-2");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1"), "sage: T1: cycle 1 found problems on this SHA (qa-fail). Repair, then review the new SHA.", "the SHA stays blocked");
+  // A findings verdict names the clean verdict of the task's review blocks: the one that it has, or the list.
+  s.ok("task", "add", "--title", "large", "--size", "large");
+  assert.match(s.no("verdict", "T2", "--sha", SHA, "--kind", "findings"), /its cycle is clean: record this review's clean verdict \(review-clean, security-clean, ux-clean\), and fix/);
+  s.ok("task", "add", "--title", "inv", "--size", "investigate");
+  assert.match(s.no("verdict", "T3", "--kind", "findings"), /its cycle is clean: record evidence-clean, and fix/);
+});
+
+test("F-R65-2: only a header with every known column and more is a newer sage's; one without them is damaged; a BOM and CRLF line ends read as plain", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "open one");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  const tasks = join(s.dir, "tasks.tsv");
+  const text = readFileSync(tasks, "utf8");
+  const why = `sage: ${damaged(tasks, "id, title, size, risk, route, state, branch, pr, round, keys")}`;
+  for (const head of ["\n", "\tkept\n"]) { // a column lost, or renamed: so it lacks one, also with a column more
+    writeFileSync(tasks, text.replace("\tkeys\n", head));
+    assert.equal(s.no("log", "-", "x", "--why", "y"), why);
+  }
+  writeFileSync(tasks, text);
+  // An editor's BOM and CRLF line ends: the merge check and a write read the same rows, and the write saves a plain file.
+  const findings = join(s.dir, "findings.tsv");
+  writeFileSync(findings, `\uFEFF${readFileSync(findings, "utf8").replaceAll("\n", "\r\n")}`);
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "1"), /^sage: T1 has open findings: F-T1-1\./, "the open finding stays open");
+  assert.equal(s.ok("finding", "triage", "T1", "F-T1-1", "fix"), "F-T1-1 open · fix");
+  assert.equal(readFileSync(findings, "utf8"), "task\tkey\tround\tsource\tseverity\tsummary\ttriage\treason\tstatus\nT1\tF-T1-1\t0\tqa\thigh\topen one\tfix\t\topen\n");
+});
+
+test("F-R65-3: no control character reaches the terminal: a cell keeps none, a printed id, column or path shows each as \\xNN, and such a path gets no command", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  const key = "K\x1b]0;TITLE\x07\x1b[31mRED";
+  assert.equal(s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "x\x9b2J", "--key", key), "K]0;TITLE[31mRED open · low · T1");
+  assert.equal(s.ok("finding", "add", "T1", "--severity", "medium", "--key", key), "K]0;TITLE[31mRED open again · medium · T1", "the same --key finds its finding");
+  assert.deepEqual(rows(s.dir, "findings").map((f) => `${f.key} ${f.summary}`), ["K]0;TITLE[31mRED x2J"]);
+  byHand(s.dir, "findings", 1, "K]0;TITLE[31mRED", (cells) => cells.with(1, key)); // a person's edit puts them back
+  assert.equal(s.no("finding", "close", "T1", "F-T1-9"), "sage: no finding F-T1-9 on T1. The latest: K\\x1b]0;TITLE\\x07\\x1b[31mRED.");
+  const tasks = join(s.dir, "tasks.tsv");
+  writeFileSync(tasks, readFileSync(tasks, "utf8").replace("\tkeys\n", "\tkeys\tnew\x1b[2J\n"));
+  assert.equal(s.no("log", "-", "x", "--why", "y"), `sage: ${tasks} has columns that this version of sage does not know (new\\x1b[2J): a newer sage wrote this logbook. Update the sage plugin and restart this session. Nothing changed.`);
+  const project = join(mkdtempSync(join(tmpdir(), "sage-ctl-")), "x\rrm -rf ~ #"); // printed raw, the CR showed another command
+  mkdirSync(project);
+  const r = spawnSync("node", [TOOL, "status", "--project", project], { encoding: "utf8", env: { ...process.env, SAGE_HOME: s.home } });
+  said.push(r.stderr);
+  assert.deepEqual([r.status, r.stderr], [1, `sage: no logbook for the project ${dirname(project)}/x\\x0drm -rf ~ #. Its path has control characters, so no command is printed to paste. Rename the folder, or run sage init from inside it.\n`]);
+});
+
+test("F-R64-2: a table that is a link to nothing refuses a write before any change", () => {
+  // probe P4: decisions.tsv is a link to nothing, and gate answer writes gates.tsv, then decisions.tsv.
+  const s = store();
+  s.ok("task", "add", "--title", "t6", "--size", "tiny");
+  s.ok("gate", "add", "T1", "--question", "q?", "--options", "y|n", "--recommend", "y");
+  const decisions = join(s.dir, "decisions.tsv");
+  rmSync(decisions);
+  symlinkSync(join(s.home, "nothing-here"), decisions);
+  const before = snapshot(s.dir);
+  assert.equal(s.no("gate", "answer", "G1", "y"), `sage: ${decisions} is not a regular file. Ask the user to fix or remove it.`);
+  assert.deepEqual([snapshot(s.dir), rows(s.dir, "gates")[0].answer], [before, ""], "no file changed: gates.tsv has no answer");
+  rmSync(decisions); // what the line says to do
+  assert.equal(s.ok("gate", "answer", "G1", "y"), "G1 answered · y");
+});
+
 // Keep this test last: it reads every line that the tests above made the tool print.
-test("QA-2: every line the tool prints calls a project's record its logbook, never its store", () => {
+test("QA-2: every line the tool prints says logbook, never store, and merge check, never merge gate, and holds no control character", () => {
   const s = store();
   assert.equal(s.ok("init"), `logbook ${s.dir}`);
   assert.equal(s.ok("logbook"), s.dir);
   assert.match(s.no("store"), /^sage: unknown command "store"\. Commands: init, logbook, standing, /);
   assert.ok(said.length > 500, `${said.length} lines: run the whole file, so this test reads the lines of every test`);
   assert.deepEqual(said.filter((line) => /\bstores?\b/i.test(line) && !line.startsWith('sage: unknown command "store"')), []);
+  assert.deepEqual(said.filter((line) => /merge gate|[\0-\x09\x0b-\x1f\x7f-\x9f]/.test(line)), []);
 });

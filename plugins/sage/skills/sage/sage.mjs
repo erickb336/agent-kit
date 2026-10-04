@@ -121,7 +121,7 @@ function valid(key, value) {
 }
 
 /** The refusal for a path that holds something other than a regular file: a folder, a FIFO or a device. */
-const notRegular = (path) => Object.assign(new Refusal(`${path} is not a regular file. Ask the user to fix or remove it.`), { path, code: "not a regular file" });
+const notRegular = (path) => new Refusal(`${path} is not a regular file. Ask the user to fix or remove it.`);
 
 /**
  * The text of a regular file, also through a link, or undefined when nothing is there. Something else (a FIFO, a device
@@ -184,29 +184,43 @@ function put(file, text) {
   renameSync(`${real}.${process.pid}`, real);
 }
 
-const cell = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ").trim();
+/** A cell as the tables hold it: on one line, without control characters (C0, DEL and C1), which would drive a terminal. */
+const cell = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ").replace(/[\0-\x1f\x7f-\x9f]/g, "").trim();
+/** Text with each control character shown as \xNN, so that a printed line never drives the terminal. */
+const visible = (s) => String(s).replace(/[\0-\x1f\x7f-\x9f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
 
-/** The lines of a table that are not blank: its header first. A missing table has none. */
-const lines = (dir, table) => (readRegular(join(dir, `${table}.tsv`)) ?? "").split("\n").filter(Boolean);
+/**
+ * A table as its header's columns and its data lines. A missing or empty table has this version's columns and no lines.
+ * An editor's BOM and CRLF line ends read as a plain file. A first line that does not name every column of this version
+ * is no header (it was lost, or edited), so every reader refuses the table with its path: the merge check fails closed,
+ * and no data line is ever taken for the header.
+ */
+function sheet(dir, table) {
+  const file = join(dir, `${table}.tsv`);
+  const [head, ...lines] = (readRegular(file) ?? "").replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
+  const cols = head?.split("\t") ?? TABLES[table];
+  if (!TABLES[table].every((c) => cols.includes(c))) refuse(`the header of ${file} is damaged: its first line must be the column names ${TABLES[table].join(", ")}, separated by tabs. Ask the user to fix or add that line.`);
+  return { cols, lines };
+}
 
 function read(dir, table) {
-  const [head = "", ...rows] = lines(dir, table);
-  const cols = head.split("\t");
-  return rows.map((line) => {
+  const { cols, lines } = sheet(dir, table);
+  return lines.map((line) => {
     const v = line.split("\t");
     return Object.fromEntries(cols.map((c, i) => [c, v[i] ?? ""]));
   });
 }
 
 /**
- * Refuses, before any change, a logbook that a command could not change whole: a table or status.md that is not a
- * regular file, or a table that a newer version of this tool wrote. A write keeps only the columns that this version
- * knows, so another chief session's values would be lost in silence. Reading such a logbook is safe.
+ * Refuses, before any change, a logbook that a command could not change whole: a file that is not a regular file (a
+ * link to nothing, for one), a table whose header is damaged, or a table that a newer version of this tool wrote. A
+ * write keeps only the columns that this version knows, so another chief session's values would be lost in silence.
+ * Reading a newer logbook is safe.
  */
 function ready(dir) {
-  target(join(dir, "status.md"));
-  for (const [table, cols] of Object.entries(TABLES)) {
-    const extra = (lines(dir, table)[0] ?? "").split("\t").filter((c) => c && !cols.includes(c));
+  for (const file of ["status.md", "standing.md", ...Object.keys(TABLES).map((t) => `${t}.tsv`)]) target(join(dir, file));
+  for (const [table, known] of Object.entries(TABLES)) {
+    const extra = sheet(dir, table).cols.filter((c) => c && !known.includes(c));
     if (extra.length) refuse(`${join(dir, `${table}.tsv`)} has columns that this version of sage does not know (${extra.join(", ")}): a newer sage wrote this logbook. Update the sage plugin and restart this session. Nothing changed.`);
   }
 }
@@ -291,13 +305,13 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
 
 /**
  * Does one task have the clean cycles its route needs on one SHA? tasks and findings are its logbook's tables, read once
- * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge gate only through
+ * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
  * its PR number.
  */
 function judge(dir, tasks, findings, id, rows, cycles) {
   const task = tasks.find((t) => t.id === id);
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.` };
-  const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the gate fails closed
+  const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
   const clear = `clear its PR (sage task ${task.id} set pr=)`;
   if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: ${clear}.` };
   if (!rows.length) return { ok: false, reason: `${who} is a task of PR ${task.pr} but has no verdicts on this SHA. Record them, or, if it is no longer part of PR ${task.pr}, ${clear}.` };
@@ -317,7 +331,7 @@ function judge(dir, tasks, findings, id, rows, cycles) {
 }
 
 /**
- * The judgment of the merge gate: may this head SHA merge? Every task that has verdicts on the full SHA, in every
+ * The judgment of the merge check: may this head SHA merge? Every task that has verdicts on the full SHA, in every
  * project's logbook, must pass on its own rows, also an abandoned one, so no other logbook or task can lend its verdicts.
  * With pr, the tasks of that pull request in those logbooks must pass too, and there must be one. An autopilot merge
  * wants autopilot_cycles clean cycles. The hook calls this, so it never throws: what it cannot read refuses the merge.
@@ -329,7 +343,7 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
     cycles ??= config(env).autopilot_cycles;
     pr &&= String(pr); // the tasks table holds it as text
-    // A logbook may be a link to a folder: the writes go through it, so the gate reads through it too. A link to nothing
+    // A logbook may be a link to a folder: the writes go through it, so the merge check reads through it too. A link to nothing
     // holds no logbook, for the writes either; one that cannot be followed refuses.
     const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
     const each = dirs.flatMap((dir) => {
@@ -351,9 +365,10 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     const out = bad.some((r) => r.own) ? ", or push a new commit and record its verdicts under the live tasks only" : ""; // a new commit leaves behind only verdicts
     return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass${out}.` };
   } catch (e) {
+    if (e instanceof Refusal) return { ok: false, reason: `the merge check refuses every merge, because ${e.message}` }; // it names the file and what to do
     const [at, why] = [e?.path, e?.code ?? e?.message ?? e];
-    if (at === undefined) return { ok: false, reason: `the merge gate failed (${why}), so it refuses every merge.` };
-    return { ok: false, reason: `the merge gate cannot read ${at} (${why}), so it refuses every merge. Ask the user to fix ${at === root ? "" : "or remove "}${at}.` }; // never the root: it holds every logbook
+    if (at === undefined) return { ok: false, reason: `the merge check failed (${why}), so it refuses every merge.` };
+    return { ok: false, reason: `the merge check cannot read ${at} (${why}), so it refuses every merge. Ask the user to fix ${at === root ? "" : "or remove "}${at}.` }; // never the root: it holds every logbook
   }
 }
 
@@ -402,7 +417,10 @@ export function sage(argv, env = process.env) {
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
   const dir = storeDir(project, env);
-  if (cmd !== "init" && !existsSync(join(dir, "tasks.tsv"))) refuse(`no logbook for the project ${project}. Run: sage init --project ${shell(project)}`);
+  if (cmd !== "init" && !existsSync(join(dir, "tasks.tsv"))) {
+    const printed = visible(project); // a path with control characters prints otherwise than it is, so it gets no line to paste
+    refuse(`no logbook for the project ${printed}. ${printed === project ? `Run: sage init --project ${shell(project)}` : "Its path has control characters, so no command is printed to paste. Rename the folder, or run sage init from inside it."}`);
+  }
   // A read takes no lock: every file is replaced whole, so it sees the store before or after a change, never half of one.
   if (["logbook", "status"].includes(cmd) || (cmd === "standing" && pos[0] !== "add")) return act(cmd, pos, opt, dir, env);
   if (cmd === "init") {
@@ -535,7 +553,7 @@ function act(cmd, pos, opt, dir, env) {
         const { task } = taskOf(dir, need(id, "the task id"));
         const severity = need(opt.severity, "--severity");
         if (!["high", "medium", "low"].includes(severity)) refuse("severity is high, medium or low");
-        const key = opt.key ?? nextId(dir, `F-${task.id}-`);
+        const key = cell(opt.key) || nextId(dir, `F-${task.id}-`); // as the table holds it, so the same --key finds its finding again
         const again = findings.find((f) => f.task === task.id && f.key === key);
         // Without --summary, a known key keeps its summary. An empty one is refused, so no summary is ever lost.
         const summary = opt.summary === undefined ? again?.summary : cell(opt.summary) || refuse(`${key} on ${task.id}: --summary is empty. Give the finding in a few words${again ? ", or leave out --summary to keep its summary" : ""}.`);
@@ -565,10 +583,14 @@ function act(cmd, pos, opt, dir, env) {
       // The clean rule: a cycle is clean when no medium or high finding is open. Low ones are fixed, moved or dismissed
       // before a merge, and an open one blocks it. So a problem verdict needs an open finding that is not low.
       const findings = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
+      // The refusal names the finding first: a chief that recorded the verdict before its finding must not hide the finding.
       if (FOUND.includes(kind) && findings.every((f) => f.severity === "low")) {
-        refuse(`${task.id} has no open medium or high finding, so this review's cycle is clean. Record its clean verdict (${CLEAN.join(", ")}); fix, move or dismiss each low finding before the merge. For a medium or high problem, record the finding first: sage finding add ${task.id}.`);
+        const reviews = CLEAN.filter((k) => k !== "qa-pass"); // the clean verdicts of the blocks that give findings
+        const fits = kind === "qa-fail" ? ["qa-pass"] : reviews.filter((k) => list(task.route).some((b) => VERDICT[b] === k));
+        const clean = fits.length === 1 ? fits[0] : `this review's clean verdict (${(fits.length ? fits : reviews).join(", ")})`;
+        refuse(`${task.id} has no open medium or high finding, so ${kind} is refused. If this review found a medium or high problem, record it first: sage finding add ${task.id} --source <role> --severity <medium or high> --summary "<the problem>", then ${kind} again. If it found only low ones, its cycle is clean: record ${clean}, and fix, move or dismiss each low finding before the merge.`);
       }
-      // A route without build has no commit to judge. Its rows have no SHA, so the merge gate never reads them.
+      // A route without build has no commit to judge. Its rows have no SHA, so the merge check never reads them.
       if (builds(task) && !opt.sha) refuse(`${task.id} has a build block, so each verdict names its commit: add --sha with the full 40-character SHA (git rev-parse <branch>)`);
       if (!builds(task) && opt.sha) refuse(`${task.id} has no build block, so its verdicts name no commit: leave out --sha`);
       if (opt.sha && notFull(opt.sha)) refuse(notFull(opt.sha));
@@ -703,11 +725,14 @@ export function withLock(dir, fn) {
   }
 }
 
+/** The text that the tool prints: its lines, each with its control characters shown as \xNN. Ids, columns and paths come from files and the user. */
+const shown = (text) => text.split("\n").map(visible).join("\n");
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    console.log(sage(process.argv.slice(2)));
+    console.log(shown(sage(process.argv.slice(2))));
   } catch (err) {
-    console.error(`sage: ${err instanceof Refusal ? err.message : err.stack}`);
+    console.error(`sage: ${shown(err instanceof Refusal ? err.message : err.stack)}`);
     process.exit(err instanceof Refusal ? 1 : 2);
   }
 }
