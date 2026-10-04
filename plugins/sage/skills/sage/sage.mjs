@@ -48,6 +48,8 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
+/** The last states: a task in one of them is done with its worktree and its branch. */
+const DONE = Object.keys(NEXT).filter((s) => !NEXT[s].length);
 export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
 const COUNTS = { max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" };
@@ -63,7 +65,7 @@ const TABLES = {
   gates: ["id", "task", "question", "options", "recommendation", "default", "answer", "at"],
   decisions: ["at", "task", "decision", "why"],
 };
-const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config"];
+const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "worktrees"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
   "logbook repair": ["accept-loss"],
@@ -77,7 +79,10 @@ const OPTIONS = {
   "gate add": ["question", "options", "recommend", "default"],
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
+  worktrees: ["dry-run"],
 };
+/** The options that take no value. */
+const FLAGS = ["dry-run"];
 /** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
 const PR = /^\d+$/;
 const STANDING = `# Standing orders
@@ -321,8 +326,9 @@ function parse(cmd, args) {
     else {
       const eq = a.includes("=");
       const o = a.slice(2, eq ? a.indexOf("=") : undefined);
-      const v = eq ? a.slice(a.indexOf("=") + 1) : args[++i];
-      if (!eq) spaced.push(o);
+      const flag = FLAGS.includes(o) && !eq;
+      const v = eq ? a.slice(a.indexOf("=") + 1) : flag ? "" : args[++i];
+      if (!eq && !flag) spaced.push(o);
       if (o in opt) refuse(`--${o} is given twice. Give it once${o === "accept-loss" ? `, with the tables joined by a comma: --accept-loss ${opt[o]},${v}` : ""}.`);
       opt[o] = v;
     }
@@ -495,6 +501,7 @@ export function sage(argv, env = process.env) {
     return Object.entries(c).map(([k, v]) => `${k}=${v}`).join(" ");
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
+  if (cmd === "worktrees") return worktrees(project, env, opt["dry-run"] !== undefined);
   const dir = storeDir(project, env);
   const repair = cmd === "logbook" && pos[0] === "repair";
   const skip = repair ? [...new Set(list(opt["accept-loss"]))] : [];
@@ -510,12 +517,122 @@ export function sage(argv, env = process.env) {
     mkdirSync(join(dir, "briefs"), { recursive: true });
     mkdirSync(join(dir, "reports"), { recursive: true });
   }
-  return withLock(dir, () => {
+  const out = withLock(dir, () => {
     ready(dir, skip);
     const out = act(cmd, pos, opt, dir, env, skip);
     status(dir, true);
+    try {
+      const at = projectRoot(project); // for sage worktrees, which tidies every project
+      if (readRegular(join(dir, "checkout.txt"))?.trim() !== at) put(join(dir, "checkout.txt"), `${at}\n`);
+    } catch {}
     return out;
   });
+  // A task that reaches a last state gives up its worktree here, so the rule is in code. It never fails the move.
+  const to = cmd === "task" && pos[1] === "set" ? pos.slice(2).findLast((kv) => kv.startsWith("state="))?.slice(6) : undefined;
+  if (!DONE.includes(to)) return out;
+  try {
+    const task = read(dir, "tasks").find((t) => t.id === pos[0]);
+    return [out, ...tidy(dir, projectRoot(project), env, { task }).map((line) => `worktree ${line}`)].join("\n");
+  } catch (e) {
+    return `${out}\nworktree not tidied: ${e.message}`;
+  }
+}
+
+const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+
+/** The pull requests of a project, or null when gh cannot give them, for example offline. $SAGE_GH names another gh. */
+function pullRequests(root, env) {
+  try {
+    return JSON.parse(execFileSync(env.SAGE_GH ?? "gh", ["pr", "list", "--state", "all", "--limit", "1000", "--json", "number,state,headRefName,headRefOid"], { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Removes the worktrees and local branches of finished work in one project, and returns one line for each that it
+ * removed or kept, with the reason. Finished: its task is merged, concluded or abandoned, or its PR is merged or closed.
+ * Never while its PR is open or a run of its task or branch runs. It removes only a clean one whose last commit is on
+ * the remote (its PR's head, or in a remote branch), and only when GitHub gives the PR state: it fails closed. It uses
+ * git worktree remove without --force, deletes the branch only at that commit, and never touches the main checkout or a
+ * folder that is not a registered worktree. With task, only that task's branch.
+ */
+function tidy(dir, root, env, { task: only, dry } = {}) {
+  let trees;
+  try {
+    trees = git(root, "worktree", "list", "--porcelain").split(/\n\n+/).map((block) => Object.fromEntries(block.split("\n").map((l) => [l.split(" ")[0], l.slice(l.indexOf(" ") + 1)])));
+  } catch {
+    return only ? [] : [`${root}: skipped: it is not a git checkout`];
+  }
+  const [main, ...others] = trees; // git lists the main checkout first
+  const [tasks, runs] = [read(dir, "tasks"), read(dir, "runs")];
+  const checkedOut = new Set(trees.map((t) => t.branch));
+  const seen = new Set();
+  const all = [
+    ...others.filter((t) => t.branch?.startsWith("refs/heads/") && !("prunable" in t)).sort((a, b) => (a.worktree < b.worktree ? -1 : 1)).map((t) => ({ path: t.worktree, branch: t.branch.slice(11), head: t.HEAD })),
+    ...tasks.filter((t) => DONE.includes(t.state) && t.branch && !checkedOut.has(`refs/heads/${t.branch}`)).flatMap((t) => {
+      try {
+        return [{ branch: t.branch, head: git(root, "rev-parse", "--verify", "-q", `refs/heads/${t.branch}`) }]; // a branch without its worktree
+      } catch {
+        return [];
+      }
+    }),
+  ].filter((c) => (only ? c.branch === only.branch : true) && main.worktree !== c.path && !seen.has(c.branch) && seen.add(c.branch));
+  let prs;
+  const lines = [];
+  for (const c of all) {
+    const own = tasks.filter((t) => t.branch === c.branch);
+    const task = own.find((t) => !DONE.includes(t.state)) ?? only ?? own.at(-1); // a branch that two tasks share is done when both are
+    if (runs.some((r) => r.status === "running" && (r.branch === c.branch || own.some((t) => t.id === r.task)))) continue;
+    if (prs === undefined) prs = pullRequests(root, env); // once, and only when a worktree needs it
+    const mine = (prs ?? []).filter((p) => p.headRefName === c.branch || (task?.pr && String(p.number) === task.pr));
+    if (mine.some((p) => p.state === "OPEN")) continue;
+    const ended = mine.find((p) => ["MERGED", "CLOSED"].includes(p.state));
+    const why = DONE.includes(task?.state) ? `${task.id} ${task.state}` : ended ? `PR ${ended.number} ${ended.state.toLowerCase()}` : "";
+    if (!why) continue;
+    const line = (verdict) => lines.push(`${c.path ? `${c.path} · ${c.branch}` : `branch ${c.branch}`} · ${why}: ${verdict}`);
+    try {
+      const reason =
+        c.path && git(c.path, "status", "--porcelain") ? "it has changes that are not committed"
+        : !mine.some((p) => p.headRefOid === c.head) && !git(root, "branch", "-r", "--contains", c.head) ? `its last commit ${c.head.slice(0, 7)} is not on the remote`
+        : prs === null ? "GitHub cannot be reached, so its PR state is unknown"
+        : "";
+      if (reason || dry) {
+        line(reason ? `kept: ${reason}` : "would remove");
+        continue;
+      }
+      if (c.path) git(root, "worktree", "remove", c.path);
+      git(root, "update-ref", "-d", `refs/heads/${c.branch}`, c.head); // only at the commit that is on the remote
+      try {
+        git(root, "config", "--remove-section", `branch.${c.branch}`);
+      } catch {} // a branch without an upstream has no section
+      line("removed");
+    } catch (e) {
+      line(`kept: git refused: ${String(e.stderr || e.message).split("\n")[0].replace(/^(fatal|error): /, "")}`);
+    }
+  }
+  if (!dry) {
+    try {
+      git(root, "worktree", "prune");
+    } catch {}
+  }
+  return lines;
+}
+
+/** sage worktrees: tidy in every project's logbook. A logbook names its main checkout in checkout.txt, which each change writes. */
+function worktrees(project, env, dry) {
+  const root = sageRoot(env);
+  const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((d) => existsSync(join(d, "tasks.tsv"))).sort() : [];
+  const lines = dirs.flatMap((dir) => {
+    try {
+      const at = dir === storeDir(project, env) ? projectRoot(project) : readRegular(join(dir, "checkout.txt"))?.trim();
+      if (!at || storeDir(at, env) !== dir) return [`${dir}: skipped: it does not name its main checkout yet. Run sage worktrees in that project once.`];
+      return tidy(dir, at, env, { dry });
+    } catch (e) {
+      return [`${dir}: skipped: ${e.message}`];
+    }
+  });
+  return lines.join("\n") || "no stale worktrees";
 }
 
 function act(cmd, pos, opt, dir, env, skip) {
