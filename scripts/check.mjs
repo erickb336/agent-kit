@@ -1,7 +1,8 @@
 // Checks the sources and that the generated files match them. Fails with a list of every problem.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, outputs, parseSource } from "./build.mjs";
+import { GENERATED, ROOT, outputs, parseSource } from "./build.mjs";
+import { checkWords, flaggedWords } from "./dictionary.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
@@ -113,6 +114,25 @@ for (const name of new Set([...drawn.keys()].map((f) => f.replace(/-(light|dark)
   const svg = (theme) => `docs/assets/${name}-${theme}\\.svg`;
   const shown = new RegExp(`<a href="${svg("light")}">\\n<picture>\\n\\s*<source media="\\(prefers-color-scheme: dark\\)" srcset="${svg("dark")}">\\n\\s*<img alt="[^"]+" src="${svg("light")}"[^>]*>\\n</picture>\\n</a>\\n`);
   if (!shown.test(readme)) problems.push(`README.md: show ${name} as <a href="docs/assets/${name}-light.svg">, then <picture> with its dark <source> and an <img> with alt text, each on its own line`);
+}
+
+// sage's words (writing/dictionary.md): no flagged word in the text that a person reads. The generated skills are left
+// out: their words come from the principles, pstack and the dictionary itself. Code is left out too: its names stay.
+// WAITING holds a file that an open pull request fixes. Its skip fails once the file is clean, so that the skip goes too.
+const WAITING = { "plugins/sage/skills/sage/SKILL.md": "PR #5" };
+const dictionary = checkWords(parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8"), "writing/dictionary.md").body);
+const readByPeople = [
+  ...agents.map((f) => `plugins/sage/agents/${f}`),
+  ...readdirSync(skillsDir).map((d) => `plugins/sage/skills/${d}/SKILL.md`).filter((f) => existsSync(join(ROOT, f)) && !readFileSync(join(ROOT, f), "utf8").includes(GENERATED)),
+  "README.md",
+  "docs/design/sage-mode.html",
+  ...readdirSync(join(ROOT, "docs/assets")).filter((f) => f.endsWith(".svg")).map((f) => `docs/assets/${f}`),
+];
+for (const f of readByPeople) {
+  const found = flaggedWords(readFileSync(join(ROOT, f), "utf8"), dictionary, { html: !f.endsWith(".md") });
+  if (WAITING[f] && !found.length) problems.push(`${f}: has no flagged word now; remove it from WAITING in scripts/check.mjs`);
+  else if (WAITING[f]) console.warn(`! ${f}: ${found.length} flagged words, skipped until ${WAITING[f]} merges`);
+  else for (const h of found) problems.push(`${f}:${h.line}: "${h.word}" is a flagged word${h.use.length ? `; say ${h.use.join(" or ")}` : ""} (writing/dictionary.md)`);
 }
 
 for (const [rel, text] of outputs()) {
