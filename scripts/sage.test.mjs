@@ -430,7 +430,7 @@ test("config: every count is 1 or more, config.json is written whole, and a torn
   const s = store();
   const f = join(s.home, "config.json");
   for (const [key, why] of Object.entries({ max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" })) {
-    assert.equal(s.no("config", `${key}=0`), `sage: ${key} must be a whole number of 1 or more: with 0, ${why}`);
+    assert.equal(s.no("config", `${key}=0`), `sage: ${key} must be a whole number of ${key.startsWith("cycles.") && key !== "cycles.small" ? 2 : 1} or more: with 0, ${why}`);
   }
   assert.match(s.no("config", "max_agents=-1"), /max_agents must be a whole number of 1 or more/);
   assert.match(s.no("config", "toString=5"), /config takes max_agents/);
@@ -702,14 +702,14 @@ test("F4: a finding opened again takes the new summary and source, and the decis
   assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /\tT1\tF-T1-1 opened again: every date is off by one day\tthe summary before: the date is off by one\n$/);
 });
 
-test("F-R44-1: a link in the sage folder is read and written through, so its values and rows stay and it stays a link", () => {
+test("F-R44-1: a link in the sage folder is read and written through, so its values and rows stay and it stays a link (T42: a config write refuses a link)", () => {
   const s = store();
   const elsewhere = mkdtempSync(join(tmpdir(), "sage-dotfiles-"));
   writeFileSync(join(elsewhere, "config.json"), JSON.stringify({ "cycles.large": 3, max_agents: 5 }));
   symlinkSync(join(elsewhere, "config.json"), join(s.home, "config.json"));
   assert.equal(s.ok("config"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
-  assert.equal(s.ok("config", "max_rounds=4"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
-  assert.deepEqual([lstatSync(join(s.home, "config.json")).isSymbolicLink(), JSON.parse(readFileSync(join(elsewhere, "config.json"), "utf8")).max_rounds], [true, 4]);
+  assert.equal(s.no("config", "max_rounds=4"), `sage: ${join(s.home, "config.json")} is a link, not a regular file, so config writes nothing. Replace it with a regular file.`);
+  assert.deepEqual([lstatSync(join(s.home, "config.json")).isSymbolicLink(), JSON.parse(readFileSync(join(elsewhere, "config.json"), "utf8"))], [true, { "cycles.large": 3, max_agents: 5 }], "the link and its target are as they were");
 
   s.ok("task", "add", "--title", "a", "--size", "small");
   s.ok("task", "add", "--title", "b", "--size", "small");
@@ -768,7 +768,7 @@ test("QA-3: a bad count gives the reason for its value, and a SHA in capitals na
   assert.equal(s.no("config", "max_agents=-1"), 'sage: max_agents must be a whole number of 1 or more, not "-1"');
   assert.equal(s.no("config", "arena=abc"), 'sage: arena must be a whole number of 1 or more, not "abc"');
   assert.equal(s.no("config", "max_rounds=1.5"), 'sage: max_rounds must be a whole number of 1 or more, not "1.5"');
-  assert.equal(s.no("config", "cycles.large=00"), "sage: cycles.large must be a whole number of 1 or more: with 0, a large task would merge with no review");
+  assert.equal(s.no("config", "cycles.large=00"), "sage: cycles.large must be a whole number of 2 or more: with 0, a large task would merge with no review");
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   assert.equal(s.ok("verdict", "T1", "--sha", SHA.toUpperCase(), "--kind", "checks-pass"), "T1 checks-pass · a1b2c3d · cycle 1");
   assert.equal(rows(s.dir, "ledger")[0].sha, SHA, "the ledger holds it as git prints it");
@@ -1388,4 +1388,28 @@ test("QA-2: every line the tool prints says logbook, never store, and merge chec
   assert.ok(said.length > 500, `${said.length} lines: run the whole file, so this test reads the lines of every test`);
   assert.deepEqual(said.filter((line) => /\bstores?\b/i.test(line) && !line.startsWith('sage: unknown command "store"')), []);
   assert.deepEqual(said.filter((line) => /merge gate|[\0-\x09\x0b-\x1f\x7f-\x9f]/.test(line)), []);
+});
+
+test("T42: the owner's floors (gate G18): cycles.large and cycles.risk never go below 2, whoever writes config.json; a legacy autopilot_cycles reads as cycles.large", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  const all = (large, risk) => `max_agents=3 cycles.small=1 cycles.large=${large} cycles.risk=${risk} max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12`;
+  assert.equal(s.no("config", "cycles.large=1"), "sage: cycles.large must be a whole number of 2 or more: 1 is below the floor of 2, which only a code change lowers");
+  assert.equal(s.no("config", "cycles.risk=1"), "sage: cycles.risk must be a whole number of 2 or more: 1 is below the floor of 2, which only a code change lowers");
+  assert.equal(existsSync(f), false, "a refused change writes nothing");
+  assert.equal(s.ok("config", "cycles.small=1", "cycles.large=2", "cycles.risk=2"), all(2, 2), "the floor itself is fine");
+
+  s.ok("task", "add", "--title", "t", "--size", "large");
+  for (const kind of ["checks-pass", "review-clean", "security-clean", "ux-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind, "--cycle", "1");
+  writeFileSync(f, '{"cycles.large": 1, "cycles.risk": 1}'); // an agent, or an older sage, wrote the file
+  assert.equal(s.ok("config"), all(2, 2), "a value below its floor reads as the floor");
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles on this SHA/, "a large task still needs 2 clean cycles");
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T1 may merge: 1 clean cycle on this SHA", "the chief's explicit --cycles is not a setting, so it keeps its own floor of 1");
+
+  for (const [text, want] of [['{"autopilot_cycles": 3}', 3], ['{"autopilot_cycles": 1}', 2], ['{"autopilot_cycles": 3, "cycles.large": 4}', 4], ['{"autopilot_cycles": "x"}', 2]]) {
+    writeFileSync(f, text);
+    assert.equal(s.ok("config"), all(want, 2), `config.json ${text}`);
+  }
+  writeFileSync(f, '{"autopilot_cycles": 3}');
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles on this SHA/, "the legacy key counts");
 });
