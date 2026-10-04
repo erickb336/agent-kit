@@ -1,7 +1,7 @@
 <a href="docs/assets/hero-light.svg">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="sage: your chief of staff for Claude Code. Start a message with “sage mode”. A hooded toad sage with glowing gold eyes, the chief of staff, meditates in front of a big moon in a misty mountain world. Around it, its team on an arrowed loop: designer, PE, implementer, arena judge, code review, security review, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
+  <img alt="sage: your chief of staff for Claude Code. Start a message with “sage mode”. A hooded toad sage with glowing gold eyes, the chief of staff, meditates in front of a big moon in a misty mountain world. Around it, its team on an arrowed loop: designer, PE, implementer, arena judge, code reviewer, security reviewer, UX reviewer and QA." src="docs/assets/hero-light.svg" width="100%">
 </picture>
 </a>
 

@@ -283,7 +283,7 @@ function toadSage(cx, cy, s, id, { bust = false } = {}) {
 }
 
 // The roles on the ring, clockwise from one o'clock. The writers (true) work in their own worktrees.
-const RING = [["Designer", true, "scroll"], ["PE", false, "square"], ["Implementer", true, "anvil"], ["Arena judge", true, "scales"], ["Code review", false, "lens"], ["Security review", false, "shield"], ["UX review", false, "mirror"], ["QA", false, "orb"]];
+const RING = [["Designer", true, "scroll"], ["PE", false, "square"], ["Implementer", true, "anvil"], ["Arena judge", true, "scales"], ["Code reviewer", false, "lens"], ["Security reviewer", false, "shield"], ["UX reviewer", false, "mirror"], ["QA", false, "orb"]];
 // Where the spirit's hand goes for each tool, in medallion units (the medallion has a radius of 50).
 const HANDS = { scroll: [10, 6], square: [13, 6], anvil: [8, 2], scales: [12, 10], lens: [9, 7], shield: [12, 6], mirror: [19, 16], orb: [18, 11] };
 
@@ -503,7 +503,7 @@ function hero(t, id) {
     text(245, 1099, "Claude Code plugin · MIT", { size: 28, weight: 700, fill: EMBER.hot, anchor: "middle" }),
     text(W - 40, 1099, "Built on pstack and poteto mode, by Lauren Tan", { size: 28, fill: EMBER.muted, anchor: "end" }),
   ].join("\n");
-  return worldSvg(W, H, id, worldDefs(id), body, "sage: your chief of staff for Claude Code. Start a message with sage mode. A hooded toad sage, the chief of staff, meditates on a rock in a misty mountain world, with glowing gold toad eyes. Around it, its team on a loop: designer, PE, implementer, arena judge, code review, security review, UX review and QA. Claude Code plugin, MIT. Built on pstack and poteto mode, by Lauren Tan.", { border: t.dark ? "#3A2414" : undefined });
+  return worldSvg(W, H, id, worldDefs(id), body, "sage: your chief of staff for Claude Code. Start a message with sage mode. A hooded toad sage, the chief of staff, meditates on a rock in a misty mountain world, with glowing gold toad eyes. Around it, its team on a loop: designer, PE, implementer, arena judge, code reviewer, security reviewer, UX reviewer and QA. Claude Code plugin, MIT. Built on pstack and poteto mode, by Lauren Tan.", { border: t.dark ? "#3A2414" : undefined });
 }
 
 /** How it works: you, the chief of staff (the toad sage), the team's flow to a pull request, the store, and the outer
