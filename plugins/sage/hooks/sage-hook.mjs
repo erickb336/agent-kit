@@ -10,7 +10,8 @@
 //     cycles that the ledger records for it (the merge check). The merge rule and the push rule are allow-lists: a
 //     command that names a merge or runs a push is refused unless it is exactly the merge form or the push form, or the
 //     merge text stands only in a harmless command's text. One case asks the user instead of a refusal: the chief's
-//     first upload of a one-commit main or master to a remote that has no such branch (firstUpload).
+//     first upload of one root commit, named by its full id, to a main or master that the remote does not have
+//     (firstUpload).
 //   - A sage agent may finish only with the full report of the sage:report skill.
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
@@ -187,7 +188,7 @@ function pushProblem(command, cwd) {
   for (const { cmd, words, bodies } of runnable(commands)) {
     if (cmd.words[0] === "cd" && cmd.words.length === 2) dir = resolve(dir, cmd.words[1]);
     const git = words.findIndex((w, k) => /(?:^|\/)git$/.test(w) && /^push$/i.test(subcommand(words, k + 1)));
-    const why = git >= 0 ? pushForm(words, git, dir) : words[0] === "gh" && words[1] === "api" && words.some((w) => MAIN_FIELD.test(w)) ? TO_MAIN : [...words, ...bodies].some((w) => /\s/.test(w) && PUSH_TEXT.test(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
+    const why = git >= 0 ? pushForm(words, git, dir) : words[0] === "gh" && words[1] === "api" && words.some((w) => REFS_ENDPOINT.test(w)) && words.some((w) => MAIN_FIELD.test(w)) ? TO_MAIN : [...words, ...bodies].some((w) => /\s/.test(w) && PUSH_TEXT.test(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
     if (why) return refuse(why);
   }
   return undefined;
@@ -210,7 +211,7 @@ const longOption = (word, names) => {
   return name.length > 3 && names.some((n) => n.startsWith(name));
 };
 const FORCE = "sage mode never force-pushes. Push a new commit instead.";
-const TO_MAIN = "work reaches main only through a pull request. Push the task's branch and open a pull request.";
+const TO_MAIN = "work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first upload of a blank project asks the user, in the form git push origin <sha>:refs/heads/main, where <sha> is a root commit.)";
 
 /** Why the git push at words[git] is not the push form, or undefined. dir is where the command runs. */
 function pushForm(words, git, dir) {
@@ -264,15 +265,22 @@ function branchAt(dir) {
   }
 }
 
+/** A gh api endpoint of git refs: repos/<o>/<r>/git/refs or repos/<o>/<r>/git/refs/<ref>. */
+const REFS_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/git\/refs(?:\/|$)/;
 /** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
 const MAIN_FIELD = /^(?:-[fF]|--(?:raw-)?field=)?ref=(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
 
+/** git config keys that can send a push to another place than the url that git ls-remote reads, or force it. */
+const REDIRECT = /^(?:remote\.origin\.(?:pushurl|push)|url\..*\.pushinsteadof)$/i;
+
 /**
  * The one exception to the push rule: the first upload of main or master to a blank remote. The whole command is
- * git [-C <dir>] push [-u] origin main|master, or gh api repos/<o>/<r>/git/refs -f ref=refs/heads/main|master
- * -f sha=<sha> (a POST) for the repository of origin. Origin has no branch of that name, and the local branch holds
- * exactly one commit (for gh api, the commit <sha>). Then the user decides in Claude Code's permission prompt.
- * Returns the reason for that prompt, or undefined: then the push rule refuses the command as before.
+ * git [-C <dir>] push origin <sha>:refs/heads/main|master, or gh api repos/<o>/<r>/git/refs -f ref=refs/heads/main|master
+ * -f sha=<sha> (a POST) for the repository of origin, each field once. <sha> is the full id of a root commit (a commit
+ * with no parent), so the upload is that one commit, whatever happens to the local branches later. Origin has no branch
+ * of that name, and no git config sends the push elsewhere. Then the user decides in Claude Code's permission prompt,
+ * which names the commit and its files. Returns the reason for that prompt, or undefined: then the push rule refuses
+ * the command as before.
  */
 function firstUpload(command, cwd) {
   try {
@@ -280,15 +288,12 @@ function firstUpload(command, cwd) {
     if (commands.length !== 1 || commands[0].bodies.length) return undefined;
     const words = commands[0].words;
     let dir = cwd;
-    let branch;
-    let sha;
+    let target;
     if (words[0] === "git") {
       let k = 1;
       if (words[1] === "-C") [dir, k] = [resolve(cwd, words[2]), 3];
-      if (words[k++] !== "push") return undefined;
-      if (words[k] === "-u" || words[k] === "--set-upstream") k++;
-      if (words[k] !== "origin" || words.length !== k + 2) return undefined;
-      branch = words[k + 1];
+      if (words[k] !== "push" || words[k + 1] !== "origin" || words.length !== k + 3) return undefined;
+      target = words[k + 2];
     } else if (words[0] === "gh" && words[1] === "api") {
       const fields = {};
       let endpoint;
@@ -299,22 +304,27 @@ function firstUpload(command, cwd) {
         if (/^(?:-X|--method)$/.test(flag)) method = (value ?? words[++k] ?? "").toUpperCase();
         else if (/^(?:-[fF]|--field|--raw-field)$/.test(flag)) {
           const field = value ?? words[++k] ?? "";
-          fields[field.split("=")[0]] = field.slice(field.indexOf("=") + 1);
+          const name = field.split("=")[0];
+          if (name in fields) return undefined; // gh may send either value of a repeated field
+          fields[name] = field.slice(field.indexOf("=") + 1);
         } else if (endpoint === undefined && !flag.startsWith("-")) endpoint = flag;
         else return undefined;
       }
       const repo = /^\/?repos\/([\w.-]+\/[\w.-]+)\/git\/refs$/.exec(endpoint ?? "")?.[1]?.toLowerCase();
-      if (!repo || method !== "POST" || Object.keys(fields).sort().join() !== "ref,sha" || !/^[0-9a-f]{40}$/.test(fields.sha)) return undefined;
+      if (!repo || method !== "POST" || Object.keys(fields).sort().join() !== "ref,sha") return undefined;
       const origin = git(dir, "remote", "get-url", "origin").replace(/(?:\.git)?\/*$/, "").toLowerCase();
       if (!origin.endsWith(`/${repo}`) && !origin.endsWith(`:${repo}`)) return undefined;
-      branch = /^refs\/heads\/(main|master)$/.exec(fields.ref)?.[1];
-      sha = fields.sha;
+      target = `${fields.sha}:${fields.ref}`;
     } else return undefined;
-    if (!/^(?:main|master)$/.test(branch ?? "")) return undefined;
+    const [, sha, branch] = /^([0-9a-f]{40}):refs\/heads\/(main|master)$/.exec(target ?? "") ?? [];
+    if (!sha) return undefined;
+    if (git(dir, "config", "--list", "--name-only").split("\n").some((key) => REDIRECT.test(key))) return undefined;
+    if (git(dir, "rev-list", "--count", sha) !== "1") return undefined; // it throws when the commit is not here
     if (git(dir, "ls-remote", "--heads", "origin", `refs/heads/${branch}`) !== "") return undefined;
-    if (git(dir, "rev-list", "--count", `refs/heads/${branch}`) !== "1") return undefined;
-    if (sha && git(dir, "rev-parse", `refs/heads/${branch}`) !== sha) return undefined;
-    return `this is the first upload of ${branch} to a blank remote: origin has no ${branch}, and the local ${branch} holds one commit. The user must approve it.`;
+    const files = git(dir, "ls-tree", "-r", "--name-only", sha).split("\n").filter(Boolean).length;
+    const top = git(dir, "ls-tree", "--name-only", sha).split("\n").filter(Boolean);
+    const names = top.length ? `: ${top.slice(0, 10).join(", ")}${top.length > 10 ? `, and ${top.length - 10} more` : ""}` : "";
+    return `this is the first upload of ${branch} to a blank remote: origin has no ${branch}, and commit ${sha} is one root commit with ${files} file${files === 1 ? "" : "s"}${names}. The user must approve it.`;
   } catch {
     return undefined; // git failed or timed out, or the hook cannot read the command: the push rule refuses it
   }

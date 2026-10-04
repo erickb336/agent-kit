@@ -274,75 +274,139 @@ test("a push from a checkout of main or master is refused; a push with -C or aft
 
 /**
  * A blank project for the first upload of main (T24): a checkout on branch with commits commits, whose origin is a local
- * bare repository at <tmp>/owner/repo.git. remote: "has" gives origin the branch, "missing" points origin at no repository.
+ * bare repository at <tmp>/owner/repo.git. The first commit holds files files (f01, f02, ...); the later ones are empty.
+ * remote: "has" gives origin the branch, "missing" points origin at no repository. config: extra git config of the checkout.
  */
-const blank = ({ branch = "main", commits = 1, remote = "blank" } = {}) => {
+const blank = ({ branch = "main", commits = 1, files = 0, remote = "blank", config = [] } = {}) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sage-blank-")));
   const bare = join(root, "owner", "repo.git");
   const dir = join(root, "work");
   const run = (...args) => assert.equal(spawnSync("git", args, { encoding: "utf8" }).status, 0, args.join(" "));
   run("init", "-q", "--bare", bare);
   run("init", "-q", "-b", branch, dir);
+  for (let n = 1; n <= files; n++) writeFileSync(join(dir, `f${String(n).padStart(2, "0")}`), `${n}\n`);
+  if (files) run("-C", dir, "add", ".");
   for (let n = 0; n < commits; n++) run("-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", `c${n}`);
   run("-C", dir, "remote", "add", "origin", remote === "missing" ? join(root, "none.git") : bare);
+  for (const [key, value] of config) run("-C", dir, "config", key, value);
   if (remote === "has") run("-C", dir, "push", "-q", "origin", branch);
   const sha = spawnSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-  return { dir, sha, api: (rest = "") => `gh api repos/owner/repo/git/refs -f ref=refs/heads/${branch} -f sha=${sha}${rest}` };
+  return { dir, root, sha, up: (to = branch) => `git push origin ${sha}:refs/heads/${to}`, api: (rest = "") => `gh api repos/owner/repo/git/refs -f ref=refs/heads/${branch} -f sha=${sha}${rest}` };
 };
 const asked = (out) => (out?.hookSpecificOutput?.permissionDecision === "ask" ? out.hookSpecificOutput.permissionDecisionReason : undefined);
 
-test("the first upload of a one-commit main to a blank remote asks the user; every other upload of main is refused (T24)", () => {
+test("the first upload of one root commit to a blank main asks the user; every other upload of main is refused (T24)", () => {
   const s = session();
-  const ASK = /^sage: this is the first upload of (main|master) to a blank remote: origin has no \1, and the local \1 holds one commit\. The user must approve it\.$/;
+  const ASK = /^sage: this is the first upload of (main|master) to a blank remote: origin has no \1, and commit [0-9a-f]{40} is one root commit with \d+ files?(: .*)?\. The user must approve it\.$/;
   const one = blank();
-  assert.equal(s.send(bash("git push -u origin main", one.dir)), undefined, "outside sage mode the hook does not judge pushes");
+  assert.equal(s.send(bash(one.up(), one.dir)), undefined, "outside sage mode the hook does not judge pushes");
   assert.equal(s.send(bash(one.api(), one.dir)), undefined, "outside sage mode the hook does not judge gh api");
   s.send(prompt("sage mode"));
 
-  // Ask: the plain push, with -u, -C or master, and the gh api POST that creates the branch at its one commit.
+  // Ask: the fixed-commit push, with -C or master, and the gh api POST that creates the branch at that commit.
   const master = blank({ branch: "master" });
   const ask = [
-    ["git push -u origin main", one.dir],
-    ["git push origin main", one.dir],
-    [`git -C ${one.dir} push --set-upstream origin main`, FEATURE],
-    ["git push -u origin master", master.dir],
+    [one.up(), one.dir],
+    [`git -C ${one.dir} push origin ${one.sha}:refs/heads/main`, FEATURE],
+    [master.up(), master.dir],
     [one.api(), one.dir],
     [`${one.api()} -X POST`, one.dir],
     [`gh api --method=POST /repos/owner/repo/git/refs --raw-field ref=refs/heads/master -F sha=${master.sha}`, master.dir],
   ];
   assert.deepEqual(ask.flatMap(([command, cwd]) => (ASK.test(asked(s.send(bash(command, cwd))) ?? "") ? [] : [command])), []);
-  assert.equal(asked(s.send(bash(one.api(), one.dir))), "sage: this is the first upload of main to a blank remote: origin has no main, and the local main holds one commit. The user must approve it.");
+  assert.equal(asked(s.send(bash(one.api(), one.dir))), `sage: this is the first upload of main to a blank remote: origin has no main, and commit ${one.sha} is one root commit with 0 files. The user must approve it.`);
 
-  // Refuse, as before: the remote has main, main has 2 commits, git ls-remote fails, or a subagent asks.
+  // Refuse, as before: the remote has main, git ls-remote fails, or a subagent asks.
   const has = blank({ remote: "has" });
-  const two = blank({ commits: 2 });
   const missing = blank({ remote: "missing" });
   const refused = (command, cwd, extra = {}) => denied(s.send(tool("Bash", { command }, { cwd, ...extra }))) ?? "allowed";
-  for (const b of [has, two, missing]) {
-    assert.match(refused("git push -u origin main", b.dir), TO_MAIN, b.dir);
+  for (const b of [has, missing]) {
+    assert.match(refused(b.up(), b.dir), TO_MAIN, b.dir);
     assert.match(refused(b.api(), b.dir), TO_MAIN, b.dir);
   }
-  assert.match(refused("git push -u origin main", one.dir, { agent_id: "a1", agent_type: "sage:implementer" }), TO_MAIN, "a subagent never gets the exception");
+  assert.match(refused(one.up(), one.dir, { agent_id: "a1", agent_type: "sage:implementer" }), TO_MAIN, "a subagent never gets the exception");
   assert.match(refused(one.api(), one.dir, { agent_id: "a1", agent_type: "sage:implementer" }), TO_MAIN);
 
-  // Refuse any other form for a blank remote too: force, a refspec, HEAD, a variable, a list, or a gh api call that is not the POST.
+  // Refuse any other form for a blank remote too: force, a branch name, HEAD, a short sha, a variable, a list, or a gh api call that is not the POST.
   assert.match(refused("git push -f origin main", one.dir), FORCE);
-  assert.match(refused("git push origin +main", one.dir), FORCE);
-  for (const command of ["git push origin main:main", "git push origin HEAD:main", "git push origin refs/heads/main", "git push -u origin main && echo ok", "git push origin main 2>&1", "git push --no-verify origin main"]) {
+  assert.match(refused(`git push origin +${one.sha}:refs/heads/main`, one.dir), FORCE);
+  for (const command of [`git push -u origin ${one.sha}:refs/heads/main`, `git push origin ${one.sha}:main`, `git push origin ${one.sha.slice(0, 12)}:refs/heads/main`, "git push origin HEAD:refs/heads/main", "git push origin refs/heads/main", `${one.up()} && echo ok`, `${one.up()} 2>&1`]) {
     assert.match(refused(command, one.dir), TO_MAIN, command);
   }
-  assert.match(refused("git push origin HEAD", one.dir), NOT_FORM);
   assert.match(refused("git push origin $B", one.dir), NOT_FORM);
   for (const command of [
     one.api(" -X PATCH"),
     one.api(" -f force=true"),
     `gh api repos/owner/other/git/refs -f ref=refs/heads/main -f sha=${one.sha}`,
-    `gh api repos/owner/repo/git/refs -f ref=refs/heads/main -f sha=${two.sha}`,
     `gh api repos/owner/repo/git/refs -f ref=main -f sha=${one.sha}`,
   ]) {
     assert.match(refused(command, one.dir), TO_MAIN, command);
   }
   assert.equal(s.send(bash(`gh api repos/owner/repo/git/refs -f ref=refs/heads/feat -f sha=${one.sha}`, one.dir)), undefined, "a gh api call for another branch is not the push rule's");
+});
+
+test("the plain push of main to a blank remote is refused, and the refusal names the fixed-commit form (T24 ONE-COMMIT-TOCTOU)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const one = blank();
+  for (const command of ["git push -u origin main", "git push origin main", "git push --set-upstream origin main"]) {
+    const reason = denied(s.send(bash(command, one.dir))) ?? "allowed";
+    assert.match(reason, TO_MAIN, command);
+    assert.ok(reason.includes("git push origin <sha>:refs/heads/main, where <sha> is a root commit"), reason);
+  }
+});
+
+test("the first upload asks only for a root commit that exists here (T24 ONE-COMMIT-TOCTOU)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const two = blank({ commits: 2 });
+  const absent = "0123456789abcdef0123456789abcdef01234567";
+  for (const command of [two.up(), two.api(), `git push origin ${absent}:refs/heads/main`, `gh api repos/owner/repo/git/refs -f ref=refs/heads/main -f sha=${absent}`]) {
+    assert.match(denied(s.send(bash(command, two.dir))) ?? "allowed", TO_MAIN, command);
+  }
+  const root = spawnSync("git", ["-C", two.dir, "rev-list", "--max-parents=0", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  assert.match(asked(s.send(bash(`git push origin ${root}:refs/heads/main`, two.dir))) ?? "refused", new RegExp(`commit ${root} is one root commit`), "the root commit of a longer branch is one commit");
+});
+
+test("a git config that sends the push elsewhere or forces it removes the exception (T24 UPLOAD-CONFIG-REDIRECT, PUSHURL-MISMATCH)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const full = blank({ commits: 3, remote: "has" });
+  const bare = join(full.root, "owner", "repo.git");
+  const configs = {
+    pushurl: [["remote.origin.pushurl", bare]],
+    push: [["remote.origin.push", "+refs/heads/main:refs/heads/main"]],
+    pushInsteadOf: [[`url.${bare}.pushInsteadOf`, "/nowhere/"]],
+  };
+  for (const [name, config] of Object.entries(configs)) {
+    const b = blank({ config });
+    assert.match(denied(s.send(bash(b.up(), b.dir))) ?? "allowed", TO_MAIN, name);
+    assert.match(denied(s.send(bash(b.api(), b.dir))) ?? "allowed", TO_MAIN, name);
+  }
+  const plain = blank();
+  assert.ok(asked(s.send(bash(plain.up(), plain.dir))), "without that config, the same command asks");
+});
+
+test("the first-upload prompt names the commit's file count and up to 10 top-level names (T24 PROMPT-NO-CONTENTS)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const twelve = blank({ files: 12 });
+  assert.equal(asked(s.send(bash(twelve.up(), twelve.dir))), `sage: this is the first upload of main to a blank remote: origin has no main, and commit ${twelve.sha} is one root commit with 12 files: f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, and 2 more. The user must approve it.`);
+  const three = blank({ files: 3 });
+  assert.equal(asked(s.send(bash(three.api(), three.dir))), `sage: this is the first upload of main to a blank remote: origin has no main, and commit ${three.sha} is one root commit with 3 files: f01, f02, f03. The user must approve it.`);
+});
+
+test("gh api: a repeated field removes the exception; ref=main counts only on a git refs endpoint (T24 GHAPI-REPEATED-FIELD, GHAPI-REF-OVERBROAD)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const one = blank();
+  for (const command of [one.api(` -f sha=${one.sha}`), `gh api repos/owner/repo/git/refs -f ref=refs/heads/feat -f ref=refs/heads/main -f sha=${one.sha}`]) {
+    assert.match(denied(s.send(bash(command, one.dir))) ?? "allowed", TO_MAIN, command);
+  }
+  for (const command of ["gh api repos/o/r/actions/workflows/ci.yml/dispatches -f ref=main", "gh api repos/o/r/deployments -f ref=main -f environment=prod"]) {
+    assert.equal(s.send(bash(command)), undefined, command);
+  }
+  assert.match(denied(s.send(bash("gh api -X PATCH repos/o/r/git/refs/heads/main -f ref=main"))) ?? "allowed", TO_MAIN, "a git refs endpoint with a path still counts");
 });
 
 test("a push command that the hook cannot read is refused with what to do (F-R90-4)", () => {
