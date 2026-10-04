@@ -1,7 +1,7 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -138,6 +138,54 @@ test("a stopped or dead agent frees its slot without SubagentStop: TaskStop, the
   assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu8"))), "an agent's own event renews its lease");
   utimesSync(slot, old, old);
   assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu9")), undefined, "a slot that nothing touched for an hour expires");
+});
+
+// Repair round 2 of T38 (security review of 7746587, cases R1c, R2b, R3, R4): an id from the event never names a path
+// outside the slot, and a slot that cannot be marked is freed, with the spawn refused.
+test("an id with path segments writes and renames only inside the slot; the same id still frees the slot (sec15 R1c, R2b)", () => {
+  const s = session();
+  s.sage("config", "max_agents=1");
+  s.send(prompt("sage mode"));
+  const victim = join(s.dir, "victim.txt");
+  writeFileSync(victim, "keep this text");
+  const id = "/../../../../victim.txt"; // from <state>/slots/slot-1/<mark>: up to the session's dir
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, id)), undefined);
+  assert.equal(readFileSync(victim, "utf8"), "keep this text", "take() writes no file outside the slot");
+  s.send(start(id));
+  assert.equal(readFileSync(victim, "utf8"), "keep this text", "bind() renames nothing outside the slot");
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2"))), "the agent holds the one slot");
+  s.send(tool("TaskStop", { task_id: id }));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu3")), undefined, "the TaskStop with the same id frees the slot");
+  assert.deepEqual(readdirSync(s.dir).sort(), ["home", "state", "victim.txt"], "nothing new next to the state");
+});
+
+test("an id the file system refuses (NUL, over 255 bytes) is counted and freed like any other (sec15 R3, R4)", () => {
+  const s = session();
+  s.sage("config", "max_agents=1");
+  s.send(prompt("sage mode"));
+  const long = "y".repeat(300);
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "a\u0000b")), undefined, "a spawn with a NUL in its tool use id passes under the cap");
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, long))), "and it is counted");
+  s.send({ hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_use_id: "a\u0000b" });
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, long)), undefined, "the failed spawn frees its slot by the same id");
+  s.send(start(long));
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2"))), "the agent with the long id holds the slot");
+  s.send(tool("TaskStop", { task_id: long }));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu3")), undefined, "the TaskStop with the long id frees the slot");
+  s.send({ hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_use_id: "tu3" });
+  assert.deepEqual(readdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots")), [], "no half-marked slot is left");
+});
+
+test("a slot that cannot be marked is freed, and the spawn is refused with the reason", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  mkdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots"), { recursive: true });
+  // The hook runs with umask 777, so the slot directory it makes has no permissions: its marks cannot be written.
+  const r = spawnSync("sh", ["-c", `umask 777; node "${HOOK}"`], { input: JSON.stringify({ session_id: "s1", ...spawnAgent("sage:qa", BRIEF, "tu1") }), encoding: "utf8", env: s.vars });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(denied(JSON.parse(r.stdout)), /^sage: the agent cap could not mark its slot \(EACCES.*\), so it refuses this spawn\. Tell the user\.$/);
+  assert.deepEqual(readdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots")), [], "the refused spawn left no slot");
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu2")), undefined, "the next spawn passes");
 });
 
 // Repair round 1 of T38: the cap is a true count, and a release frees only the agent that is really gone.

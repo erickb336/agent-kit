@@ -18,7 +18,7 @@
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -194,6 +194,7 @@ export function handle(input, state, slots) {
     if (r.refused) {
       slots.log(`${project} ${r.project}/${cap} total ${r.total}/${caps.cap_total}`);
       const raise = (key, n) => `Wait for one to finish, or raise the cap: node "${join(ROOT, "skills/sage/sage.mjs")}" config ${key}=${n + 1}`;
+      if (r.refused === "mark") return deny(event, `the agent cap could not mark its slot (${r.error}), so it refuses this spawn. Tell the user.`);
       if (r.refused === "total") return deny(event, `${r.total} sage agents are running across all projects, and the total cap is ${caps.cap_total} (${project} has ${r.project}). ${raise("cap_total", caps.cap_total)}`);
       return deny(event, `${r.project} sage agents are running for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
     }
@@ -694,6 +695,13 @@ export function chiefText() {
 }
 
 const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
+/**
+ * An id from an event (a session, an agent or a tool use) as a file name: one safe character set, at most 128
+ * characters, so that it can never name a path outside its directory or one the file system refuses. Every write and
+ * every comparison of an id goes through this one mapping.
+ */
+const safe = (raw) => String(raw ?? "").replace(/[^\w.-]/g, "_").slice(0, 128);
+
 /** A refusal, or a question to the user. Its reason can quote the command, so its control characters are escaped: they can change what a terminal shows. */
 const decide = (event, decision, reason) => ({ hookSpecificOutput: { hookEventName: event, permissionDecision: decision, permissionDecisionReason: `sage: ${String(reason).replace(/\p{Cc}/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}` } });
 const deny = (event, reason) => decide(event, "deny", reason);
@@ -712,6 +720,7 @@ const deny = (event, reason) => decide(event, "deny", reason);
  */
 export function slotsFor(dir, session, now = Date.now()) {
   const STALE = { pending: 10 * 60_000, agent: 60 * 60_000 };
+  const id = (raw) => safe(raw) || undefined; // an id that is empty after the mapping is missing
   const num = (slot) => Number(slot.slice(5));
   const list = () => {
     try {
@@ -730,7 +739,14 @@ export function slotsFor(dir, session, now = Date.now()) {
   const mark = (slot, prefix) => marks(slot).find((m) => m.startsWith(prefix))?.slice(prefix.length);
   const ofSession = () => list().filter((slot) => mark(slot, "session-") === session);
   const withMark = (name) => ofSession().find((slot) => marks(slot).includes(name));
-  const free = (slot) => slot && rmSync(join(dir, slot), { recursive: true, force: true });
+  const free = (slot) => {
+    if (!slot) return;
+    try {
+      rmdirSync(join(dir, slot)); // an empty slot goes even when it cannot be read: the marks could not be written
+    } catch {
+      rmSync(join(dir, slot), { recursive: true, force: true });
+    }
+  };
   const expire = () => {
     for (const slot of list()) {
       const kind = mark(slot, "agent-") === undefined ? "pending" : "agent";
@@ -760,39 +776,47 @@ export function slotsFor(dir, session, now = Date.now()) {
         }
       }
       if (!mine) return { refused: "total", ...counts(project) };
-      for (const m of [`project-${project}`, `session-${session}`, `tool-${toolUseId}`, `pending-${toolUseId}`]) writeFileSync(join(dir, mine, m), "");
-      const counted = (slot) => slot !== mine && (mark(slot, "project-") ?? project) === project && (num(slot) < num(mine) || marks(slot).includes("ok"));
-      if (list().filter(counted).length < cap) {
-        writeFileSync(join(dir, mine, "ok"), "");
-        return { ok: true };
+      try {
+        const tu = id(toolUseId) ?? String(now);
+        for (const m of [`project-${project}`, `session-${session}`, `tool-${tu}`, `pending-${tu}`]) writeFileSync(join(dir, mine, m), "");
+        const counted = (slot) => slot !== mine && (mark(slot, "project-") ?? project) === project && (num(slot) < num(mine) || marks(slot).includes("ok"));
+        if (list().filter(counted).length < cap) {
+          writeFileSync(join(dir, mine, "ok"), "");
+          return { ok: true };
+        }
+        free(mine);
+        return { refused: "project", ...counts(project) };
+      } catch (e) {
+        free(mine); // a slot with some marks would count against the project for 10 minutes
+        return { refused: "mark", error: e?.message ?? String(e), ...counts(project) };
       }
-      free(mine);
-      return { refused: "project", ...counts(project) };
     },
     bind(agentId) {
+      if (!id(agentId)) return;
       for (const slot of ofSession()) {
         const pending = marks(slot).find((m) => m.startsWith("pending-"));
         if (!pending) continue;
         try {
-          renameSync(join(dir, slot, pending), join(dir, slot, `agent-${agentId}`)); // atomic: one start binds one slot
+          renameSync(join(dir, slot, pending), join(dir, slot, `agent-${id(agentId)}`)); // atomic: one start binds one slot
           return;
         } catch {
           /* another start took this one */
         }
       }
     },
-    release: (agentId) => free(withMark(`agent-${agentId}`)),
+    release: (agentId) => free(withMark(`agent-${id(agentId)}`)),
     /** A failed spawn frees its slot while it is pending. A bound slot stays: SubagentStart names no tool use, so the agent may be another spawn's. */
-    drop: (toolUseId) => free(withMark(`pending-${toolUseId}`)),
+    drop: (toolUseId) => free(withMark(`pending-${id(toolUseId)}`)),
     touch(agentId) {
       try {
-        utimesSync(join(dir, withMark(`agent-${agentId}`)), new Date(now), new Date(now));
+        utimesSync(join(dir, withMark(`agent-${id(agentId)}`)), new Date(now), new Date(now));
       } catch {
         /* no slot: the agent's slot expired, or it is not a sage agent's */
       }
     },
     /** Frees the session's bound slots whose agent is not among the live task ids. */
     reconcile(liveIds) {
+      liveIds = liveIds.map(id);
       for (const slot of ofSession()) {
         const agent = mark(slot, "agent-");
         if (agent !== undefined && !liveIds.includes(agent)) free(slot);
@@ -807,7 +831,6 @@ export function slotsFor(dir, session, now = Date.now()) {
 }
 
 const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(tmpdir(), "sage-hooks");
-const safe = (id) => String(id).replace(/[^\w.-]/g, "_");
 
 // Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.env.SAGE_HOOKS !== "off") {
