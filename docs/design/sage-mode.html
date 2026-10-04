@@ -62,7 +62,7 @@
 
 <div class="lead">
   <p><strong>What this is.</strong> The design of sage mode: you say "sage mode", and the session becomes your chief of staff. The chief of staff runs a factory of specialist agents, like Orchestrator, but inside any Claude Code session, from your phone or your desktop. There is no app and no dashboard: the chat is the interface, and the state is plain files.</p>
-  <p><strong>Main point.</strong> Use one coordinator that never writes code, with specialists that write one at a time. Code enforces the important rules: hooks, plus one small state tool. Each task gets a route made from building blocks, sized to the task, instead of a fixed flow.</p>
+  <p><strong>Main point.</strong> Use one chief that never writes code, with specialists that write one at a time. Code enforces the important rules: hooks, plus one small state tool. Each task gets a route made from building blocks, sized to the task, instead of a fixed flow.</p>
   <p><strong>New in v2.</strong> Your decisions (<a href="#decide">section 15</a>), autopilot as "everything merges through a pull request after a set number of cycles", the <a href="#arena">arena</a> block, and a <a href="#prototype">sample session</a> that shows the experience.</p>
   <p><strong>What I need from you.</strong> Two details and your go to build, in <a href="#decide">the last section</a>.</p>
 </div>
@@ -102,7 +102,7 @@ flowchart TB
     V -->|"fail"| B
   end
   V -->|"report + evidence"| C
-  C --- S[("Store · tasks, ledger, gates, trail")]
+  C --- S[("Logbook · tasks, ledger, gates, trail")]
   V --> M{"Land"}
   M -->|"autopilot lane"| G["Merge"]
   M -->|"otherwise"| P["Pull request for you"]
@@ -113,9 +113,9 @@ flowchart TB
 <h2 id="sources">3. What we take from each source</h2>
 <div class="scroll"><table>
 <tr><th>Idea</th><th>From</th><th>In sage mode</th></tr>
-<tr><td>A coordinator that owns the program, never the code</td><td>pstack orchestrate, Cursor projects</td><td>The chief of staff has no edit tools. In phrase mode, the hook blocks its edits.</td></tr>
+<tr><td>A chief that owns the program, never the code</td><td>pstack orchestrate, Cursor projects</td><td>The chief of staff has no edit tools. In phrase mode, the hook blocks its edits.</td></tr>
 <tr><td>"The brief is the product." A missing field stops the spawn</td><td>pstack orchestrate</td><td>A brief template with required fields. The hook refuses an agent spawn when a field is missing.</td></tr>
-<tr><td>Verdicts recorded by head SHA. A new commit voids them</td><td>pstack ledger, Orchestrator "merge the exact checked commit"</td><td>A ledger in the store. A merge is blocked unless the current SHA has the verdicts its route needs.</td></tr>
+<tr><td>Verdicts recorded by head SHA. A new commit voids them</td><td>pstack ledger, Orchestrator "merge the exact checked commit"</td><td>A ledger in the logbook. A merge is blocked unless the current SHA has the verdicts its route needs.</td></tr>
 <tr><td>A mode switched on by name, with playbooks copied into the to-do list</td><td>poteto mode</td><td>"sage mode" at the start of a message. Each route's blocks go into the task list.</td></tr>
 <tr><td>Scale the ceremony to the unit</td><td>pstack, Anthropic research system</td><td>Routes come in sizes: tiny, small, large, program.</td></tr>
 <tr><td>A PE that separates "changes" from "questions for you"</td><td>Orchestrator, after the PE loop failed to converge</td><td>The same verdict shape. A later PE pass checks its earlier asks first.</td></tr>
@@ -235,7 +235,7 @@ erDiagram
   LESSON ||--o| TASK : "kitchen change"
 </pre></div>
 <div class="scroll"><table>
-<tr><th>Thing</th><th>Main fields</th><th>Store file</th><th>Writer</th></tr>
+<tr><th>Thing</th><th>Main fields</th><th>Logbook file</th><th>Writer</th></tr>
 <tr><td>Standing orders</td><td>Numbered lines, one rule each: models, concurrency cap, autopilot lanes, forbidden paths</td><td><code>standing.md</code></td><td>The chief, through the state tool</td></tr>
 <tr><td>Task</td><td>id, title, size, risk flags, route, state, branch, worktree, PR, head SHA, round</td><td><code>tasks.tsv</code></td><td>The state tool</td></tr>
 <tr><td>Brief</td><td>The template fields (<a href="#brief">next section</a>)</td><td><code>briefs/&lt;task&gt;-&lt;round&gt;.md</code></td><td>The chief</td></tr>
@@ -246,7 +246,7 @@ erDiagram
 <tr><td>Lesson</td><td>problem, times seen, trust-ladder layer, kitchen task</td><td><code>lessons.tsv</code></td><td>The chief</td></tr>
 <tr><td>Status</td><td>Made from the tables at each drain. Nobody edits it by hand</td><td><code>status.md</code></td><td>The state tool</td></tr>
 </table></div>
-<p><strong>The state tool</strong> is a small script in the plugin (<code>sage</code>). The chief of staff calls it through the shell: one command in, one line out, like pstack's <code>orch</code>. Each file has one writer. The files are plain TSV and Markdown, so you or any session can read them. A session on your phone picks up the work from the store, not from a conversation.</p>
+<p><strong>The state tool</strong> is a small script in the plugin (<code>sage</code>). The chief of staff calls it through the shell: one command in, one line out, like pstack's <code>orch</code>. Each file has one writer. The files are plain TSV and Markdown, so you or any session can read them. A session on your phone picks up the work from the logbook, not from a conversation.</p>
 
 <h2 id="brief">8. The brief and the report</h2>
 <div class="grid">
@@ -299,7 +299,7 @@ BRANCH      branch · head SHA · PR</pre>
 <tr><td>The project has no checks</td><td>The first task is "add a check". In poteto's words, build verification first. Until then QA is live-only, and autopilot is off.</td></tr>
 <tr><td>You don't answer a gate</td><td>Reversible work goes on around it. The default applies only where the gate says so, and the chief reports it.</td></tr>
 <tr><td>An agent goes silent</td><td>Liveness is judged by side effects: a pushed branch, a ledger row. After its budget, it's marked dead, and a fresh agent gets the brief once. Two failures, then re-plan.</td></tr>
-<tr><td>The session ends or you switch devices</td><td>The store keeps the state. "sage mode" in a new session reads <code>status.md</code> and goes on.</td></tr>
+<tr><td>The session ends or you switch devices</td><td>The logbook keeps the state. "sage mode" in a new session reads <code>status.md</code> and goes on.</td></tr>
 <tr><td>Context fills up</td><td>The chief keeps reports short and files long. After a compaction, the hook gives the chief its instructions again (built in the prototype).</td></tr>
 <tr><td>Two tasks need the same files</td><td>The chief puts them in order, or merges them into one task. Never two writers.</td></tr>
 <tr><td>A reviewer reports noise</td><td>The chief dismisses it with a reason in the trail. Reviewers report only correctness, requirements and security, not style.</td></tr>
@@ -348,7 +348,7 @@ flowchart TB
 <p><strong>Sample data. This is made up to show the experience, not a real run.</strong> You're on your phone, in a session in <code>~/workspace</code>.</p>
 <pre>You     sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 
-Chief   Sage mode on. Store: ~/.claude/sage/ramen-finder/ (new).
+Chief   Sage mode on. Logbook: ~/.claude/sage/ramen-finder/ (new).
         2 tasks:
         T1  Favourites list    large · personal data
             Design (arena 3) → PE → you → Build → code, security, UX review → QA live
@@ -400,7 +400,7 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <p>Each step ends in a check. The next step starts only when that check passes.</p>
 <div class="scroll"><table>
 <tr><th>Step</th><th>What</th><th>The check</th></tr>
-<tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the store. The hook gates: brief fields, edits, the agent cap, the merge gate</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
+<tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the logbook. The hook gates: brief fields, edits, the agent cap, the merge gate</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
 <tr><td>2. The team <strong>(done: <a href="../runs/dry-run-1.html">dry run 1</a>)</strong></td><td>The eight agents, the route rules, the brief and report shapes. Test whether a stop hook can see a subagent's report</td><td>A dry run on a demo project with sample data. You read the transcript</td></tr>
 <tr><td>3. Pilot</td><td>One small real task on one of your projects. You watch from your phone</td><td>The task merges, or reaches a PR, with a ledger verdict on its head SHA. Measured cost</td></tr>
 <tr><td>4. Design rounds and arena</td><td>The Design block with prototypes and keep, change or drop. The arena block</td><td>One real design round with an arena of 3 that you mark</td></tr>
@@ -413,7 +413,7 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <div class="scroll"><table>
 <tr><th>Decision</th><th>Your answer</th></tr>
 <tr><td>Architecture</td><td>C: a chief of staff, building blocks, a state tool and hook gates</td></tr>
-<tr><td>Where the store lives</td><td><code>~/.claude/sage/&lt;project&gt;/</code>, outside the repository</td></tr>
+<tr><td>Where the logbook lives</td><td><code>~/.claude/sage/&lt;project&gt;/</code>, outside the repository</td></tr>
 <tr><td>Independent review</td><td>Claude reviewers in a fresh context for v1</td></tr>
 <tr><td>Autopilot</td><td>Everything can merge, through a pull request, after a set number of cycles</td></tr>
 <tr><td>Arena</td><td>Yes: N agents make a design or an implementation, and the PE takes the best of each</td></tr>
@@ -424,7 +424,7 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <ol>
   <li><strong>How many clean cycles before autopilot merges?</strong> <span class="rec">2 in a row on the same head SHA (recommended)</span>, 1, or 3.</li>
   <li><strong>When does the arena run by itself?</strong> <span class="rec">Only for designs with no clear answer, and when you say "arena" (recommended)</span>, or also for implementations that are hard to undo, or only when you say "arena".</li>
-  <li><strong>Your go to build</strong>, starting with step 1 of the plan: the kitchen (the state tool, the store and the hook gates, with tests).</li>
+  <li><strong>Your go to build</strong>, starting with step 1 of the plan: the kitchen (the state tool, the logbook and the hook gates, with tests).</li>
 </ol>
 </div>
 

@@ -506,7 +506,7 @@ function hero(t, id) {
   return worldSvg(W, H, id, worldDefs(id), body, "sage: your chief of staff for Claude Code. Start a message with sage mode. A hooded toad sage, the chief of staff, meditates on a rock in a misty mountain world, with glowing gold toad eyes. Around it, its team on a loop: designer, PE, implementer, arena judge, code reviewer, security reviewer, UX reviewer and QA. Claude Code plugin, MIT. Built on pstack and poteto mode, by Lauren Tan.", { border: t.dark ? "#3A2414" : undefined });
 }
 
-/** How it works: you, the chief of staff (the toad sage), the team's flow to a pull request, the store, and the outer
+/** How it works: you, the chief of staff (the toad sage), the team's flow to a pull request, the logbook, and the outer
  *  loop. The same world, simpler: ink-wash peaks on parchment in the light version, misty peaks at night in the dark. */
 function loop(t, id) {
   const W = 1100, H = 864;
@@ -526,7 +526,7 @@ function loop(t, id) {
   const body = [
     // The world: a moon behind the chief, two rows of peaks, mist.
     backdrop(t, id, W, H, { moon: [550, 164, 186], seeds: [12, 77, 8], far: [700, 60, 200, 70, 140], near: [864, 90, 260, 80, 170], pagodas: [[964, 774, 0.95, 1.8], [100, 840, 0.8, 1.6]], falls: [[176, 772, 856, 5], [1040, 690, 772, 5]], mist: [140, 280, 700], embersTo: 800 }),
-    // Row 1: you, the chief of staff, the store.
+    // Row 1: you, the chief of staff, the logbook.
     tile(t, id, 40, 100, 200, 112, "You", "phone · desktop", false, { titleY: 46 }),
     line("M248 128 L 390 128", t.edge, "hot"), label(318, 114, "request"),
     line("M390 176 L 248 176", t.line, "muted"), label(318, 206, ["questions,", "results"]),
@@ -539,7 +539,7 @@ function loop(t, id) {
     line("M706 164 L 758 164", t.line, "muted"),
     `<path d="M766 104 L766 216 A148 18 0 0 0 1062 216 L1062 104" fill="${t.tile}" stroke="${t.line}" stroke-width="1.5"/>`,
     ellipse(914, 104, 148, 18, { fill: t.tile, stroke: t.line, sw: 1.5 }),
-    text(914, 166, "Store", { size: 26, weight: 800, fill: t.ink, anchor: "middle" }),
+    text(914, 166, "Logbook", { size: 26, weight: 800, fill: t.ink, anchor: "middle" }),
     label(914, 200, "tasks · ledger · trail"),
     // The brief goes down to the team; the report comes back up.
     line("M520 310 L 520 356", t.edge, "hot"), label(506, 342, "brief", { anchor: "end" }),
@@ -560,7 +560,7 @@ function loop(t, id) {
     line(`M1064 160 L 1072 160 Q 1080 160 1080 170 L 1080 770 Q 1080 780 1070 780 L 340 780 Q 330 780 330 770 L 330 756`, t.loop, "loop", { dash: "8 8", sw: 2.5 }),
     label(W / 2, 828, "a mistake that comes back twice → seal the lesson", { fill: t.loop, weight: 700 }),
   ].join("\n");
-  return worldSvg(W, H, id, defs, body, "How sage works: you send a request to the chief of staff, the hooded toad sage, which briefs the team (design, build, review, QA) and keeps the store. Findings and QA failures go back to the build. A clean result becomes a pull request. In the outer loop, the chief seals the lesson: a mistake that comes back twice gets a lasting fix, a test or a check in code first, a principle or a standing order only when code cannot hold it.", { rx: 24, bg: t.bg, border: t.border });
+  return worldSvg(W, H, id, defs, body, "How sage works: you send a request to the chief of staff, the hooded toad sage, which briefs the team (design, build, review, QA) and keeps the logbook. Findings and QA failures go back to the build. A clean result becomes a pull request. In the outer loop, the chief seals the lesson: a mistake that comes back twice gets a lasting fix, a test or a check in code first, a principle or a standing order only when code cannot hold it.", { rx: 24, bg: t.bg, border: t.border });
 }
 
 /** A world panel in the reader's theme, with the world's defs and arrowheads. */

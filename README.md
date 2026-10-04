@@ -92,7 +92,7 @@ This is one session, step by step. It is an illustration with sample data.
 <a href="docs/assets/loop-light.svg">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/loop-dark.svg">
-  <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the store, and the outer loop that seals each lesson." src="docs/assets/loop-light.svg" width="100%">
+  <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the logbook, and the outer loop that seals each lesson." src="docs/assets/loop-light.svg" width="100%">
 </picture>
 </a>
 
@@ -108,7 +108,7 @@ There are two loops:
 </picture>
 </a>
 
-The state lives in the store: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
+The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
 
 ### The team
 
@@ -183,7 +183,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | Word | Meaning |
 | --- | --- |
 | **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. A message that starts with "sage mode off" turns it off. |
-| **Chief of staff** | The session's coordinator. It plans, briefs, records and asks. It never edits files. |
+| **Chief of staff** | The main session. It plans, briefs, records and asks. It never edits files. |
 | **Route** | The steps a task goes through, set by its size and risk flags. |
 | **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review to a task that changes code: every size except investigate. |
 | **Brief** | What an agent gets: goal, scope, context, decisions, acceptance, how to verify, budget, what is forbidden, the report shape, and the standing orders. |
@@ -344,7 +344,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 ## Credits
 
-- **[pstack](https://github.com/cursor/plugins/tree/main/pstack) and poteto mode, by [Lauren Tan (poteto)](https://github.com/poteto).** sage's principles come from pstack, and sage mode takes its main ideas from poteto mode: the coordinator that never writes code, the brief, the ledger of verdicts by commit, the arena, and the trust ladder. Thank you, Lauren. I adopted pstack the day I found it.
+- **[pstack](https://github.com/cursor/plugins/tree/main/pstack) and poteto mode, by [Lauren Tan (poteto)](https://github.com/poteto).** sage's principles come from pstack, and sage mode takes its main ideas from poteto mode: the "coordinator" that never writes code, the brief, the ledger of verdicts by commit, the arena, and the trust ladder. Thank you, Lauren. I adopted pstack the day I found it.
 - **Sage Mode in *Naruto*, by Masashi Kishimoto**, gave the name and the look: the orange markings and the toad-like eye. The graphics and the toad sage mascot are original drawings, and no character from the series appears. sage is a fan's nod and is not affiliated with *Naruto* or its owners.
 - **My [Orchestrator](https://github.com/erickb336/orchestrator)** taught the lessons that sage keeps in code.
 - **Anthropic's and Cognition's writing on multi-agent systems** shaped the rules: one writer at a time, fresh reviewers, and evidence before a claim.
