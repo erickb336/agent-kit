@@ -304,7 +304,7 @@ test("verified needs one clean cycle on the latest SHA; an autopilot merge of a 
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "qa-pass");
   assert.match(s.ok("task", "T1", "set", "state=verified"), /^T1 verified/);
   assert.match(s.no("merge-check", "--sha", SHA), /1 of 2 clean cycles/, "autopilot wants 2");
-  assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T1 may merge: 1 clean cycle on this SHA");
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "1"), /1 of 2 clean cycles/, "F-T42-3: --cycles never lowers it");
 });
 
 test("two chiefs at once: 2 x 50 rounds of updates and of creates lose no write and repeat no id", async () => {
@@ -630,7 +630,7 @@ test("F1: no config.json makes config() or the merge check throw: a value that i
   writeFileSync(join(s.home, "config.json"), `{"cycles.large": ${deep}, "max_agents": [5], "max_rounds": 4}`);
   const { config, mergeCheck } = await import(LIB);
   const env = { SAGE_HOME: s.home };
-  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, autopilot_cycles: 2 }, "autopilot_cycles is the hook's name for cycles.large until the hook reads cycles.large");
+  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
   const none = "9".repeat(40);
   assert.deepEqual(mergeCheck(none, env), { ok: false, reason: `no verdicts recorded for ${none}. Record the reviews and QA with sage verdict first.` }, "the hook's call: no cycles given");
   assert.equal(mergeCheck(SHA, env).ok, false);
@@ -1404,7 +1404,8 @@ test("T42: the owner's floors (gate G18): cycles.large and cycles.risk never go 
   writeFileSync(f, '{"cycles.large": 1, "cycles.risk": 1}'); // an agent, or an older sage, wrote the file
   assert.equal(s.ok("config"), all(2, 2), "a value below its floor reads as the floor");
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles on this SHA/, "a large task still needs 2 clean cycles");
-  assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T1 may merge: 1 clean cycle on this SHA", "the chief's explicit --cycles is not a setting, so it keeps its own floor of 1");
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "1"), /T1: 1 of 2 clean cycles on this SHA/, "F-T42-3: --cycles only raises the task's own count");
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "3"), /T1: 1 of 3 clean cycles on this SHA/, "--cycles raises it");
 
   for (const [text, want] of [['{"autopilot_cycles": 3}', 3], ['{"autopilot_cycles": 1}', 2], ['{"autopilot_cycles": 3, "cycles.large": 4}', 4], ['{"autopilot_cycles": "x"}', 2]]) {
     writeFileSync(f, text);
@@ -1412,4 +1413,54 @@ test("T42: the owner's floors (gate G18): cycles.large and cycles.risk never go 
   }
   writeFileSync(f, '{"autopilot_cycles": 3}');
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles on this SHA/, "the legacy key counts");
+});
+
+test("T42-SMALL-ABOVE-LARGE: a large task needs at least cycles.small, and a risk task at least its size's count", () => {
+  const s = store();
+  s.ok("config", "cycles.small=3");
+  s.ok("task", "add", "--title", "large", "--size", "large");
+  s.ok("task", "add", "--title", "risk", "--size", "small", "--risk", "data");
+  for (const t of ["T1", "T2"]) for (const kind of ["checks-pass", "review-clean", "security-clean", "ux-clean", "qa-pass"]) s.ok("verdict", t, "--sha", SHA, "--kind", kind, "--cycle", "1");
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles on this SHA/);
+  assert.match(s.no("merge-check", "--sha", SHA), /T2: 1 of 3 clean cycles on this SHA/);
+});
+
+test("F-T42-4: a config write names what config.json is when it is not a regular file", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  mkdirSync(f);
+  assert.equal(s.no("config", "max_rounds=4"), `sage: ${f} is a folder, not a regular file, so config writes nothing. Replace it with a regular file.`);
+  rmSync(f, { recursive: true });
+  execFileSync("mkfifo", [f]);
+  assert.equal(s.no("config", "max_rounds=4"), `sage: ${f} is a named pipe, not a regular file, so config writes nothing. Replace it with a regular file.`);
+  rmSync(f);
+  symlinkSync(join(s.home, "nowhere.json"), f);
+  assert.equal(s.no("config", "max_rounds=4"), `sage: ${f} is a link, not a regular file, so config writes nothing. Replace it with a regular file.`);
+});
+
+test("F-T42-2: a config write never lands on a link's target, also when a link replaces config.json during the write", async () => {
+  const s = store();
+  const { sage } = await import(LIB);
+  const env = { SAGE_HOME: s.home };
+  const f = join(s.home, "config.json");
+  const victim = join(mkdtempSync(join(tmpdir(), "sage-victim-")), "victim.json");
+  writeFileSync(victim, "victim\n");
+  // Another process swaps config.json between a regular file and a link to victim.json, each by an atomic rename.
+  const swap = spawn("node", ["-e", `const fs = require("fs"); const [f, v] = process.argv.slice(1); for (let i = 0; ; i++) { fs.symlinkSync(v, f + ".l"); fs.renameSync(f + ".l", f); fs.writeFileSync(f + ".r", "{}"); fs.renameSync(f + ".r", f); }`, f, victim], { stdio: "ignore" });
+  try {
+    await new Promise((r) => setTimeout(r, 200));
+    let writes = 0;
+    for (const end = Date.now() + 2500; Date.now() < end; ) {
+      try {
+        sage(["config", `max_rounds=${(writes % 5) + 1}`], env);
+        writes++;
+      } catch {} // a refusal (config.json was a link) is fine
+      await new Promise((r) => setImmediate(r));
+    }
+    assert.ok(writes > 0, "some writes ran");
+    assert.equal(readFileSync(victim, "utf8"), "victim\n", `the victim is unchanged after ${writes} writes`);
+  } finally {
+    swap.kill();
+  }
+  assert.deepEqual(readdirSync(s.home).filter((n) => n.startsWith("config.json.") && !/\.(l|r)$/.test(n)), [], "no temp file is left");
 });
