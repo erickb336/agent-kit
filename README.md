@@ -92,8 +92,8 @@ There are two loops:
 - **The outer loop** improves the kitchen. When the same kind of problem comes back twice, the chief proposes a change that stops it for good: a test, a lint, a check, a principle, or a standing order.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-kitchen-dark.svg">
-  <img alt="The toad sage's tip: a mistake that comes back twice gets a test, a check or a rule. That is how the kitchen gets stronger, one lesson at a time." src="docs/assets/tip-kitchen-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-seal-dark.svg">
+  <img alt="The toad sage's tip: seal the lesson. A mistake that comes back twice is sealed into code, as a test, a check or a rule. That is how the dojo gets stronger." src="docs/assets/tip-seal-light.svg" width="100%">
 </picture>
 
 The state lives in plain files, in `~/.claude/sage/<project>-<hash>/`: the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.

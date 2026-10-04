@@ -5,7 +5,7 @@ import { ROOT, outputs, parseSource } from "./build.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
-import { GRAPHICS, THEMES } from "./graphics.mjs";
+import { files as graphics } from "./graphics.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -92,11 +92,17 @@ for (const o of overrides(ROOT)) {
   if (now && now !== o.reviewed) console.warn(`! ${o.file}: pstack changed ${o.upstream} since this override's review (now ${now})`);
 }
 
-// The README's graphics match what scripts/graphics.mjs draws, so nobody edits an SVG by hand.
-for (const [name, draw] of Object.entries(GRAPHICS)) for (const [theme, t] of Object.entries(THEMES)) {
-  const f = join(ROOT, "docs/assets", `${name}-${theme}.svg`);
-  if (!existsSync(f) || readFileSync(f, "utf8") !== draw(t)) problems.push(`docs/assets/${name}-${theme}.svg: out of date; run npm run graphics`);
+// The README's graphics are exactly what scripts/graphics.mjs draws, so nobody edits or adds an SVG by hand. Each text
+// stays 7 px or more on a phone, where GitHub shows a graphic 358 px wide (a 390 px screen less the page margins).
+const drawn = new Map(graphics());
+for (const [f, svg] of drawn) {
+  const file = join(ROOT, "docs/assets", f);
+  if (!existsSync(file) || readFileSync(file, "utf8") !== svg) problems.push(`docs/assets/${f}: out of date; run npm run graphics`);
+  const width = +/viewBox="0 0 ([\d.]+)/.exec(svg)[1];
+  const small = Math.min(...[...svg.matchAll(/font-size="([\d.]+)"/g)].map((m) => +m[1]));
+  if ((small * 358) / width < 7) problems.push(`docs/assets/${f}: a ${small} px text is ${((small * 358) / width).toFixed(1)} px on a phone; make it ${Math.ceil((7 * width) / 358)} px or more`);
 }
+for (const f of readdirSync(join(ROOT, "docs/assets")).filter((f) => f.endsWith(".svg") && !drawn.has(f))) problems.push(`docs/assets/${f}: scripts/graphics.mjs does not draw it; draw it there, or delete it`);
 
 for (const [rel, text] of outputs()) {
   const f = join(ROOT, rel);

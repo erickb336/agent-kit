@@ -1,17 +1,19 @@
 // Draws the README's graphics as SVG, each in a light and a dark version (docs/assets/<name>-light.svg, -dark.svg).
 // The README shows the version that matches the reader's GitHub theme. Run `npm run graphics` after a change here.
-// The hero and "How it works" show a misty mountain world (see "The misty mountain world" below). The look is
-// inspired by Sage Mode in Naruto (orange markings, a toad-like eye, natural energy) with original shapes only:
-// no characters, logos, clothing patterns or village symbols. The mascot is an original toad sage.
+// Every graphic shows the same misty mountain world (see "The misty mountain world" below), with the hooded toad sage
+// and its team as toad spirits in medallions. The look is inspired by Sage Mode in Naruto (orange markings, a toad-like
+// eye, natural energy) with original shapes only: no characters, logos, clothing patterns or village symbols.
+// Each text is 7 px or more on a phone, where a graphic is 358 px wide: `npm run check` checks it.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "../docs/assets");
 
-export const THEMES = {
-  light: { bg: "#FBF7F1", panel: "#FFFFFF", ink: "#1C1410", muted: "#6E5F53", faint: "#A3927F", line: "#EADFCF", accent: "#E5600B", gold: "#E9A91B", soft: "#FDEBD9", chip: "#F6EFE6", chief: "#21160F", chiefInk: "#FFF4E8", ok: "#2F8552", bad: "#C2412D", energy: "#F0A050", white: "#FFF9F1", toad: "#A0693F", toadShade: "#7E5130", toadBelly: "#F3D6AC", toadLine: "#3B2414", blush: "#F0907E" },
-  dark: { bg: "#100B08", panel: "#1A130F", ink: "#F6EEE6", muted: "#BCAA98", faint: "#7F6F62", line: "#3A2B21", accent: "#FF7A1F", gold: "#F6C343", soft: "#2A190D", chip: "#1E1611", chief: "#FF7A1F", chiefInk: "#140D08", ok: "#6CC28F", bad: "#F08A78", energy: "#FF8C3A", white: "#FFF6EA", toad: "#B47D50", toadShade: "#8A5A36", toadBelly: "#F0D2A6", toadLine: "#24150B", blush: "#F0907E" },
+/** The two themes. The world is a night of misty peaks in dark, and pale paper with ink-wash peaks in light. */
+const THEMES = {
+  light: { dark: false, bg: "#FAF6F0", hill: "#8C7867", hillOp: 0.2, mistC: "#FFFFFF", mistOp: 0.7, moonOp: 0.4, moonDisc: 0.3, tile: "#FFFFFF", panel: "#FFF3E6", chip: "#F5EBDD", ink: "#1A0E07", muted: "#6B5242", line: "#A88B75", edge: "#E5600B", bad: "#C7361F", loop: "#B4470C", glowOp: 0.25, border: "#E8D9C6" },
+  dark: { dark: true, bg: "#0C0806", hill: "#3A2B21", hillOp: 0.45, mistC: "#E9D6BC", mistOp: 0.08, moonOp: 0.3, moonDisc: 0.22, tile: "#17100C", panel: "#120C08", chip: "#241A13", ink: "#FFF3E6", muted: "#CDB6A0", line: "#8A705C", edge: "#FF6A0F", bad: "#FF6A55", loop: "#FFC93C", glowOp: 0.5, border: "#3A2414" },
 };
 const SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif";
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
@@ -24,112 +26,13 @@ function text(x, y, lines, { size = 16, weight = 400, fill, anchor = "start", mo
   const ts = [].concat(lines).map((l, i) => `<tspan x="${x}" dy="${i === 0 ? 0 : size * lh}">${esc(l)}</tspan>`).join("");
   return `<text ${attrs({ x, y, "font-family": mono ? MONO : SANS, "font-size": size, "font-weight": weight, fill, "text-anchor": anchor, opacity, "letter-spacing": ls })}>${ts}</text>`;
 }
+/** The width of a line of text, a little more than the widest of the system font and Arial measure. */
+const tw = (s, size, bold) => Math.round(s.length * size * (bold ? 0.58 : 0.48));
 const rect = (x, y, w, h, o = {}) => `<rect ${attrs({ x, y, width: w, height: h, rx: o.rx ?? 12, fill: o.fill ?? "none", stroke: o.stroke, "stroke-width": o.sw, "stroke-dasharray": o.dash, opacity: o.opacity })}/>`;
-const path = (d, o = {}) => `<path ${attrs({ d, fill: o.fill ?? "none", stroke: o.stroke, "stroke-width": o.sw ?? 2, "stroke-dasharray": o.dash, "marker-end": o.arrow ? `url(#${o.arrow === true ? "arrow" : o.arrow})` : undefined, "stroke-linecap": "round", opacity: o.opacity })}/>`;
+const path = (d, o = {}) => `<path ${attrs({ d, fill: o.fill ?? "none", stroke: o.stroke, "stroke-width": o.sw ?? 2, "stroke-dasharray": o.dash, "stroke-linecap": "round", opacity: o.opacity })}/>`;
 const circle = (cx, cy, r, o = {}) => `<circle ${attrs({ cx, cy, r, fill: o.fill ?? "none", stroke: o.stroke, "stroke-width": o.sw, opacity: o.opacity })}/>`;
-const arrowTo = (x1, y1, x2, y2, t, o = {}) => path(`M${x1} ${y1} L ${x2} ${y2}`, { stroke: o.stroke ?? t.muted, sw: o.sw ?? 2, arrow: o.arrow ?? true, dash: o.dash });
-
-/** The sage eye, the project's mark: orange markings, a gold iris and a horizontal, toad-like pupil. */
-function eye(cx, cy, w, t) {
-  const h = w * 0.5;
-  const almond = (ww, hh, dy = 0) => `M${cx - ww / 2} ${cy + dy} Q ${cx} ${cy + dy - hh}, ${cx + ww / 2} ${cy + dy} Q ${cx} ${cy + dy + hh}, ${cx - ww / 2} ${cy + dy} Z`;
-  const r = h * 0.43;
-  return [
-    path(almond(w * 1.34, h * 1.55, -h * 0.08), { fill: t.accent, sw: 0 }),
-    path(almond(w, h), { fill: t.white, sw: 0 }),
-    circle(cx, cy, r, { fill: t.gold, stroke: "#8A5A06", sw: w * 0.02 }),
-    rect(cx - r * 0.78, cy - r * 0.2, r * 1.56, r * 0.4, { rx: r * 0.2, fill: "#140B06" }),
-    circle(cx - r * 0.38, cy - r * 0.45, r * 0.16, { fill: "#FFFFFF", opacity: 0.85 }),
-  ].join("");
-}
-
-/** A faint spiral of natural energy behind a graphic. */
-function energy(cx, cy, turns, step, t, opacity = 0.16) {
-  const pts = [];
-  for (let a = 0; a <= turns * 2 * Math.PI; a += 0.08) {
-    const r = 18 + step * a;
-    pts.push(`${(cx + r * Math.cos(a)).toFixed(1)} ${(cy + r * Math.sin(a)).toFixed(1)}`);
-  }
-  return path(`M${pts.join(" L ")}`, { stroke: t.energy, sw: 2, opacity });
-}
-
-let toadCount = 0;
 const ellipse = (cx, cy, rx, ry, o = {}) => `<ellipse ${attrs({ cx, cy, rx, ry, fill: o.fill ?? "none", stroke: o.stroke, "stroke-width": o.sw, opacity: o.opacity })}/>`;
 
-/** The toad sage, the mascot: an original round toad with orange sage markings, gold toad eyes and a ✓ headband. */
-function toad(cx, cy, s, t, { wave = false } = {}) {
-  const u = (x) => +(cx + x * s).toFixed(1), v = (y) => +(cy + y * s).toFixed(1), r = (n) => +(n * s).toFixed(2);
-  const id = `toad-body-${++toadCount}`;
-  const ink = { stroke: t.toadLine, sw: r(0.035) };
-  const eyeAt = (x) => [
-    ellipse(u(x), v(-0.5), r(0.28), r(0.26), { fill: t.accent }),
-    circle(u(x), v(-0.5), r(0.2), { fill: t.white, stroke: t.toadLine, sw: r(0.02) }),
-    circle(u(x), v(-0.5), r(0.15), { fill: t.gold }),
-    rect(u(x - 0.1), v(-0.53), r(0.2), r(0.06), { rx: r(0.03), fill: "#140B06" }),
-    circle(u(x - 0.05), v(-0.57), r(0.035), { fill: "#FFFFFF" }),
-  ].join("");
-  const arm = wave
-    ? path(`M${u(0.8)} ${v(0.18)} Q ${u(1.08)} ${v(0.05)} ${u(1.12)} ${v(-0.28)}`, { stroke: t.toadLine, sw: r(0.2) }) +
-      path(`M${u(0.8)} ${v(0.18)} Q ${u(1.08)} ${v(0.05)} ${u(1.12)} ${v(-0.28)}`, { stroke: t.toad, sw: r(0.13) }) +
-      circle(u(1.12), v(-0.32), r(0.1), { fill: t.toad, ...ink })
-    : ellipse(u(0.36), v(0.84), r(0.2), r(0.09), { fill: t.toadShade, ...ink });
-  return [
-    `<defs><clipPath id="${id}"><ellipse cx="${cx}" cy="${v(0.12)}" rx="${r(0.95)}" ry="${r(0.74)}"/></clipPath></defs>`,
-    ellipse(u(-0.8), v(0.5), r(0.36), r(0.25), { fill: t.toadShade, ...ink }),
-    ellipse(u(0.8), v(0.5), r(0.36), r(0.25), { fill: t.toadShade, ...ink }),
-    circle(u(-0.44), v(-0.48), r(0.3), { fill: t.toad, ...ink }),
-    circle(u(0.44), v(-0.48), r(0.3), { fill: t.toad, ...ink }),
-    ellipse(cx, v(0.12), r(0.95), r(0.74), { fill: t.toad, ...ink }),
-    ellipse(cx, v(0.42), r(0.58), r(0.34), { fill: t.toadBelly }),
-    `<g clip-path="url(#${id})">${rect(u(-1), v(-0.3), r(2), r(0.15), { rx: 0, fill: "#2A1B12" })}</g>`,
-    path(`M${u(0.74)} ${v(-0.26)} q ${r(0.22)} ${r(0.02)} ${r(0.3)} ${r(0.2)}`, { stroke: "#2A1B12", sw: r(0.06) }),
-    path(`M${u(0.74)} ${v(-0.23)} q ${r(0.14)} ${r(0.12)} ${r(0.14)} ${r(0.3)}`, { stroke: "#2A1B12", sw: r(0.06) }),
-    rect(u(-0.2), v(-0.34), r(0.4), r(0.22), { rx: r(0.05), fill: "#CBD2DA", stroke: "#7D8794", sw: r(0.02) }),
-    path(`M${u(-0.09)} ${v(-0.23)} L ${u(-0.02)} ${v(-0.16)} L ${u(0.1)} ${v(-0.29)}`, { stroke: "#2A1B12", sw: r(0.045) }),
-    eyeAt(-0.44),
-    eyeAt(0.44),
-    circle(u(-0.62), v(0.06), r(0.09), { fill: t.blush, opacity: 0.55 }),
-    circle(u(0.62), v(0.06), r(0.09), { fill: t.blush, opacity: 0.55 }),
-    path(`M${u(-0.46)} ${v(0.04)} Q ${cx} ${v(0.3)} ${u(0.46)} ${v(0.04)}`, { stroke: t.toadLine, sw: r(0.045) }),
-    ellipse(u(-0.36), v(0.84), r(0.2), r(0.09), { fill: t.toadShade, ...ink }),
-    arm,
-  ].join("");
-}
-
-/** A speech bubble with a tail that points at (tx, ty). */
-function say(x, y, w, h, tx, ty, lines, t, o = {}) {
-  const midY = y + h / 2;
-  const fromLeft = tx < x;
-  const base = fromLeft ? x + 1 : x + w - 1;
-  return (
-    path(`M${base} ${midY - 10} L ${tx} ${ty} L ${base} ${midY + 10} Z`, { fill: t.panel, stroke: t.accent, sw: 2 }) +
-    rect(x, y, w, h, { rx: 18, fill: t.panel, stroke: t.accent, sw: 2 }) +
-    rect(fromLeft ? x + 2 : x + w - 4, midY - 9, 3, 18, { rx: 0, fill: t.panel }) +
-    text(x + (o.center ? w / 2 : 22), y + (o.size ?? 19) + (h - [].concat(lines).length * (o.size ?? 19) * 1.4) / 2 - 2, lines, { size: o.size ?? 19, weight: o.weight ?? 600, fill: t.ink, anchor: o.center ? "middle" : "start", lh: 1.4 })
-  );
-}
-
-/** A tip from the toad sage: the toad on the left, a speech bubble on the right. */
-const tip = (lines, label) => (t) => svg(1000, 170, t, [energy(95, 92, 1.6, 9, t, 0.12), toad(95, 92, 56, t), say(196, 32, 776, 104, 166, 92, lines, t)].join("\n"), label);
-
-function svg(w, h, t, body, label) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="${esc(label)}">
-<defs>
-<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="${t.muted}"/></marker>
-<marker id="arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="${t.accent}"/></marker>
-<marker id="arrow-bad" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="${t.bad}"/></marker>
-</defs>
-<rect width="${w}" height="${h}" fill="${t.bg}"/>
-${body}
-</svg>
-`;
-}
-
-/** A role box: writers get the orange border, read-only roles a plain one. */
-const role = (x, y, w, h, name, writes, t, sub) =>
-  rect(x, y, w, h, { rx: 12, fill: writes ? t.soft : t.panel, stroke: writes ? t.accent : t.line, sw: writes ? 2 : 1.5 }) +
-  text(x + w / 2, y + (sub ? h / 2 - 2 : h / 2 + 6), name, { size: 16, weight: 650, fill: t.ink, anchor: "middle" }) +
-  (sub ? text(x + w / 2, y + h / 2 + 18, sub, { size: 12.5, fill: t.muted, anchor: "middle" }) : "");
 
 /* The misty mountain world of the hero and "How it works". An original drawing in the user's reference mood: a hooded
  * toad sage meditates at the centre, the team is a ring of glowing medallions on an arrowed loop, and behind them are
@@ -474,10 +377,68 @@ ${o.border ? `<rect x="0.75" y="0.75" width="${w - 1.5}" height="${h - 1.5}" rx=
 `;
 }
 
+/** The arrowheads of a world graphic: hot (the main flow), muted, bad (back to the build) and loop. */
+const markers = (id, t) => [["hot", t.edge], ["muted", t.line], ["bad", t.bad], ["loop", t.loop]].map(([name, color]) => `<marker id="${id}-${name}" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 L12 6 L0 12 L3 6 z" fill="${color}"/></marker>`).join("\n");
+
+/** A line with an arrowhead at its end: marker is hot, muted, bad or loop (see markers). */
+const flow = (id, d, color, marker, o = {}) => `<path d="${d}" fill="none" stroke="${color}" stroke-width="${o.sw ?? 2.5}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ""} stroke-linecap="round" stroke-linejoin="round"${marker ? ` marker-end="url(#${id}-${marker})"` : ""}/>`;
+
+/** A tile with a title and a smaller line or two under it. A hot tile has a glowing ember edge. */
+function tile(t, id, x, y, w, h, title, sub, hot, { titleY = 40, size = 26, subSize = 22, gap = 34, fill = t.tile, ink = t.ink, subInk = t.muted } = {}) {
+  return (hot ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="none" stroke="${t.edge}" stroke-width="4" opacity="${t.glowOp}" filter="url(#${id}-glow)"/>` : "") +
+    rect(x, y, w, h, { rx: 8, fill, stroke: hot ? t.edge : t.line, sw: hot ? 2 : 1.5 }) +
+    text(x + w / 2, y + titleY, title, { size, weight: 800, fill: ink, anchor: "middle" }) +
+    text(x + w / 2, y + titleY + gap, sub, { size: subSize, fill: subInk, anchor: "middle", lh: 1.25 });
+}
+/** The ember fill and inks of a tile that is the chief's or yours. */
+const chiefTile = (id) => ({ fill: `url(#${id}-chief)`, ink: "#160902", subInk: "#3A1806" });
+
+/** A flat plaque with one label. kind: "you" (an ember fill: a step for you), "hot" (an ember edge), "bad" (a red edge),
+ *  "wait" (a dashed edge), or "plain". */
+function pill(t, id, x, y, w, h, label, kind = "plain", size = 22) {
+  const box = kind === "you" ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="url(#${id}-chief)"/>`
+    : rect(x, y, w, h, { rx: 8, fill: t.tile, stroke: { hot: t.edge, bad: t.bad }[kind] ?? t.line, sw: kind === "hot" || kind === "bad" ? 2 : 1.5, dash: kind === "wait" ? "6 5" : undefined });
+  return box + text(f1(x + w / 2), f1(y + h / 2 + size * 0.35), label, { size, weight: 700, fill: kind === "you" ? "#160902" : t.ink, anchor: "middle" });
+}
+
+/** A label in capitals, the heading inside a graphic. */
+const heading = (t, x, y, s) => text(x, y, s, { size: 22, weight: 800, fill: t.loop, ls: 2 });
+
+/** The world behind a graphic: a moon, two rows of misty peaks with pagodas and waterfalls, mist, and embers at night.
+ *  Draw it first, so that every label sits on top of it. seeds: the far peaks, the near peaks, the mist and embers.
+ *  far and near: a ridge's base, its lowest and highest peak, and its narrowest and widest peak. mistK scales the mist;
+ *  under text, keep it at 0.6, so that the mist stays a soft glow and never reads as a shape behind a label. */
+function backdrop(t, id, W, H, { moon: [mx, my, mr], seeds: [s1, s2, s3], far, near, pagodas = [], falls = [], mist: [x0, step, y], mistK = 1, embersTo = H }) {
+  const r = seeded(s3);
+  return [
+    `<circle cx="${mx}" cy="${my}" r="${f1((mr * 250) / 186)}" fill="url(#${id}-moonglow)" opacity="${t.moonOp}"/>`,
+    `<circle cx="${mx}" cy="${my}" r="${mr}" fill="url(#${id}-moon)" opacity="${t.moonDisc}"/>`,
+    `<path d="${ridge(seeded(s1), W, H, ...far).d}" fill="${t.hill}" opacity="${f1(t.hillOp * 0.7)}"/>`,
+    ...pagodas.map(([x, base, s, k]) => pagoda(x, base, s, t.hill, f1(t.hillOp * k), id)),
+    ...falls.map(([x, y0, y1, w]) => waterfall(x, y0, y1, w, id)),
+    `<path d="${ridge(seeded(s2), W, H, ...near).d}" fill="${t.hill}" opacity="${t.hillOp}"/>`,
+    Array.from({ length: 4 }, (_, i) => `<ellipse cx="${f1(x0 + i * step + r() * 60)}" cy="${f1(y + r() * 60)}" rx="${f1(200 + r() * 80)}" ry="26" fill="${t.mistC}" opacity="${f1(t.mistOp * mistK * (0.7 + r() * 0.4))}" filter="url(#${id}-mist)"/>`).join(""),
+    t.dark ? embers(r, 40, W, 20, embersTo) : "",
+  ].join("\n");
+}
+
+/** The toad sage's emblem: its hooded bust in a gold-rimmed medallion of radius r. One per graphic: its clip ids are fixed. */
+function emblem(cx, cy, r, id) {
+  return [
+    `<g class="pulse"><circle cx="${cx}" cy="${cy}" r="${f1(r + 14)}" fill="${EMBER.orange}" opacity="0.34" filter="url(#${id}-blur)"/></g>`,
+    circle(cx, cy, r + 8, { stroke: EMBER.gold, sw: 1, opacity: 0.45 }),
+    `<defs><clipPath id="${id}-emblem"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath></defs>`,
+    circle(cx, cy, r, { fill: "#0A0604" }),
+    `<g clip-path="url(#${id}-emblem)">${toadSage(cx, f1(cy - r * 0.08), r / 190, id, { bust: true })}</g>`,
+    circle(cx, cy, r, { stroke: EMBER.gold, sw: 3.2 }),
+    circle(cx, cy, r - 6, { stroke: EMBER.orange, sw: 1.2, opacity: 0.75 }),
+  ].join("");
+}
+
 /** The hero: the hooded toad sage meditates on a rock, ringed by its eight roles on an arrowed loop, in a misty
  *  mountain world. A title band on top, a footer band below. Dark in both themes. */
-function hero(t) {
-  const W = 1280, H = 1120, id = `hero-${t === THEMES.dark ? "d" : "l"}`;
+function hero(t, id) {
+  const W = 1280, H = 1120;
   const cx = 640, cy = 640, rx = 470, ry = 330, mr = 58, eyeY = 520;
   const r = seeded(5);
   const far = ridge(seeded(21), W, H, 650, 110, 270, 70, 150);
@@ -535,30 +496,16 @@ function hero(t) {
     text(235, 1099, "Claude Code plugin · MIT", { size: 26, weight: 700, fill: EMBER.hot, anchor: "middle" }),
     text(W - 40, 1099, "Built on pstack and poteto mode, by Lauren Tan", { size: 26, fill: EMBER.muted, anchor: "end" }),
   ].join("\n");
-  return worldSvg(W, H, id, worldDefs(id), body, "sage: your chief of staff for Claude Code. Start a message with sage mode. A hooded toad sage, the chief of staff, meditates on a rock in a misty mountain world, with glowing gold toad eyes. Around it, its team on a loop: designer, PE, implementer, arena judge, code review, security, UX review and QA. Claude Code plugin, MIT. Built on pstack and poteto mode, by Lauren Tan.", { border: t === THEMES.dark ? "#3A2414" : undefined });
+  return worldSvg(W, H, id, worldDefs(id), body, "sage: your chief of staff for Claude Code. Start a message with sage mode. A hooded toad sage, the chief of staff, meditates on a rock in a misty mountain world, with glowing gold toad eyes. Around it, its team on a loop: designer, PE, implementer, arena judge, code review, security, UX review and QA. Claude Code plugin, MIT. Built on pstack and poteto mode, by Lauren Tan.", { border: t.dark ? "#3A2414" : undefined });
 }
 
 /** How it works: you, the chief of staff (the toad sage), the team's flow to a pull request, the store, and the outer
  *  loop. The same world, simpler: ink-wash peaks on parchment in the light version, misty peaks at night in the dark. */
-function loop(t) {
-  const dark = t === THEMES.dark, id = `loop-${dark ? "d" : "l"}`;
-  const c = dark
-    ? { bg: "#0C0806", hill: "#3A2B21", hillOp: 0.45, mistC: "#E9D6BC", mistOp: 0.08, moonOp: 0.3, moonDisc: 0.22, tile: "#17100C", panel: "#120C08", ink: "#FFF3E6", muted: "#CDB6A0", line: "#8A705C", edge: EMBER.orange, bad: "#FF6A55", loop: EMBER.gold, glowOp: 0.5, border: "#3A2414" }
-    : { bg: "#FAF6F0", hill: "#8C7867", hillOp: 0.2, mistC: "#FFFFFF", mistOp: 0.7, moonOp: 0.4, moonDisc: 0.3, tile: "#FFFFFF", panel: "#FFF3E6", ink: "#1A0E07", muted: "#6B5242", line: "#A88B75", edge: "#E5600B", bad: "#C7361F", loop: "#B4470C", glowOp: 0.25, border: "#E8D9C6" };
+function loop(t, id) {
   const W = 1100, H = 864;
-  const mk = (name, color) => `<marker id="${id}-${name}" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 L12 6 L0 12 L3 6 z" fill="${color}"/></marker>`;
-  const defs = [worldDefs(id), mk("hot", c.edge), mk("muted", c.line), mk("bad", c.bad), mk("loop", c.loop), `<clipPath id="${id}-chiefclip"><rect x="402" y="26" width="296" height="276" rx="7"/></clipPath>`].join("\n");
-  const line = (d, color, marker, o = {}) => `<path d="${d}" fill="none" stroke="${color}" stroke-width="${o.sw ?? 2.5}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ""} stroke-linecap="round" stroke-linejoin="round"${marker ? ` marker-end="url(#${id}-${marker})"` : ""}/>`;
-  const label = (x, y, s, o = {}) => text(x, y, s, { size: 22, fill: o.fill ?? c.muted, anchor: o.anchor ?? "middle", weight: o.weight, lh: 1.2, ls: o.ls });
-  /** A tile with a glowing orange edge (hot) or a plain one; titleY is its title's offset from the top. */
-  const tile = (x, y, w, h, title, sub, hot, titleY = 40) =>
-    (hot ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="none" stroke="${c.edge}" stroke-width="4" opacity="${c.glowOp}" filter="url(#${id}-glow)"/>` : "") +
-    rect(x, y, w, h, { rx: 8, fill: c.tile, stroke: hot ? c.edge : c.line, sw: hot ? 2 : 1.5 }) +
-    text(x + w / 2, y + titleY, title, { size: 26, weight: 800, fill: c.ink, anchor: "middle" }) +
-    text(x + w / 2, y + titleY + 34, sub, { size: 22, fill: c.muted, anchor: "middle", lh: 1.25 });
-  const r = seeded(8);
-  const hills = ridge(seeded(77), W, H, 864, 90, 260, 80, 170);
-  const hills2 = ridge(seeded(12), W, H, 700, 60, 200, 70, 140);
+  const defs = [worldDefs(id), markers(id, t), `<clipPath id="${id}-chiefclip"><rect x="402" y="26" width="296" height="276" rx="7"/></clipPath>`].join("\n");
+  const line = (d, color, marker, o) => flow(id, d, color, marker, o);
+  const label = (x, y, s, o = {}) => text(x, y, s, { size: 22, fill: o.fill ?? t.muted, anchor: o.anchor ?? "middle", weight: o.weight, lh: 1.2, ls: o.ls });
 
   // The team's stages, left to right, each with the medallion of its role.
   let sx = 60;
@@ -571,221 +518,262 @@ function loop(t) {
   const ty = 514, th = 140, mr = 25, panelR = qa.x + qa.w + 20;
   const body = [
     // The world: a moon behind the chief, two rows of peaks, mist.
-    `<circle cx="550" cy="164" r="250" fill="url(#${id}-moonglow)" opacity="${c.moonOp}"/>`,
-    `<circle cx="550" cy="164" r="186" fill="url(#${id}-moon)" opacity="${c.moonDisc}"/>`,
-    `<path d="${hills2.d}" fill="${c.hill}" opacity="${f1(c.hillOp * 0.7)}"/>`,
-    pagoda(964, 774, 0.95, c.hill, f1(c.hillOp * 1.8), id), pagoda(100, 840, 0.8, c.hill, f1(c.hillOp * 1.6), id),
-    waterfall(176, 772, 856, 5, id), waterfall(1040, 690, 772, 5, id),
-    `<path d="${hills.d}" fill="${c.hill}" opacity="${c.hillOp}"/>`,
-    Array.from({ length: 4 }, (_, i) => `<ellipse cx="${f1(140 + i * 280 + r() * 60)}" cy="${f1(700 + r() * 60)}" rx="${f1(200 + r() * 80)}" ry="26" fill="${c.mistC}" opacity="${f1(c.mistOp * (0.7 + r() * 0.4))}" filter="url(#${id}-mist)"/>`).join(""),
-    dark ? embers(r, 40, W, 20, 800) : "",
+    backdrop(t, id, W, H, { moon: [550, 164, 186], seeds: [12, 77, 8], far: [700, 60, 200, 70, 140], near: [864, 90, 260, 80, 170], pagodas: [[964, 774, 0.95, 1.8], [100, 840, 0.8, 1.6]], falls: [[176, 772, 856, 5], [1040, 690, 772, 5]], mist: [140, 280, 700], embersTo: 800 }),
     // Row 1: you, the chief of staff, the store.
-    tile(40, 100, 200, 112, "You", "phone · desktop", false, 46),
-    line("M248 128 L 390 128", c.edge, "hot"), label(318, 114, "request"),
-    line("M390 176 L 248 176", c.line, "muted"), label(318, 206, ["questions,", "results"]),
+    tile(t, id, 40, 100, 200, 112, "You", "phone · desktop", false, { titleY: 46 }),
+    line("M248 128 L 390 128", t.edge, "hot"), label(318, 114, "request"),
+    line("M390 176 L 248 176", t.line, "muted"), label(318, 206, ["questions,", "results"]),
     // The chief of staff: a dark tile with the hooded toad sage, in both themes.
-    `<rect x="402" y="26" width="296" height="276" rx="8" fill="${c.edge}" opacity="${c.glowOp}" filter="url(#${id}-glow)"/>`,
-    rect(402, 26, 296, 276, { rx: 8, fill: "#0A0604", stroke: c.edge, sw: 2 }),
+    `<rect x="402" y="26" width="296" height="276" rx="8" fill="${t.edge}" opacity="${t.glowOp}" filter="url(#${id}-glow)"/>`,
+    rect(402, 26, 296, 276, { rx: 8, fill: "#0A0604", stroke: t.edge, sw: 2 }),
     `<g clip-path="url(#${id}-chiefclip)">${toadSage(550, 104, 0.36, id, { bust: true })}</g>`,
     text(550, 226, "Chief of staff", { size: 32, weight: 800, fill: EMBER.ink, anchor: "middle" }),
     text(550, 258, ["routes · briefs", "ledger · gates"], { size: 22, fill: "#CDB6A0", anchor: "middle", lh: 1.2 }),
-    line("M706 164 L 758 164", c.line, "muted"),
-    `<path d="M766 104 L766 216 A148 18 0 0 0 1062 216 L1062 104" fill="${c.tile}" stroke="${c.line}" stroke-width="1.5"/>`,
-    ellipse(914, 104, 148, 18, { fill: c.tile, stroke: c.line, sw: 1.5 }),
-    text(914, 166, "Store", { size: 26, weight: 800, fill: c.ink, anchor: "middle" }),
+    line("M706 164 L 758 164", t.line, "muted"),
+    `<path d="M766 104 L766 216 A148 18 0 0 0 1062 216 L1062 104" fill="${t.tile}" stroke="${t.line}" stroke-width="1.5"/>`,
+    ellipse(914, 104, 148, 18, { fill: t.tile, stroke: t.line, sw: 1.5 }),
+    text(914, 166, "Store", { size: 26, weight: 800, fill: t.ink, anchor: "middle" }),
     label(914, 200, "tasks · ledger · trail"),
     // The brief goes down to the team; the report comes back up.
-    line("M520 310 L 520 356", c.edge, "hot"), label(506, 342, "brief", { anchor: "end" }),
-    line("M580 356 L 580 310", c.line, "muted"), label(594, 342, "report + evidence", { anchor: "start" }),
+    line("M520 310 L 520 356", t.edge, "hot"), label(506, 342, "brief", { anchor: "end" }),
+    line("M580 356 L 580 310", t.line, "muted"), label(594, 342, "report + evidence", { anchor: "start" }),
     // The team.
-    rect(40, 362, panelR - 40, 386, { rx: 10, fill: c.panel, stroke: c.edge, sw: 1.5, opacity: 0.92 }),
-    label(64, 400, "THE TEAM · ONE WRITER AT A TIME", { anchor: "start", fill: c.edge, weight: 800, ls: 2 }),
-    line(`M${review.c} ${ty - mr - 4} C ${review.c} ${ty - mr - 44}, ${build.c} ${ty - mr - 44}, ${build.c} ${ty - mr - 6}`, c.bad, "bad"),
-    label((review.c + build.c) / 2, ty - mr - 46, "findings", { fill: c.bad }),
-    ...S.map((st, i) => tile(st.x, ty, st.w, th, st.title, st.sub, true, 64) + (i < S.length - 1 ? line(`M${st.x + st.w + 5} ${ty + th / 2} L ${st.x + st.w + 28} ${ty + th / 2}`, c.edge, "hot") : "")),
+    rect(40, 362, panelR - 40, 386, { rx: 10, fill: t.panel, stroke: t.edge, sw: 1.5, opacity: 0.92 }),
+    label(64, 400, "THE TEAM · ONE WRITER AT A TIME", { anchor: "start", fill: t.edge, weight: 800, ls: 2 }),
+    line(`M${review.c} ${ty - mr - 4} C ${review.c} ${ty - mr - 44}, ${build.c} ${ty - mr - 44}, ${build.c} ${ty - mr - 6}`, t.bad, "bad"),
+    label((review.c + build.c) / 2, ty - mr - 46, "findings", { fill: t.bad }),
+    ...S.map((st, i) => tile(t, id, st.x, ty, st.w, th, st.title, st.sub, true, { titleY: 64 }) + (i < S.length - 1 ? line(`M${st.x + st.w + 5} ${ty + th / 2} L ${st.x + st.w + 28} ${ty + th / 2}`, t.edge, "hot") : "")),
     ...S.map((st) => medallion(st.c, ty, mr, st.tool, false, id)),
-    line(`M${qa.c} ${ty + th + 4} C ${qa.c} ${ty + th + 48}, ${build.c} ${ty + th + 48}, ${build.c} ${ty + th + 6}`, c.bad, "bad"),
-    label((qa.c + build.c) / 2, ty + th + 62, "QA fail", { fill: c.bad }),
+    line(`M${qa.c} ${ty + th + 4} C ${qa.c} ${ty + th + 48}, ${build.c} ${ty + th + 48}, ${build.c} ${ty + th + 6}`, t.bad, "bad"),
+    label((qa.c + build.c) / 2, ty + th + 62, "QA fail", { fill: t.bad }),
     // The pull request.
-    line(`M${qa.x + qa.w + 5} ${ty + th / 2} L ${panelR + 30} ${ty + th / 2}`, c.edge, "hot"),
-    tile(panelR + 36, ty - 20, W - 40 - panelR - 36, th + 40, "Pull request", ["you merge, or", "autopilot after", "2 clean cycles"], true),
-    // The outer loop: a lesson that comes back twice improves the kitchen.
-    line(`M1064 160 L 1072 160 Q 1080 160 1080 170 L 1080 770 Q 1080 780 1070 780 L 340 780 Q 330 780 330 770 L 330 756`, c.loop, "loop", { dash: "8 8", sw: 2.5 }),
-    label(W / 2, 828, "a lesson that comes back twice → improve the kitchen", { fill: c.loop, weight: 700 }),
+    line(`M${qa.x + qa.w + 5} ${ty + th / 2} L ${panelR + 30} ${ty + th / 2}`, t.edge, "hot"),
+    tile(t, id, panelR + 36, ty - 20, W - 40 - panelR - 36, th + 40, "Pull request", ["you merge, or", "autopilot after", "2 clean cycles"], true),
+    // The outer loop: a mistake that comes back twice is sealed into code.
+    line(`M1064 160 L 1072 160 Q 1080 160 1080 170 L 1080 770 Q 1080 780 1070 780 L 340 780 Q 330 780 330 770 L 330 756`, t.loop, "loop", { dash: "8 8", sw: 2.5 }),
+    label(W / 2, 828, "a mistake that comes back twice → seal the lesson", { fill: t.loop, weight: 700 }),
   ].join("\n");
-  return worldSvg(W, H, id, defs, body, "How sage works: you send a request to the chief of staff, the hooded toad sage, which briefs the team (design, build, review, QA) and keeps the store. Findings and QA failures go back to the build. A clean result becomes a pull request. In the outer loop, a lesson that comes back twice improves the kitchen.", { rx: 24, bg: c.bg, border: c.border });
+  return worldSvg(W, H, id, defs, body, "How sage works: you send a request to the chief of staff, the hooded toad sage, which briefs the team (design, build, review, QA) and keeps the store. Findings and QA failures go back to the build. A clean result becomes a pull request. In the outer loop, a mistake that comes back twice is sealed into code: a test, a check or a rule.", { rx: 24, bg: t.bg, border: t.border });
 }
 
-/** Your first training (5 minutes): one session, with numbered notes. Sample data. */
-function walkthrough(t) {
-  const px = 40, py = 40, pw = 470, ph = 640;
-  const bubble = (side, y, lines, w, n) => {
-    const h = 22 + lines.length * 24;
-    const x = side === "you" ? px + pw - 24 - w : px + 24;
-    const you = side === "you";
-    return { svg: rect(x, y, w, h, { rx: 16, fill: you ? t.accent : t.chip }) + text(x + 16, y + 28, lines, { size: 16, fill: you ? "#FFFFFF" : t.ink, lh: 1.5 }), y: y + h / 2, n, x: x + w };
-  };
+/** A world panel in the reader's theme, with the world's defs and arrowheads. */
+const panel = (t, id, W, H, body, label) => worldSvg(W, H, id, [worldDefs(id), markers(id, t)].join("\n"), body, label, { rx: 24, bg: t.bg, border: t.border });
+
+/** Learn sage in 5 minutes: one session in a chat card, and five numbered notes. Sample data. */
+function walkthrough(t, id) {
+  const W = 1100, H = 864, px = 36, py = 36, pw = 500, nx = 600, size = 22, lh = 1.4, LH = size * lh;
+  let by = py + 84;
   const b = [
-    bubble("you", py + 76, ["sage mode. Ramen Finder: add a", "favourites list, and fix this week's crash."], 360, 1),
-    bubble("chief", py + 160, ["T1 favourites: large · data", "T2 crash: small · input", "T2 starts now."], 300, 2),
-    bubble("chief", py + 268, ["One question for T1: sync favourites", "across devices? Recommended: not now.", "Default if you don't answer: not now."], 360, 3),
-    bubble("you", py + 380, ["not now"], 100, 3),
-    bubble("chief", py + 438, ["T2: build → code review → security", "→ QA. Repair round 1: an empty", "search still crashed. Fixed in 4787c81."], 340, 4),
-    bubble("chief", py + 550, ["T2 verified. QA ran the app: PASS.", "→ PR #41 is ready for you."], 312, 5),
-  ];
+    ["you", 1, ["sage mode. Ramen Finder: add a", "favourites list, and fix this", "week's crash."]],
+    ["chief", 2, ["T1 favourites: large · data", "T2 crash: small · input", "T2 starts now."]],
+    ["chief", 3, ["One question for T1: sync favourites", "across devices? Recommended: not now.", "Default if you don't answer: not now."]],
+    ["you", 0, ["not now"]],
+    ["chief", 4, ["T2: build → code → security → QA.", "Repair round 1: an empty search", "still crashed. Fixed in 4787c81."]],
+    ["chief", 5, ["T2 verified. QA ran the app: PASS.", "→ PR #41 is ready for you."]],
+  ].map(([side, n, lines]) => {
+    const w = Math.max(...lines.map((l) => tw(l, size, side === "you"))) + 36, h = f1(22 + lines.length * LH);
+    const bubble = { side, n, lines, x: side === "you" ? px + pw - 22 - w : px + 22, y: f1(by), w, h, mid: f1(by + h / 2) };
+    by += h + 18;
+    return bubble;
+  });
+  const ph = f1(by - py + 6);
   const notes = [
-    [1, "Switch it on", ["Start with “sage mode”, then what you want.", "Any session: desktop, terminal, phone."]],
-    [2, "The chief frames each task", ["It sizes each task and picks a route.", "A risk flag such as data or input adds", "a security review."]],
-    [3, "One product question, at most", ["With a recommendation and a default.", "Engineering choices are the chief's."]],
-    [4, "The team works; you don't watch code", ["Fresh agents build, review and test.", "Findings go back for repair, bounded."]],
-    [5, "You get results, not code", ["Evidence, what was not checked, and", "a pull request. You merge, or autopilot."]],
+    [1, "Switch it on", ["Start a message with “sage mode”,", "then say what you want."]],
+    [2, "The chief frames each task", ["A size, risk flags and a route.", "A risk flag such as input adds", "the security review to a code change."]],
+    [3, "One question, at most", ["Only a product question, with a", "recommendation and a default."]],
+    [4, "The team works", ["Fresh agents build, review and test.", "Findings go back for a repair."]],
+    [5, "You get results, not code", ["Evidence, what was not checked,", "and a pull request to merge."]],
   ];
-  const nx = 600;
-  const noteY = [96, 196, 318, 450, 566];
+  let end = 150;
+  const placed = notes.map(([n, title, lines]) => {
+    const target = b.find((x) => x.n === n), y = f1(Math.max(target.mid - 14, end + 30));
+    end = y + 40 + (lines.length - 1) * LH;
+    return { n, title, lines, y, target };
+  });
   const body = [
-    energy(880, 360, 3, 14, t, 0.08),
-    rect(px, py, pw, ph, { rx: 30, fill: t.panel, stroke: t.line, sw: 1.5 }),
-    eye(px + 38, py + 32, 24, t),
-    text(px + 58, py + 37, "sage mode · ~/workspace", { size: 14, fill: t.muted, mono: true }),
-    path(`M${px} ${py + 58} L ${px + pw} ${py + 58}`, { stroke: t.line, sw: 1 }),
-    ...b.map((x) => x.svg),
-    text(px + pw, py + ph + 30, "Illustrative session, sample data", { size: 13, fill: t.faint, anchor: "end" }),
-    toad(1112, 652, 38, t, { wave: true }),
-    say(964, 618, 106, 42, 1072, 646, "Your turn!", t, { center: true, size: 16, weight: 750 }),
-    ...notes.map(([n, title, lines], i) => {
-      const y = noteY[i];
-      const target = b.find((x) => x.n === n);
-      return [
-        path(`M${nx - 14} ${y} C ${nx - 40} ${y}, ${px + pw + 30} ${target.y}, ${px + pw + 6} ${target.y}`, { stroke: t.accent, sw: 1.5, dash: "3 5", opacity: 0.7 }),
-        circle(nx + 14, y - 6, 16, { fill: t.accent }),
-        text(nx + 14, y - 0.5, String(n), { size: 16, weight: 750, fill: "#FFFFFF", anchor: "middle" }),
-        text(nx + 42, y, title, { size: 19, weight: 700, fill: t.ink }),
-        text(nx + 42, y + 26, lines, { size: 15.5, fill: t.muted, lh: 1.45 }),
-      ].join("");
-    }),
+    backdrop(t, id, W, H, { moon: [nx + 44, 84, 130], seeds: [14, 63, 9], far: [H - 140, 60, 200, 70, 140], near: [H, 90, 240, 80, 170], pagodas: [[1040, H - 20, 0.8, 1.6]], mist: [140, 280, H - 170], mistK: 0.6 }),
+    // The chat card.
+    `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="24" fill="${t.edge}" opacity="${t.glowOp}" filter="url(#${id}-glow)"/>`,
+    rect(px, py, pw, ph, { rx: 24, fill: t.tile, stroke: t.edge, sw: 1.5 }),
+    `<circle cx="${px + 30}" cy="${py + 34}" r="7" fill="${EMBER.orange}" filter="url(#${id}-glow)"/>`,
+    text(px + 48, py + 42, "sage mode · ~/workspace", { size, fill: t.muted, mono: true }),
+    path(`M${px} ${py + 62} L ${px + pw} ${py + 62}`, { stroke: t.line, sw: 1 }),
+    ...b.map(({ side, lines, x, y, w, h }) => (side === "you" ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="16" fill="url(#${id}-chief)"/>` : rect(x, y, w, h, { rx: 16, fill: t.chip, stroke: t.line, sw: 1 })) +
+      text(x + 18, f1(y + 33), lines, { size, lh, fill: side === "you" ? "#160902" : t.ink, weight: side === "you" ? 600 : 400 })),
+    // The notes: the toad sage's emblem on top, then five numbered steps, each tied to its message.
+    emblem(nx + 44, 84, 44, id),
+    text(nx + 104, 78, "One session, step by step", { size: 24, weight: 800, fill: t.ink }),
+    text(nx + 104, 110, "an illustration with sample data", { size, fill: t.muted }),
+    ...placed.map(({ n, title, lines, y, target }) => [
+      path(`M${nx - 2} ${y - 8} C ${nx - 30} ${y - 8}, ${target.x + target.w + 36} ${target.mid}, ${target.x + target.w + 8} ${target.mid}`, { stroke: t.edge, sw: 1.6, dash: "3 5", opacity: 0.8 }),
+      circle(nx + 18, y - 8, 18, { fill: "#0A0604", stroke: EMBER.gold, sw: 2 }),
+      text(nx + 18, f1(y - 0.5), String(n), { size, weight: 800, fill: EMBER.gold, anchor: "middle" }),
+      text(nx + 48, y, title, { size: 24, weight: 800, fill: t.ink }),
+      text(nx + 48, y + 32, lines, { size, fill: t.muted, lh }),
+    ].join("")),
   ].join("\n");
-  return svg(1200, 720, t, body, "Your first training, in five minutes: an illustrative session with numbered notes. 1, switch it on. 2, the chief frames each task. 3, one product question at most. 4, the team works. 5, you get results and a pull request.");
+  return panel(t, id, W, H, body, "Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with numbered notes. 1, switch it on: start a message with sage mode. 2, the chief frames each task. 3, one product question at most. 4, the team works. 5, you get results and a pull request.");
 }
 
 /** Routes: the least route for each size of task. */
-function routes(t) {
-  const BLOCK = { design: "Design", pe: "PE check", approve: "You approve", build: "Build", code: "Code review", security: "Security review", ux: "UX review", qa: "QA", evidence: "Gather evidence", review: "Evidence review", propose: "A proposal to you" };
+function routes(t, id) {
+  const W = 1100, H = 770, size = 22, ph = 48, gap = 30, x0 = 272;
+  const STEP = { design: "Design", pe: "PE check", approve: "You approve", build: "Build", code: "Code review", security: "Security review", ux: "UX review", qa: "QA", evidence: "Gather evidence", review: "Evidence review", propose: "A proposal to you" };
   const rows = [
-    ["tiny", "one obvious edit", ["build"]],
-    ["small", "one bounded change", ["build", "code", "qa"]],
-    ["large", "new screens, flows or data", ["design", "pe", "approve", "build", "code", "security", "ux", "qa"]],
-    ["investigate", "the cause is unknown", ["evidence", "review", "propose"]],
+    ["tiny", ["one obvious edit"], [["build"]]],
+    ["small", ["one bounded change"], [["build", "code", "qa"]]],
+    ["large", ["new screens,", "flows or data"], [["design", "pe", "approve", "build"], ["code", "security", "ux", "qa"]]],
+    ["investigate", ["the cause", "is unknown"], [["evidence", "review", "propose"]]],
   ];
-  const out = [];
-  rows.forEach(([size, sub, blocks], i) => {
-    const y = 40 + i * 86;
-    out.push(text(40, y + 26, size, { size: 20, weight: 750, fill: t.ink }), text(40, y + 50, sub, { size: 14, fill: t.muted }));
-    let x = 236;
-    blocks.forEach((k, j) => {
-      const label = BLOCK[k];
-      const w = Math.round(label.length * 8.6 + 34);
-      const you = k === "approve" || k === "propose";
-      out.push(rect(x, y + 8, w, 44, { rx: 22, fill: you ? t.soft : t.panel, stroke: you ? t.accent : t.line, sw: you ? 2 : 1.5 }), text(x + w / 2, y + 36, label, { size: 15, weight: 600, fill: t.ink, anchor: "middle" }));
-      if (j < blocks.length - 1) out.push(arrowTo(x + w + 4, y + 30, x + w + 18, y + 30, t, { sw: 1.5 }));
-      x += w + 22;
+  const out = [
+    backdrop(t, id, W, H, { moon: [930, 150, 120], seeds: [23, 41, 6], far: [H - 120, 60, 200, 70, 140], near: [H + 20, 90, 240, 80, 170], mist: [140, 280, H - 160], mistK: 0.6 }),
+    heading(t, 36, 62, "THE LEAST ROUTE FOR EACH SIZE"),
+  ];
+  let y = 96;
+  for (const [name, sub, lines] of rows) {
+    out.push(text(36, y + 32, name, { size: 28, weight: 800, fill: t.ink }), text(36, y + 64, sub, { size, fill: t.muted, lh: 1.25 }));
+    let end;
+    lines.forEach((steps, li) => {
+      const ly = y + li * 88;
+      let x = x0;
+      steps.forEach((k, j) => {
+        const label = STEP[k], w = tw(label, size, true) + 32;
+        if (li > 0 && j === 0) out.push(flow(id, `M${end.cx} ${end.y + ph + 4} L ${end.cx} ${end.y + ph + 20} L ${x + w / 2} ${end.y + ph + 20} L ${x + w / 2} ${ly - 6}`, t.edge, "hot", { sw: 2 }));
+        out.push(pill(t, id, x, ly, w, ph, label, k === "approve" || k === "propose" ? "you" : "plain", size));
+        if (j < steps.length - 1) out.push(flow(id, `M${x + w + 4} ${ly + ph / 2} L ${x + w + gap - 6} ${ly + ph / 2}`, t.edge, "hot", { sw: 2 }));
+        else end = { cx: x + w / 2, y: ly };
+        x += w + gap;
+      });
     });
-  });
+    y += Math.max(lines.length * 88 - 8, 40 + sub.length * 27.5) + 22;
+  }
+  const ny = y + 10, nh = 3 * 30.8 + 34;
   out.push(
-    rect(40, 392, 1200, 52, { rx: 14, fill: t.chip }),
-    circle(66, 418, 9, { fill: t.accent }),
-    text(86, 423, "A risk flag (auth, personal data, schema, money, secrets, outside input) adds the security review. The chief may add blocks, never remove these.", { size: 15, fill: t.ink }),
+    rect(36, ny, W - 72, nh, { rx: 8, fill: t.tile, stroke: t.edge, sw: 1.5 }),
+    medallion(100, ny + nh / 2, 38, "shield", false, id),
+    text(160, ny + 42, ["A risk flag (auth, personal data, schema, money, secrets, outside input) adds", "the security review to every size except investigate, which changes no code.", "The chief may add steps to a route, never remove these."], { size, fill: t.ink, lh: 1.4 }),
   );
-  return svg(1280, 470, t, out.join("\n"), "Routes by size. Tiny: build. Small: build, code review, QA. Large: design, PE check, you approve, build, code review, security review, UX review, QA. Investigate: gather evidence, evidence review, a proposal to you. A risk flag adds the security review.");
+  return panel(t, id, W, H, out.join("\n"), "Routes by size. Tiny: build. Small: build, code review, QA. Large: design, PE check, you approve, build, code review, security review, UX review, QA. Investigate: gather evidence, evidence review, a proposal to you. A risk flag adds the security review to every size except investigate, which changes no code.");
 }
 
 /** A task's life: the states, with the repair loop and the held state. */
-function lifecycle(t) {
-  const states = [["framed", 40], ["briefed", 190], ["building", 340], ["reviewing", 500], ["verifying", 670], ["verified", 840], ["merged", 1010]];
-  const y = 110;
-  const out = [];
-  states.forEach(([name, x], i) => {
-    const w = 130;
-    const done = name === "verified" || name === "merged";
-    out.push(rect(x, y, w, 50, { rx: 25, fill: done ? t.soft : t.panel, stroke: done ? t.accent : t.line, sw: done ? 2 : 1.5 }), text(x + w / 2, y + 31, name, { size: 16, weight: 650, fill: t.ink, anchor: "middle" }));
-    if (i < states.length - 1) out.push(arrowTo(x + w + 4, y + 25, states[i + 1][1] - 4, y + 25, t));
-  });
-  out.push(
-    rect(500, 236, 130, 50, { rx: 25, fill: t.panel, stroke: t.bad, sw: 1.5 }),
-    text(565, 267, "repairing", { size: 16, weight: 650, fill: t.ink, anchor: "middle" }),
-    path("M735 162 C 735 230, 690 262, 634 262", { stroke: t.bad, arrow: "arrow-bad" }),
-    text(742, 218, ["findings to fix,", "or QA fail"], { size: 13, fill: t.bad, lh: 1.25 }),
-    path("M528 236 L 552 164", { stroke: t.muted, arrow: true }),
-    text(436, 300, "next round, at most 3", { size: 13, fill: t.muted }),
-    rect(340, 236, 130, 50, { rx: 25, fill: t.panel, stroke: t.line, sw: 1.5, dash: "5 5" }),
-    text(405, 267, "held", { size: 16, weight: 650, fill: t.ink, anchor: "middle" }),
-    path("M380 162 L 380 232", { stroke: t.muted, arrow: true }),
-    text(250, 214, ["a product", "question"], { size: 13, fill: t.muted, lh: 1.25 }),
-    text(40, 52, "Each move is checked by the state tool. A new commit voids the verdicts, so the task is reviewed again.", { size: 15, fill: t.muted }),
-    text(840, 214, ["needs 1 clean cycle;", "autopilot merges", "after 2"], { size: 13, fill: t.accent, lh: 1.3 }),
-  );
-  return svg(1180, 330, t, out.join("\n"), "A task's life: framed, briefed, building, reviewing, verifying, verified, merged. Findings or a QA failure send it to repairing, at most 3 rounds. A product question holds it. Verified needs one clean cycle; autopilot merges after two.");
+function lifecycle(t, id) {
+  const W = 1100, H = 530, size = 22, ph = 50, y = 104, by = 256;
+  const names = ["framed", "briefed", "building", "reviewing", "verifying", "verified", "merged"];
+  const ws = names.map((n) => tw(n, size, true) + 24);
+  const gap = (W - 72 - ws.reduce((a, b) => a + b)) / (names.length - 1);
+  let x = 36;
+  const S = Object.fromEntries(names.map((n, i) => { const s = { x: f1(x), w: ws[i], cx: f1(x + ws[i] / 2) }; x += ws[i] + gap; return [n, s]; }));
+  const { building: bu, reviewing: re, verifying: ve } = S;
+  const held = { w: tw("held", size, true) + 64 }, rep = { w: tw("repairing", size, true) + 64 };
+  held.x = f1(bu.cx - held.w / 2);
+  rep.x = f1((re.cx + ve.cx) / 2 - rep.w / 2);
+  const fy = 372, fh = 3 * 30.8 + 32;
+  const body = [
+    backdrop(t, id, W, H, { moon: [990, 250, 100], seeds: [17, 52, 4], far: [H - 60, 60, 180, 70, 140], near: [H + 60, 90, 220, 80, 170], mist: [140, 280, H - 130], mistK: 0.6 }),
+    heading(t, 36, 62, "THE STATES OF A TASK"),
+    ...names.map((n, i) => pill(t, id, S[n].x, y, S[n].w, ph, n, n === "verified" || n === "merged" ? "hot" : "plain", size) +
+      (i < names.length - 1 ? flow(id, `M${f1(S[n].x + S[n].w + 4)} ${y + ph / 2} L ${f1(S[names[i + 1]].x - 6)} ${y + ph / 2}`, t.edge, "hot", { sw: 2 }) : "")),
+    // A product question holds the build; the answer lets it go on.
+    flow(id, `M${bu.cx - 14} ${y + ph + 4} L ${bu.cx - 14} ${by - 6}`, t.line, "muted", { sw: 2 }),
+    flow(id, `M${bu.cx + 14} ${by - 4} L ${bu.cx + 14} ${y + ph + 6}`, t.line, "muted", { sw: 2 }),
+    text(bu.cx - 28, 196, ["a product", "question"], { size, fill: t.muted, anchor: "end", lh: 1.25 }),
+    text(bu.cx + 28, 196, ["your", "answer"], { size, fill: t.muted, lh: 1.25 }),
+    pill(t, id, held.x, by, held.w, ph, "held", "wait", size),
+    // Findings or a QA failure start a repair round; the next round is reviewed again.
+    flow(id, `M${ve.cx + 20} ${y + ph + 4} C ${ve.cx + 40} ${by - 30}, ${ve.cx + 40} ${by + ph / 2}, ${f1(rep.x + rep.w + 6)} ${by + ph / 2}`, t.bad, "bad", { sw: 2 }),
+    text(ve.cx + 52, 210, ["findings to fix,", "or QA fail"], { size, fill: t.bad, lh: 1.25 }),
+    flow(id, `M${f1(rep.x - 4)} ${by + ph / 2} C ${re.cx - 40} ${by + ph / 2}, ${re.cx - 30} ${by - 40}, ${re.cx - 30} ${y + ph + 6}`, t.line, "muted", { sw: 2 }),
+    pill(t, id, rep.x, by, rep.w, ph, "repairing", "bad", size),
+    text(f1(rep.x + rep.w / 2), by + ph + 34, "next round, at most 3", { size, fill: t.muted, anchor: "middle" }),
+    // The rules of the states.
+    rect(36, fy, W - 72, fh, { rx: 8, fill: t.tile, stroke: t.edge, sw: 1.5 }),
+    text(64, fy + 40, "Verified needs 1 clean cycle. Autopilot merges after 2 in a row.", { size, weight: 700, fill: t.ink }),
+    text(64, f1(fy + 40 + 30.8), ["The state tool checks each move. A new commit voids the verdicts,", "so the task is reviewed again."], { size, fill: t.muted, lh: 1.4 }),
+  ].join("\n");
+  return panel(t, id, W, H, body, "A task's life: framed, briefed, building, reviewing, verifying, verified, merged. A product question holds the task until your answer. Findings or a QA failure send it to repairing, then to review again, at most 3 rounds. Verified needs one clean cycle; autopilot merges after two.");
 }
 
-/** The arena: N candidates on a mix of Claude models, a judge, one final version. */
-function arena(t) {
-  const out = [
-    rect(40, 150, 170, 96, { rx: 14, fill: t.chief, stroke: t.accent, sw: 3 }),
-    text(125, 188, "One brief", { size: 17, weight: 750, fill: t.chiefInk, anchor: "middle" }),
-    text(125, 212, ["+ a rubric the", "candidates don't see"], { size: 12.5, fill: t.chiefInk, anchor: "middle", opacity: 0.85, lh: 1.3 }),
-  ];
-  const cands = [["Candidate 1", "Opus · fewest taps"], ["Candidate 2", "Sonnet · most control"], ["Candidate 3", "Sonnet · reuse screens"]];
-  cands.forEach(([name, sub], i) => {
-    const y = 50 + i * 112;
-    out.push(path(`M212 198 C 260 198, 250 ${y + 38}, 296 ${y + 38}`, { stroke: t.muted, arrow: true }));
-    out.push(role(300, y, 230, 76, name, true, t, sub));
-    out.push(path(`M534 ${y + 38} C 580 ${y + 38}, 570 198, 616 198`, { stroke: t.muted, arrow: true }));
-  });
-  out.push(
-    rect(620, 140, 200, 116, { rx: 14, fill: t.panel, stroke: t.accent, sw: 2 }),
-    eye(660, 178, 34, t),
-    text(744, 184, "Arena judge", { size: 17, weight: 750, fill: t.ink, anchor: "middle" }),
-    text(720, 214, ["scores, picks a base,", "grafts the best parts"], { size: 13, fill: t.muted, anchor: "middle", lh: 1.3 }),
-    arrowTo(824, 198, 880, 198, t),
-    role(884, 160, 160, 76, "Final version", true, t, "one design"),
-    arrowTo(1048, 198, 1090, 198, t),
-    text(1096, 192, ["reviews", "and QA"], { size: 14, fill: t.muted, lh: 1.3 }),
-    text(620, 300, ["All converge → keep the shared shape.", "Wildly different → re-frame the brief once, then ask you."], { size: 13.5, fill: t.muted, lh: 1.45 }),
-  );
-  return svg(1180, 400, t, out.join("\n"), "The arena: one brief and a hidden rubric go to three candidates on a mix of Claude models, each with a different angle. The arena judge scores them, picks a base and grafts the best parts into one final version, which then goes through reviews and QA.");
+/** The arena: one brief, N candidates on a mix of Claude models, a judge, one final version. */
+function arena(t, id) {
+  const W = 1100, H = 740, size = 22, my = 236, mr = 44, jx = 550, jy = 506, jr = 56;
+  const cands = [["Candidate 1", "Opus · fewest taps", 190], ["Candidate 2", "Sonnet · most control", 550], ["Candidate 3", "Sonnet · reuse screens", 910]];
+  const body = [
+    backdrop(t, id, W, H, { moon: [jx, jy, 150], seeds: [29, 58, 7], far: [H - 110, 60, 200, 70, 140], near: [H + 30, 90, 240, 80, 170], pagodas: [[1010, H - 130, 0.85, 1.6], [92, H - 120, 0.75, 1.6]], mist: [140, 280, H - 160], mistK: 0.6 }),
+    tile(t, id, 340, 36, 420, 100, "One brief", "+ a rubric the candidates don't see", true, { titleY: 42, ...chiefTile(id) }),
+    ...cands.map(([, , cx], i) => flow(id, `M${550 + (i - 1) * 110} 140 C ${550 + (i - 1) * 110} 168, ${cx} 150, ${cx} ${my - mr - 14}`, t.edge, "hot", { sw: 2 })),
+    ...cands.map(([name, sub, cx]) => medallion(cx, my, mr, "scroll", true, id) + tile(t, id, cx - 150, 300, 300, 92, name, sub, false, { titleY: 36, size: 24 })),
+    ...cands.map(([, , cx], i) => flow(id, `M${cx} 396 C ${cx} 424, ${jx + (i - 1) * 36} 410, ${jx + (i - 1) * 36} ${jy - jr - 14}`, t.edge, "hot", { sw: 2 })),
+    medallion(jx, jy, jr, "scales", true, id),
+    tile(t, id, 156, jy - 50, 300, 116, "Arena judge", ["scores, picks a base,", "grafts the best parts"], false, { titleY: 38, size: 24 }),
+    flow(id, `M${jx + jr + 12} ${jy} L 660 ${jy}`, t.edge, "hot", { sw: 2 }),
+    tile(t, id, 666, jy - 46, 220, 92, "Final version", "one design", true, { titleY: 36, size: 24 }),
+    flow(id, `M892 ${jy} L 936 ${jy}`, t.edge, "hot", { sw: 2 }),
+    text(946, jy - 6, ["reviews", "and QA"], { size, fill: t.muted, lh: 1.25 }),
+    rect(36, 616, W - 72, 2 * 30.8 + 34, { rx: 8, fill: t.tile, stroke: t.line, sw: 1.5 }),
+    text(W / 2, 656, ["All converge → keep the shared shape.", "Wildly different → re-frame the brief once, then ask you."], { size, fill: t.ink, anchor: "middle", lh: 1.4 }),
+  ].join("\n");
+  return panel(t, id, W, H, body, "The arena: one brief and a hidden rubric go to three candidates on a mix of Claude models, each with a different angle. The arena judge scores them, picks a base and grafts the best parts into one final version, which then goes through reviews and QA.");
 }
 
 /** Following pstack: a weekly sync, your overrides, one build. */
-function pstack(t) {
-  const out = [
-    role(40, 70, 210, 80, "pstack", false, t, "by Lauren Tan (poteto)"),
-    arrowTo(254, 110, 330, 110, t),
-    text(292, 98, "weekly", { size: 13, fill: t.muted, anchor: "middle" }),
-    role(334, 70, 220, 80, "upstream/pstack", false, t, "pinned commit + licence"),
-    role(334, 196, 220, 80, "principles/", true, t, "your versions win"),
-    path("M558 110 C 610 110, 600 150, 646 150", { stroke: t.muted, arrow: true }),
-    path("M558 236 C 610 236, 600 196, 646 196", { stroke: t.muted, arrow: true }),
-    rect(650, 128, 160, 90, { rx: 14, fill: t.chief, stroke: t.accent, sw: 3 }),
-    text(730, 166, "Build", { size: 18, weight: 750, fill: t.chiefInk, anchor: "middle" }),
-    text(730, 192, "checks + tests", { size: 13, fill: t.chiefInk, anchor: "middle", opacity: 0.85 }),
-    arrowTo(814, 173, 870, 173, t),
-    role(874, 133, 180, 80, "sage plugin", false, t, "25 principles"),
-    path("M730 222 L 730 296", { stroke: t.accent, dash: "5 6" }),
-    rect(560, 300, 340, 70, { rx: 14, fill: t.soft, stroke: t.accent, sw: 1.5 }),
-    text(730, 330, "pstack changed one of your versions?", { size: 15, weight: 650, fill: t.ink, anchor: "middle" }),
-    text(730, 354, "The update waits for you. Otherwise it merges.", { size: 13.5, fill: t.muted, anchor: "middle" }),
-  ];
-  return svg(1100, 400, t, out.join("\n"), "Following pstack: every week, pstack's principles come into upstream/pstack at a pinned commit. Your versions in principles/ win. The build runs the checks and tests and makes the sage plugin. If pstack changed a principle you override, the update waits for you; otherwise it merges.");
+function pstack(t, id) {
+  const W = 1100, H = 570;
+  const body = [
+    backdrop(t, id, W, H, { moon: [972, 140, 110], seeds: [37, 66, 3], far: [H - 80, 60, 180, 70, 140], near: [H + 40, 90, 220, 80, 170], pagodas: [[150, H - 40, 0.9, 1.6]], mist: [140, 280, H - 140], mistK: 0.6 }),
+    heading(t, 36, 62, "FOLLOWING PSTACK, EVERY WEEK"),
+    tile(t, id, 36, 140, 170, 120, "pstack", ["by Lauren Tan", "(poteto)"], false, { titleY: 42 }),
+    flow(id, "M212 200 L 322 200", t.edge, "hot"), text(267, 184, "weekly", { size: 22, fill: t.muted, anchor: "middle" }),
+    tile(t, id, 330, 140, 240, 120, "upstream/pstack", ["pinned commit", "+ licence"], false, { titleY: 42 }),
+    tile(t, id, 330, 300, 240, 100, "principles/", "your versions win", true, { titleY: 42 }),
+    flow(id, "M576 200 C 606 200, 606 262, 634 262", t.line, "muted"),
+    flow(id, "M576 350 C 606 350, 606 298, 634 298", t.line, "muted"),
+    tile(t, id, 642, 224, 184, 112, "Build", "checks + tests", true, { titleY: 44, ...chiefTile(id) }),
+    flow(id, "M832 280 L 872 280", t.edge, "hot"),
+    emblem(972, 140, 52, id),
+    tile(t, id, 880, 224, 184, 112, "sage plugin", "25 principles", false, { titleY: 44 }),
+    path("M734 342 L 734 446", { stroke: t.edge, sw: 2, dash: "5 6" }),
+    rect(330, 452, 734, 96, { rx: 8, fill: t.tile, stroke: t.edge, sw: 1.5 }),
+    text(697, 490, "pstack changed one of your versions?", { size: 22, weight: 700, fill: t.ink, anchor: "middle" }),
+    text(697, 524, "The update waits for you. Otherwise, it merges.", { size: 22, fill: t.muted, anchor: "middle" }),
+  ].join("\n");
+  return panel(t, id, W, H, body, "Following pstack: every week, pstack's principles come into upstream/pstack at a pinned commit. Your versions in principles/ win. The build runs the checks and tests and makes the sage plugin. If pstack changed a principle you override, the update waits for you; otherwise it merges.");
 }
 
-export const GRAPHICS = {
-  hero, loop, walkthrough, routes, lifecycle, arena, pstack,
-  "tip-start": tip(["Start a message with “sage mode”. That's the whole hand sign.", "Mid-sentence, it does nothing. “sage mode off” works anywhere."], "The toad sage's tip: start a message with sage mode. In the middle of a sentence it does nothing; sage mode off works anywhere."),
-  "tip-try": tip(["Your first training: one small, real bug, from your phone.", "Then look at the result, not the code."], "The toad sage's tip: try one small, real bug from your phone, then look at the result."),
-  "tip-kitchen": tip(["A mistake that comes back twice gets a test, a check or a rule.", "That's how the kitchen gets stronger, one lesson at a time."], "The toad sage's tip: a mistake that comes back twice gets a test, a check or a rule, so the kitchen gets stronger one lesson at a time."),
+/** A tip from the toad sage: its emblem on the left, and the tip on a hanging scroll to the right. */
+const tip = (lines, label) => (t, id) => {
+  const W = 1100, H = 230, size = 24, lh = 1.4;
+  const sx = 222, sy = 32, sw = W - 36 - sx, sh = H - 64;
+  const ty = f1(sy + (sh - (34 + (lines.length - 1) * size * lh + size)) / 2 + 22);
+  const body = [
+    backdrop(t, id, W, H, { moon: [120, 115, 96], seeds: [31, 47, 5], far: [H - 30, 30, 90, 60, 120], near: [H + 50, 40, 110, 80, 150], mist: [80, 280, H - 80], mistK: 0.6, embersTo: H - 20 }),
+    emblem(120, 115, 74, id),
+    `<rect x="${sx}" y="${sy}" width="${sw}" height="${sh}" rx="4" fill="${t.edge}" opacity="${t.glowOp}" filter="url(#${id}-glow)"/>`,
+    rect(sx, sy, sw, sh, { rx: 4, fill: t.tile, stroke: t.edge, sw: 1.5 }),
+    rect(sx + 9, sy + 9, sw - 18, sh - 18, { rx: 2, stroke: t.line, sw: 1, opacity: 0.6 }),
+    rect(sx - 9, sy - 10, 14, sh + 20, { rx: 7, fill: "#3D2D21", stroke: "#120C08", sw: 1 }),
+    rect(sx + sw - 5, sy - 10, 14, sh + 20, { rx: 7, fill: "#3D2D21", stroke: "#120C08", sw: 1 }),
+    rect(sx + sw - 50, sy + sh - 48, 20, 20, { rx: 2, fill: EMBER.deep, opacity: 0.85 }),
+    text(sx + 40, ty, "TIP", { size: 22, weight: 800, fill: t.loop, ls: 2 }),
+    text(sx + 40, ty + 36, lines, { size, weight: 600, fill: t.ink, lh }),
+  ].join("\n");
+  return panel(t, id, W, H, body, label);
 };
+
+const GRAPHICS = {
+  hero, loop, walkthrough, routes, lifecycle, arena, pstack,
+  "tip-start": tip(["Start a message with “sage mode” to switch it on,", "and with “sage mode off” to switch it off.", "In the middle of a sentence, it does nothing."], "The toad sage's tip: start a message with sage mode to switch it on, and with sage mode off to switch it off. In the middle of a sentence, it does nothing."),
+  "tip-try": tip(["Try it on one small, real bug, from your phone.", "Then look at the result, not the code."], "The toad sage's tip: try it on one small, real bug from your phone, then look at the result, not the code."),
+  "tip-seal": tip(["Seal the lesson: a mistake that comes back twice", "is sealed into code, as a test, a check or a rule.", "That's how the dojo gets stronger."], "The toad sage's tip: seal the lesson. A mistake that comes back twice is sealed into code, as a test, a check or a rule. That is how the dojo gets stronger, one lesson at a time."),
+};
+
+/** Every graphic in both themes, as [file name, SVG]. The ids in a file start with its own name and theme, so that
+ *  no file depends on another, or on the order in which they are drawn. */
+export const files = () => Object.entries(GRAPHICS).flatMap(([name, draw]) => Object.entries(THEMES).map(([theme, t]) => [`${name}-${theme}.svg`, draw(t, `${name}-${theme[0]}`)]));
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   mkdirSync(OUT, { recursive: true });
-  for (const [name, draw] of Object.entries(GRAPHICS)) for (const [theme, t] of Object.entries(THEMES)) writeFileSync(join(OUT, `${name}-${theme}.svg`), draw(t));
-  console.log(`drew ${Object.keys(GRAPHICS).length * 2} files in docs/assets`);
+  const all = files();
+  for (const [file, svg] of all) writeFileSync(join(OUT, file), svg);
+  console.log(`drew ${all.length} files in docs/assets`);
 }
