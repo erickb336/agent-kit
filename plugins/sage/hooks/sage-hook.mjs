@@ -15,20 +15,21 @@ import { fileURLToPath } from "node:url";
 import { config, mergeCheck } from "../skills/sage/sage.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-// The mode phrases. "sage mode", "sage mode off" and "autopilot on" count only at the start of the message, so that a
-// mention, a quote or an agent's report ("<task-notification>…") switches nothing: "sage mode off" also drops the git
-// gates. An on-phrase must stand alone or end at ".", ",", ":", ";", "!" or the end of its line, so "autopilot on?"
-// and "autopilot on main" switch nothing. Only "autopilot off" works anywhere, because a missed off is the unsafe one.
+// The mode phrases. "sage mode" (also "sage mode on"), "sage mode off" and "autopilot on" count only at the start of the
+// message, so that a mention, a quote or an agent's report ("<task-notification>…") switches nothing: "sage mode off"
+// also drops the git gates. Each must stand alone or end at ".", ",", ":", ";", "!" or the end of its line, so
+// "autopilot on?", "autopilot on main" and "sage mode off?" switch nothing. Only an autopilot off ("autopilot off",
+// "disable autopilot", "no autopilot" and the like) works anywhere, because a missed off is the unsafe one.
 // No mode-phrase regex has the m flag: with it, "^" would also match the start of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
-const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode`;
+const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
 const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
 const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
-const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off\\b`, "i");
+const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off${END}`, "i");
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
-const AUTOPILOT_OFF = /\b(?:autopilot(?:\s*:\s*|\s+is\s+|\s+)off|(?:turn\s+off|stop)\s+autopilot)\b/i;
+const AUTOPILOT_OFF = /\b(?:autopilot(?:\s*[:,=]\s*|\s+is(?:\s+now)?\s+|\s+)(?:off|disabled)|(?:turn\s+off|switch\s+off|stop|disable|pause|end|no)\s+(?:the\s+)?autopilot)\b/i;
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
@@ -81,7 +82,7 @@ export function handle(input, state, slots) {
 
   const tool = input.tool_name ?? "";
   const ti = input.tool_input ?? {};
-  if (main && FILE_TOOLS.test(tool)) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with "sage mode off".');
+  if (main && FILE_TOOLS.test(tool)) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with a message that starts with "sage mode off".');
   if (main && AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
     if (missing.length) return deny(event, `the brief has no ${missing.join(", ")}. Every brief has all of ${BRIEF_FIELDS.join(", ")}, each at the start of a line. A tiny task may keep each field to one line.`);
@@ -111,7 +112,7 @@ export function chiefText() {
   const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(readFileSync(join(ROOT, "agents/chief-of-staff.md"), "utf8"));
   const skills = [...m[1].matchAll(/^\s+-\s+(\S+)\s*$/gm)].map((x) => x[1]);
   return [
-    `sage: sage mode is on. You are the user's chief of staff until the user says "sage mode off".`,
+    `sage: sage mode is on. You are the user's chief of staff until a message from the user starts with "sage mode off".`,
     `The state tool: node "${join(ROOT, "skills/sage/sage.mjs")}" <command> --project <path>. Each shell call starts fresh, so write this full command every time; do not keep it in a variable. Load these skills now: ${skills.join(", ")}.`,
     m[2].trim(),
   ].join("\n\n");
