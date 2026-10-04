@@ -4,7 +4,8 @@
 //     session that starts as the sage:chief-of-staff agent is in sage mode from its first event. Only the user's own
 //     words switch a mode on, or sage mode off: never an agent's report, a task notification or another session's
 //     message (promptOf). When the hook cannot read the frames of a prompt, nothing in it switches a mode on (fail
-//     closed). An autopilot off counts in any text, also in a frame.
+//     closed). An autopilot off counts in more text: in the owner's text, in a message the owner sends while Claude
+//     works, and in a frame on a line that starts with the off-phrase. Such a message never switches a mode on.
 //   - In sage mode it holds the rules that prompts alone did not hold in Orchestrator (docs/design/sage-mode.html,
 //     "Rules"): the chief never edits files, every brief has all its fields, at most max_agents sage agents run at
 //     once, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
@@ -62,14 +63,15 @@ const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*
  * the owner's message to them. A frame closes only with a close of its own kind. Another session's message closes with
  * the note that Claude Code puts after it, so the note is part of the frame.
  * The hook counts the frames on the prompt as Claude Code sent it.
- *   - The owner's message that Claude Code queues while it works (QUEUED) is the owner's text, although it comes in a
- *     system reminder. It counts only as a whole system reminder, with Claude Code's note, outside every other frame
- *     and with no frame mark in it. The queued shape inside another frame is that frame's text.
- *   - text: the text before the first frame and after the last close, with the queued messages there. An agent cannot
- *     write there, also when it writes a close in its report, because the real close comes after it. It can switch a
- *     mode on.
- *   - outside: all the text outside the frames, also between two frames, with all the queued messages. It counts
- *     only for an autopilot off (the broad off rule).
+ *   - The owner's message that Claude Code queues while it works (QUEUED) comes in a system reminder. It counts only
+ *     as a whole system reminder, with Claude Code's note, outside every other frame and with no frame mark in it. The
+ *     queued shape inside another frame is that frame's text. An agent can write a whole queued shape at the end of a
+ *     bare system reminder, and the hook cannot tell it from a real one. So a queued message counts only for an
+ *     autopilot off, never for an on: the owner sends an on again when Claude is idle.
+ *   - text: the text before the first frame and after the last close. An agent cannot write there, also when it
+ *     writes a close in its report, because the real close comes after it. It can switch a mode on.
+ *   - outside: all the text outside the frames, also between two frames, with the queued messages. It counts only for
+ *     an autopilot off (the broad off rule).
  *   - owner: false when the hook cannot read the frames (fail closed): a kind with more opens than closes or more
  *     closes than opens, or a frame's marker in the text. Then nothing in the prompt switches a mode on.
  */
@@ -92,23 +94,20 @@ export function promptOf(input) {
     if (step > 0 && depth++ === 0) frames.push([at, all.length]);
     else if (step < 0 && depth > 0 && --depth === 0) frames.at(-1)[1] = at;
   }
-  const queued = new Map();
-  for (const m of all.matchAll(QUEUED)) {
-    const end = m.index + m[0].length;
-    if (frames.some(([s, e]) => s === m.index && e === end) && !edges.some(([at]) => at > m.index && at < end)) queued.set(m.index, `\n${m[1]}\n`);
-  }
-  // The text between the frames, in pieces: a queued message joins the piece it is in.
-  const pieces = [""];
+  const queued = [...all.matchAll(QUEUED)]
+    .filter((m) => frames.some(([s, e]) => s === m.index && e === m.index + m[0].length) && !edges.some(([at]) => at > m.index && at < m.index + m[0].length))
+    .map((m) => m[1]);
+  // The text between the frames, in pieces.
+  const pieces = [];
   let at = 0;
   for (const [s, e] of frames) {
-    pieces[pieces.length - 1] += all.slice(at, s) + (queued.get(s) ?? "");
-    if (!queued.has(s)) pieces.push("");
+    pieces.push(all.slice(at, s));
     at = e;
   }
-  pieces[pieces.length - 1] += all.slice(at);
+  pieces.push(all.slice(at));
   const text = pieces.length > 1 ? `${pieces[0]}\n${pieces.at(-1)}` : pieces[0];
   const balanced = marks.every(([o, c]) => o.length === c.length);
-  return { owner: balanced && !MARKERS.test(text), text, outside: pieces.join("\n"), all };
+  return { owner: balanced && !MARKERS.test(text), text, outside: [...pieces, ...queued].join("\n"), all };
 }
 
 /**
