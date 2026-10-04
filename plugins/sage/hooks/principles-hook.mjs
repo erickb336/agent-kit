@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The principles hook of sage, for Claude Code and Codex. Both tools send one JSON event on stdin and read one JSON answer on stdout.
+// The principles hook of sage. Claude Code sends one JSON event on stdin and reads one JSON answer on stdout.
 //   - It puts a principle's text into the agent's context at the moment the principle applies (MOMENTS), once per
 //     session. So the principle no longer depends on the agent choosing to load its skill.
 //   - It stops the agent once from finishing when the code changed and no check ran after the change (prove-it-works).
@@ -8,7 +8,7 @@
 // The hook never breaks a session: on any error it answers nothing.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,7 +50,7 @@ export function handle(input, state) {
     return inject(event, state, [DESIGN.test(prompt) && "design", REFACTOR.test(prompt) && "refactor"]);
   }
   if (event === "PreToolUse") {
-    const paths = shell ? [] : editedPaths(input.tool_input);
+    const paths = shell ? [] : [input.tool_input?.file_path, input.tool_input?.notebook_path].filter((p) => typeof p === "string");
     return inject(event, state, [paths.some((p) => TEST_FILE.test(p)) && "testEdit", paths.some((p) => DOC_FILE.test(p)) && "docEdit", shell && COMMIT.test(command) && "commit"]);
   }
   if (event === "PostToolUse" || event === "PostToolUseFailure") {
@@ -58,7 +58,8 @@ export function handle(input, state) {
     if (!check) return undefined;
     const now = fingerprint(input.cwd);
     state.lastCheck = now;
-    if (!shell || !failed(input)) {
+    // Claude Code sends a failed command as PostToolUseFailure, so its PostToolUse is a success.
+    if (!shell || event !== "PostToolUseFailure") {
       delete state.failures[check];
       return undefined;
     }
@@ -112,31 +113,9 @@ export function principleText(id) {
   return text.replace(/^---\n[\s\S]*?\n---\n/, "").replace(/<!--[\s\S]*?-->/, "").trim();
 }
 
-/** Claude Code names the file; Codex sends an apply_patch text with "*** Update File: <path>" lines. */
-function editedPaths(toolInput = {}) {
-  const named = [toolInput.file_path, toolInput.notebook_path].filter((p) => typeof p === "string");
-  const patch = typeof toolInput.command === "string" ? toolInput.command : "";
-  const patched = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)].map((m) => (m[1] ?? m[2]).trim());
-  return [...named, ...patched];
-}
-
-/**
- * Claude Code sends a failed command as PostToolUseFailure, so its PostToolUse is a success. Codex (0.159) sends only
- * the command's output as text, without the exit code, so the hook looks for the lines that common check tools print
- * when they fail. That is a heuristic: a tool that fails without such a line is missed.
- */
-function failed(input) {
-  if (input.hook_event_name === "PostToolUseFailure") return true;
-  const r = input.tool_response;
-  if (typeof r !== "string") return [r?.exit_code, r?.exitCode].some((c) => typeof c === "number" && c !== 0);
-  const code = /(?:exit code|exited with code)[:\s]+(\d+)/i.exec(r);
-  return code ? code[1] !== "0" : FAILURE_LINES.test(r);
-}
-const FAILURE_LINES = /^(ℹ|#) fail [1-9]|^FAIL\b|\b[1-9]\d* (failed|failing)\b|test result: FAILED|\berror TS\d+:|\b[1-9]\d* problems? \(|BUILD FAILED|^npm (ERR!|error)\b|^error(\[E\d+\])?: /m;
-
 /**
  * The content of the code in the working tree, as one hash. A commit does not change it, and documents are left out.
- * Undefined outside a git repository, so the stop gate is off there.
+ * Undefined outside a git repository, so the stop check is off there.
  */
 export function fingerprint(cwd) {
   try {
@@ -182,7 +161,8 @@ function log(entry) {
   if (process.env.AGENT_KIT_HOOKS_LOG) appendFileSync(process.env.AGENT_KIT_HOOKS_LOG, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url) && process.env.AGENT_KIT_HOOKS !== "off") {
+// Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.env.AGENT_KIT_HOOKS !== "off") {
   let input;
   try {
     input = JSON.parse(readFileSync(0, "utf8"));

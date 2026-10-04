@@ -2,7 +2,7 @@
   "name": "sage",
   "private": true,
   "type": "module",
-  "description": "Principles, a writing standard and sage mode for Claude Code (and the principles for Codex).",
+  "description": "Principles, a writing standard and sage mode for Claude Code.",
   "license": "MIT",
   "scripts": {
     "build": "node scripts/build.mjs",

@@ -35,7 +35,7 @@ for (const d of readdirSync(skillsDir)) {
   if (!name || name.length > 64 || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) problems.push(`skills/${d}/SKILL.md: name must be lowercase words joined by hyphens, at most 64 characters`);
   if (!desc) problems.push(`skills/${d}/SKILL.md: missing description`);
   else if (yamlText(desc).length > 1024) problems.push(`skills/${d}/SKILL.md: description over 1024 characters`);
-  // Codex's validator accepts only these top-level keys.
+  // The shared skill format (agentskills.io) has only these top-level keys.
   for (const key of m[1].split("\n").filter((l) => /^[A-Za-z-]+:/.test(l)).map((l) => l.split(":")[0])) {
     if (!["name", "description", "license", "allowed-tools", "metadata"].includes(key)) problems.push(`skills/${d}/SKILL.md: key "${key}" is not in the shared skill format`);
   }
@@ -141,7 +141,7 @@ try {
   }
 } catch (e) { problems.push(String(e.message)); } // a source that the build cannot read, such as a README without its markers
 const core = readFileSync(join(ROOT, "instructions/core.md"), "utf8");
-if (Buffer.byteLength(core) > 8 * 1024) problems.push(`instructions/core.md: ${Buffer.byteLength(core)} bytes; keep it under 8 KiB (Codex shares a 32 KiB budget with each project's AGENTS.md)`);
+if (Buffer.byteLength(core) > 8 * 1024) problems.push(`instructions/core.md: ${Buffer.byteLength(core)} bytes; keep it under 8 KiB (it loads into every session, so each byte costs context there)`);
 
 // The build reads the dictionary too, so a problem in it comes twice: report it once.
 if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }

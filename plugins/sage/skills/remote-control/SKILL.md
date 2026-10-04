@@ -6,7 +6,7 @@ license: MIT
 
 # Remote Control by default
 
-This skill makes Claude Code sessions reachable from the Claude app on the user's phone. It is for Claude Code only: Codex has no Remote Control.
+This skill makes Claude Code sessions reachable from the Claude app on the user's phone.
 
 | Argument | What it does |
 | --- | --- |
