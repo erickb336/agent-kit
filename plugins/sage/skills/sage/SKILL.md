@@ -16,9 +16,9 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 
 | Command | Does |
 | --- | --- |
-| `init` | Makes the project's logbook and its standing orders. A new logbook has each table with only its header line. `init` writes tasks.tsv last, so a folder with tasks.tsv has every table. |
-| `logbook` | Prints the logbook's folder. |
-| `standing` · `standing add "<order>"` | Prints the standing orders as written, or adds one. Paste them into every brief. Tabs stay, CRLF line ends print as plain lines, and other control characters are removed. |
+| `init` | Makes the project's logbook and its standing orders. A new logbook has each table with only its header line. `init` writes tasks.tsv last, so a folder with tasks.tsv has every table. On an existing logbook it makes no table: a lost one refuses (see "The logbook check"). |
+| `logbook` · `logbook repair --accept-loss <table>` | Prints the logbook's folder. `repair` starts a table that fails the logbook check again, without rows. Run it only after the user accepts the loss of its rows. The old file stays beside it as `<table>.tsv.lost-<n>`, and the decision trail records the repair. |
+| `standing` · `standing add "<order>"` | Prints the standing orders as written, or adds one. Paste them into every brief. Tabs stay, CRLF line ends print as plain lines, and hidden characters are removed (see "Hidden characters"). |
 | `task add --title "<t>" --size tiny\|small\|large\|investigate [--risk auth,data,schema,money,secrets,input] [--add <blocks> --why "<reason>"]` | Frames a task and its route. The size gives the least route. A risk adds the security review. An investigation takes no build block: a build that it needs is its own task. |
 | `task <T> set state=<state> [branch=<b>] [pr=<n>]` | Moves the task. The tool refuses a move that the design does not allow, and "verifying" or "concluded" while a finding is open. A PR number is only digits. An investigation takes no PR number; `pr=` clears one. |
 | `round <T>` | Starts a repair round on the open findings marked fix. After the last round, or when a round did not fix its findings, it holds or re-plans the task. |
@@ -29,7 +29,7 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 | `gate add <T> --question "<q>" --options "<a\|b>" --recommend <a> [--default <a>]` · `gate answer <G> <answer>` | Parks a question for the user, with your recommendation and the default. |
 | `log <T\|-> "<decision>" --why "<reason>"` | Adds a line to the decision trail. |
 | `status` | Prints the status lines. Each change also writes them to `status.md`. End each report to the user with them. |
-| `merge-check --sha <sha> [--pr <n>]` | Says if the full SHA may merge. Each task that has verdicts on it, in every project's logbook, must pass on its own verdicts: no open findings, checks-pass, and its route's verdicts in enough clean cycles. A logbook that is a link to a folder counts too. With `--pr`, each task of that pull request must pass too, and the pull request must have one. A refusal lists every task that fails and its way out. A task of the pull request that is no longer part of it: clear its PR with `task <T> set pr=`. A table that is not a regular file, that it cannot read, or whose header is damaged refuses every merge and names the file. So does a logbook (a folder with tasks.tsv) whose tasks.tsv, findings.tsv or ledger.tsv is missing or a link to nothing: its rows are lost. |
+| `merge-check --sha <sha> [--pr <n>]` | Says if the full SHA may merge. Each task that has verdicts on it, in every project's logbook, must pass on its own verdicts: no open findings, checks-pass, and its route's verdicts in enough clean cycles. A logbook that is a link to a folder counts too. With `--pr`, each task of that pull request must pass too, and the pull request must have one. A refusal lists every task that fails and its way out. A task of the pull request that is no longer part of it: clear its PR with `task <T> set pr=`. A logbook (a folder with tasks.tsv) that fails the logbook check refuses every merge and names the file. |
 | `config [key=n ...]` | Prints or sets max_agents, autopilot_cycles, max_rounds and arena for all projects. Each is a whole number of 1 or more. A missing or bad value in `config.json` gives its default. A change keeps the other keys in `config.json`, also those of a newer version. |
 
 ## Cycles and merges
@@ -55,6 +55,36 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 - The next command also removes the temp folder (`.lock.<id>`) of a command that was killed while it waited.
 - `status`, `logbook`, `standing` and `merge-check` take no lock. They work while another command runs.
 - The sessions may run two versions of sage. A version refuses to change a logbook whose tables have columns that it does not know: its write would lose them. The refusal says to update the sage plugin and restart the session. Reading goes on.
-- A table whose first line does not name each of its columns has a damaged header: its first line was lost or changed. Every write and every merge check refuses it, and names the file and the columns that its first line needs. A BOM and CRLF line ends from an editor are read as a plain file.
-- A command refuses, before any change, when a file of the logbook is not a regular file, also a link to nothing.
-- The tool keeps no control character in a cell, and prints each one in an id, a column or a path as `\xNN`. The standing orders print as written, with their tabs. For a project path with a control character, it prints no command to paste.
+- A command refuses, before any change, when status.md or standing.md is not a regular file, also a link to nothing.
+
+## The logbook check
+
+One check guards the merge check and every write, `init` on an existing logbook too. Each of the six tables must be:
+
+- there (not deleted, and not a link to nothing);
+- a regular file that the tool can read;
+- not empty (not 0 bytes, and not only blank lines);
+- with its header line: the first line names each of its columns. A BOM and CRLF line ends from an editor are read as a plain file.
+
+A table that fails refuses every merge and every write, and the refusal names the file. No command makes a lost table again or repairs it in silence. The ways out:
+
+- Restore the file from a copy.
+- A table that cannot be read (EACCES): fix its permissions. Do not remove it: its rows are there.
+- If no copy is left and the user accepts the loss: `logbook repair --accept-loss <table>`. Repair the table that the refusal names; then the next one, if there is one.
+
+Limit: a table cut to only its header line is a table without rows. The check cannot tell it from a new table.
+
+A folder without tasks.tsv is no logbook: `init` has not finished it. `init` finishes it when its tables have no rows. When they have rows, its task list is lost, and `init` refuses: restore tasks.tsv, or repair it.
+
+## Hidden characters
+
+The tool keeps no hidden character in a cell, and removes them from the standing orders. Hidden characters are those that a person does not see but a terminal or an agent acts on:
+
+- the control characters (C0, DEL and C1), except a tab and a line end in the standing orders;
+- the bidi embeddings, overrides and isolates (U+202A to U+202E, U+2066 to U+2069);
+- the zero-width characters (U+200B to U+200D, U+2060, U+FEFF);
+- the tag characters (U+E0000 to U+E007F), text that only an agent reads.
+
+Other text stays: each script, and emoji. A zero-width joiner between two emoji stays, so a joined emoji stays whole. A subdivision flag (England, Scotland, Wales) shows as a black flag.
+
+The tool prints each hidden character in an id, a column or a path as `\xNN` or `\u{N}`. For a project path with a control character, it prints no command to paste.
