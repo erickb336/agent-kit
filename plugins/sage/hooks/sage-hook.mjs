@@ -213,7 +213,7 @@ const longOption = (word, names) => {
 const FORCE = "sage mode never force-pushes. Push a new commit instead.";
 /** The one command that can create main or master (firstUpload). */
 const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
-const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub.)`;
+const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief turns on branch protection for main.)`;
 
 /** Why the git push at words[git] is not the push form, or undefined. dir is where the command runs. */
 function pushForm(words, git, dir) {
@@ -313,8 +313,21 @@ function githubGet(path, deadline) {
   return { status: Number(status), body: at < 0 ? "" : r.stdout.slice(at).trim() };
 }
 
-/** A name from GitHub for the prompt: in double quotes, without control or quote characters, at most 60 characters. */
-const quoted = (name) => `"${String(name).replace(/[\p{Cc}\p{Cf}"'`‘-‟]/gu, "").slice(0, 60)}"`;
+/**
+ * A name from GitHub for the prompt: in double quotes, at most 60 characters (code points). It drops control and format
+ * characters, separators other than the plain space (such as U+2028), and quote characters (also the fullwidth U+FF02).
+ */
+const quoted = (name) => `"${[...String(name).replace(/(?! )[\p{Cc}\p{Cf}\p{Z}"'`‘-‟＂]/gu, "")].slice(0, 60).join("")}"`;
+
+/** The body of a 200 answer as JSON, or {} for another status. It throws a fixed reason, never the body's text. */
+function json({ status, body }) {
+  if (status !== 200) return {};
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error("GitHub's answer was not JSON");
+  }
+}
 
 /**
  * The checks of the first creation, all on GitHub, never on the local repo: the branch is absent (404), the commit is
@@ -330,18 +343,21 @@ function firstCreation({ owner, repo, branch, sha }) {
     const ref = githubGet(`${api}/ref/heads/${branch}`, deadline);
     if (ref.status !== 404) return no(`GitHub answered ${ref.status} for ${branch}, not 404 (no such branch)`);
     const commit = githubGet(`${api}/commits/${sha}`, deadline);
-    const c = commit.status === 200 ? JSON.parse(commit.body) : {};
+    const c = json(commit);
     if (c.sha !== sha || !/^[0-9a-f]{40}$/.test(c.tree?.sha ?? "")) return no(`GitHub has no commit ${sha} in ${owner}/${repo} (answer ${commit.status}). Push it on a task branch first`);
-    if (!Array.isArray(c.parents) || c.parents.length) return no(`commit ${sha} has a parent, so it is not one root commit`);
+    // gh follows a redirect of a renamed or moved repository: then the answer is for another name than the prompt shows.
+    if (!String(c.url).toLowerCase().startsWith(`https://api.github.com/repos/${owner}/${repo}/`.toLowerCase())) return no(`GitHub answered for another repository than ${owner}/${repo}, as for a renamed or moved repository. Use its current name`);
+    if (!Array.isArray(c.parents)) return no(`GitHub's answer for commit ${sha} has no list of parents`);
+    if (c.parents.length) return no(`commit ${sha} has a parent, so it is not one root commit`);
     const tree = githubGet(`${api}/trees/${c.tree.sha}?recursive=1`, deadline);
-    const t = tree.status === 200 ? JSON.parse(tree.body) : {};
+    const t = json(tree);
     if (!Array.isArray(t.tree)) return no(`GitHub did not give the files of commit ${sha} (answer ${tree.status})`);
     const files = t.tree.filter((e) => e.type === "blob").length;
     const top = t.tree.map((e) => String(e.path)).filter((p) => !p.includes("/"));
     const more = top.length > 10 ? ` and ${t.truncated ? "more" : `${top.length - 10} more`}` : t.truncated ? " and more" : "";
     const names = top.length ? `: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
     const count = `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}`;
-    return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it.` };
+    return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it. After this, sage turns on branch protection so that ${branch} changes only through pull requests.` };
   } catch (e) {
     return no(`the check on GitHub failed (${e.message})`);
   }
