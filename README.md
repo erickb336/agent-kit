@@ -44,6 +44,8 @@ And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sa
 
 In the desktop app, run `claude plugin marketplace add erickb336/sage` and then `claude plugin install sage@sage` in a terminal. The `/plugin` dialog opens only in a terminal.
 
+**To update sage**, run `claude plugin update sage@sage`. The update applies to every running session at its next event: each hook event runs the newest installed sage. The instructions that a session already read (its skills and agent texts) refresh only after a restart.
+
 **2. Start a new session** in a project folder, or in a folder of projects such as `~/workspace`.
 
 **3. Switch it on:** start a message with "sage mode", then say what you want.

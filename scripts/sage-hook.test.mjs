@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+// Through the launcher, as Claude Code runs it. HOME is a fake home without plugins, so the launcher runs this tree's hook.
 const HOOK = fileURLToPath(new URL("../plugins/sage/hooks/sage-hook.mjs", import.meta.url));
+const LAUNCHER = [fileURLToPath(new URL("../plugins/sage/hooks/launcher.mjs", import.meta.url)), "sage-hook.mjs"];
 const TOOL = fileURLToPath(new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url));
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const BRIEF = ["GOAL fix it", "SCOPE src/", "CONTEXT none", "DECISIONS none", "ACCEPTANCE it works", "VERIFY npm test", "BUDGET 20 turns", "FORBIDDEN no merge", "REPORT the usual", "STANDING 1. work in your worktree"].join("\n");
@@ -15,15 +17,15 @@ const BRIEF = ["GOAL fix it", "SCOPE src/", "CONTEXT none", "DECISIONS none", "A
 /** A session with its own hook state and sage home. send() returns the hook's answer, or undefined. */
 function session(env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "sage-hook-"));
-  const vars = { ...process.env, SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home"), ...env };
+  const vars = { ...process.env, HOME: join(dir, "fake-home"), SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home"), ...env };
   const send = (event) => {
-    const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: vars });
+    const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: vars });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout ? JSON.parse(r.stdout) : undefined;
   };
   const sendAsync = (event) =>
     new Promise((done) => {
-      const p = spawn("node", [HOOK], { env: vars });
+      const p = spawn("node", LAUNCHER, { env: vars });
       let out = "";
       p.stdout.on("data", (d) => (out += d));
       p.on("close", () => done(out ? JSON.parse(out) : undefined));
@@ -181,7 +183,7 @@ test("a slot that cannot be marked is freed, and the spawn is refused with the r
   s.send(prompt("sage mode"));
   mkdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots"), { recursive: true });
   // The hook runs with umask 777, so the slot directory it makes has no permissions: its marks cannot be written.
-  const r = spawnSync("sh", ["-c", `umask 777; node "${HOOK}"`], { input: JSON.stringify({ session_id: "s1", ...spawnAgent("sage:qa", BRIEF, "tu1") }), encoding: "utf8", env: s.vars });
+  const r = spawnSync("sh", ["-c", `umask 777; node "${LAUNCHER[0]}" ${LAUNCHER[1]}`], { input: JSON.stringify({ session_id: "s1", ...spawnAgent("sage:qa", BRIEF, "tu1") }), encoding: "utf8", env: s.vars });
   assert.equal(r.status, 0, r.stderr);
   assert.match(denied(JSON.parse(r.stdout)), /^sage: the agent cap could not mark its slot \(EACCES.*\), so it refuses this spawn\. Tell the user\.$/);
   assert.deepEqual(readdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots")), [], "the refused spawn left no slot");
@@ -1160,10 +1162,10 @@ test("the merge check refuses a merge when it cannot run, the hook refuses a mer
   // The hook cannot save its state.
   const file = join(mkdtempSync(join(tmpdir(), "sage-file-")), "not-a-folder");
   writeFileSync(file, "");
-  const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash(MERGE) }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
+  const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash(MERGE) }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
   assert.equal(r.status, 0, r.stderr);
   assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /the hook could not check this command \(ENOTDIR/);
-  const push = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash("git push origin claude/t1") }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
+  const push = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash("git push origin claude/t1") }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
   assert.match(denied(JSON.parse(push.stdout || "{}")) ?? "", /the hook could not check this command \(ENOTDIR/, "a push too");
 });
 
@@ -1172,7 +1174,7 @@ test("the hook runs also when its path goes through a symbolic link", () => {
   s.send(prompt("sage mode"));
   const link = join(mkdtempSync(join(tmpdir(), "sage-link-")), "sage");
   symlinkSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), link);
-  const r = spawnSync("node", [join(link, "hooks/sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...bash(MERGE) }), encoding: "utf8", env: s.vars });
+  const r = spawnSync("node", [join(link, "hooks/launcher.mjs"), "sage-hook.mjs"], { input: JSON.stringify({ session_id: "s1", ...bash(MERGE) }), encoding: "utf8", env: s.vars });
   assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /autopilot is off/);
 });
 
