@@ -35,11 +35,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // on. Only OFF_LINE has the m flag: with it, "^" also matches the start of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
+// A prefix that stays on its line. With the m flag, "^" matches after each line break, so a prefix that also matched
+// line breaks would read each run of blank lines again from each of its lines: quadratic time on a long report (T34).
+const LINE_START = String.raw`^(?:${SP}|["'“‘*_>-])*`;
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
 const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
 const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
 const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
-const OFF_LINE = new RegExp(`${START}(?:sage${SP}+mode|autopilot)${SP}+off\\b`, "im"); // in any text, at the start of any line
+const OFF_LINE = new RegExp(`${LINE_START}(?:sage${SP}+mode|autopilot)${SP}+off\\b`, "im"); // in any text, at the start of any line
 const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
 // The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
@@ -53,7 +56,7 @@ const OURS = /^sage:/;
 export const BRIEF_FIELDS = ["GOAL", "SCOPE", "CONTEXT", "DECISIONS", "ACCEPTANCE", "VERIFY", "BUDGET", "FORBIDDEN", "REPORT", "STANDING"];
 export const REPORT_FIELDS = ["STATUS", "RESULT", "EVIDENCE", "FINDINGS", "QUESTIONS", "NOT VERIFIED", "BRANCH"];
 /** The fields of a template that do not start a line. Markdown around a field ("**STATUS**", "| STATUS |") is fine. */
-const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*_#|>-]*${f}\\b`, "m").test(text ?? ""));
+const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^(?:${SP}|[*_#|>-])*${f}\\b`, "m").test(text ?? ""));
 
 /**
  * A prompt: whether the owner wrote it, and the owner's text. Claude Code sends no sender field: a live capture of a
@@ -63,7 +66,7 @@ const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*
  * the owner's message to them. A frame closes only with a close of its own kind. Another session's message closes with
  * the note that Claude Code puts after it, so the note is part of the frame.
  * The hook counts the frames on the prompt as Claude Code sent it.
- *   - The owner's message that Claude Code queues while it works (QUEUED) comes in a system reminder. It counts only
+ *   - The owner's message that Claude Code queues while it works (queuedText) comes in a system reminder. It counts only
  *     as a whole system reminder, with Claude Code's note, outside every other frame and with no frame mark in it. The
  *     queued shape inside another frame is that frame's text. An agent can write a whole queued shape at the end of a
  *     bare system reminder, and the hook cannot tell it from a real one. So a queued message counts only for an
@@ -78,10 +81,18 @@ const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*
 const FRAMES = [
   [/<task-notification>/g, /<\/task-notification>/g],
   [/<agent-message[\s>]/g, /<\/agent-message>/g],
-  [/^[^\S\n]*Another Claude session sent a message:/gm, /^[^\S\n]*That "other Claude session"[^\n]*/gm],
+  [new RegExp(`^${SP}*Another Claude session sent a message:`, "gm"), new RegExp(`^${SP}*That "other Claude session"[^\\n]*`, "gm")],
   [/<system-reminder>/g, /<\/system-reminder>/g],
 ];
-const QUEUED = /<system-reminder>\s*The user sent a new message while you were working:\n([\s\S]*?)\n\nThis is how Claude Code surfaces messages[^<]*<\/system-reminder>/g;
+/** The owner's text in a queued message: the frame's text up to the first note with no "<" after it. One read (T34). */
+function queuedText(frame) {
+  const open = /^<system-reminder>\s*The user sent a new message while you were working:\n/.exec(frame);
+  const close = "</system-reminder>";
+  if (!open || !frame.endsWith(close)) return [];
+  const body = frame.slice(open[0].length, -close.length);
+  const note = body.indexOf("\n\nThis is how Claude Code surfaces messages", body.lastIndexOf("<") + 1);
+  return note < 0 ? [] : [body.slice(0, note)];
+}
 const MARKERS = /\[Subagent hand-back\]|\[SYSTEM NOTIFICATION/i;
 export function promptOf(input) {
   const all = input.prompt ?? "";
@@ -91,12 +102,13 @@ export function promptOf(input) {
   const frames = [];
   let depth = 0;
   for (const [at, step] of edges) {
-    if (step > 0 && depth++ === 0) frames.push([at, all.length]);
-    else if (step < 0 && depth > 0 && --depth === 0) frames.at(-1)[1] = at;
+    if (step > 0 && depth === 0) frames.push([at, all.length, 0]);
+    if (step > 0 || depth > 0) frames.at(-1)[2]++; // the frame's opens and closes
+    if (step > 0) depth++;
+    else if (depth > 0 && --depth === 0) frames.at(-1)[1] = at;
   }
-  const queued = [...all.matchAll(QUEUED)]
-    .filter((m) => frames.some(([s, e]) => s === m.index && e === m.index + m[0].length) && !edges.some(([at]) => at > m.index && at < m.index + m[0].length))
-    .map((m) => m[1]);
+  // A queued message is a whole frame with only its own open and close.
+  const queued = frames.flatMap(([s, e, n]) => (n === 2 ? queuedText(all.slice(s, e)) : []));
   // The text between the frames, in pieces.
   const pieces = [];
   let at = 0;
@@ -181,20 +193,21 @@ export function handle(input, state, slots) {
  * Undefined when the command line has no push, or only pushes in that form; else the reason for the refusal.
  */
 const PUSH_FORM = 'git [-C <dir>] push [-u] [--follow-tags] [-o <option>] origin <branch>, as a command of its own, with the literal name of the task\'s branch: not main or master, HEAD, @, a pattern, a variable, or a refspec with ":" or "+". To delete a branch: git push --delete origin <branch>';
-const PUSH_TEXT = /\bgit\b[\s\S]*\bpush\b/i;
+/** The word git, and then the word push. The first git is enough, so the test reads the text once (T34). */
+const pushText = (text) => /\bpush\b/i.test(/\bgit\b([\s\S]*)/i.exec(text)?.[1] ?? "");
 const refuse = (why) => `${why} Push only with ${PUSH_FORM}.`;
 function pushProblem(command, cwd) {
   let commands;
   try {
     commands = shellCommands(command);
   } catch (e) {
-    return PUSH_TEXT.test(command) ? refuse(`the hook cannot read this command (${e.message}), so it refuses it. Close each quote, substitution and heredoc.`) : undefined;
+    return pushText(command) ? refuse(`the hook cannot read this command (${e.message}), so it refuses it. Close each quote, substitution and heredoc.`) : undefined;
   }
   let dir = cwd;
   for (const { cmd, words, bodies } of runnable(commands)) {
     if (cmd.words[0] === "cd" && cmd.words.length === 2) dir = resolve(dir, cmd.words[1]);
     const git = words.findIndex((w, k) => /(?:^|\/)git$/.test(w) && /^push$/i.test(subcommand(words, k + 1)));
-    const why = git >= 0 ? pushForm(words, git, dir) : [...words, ...bodies].some((w) => /\s/.test(w) && PUSH_TEXT.test(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
+    const why = git >= 0 ? pushForm(words, git, dir) : [...words, ...bodies].some((w) => /\s/.test(w) && pushText(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
     if (why) return refuse(why);
   }
   return undefined;
@@ -647,7 +660,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   } catch (e) {
     // Never break the session, but never let a merge or a push through because the hook failed.
     const command = [].concat(input?.tool_input?.command ?? []).join(" ");
-    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || PUSH_TEXT.test(command))) {
+    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command))) {
       process.stdout.write(JSON.stringify(deny("PreToolUse", `the hook could not check this command (${e?.message ?? e}), so it refuses it. Tell the user.`)));
     }
   }

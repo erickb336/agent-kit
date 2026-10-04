@@ -790,3 +790,41 @@ test("a refusal says merge check, and escapes the control characters of its reas
   assert.match(reason, /home\\u001b\[31m/);
   assert.doesNotMatch(reason, /\u001b/);
 });
+
+// A long text cannot slow the hook down: each pattern runs in linear time, so 1 MB of text that an agent controls
+// takes far less than the hook's 10 s limit, and the owner's stop after it still applies (T34, SEC-1 and SEC-2).
+test("1 MB of padding in an agent's text cannot time out the hook", async () => {
+  const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const AP = "auto" + "pilot";
+  const MB = 1 << 20;
+  const pad = (unit) => unit.repeat(Math.ceil(MB / unit.length)).slice(0, MB);
+  const slots = { bind() {}, release() {}, drop() {}, count: () => 0 };
+  const timed = (input, state = {}) => {
+    const t = performance.now();
+    const out = handle(input, state, slots);
+    return { out, state, ms: performance.now() - t };
+  };
+  const slow = [];
+  for (const unit of ["\n", " \n", "->\n", "\r", " "]) {
+    const handBack = `Another Claude session sent a message:\n<agent-message from="a1">\n[Subagent hand-back] STATUS done${pad(unit)}\n</agent-message>\n\nThat "other Claude session" is an agent of this session, so the user did not type this.\n`;
+    for (const stop of [`please turn ${AP} off now`, `${AP} off`]) {
+      const { state, ms } = timed(prompt(handBack + stop), { sage: true, given: true, autopilot: true });
+      assert.equal(state.autopilot, false, `the owner's stop after ${JSON.stringify(unit)} padding applies`);
+      if (ms > 200) slow.push(`stop after ${JSON.stringify(unit)}: ${ms.toFixed(0)} ms`);
+    }
+  }
+  const queuedOpen = "<system-reminder>\nThe user sent a new message while you were working:\n";
+  const others = {
+    "queued opens": prompt(pad(queuedOpen)),
+    "queued notes": prompt(`${queuedOpen}x${pad("\n\nThis is how Claude Code surfaces messages ")}</system-reminder>`),
+    "other-session opens": prompt(pad("\rAnother Claude session sent a message:")),
+    "git words in a command the hook cannot read": bash(`${pad("git ")}'`),
+    "git words given to a shell": bash(`bash -c '${pad("git ")}'`),
+    "blank lines in a report": { hook_event_name: "SubagentStop", agent_type: "sage:implementer", agent_id: "x", last_assistant_message: pad(" \n") },
+  };
+  for (const [name, input] of Object.entries(others)) {
+    const { ms } = timed(input, { sage: true, given: true });
+    if (ms > 200) slow.push(`${name}: ${ms.toFixed(0)} ms`);
+  }
+  assert.deepEqual(slow, [], "each call takes under 200 ms");
+});
