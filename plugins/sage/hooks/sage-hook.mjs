@@ -61,13 +61,17 @@ const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*
  * an agent's report, a task notification, another session's message and a system reminder in frames, and it can join
  * the owner's message to them. A frame closes only with a close of its own kind. Another session's message closes with
  * the note that Claude Code puts after it, so the note is part of the frame.
- *   - text: the text before the first frame and after the last close. An agent cannot write there, also when it
- *     writes a close in its report, because the real close comes after it. The owner's message that Claude Code queues
- *     while it works (QUEUED) is the owner's text, although it comes in a system reminder.
+ * The hook counts the frames on the prompt as Claude Code sent it.
+ *   - The owner's message that Claude Code queues while it works (QUEUED) is the owner's text, although it comes in a
+ *     system reminder. It counts only as a whole system reminder, with Claude Code's note, outside every other frame
+ *     and with no frame mark in it. The queued shape inside another frame is that frame's text.
+ *   - text: the text before the first frame and after the last close, with the queued messages there. An agent cannot
+ *     write there, also when it writes a close in its report, because the real close comes after it. It can switch a
+ *     mode on.
+ *   - outside: all the text outside the frames, also between two frames, with all the queued messages. It counts
+ *     only for an autopilot off (the broad off rule).
  *   - owner: false when the hook cannot read the frames (fail closed): a kind with more opens than closes or more
  *     closes than opens, or a frame's marker in the text. Then nothing in the prompt switches a mode on.
- *   - queued: the owner's queued messages, also when they come between two frames. They count only for an off,
- *     because an agent can write the queued shape in its report.
  */
 const FRAMES = [
   [/<task-notification>/g, /<\/task-notification>/g],
@@ -75,32 +79,50 @@ const FRAMES = [
   [/^[^\S\n]*Another Claude session sent a message:/gm, /^[^\S\n]*That "other Claude session"[^\n]*/gm],
   [/<system-reminder>/g, /<\/system-reminder>/g],
 ];
-const QUEUED = /<system-reminder>\s*The user sent a new message while you were working:\n([\s\S]*?)(?:\n\nThis is how Claude Code surfaces messages[^<]*)?<\/system-reminder>/g;
+const QUEUED = /<system-reminder>\s*The user sent a new message while you were working:\n([\s\S]*?)\n\nThis is how Claude Code surfaces messages[^<]*<\/system-reminder>/g;
 const MARKERS = /\[Subagent hand-back\]|\[SYSTEM NOTIFICATION/i;
 export function promptOf(input) {
-  const prompt = (input.prompt ?? "").replace(QUEUED, "\n$1\n");
-  const marks = FRAMES.map(([open, close]) => [[...prompt.matchAll(open)], [...prompt.matchAll(close)]]);
-  const opens = marks.flatMap(([o]) => o).map((m) => m.index);
-  const ends = marks.flatMap(([, c]) => c).map((m) => m.index + m[0].length);
-  const text = opens.length ? [prompt.slice(0, Math.min(...opens)), prompt.slice(Math.max(...ends, 0))].join("\n") : prompt;
+  const all = input.prompt ?? "";
+  const marks = FRAMES.map(([open, close]) => [[...all.matchAll(open)], [...all.matchAll(close)]]);
+  // Each open is +1 and each close is -1; a frame is a span from depth 0 back to depth 0. A close sorts before an open.
+  const edges = marks.flatMap(([o, c]) => [...o.map((m) => [m.index, 1]), ...c.map((m) => [m.index + m[0].length, -1])]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const frames = [];
+  let depth = 0;
+  for (const [at, step] of edges) {
+    if (step > 0 && depth++ === 0) frames.push([at, all.length]);
+    else if (step < 0 && depth > 0 && --depth === 0) frames.at(-1)[1] = at;
+  }
+  const queued = new Map();
+  for (const m of all.matchAll(QUEUED)) {
+    const end = m.index + m[0].length;
+    if (frames.some(([s, e]) => s === m.index && e === end) && !edges.some(([at]) => at > m.index && at < end)) queued.set(m.index, `\n${m[1]}\n`);
+  }
+  // The text between the frames, in pieces: a queued message joins the piece it is in.
+  const pieces = [""];
+  let at = 0;
+  for (const [s, e] of frames) {
+    pieces[pieces.length - 1] += all.slice(at, s) + (queued.get(s) ?? "");
+    if (!queued.has(s)) pieces.push("");
+    at = e;
+  }
+  pieces[pieces.length - 1] += all.slice(at);
+  const text = pieces.length > 1 ? `${pieces[0]}\n${pieces.at(-1)}` : pieces[0];
   const balanced = marks.every(([o, c]) => o.length === c.length);
-  const queued = [...(input.prompt ?? "").matchAll(QUEUED)].map((m) => m[1]);
-  return { owner: balanced && !MARKERS.test(text), text, queued, all: prompt };
+  return { owner: balanced && !MARKERS.test(text), text, outside: pieces.join("\n"), all };
 }
 
 /**
  * Switches the modes, and returns the notes for the chief. Only the owner's own text switches sage mode or autopilot
- * on, or sage mode off. Off is the safe direction, so an autopilot off counts in more text: the broad off rule in the
- * owner's text and queued messages (in the whole prompt when the hook cannot read the frames), and an off line
- * anywhere. A sage mode off that is not the owner's switches only autopilot off, so that the git rules stay.
+ * on, or sage mode off. Off is the safe direction, so an autopilot off counts in more text: the broad off rule in all
+ * the text outside the frames (in the whole prompt when the hook cannot read the frames), and an off line anywhere. A sage mode off that is not the owner's switches only autopilot off, so that the git rules stay.
  */
-function switchModes({ owner, text, queued, all }, state) {
+function switchModes({ owner, text, outside, all }, state) {
   const notes = [];
   if (owner && SAGE_OFF.test(text)) {
     Object.assign(state, { sage: false, given: false, autopilot: false });
     notes.push("sage: sage mode is off. You may change files yourself again.");
   } else if (owner && SAGE_ON.test(text)) state.sage = true;
-  if (OFF_LINE.test(all) || broadOff(owner ? [text, ...queued].join("\n") : all)) {
+  if (OFF_LINE.test(all) || broadOff(owner ? outside : all)) {
     if (state.autopilot) notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     state.autopilot = false;
   } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
