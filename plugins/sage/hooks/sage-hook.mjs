@@ -2,8 +2,8 @@
 // The sage hook. Claude Code sends one JSON event on stdin; the hook answers with one JSON object on stdout, or nothing.
 //   - "sage mode" makes the session the user's chief of staff (agents/chief-of-staff.md) until "sage mode off". A
 //     session that starts as the sage:chief-of-staff agent is in sage mode from its first event. Only the user's own
-//     messages switch a mode on, or sage mode off: never an agent's report, a task notification or another session's
-//     message (promptOf). An autopilot off counts from any prompt, because off is the safe direction.
+//     words switch a mode on, or sage mode off: never an agent's report, a task notification or another session's
+//     message (promptOf). An autopilot off counts from any prompt, but only in the text outside a harness frame.
 //   - In sage mode it holds the rules that prompts alone did not hold in Orchestrator (docs/design/sage-mode.html,
 //     "Rules"): the chief never edits files, every brief has all its fields, at most max_agents sage agents run at
 //     once, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
@@ -50,21 +50,31 @@ export const REPORT_FIELDS = ["STATUS", "RESULT", "EVIDENCE", "FINDINGS", "QUEST
 const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*_#|>-]*${f}\\b`, "m").test(text ?? ""));
 
 /**
- * A prompt and its author. Claude Code also sends agents' reports, task notifications and other sessions' messages as
- * prompts. In 2.1.288 its hook input has no author field (the docs name prompt_source, which that build does not send),
- * so a prompt that starts with one of the frames that Claude Code puts around them is the harness's too.
+ * A prompt: whether its author is the owner, and its own text. Claude Code also sends agents' reports, task
+ * notifications and other sessions' messages as prompts, in frames, and it can join the owner's message to them. In
+ * 2.1.288 its hook input has no author field (the docs name prompt_source, which that build does not send), so the
+ * own text is the text before the first frame and after the last one, without the note that Claude Code puts after
+ * another session's message. A frame that does not close runs to the end. An agent cannot write outside its frame.
  */
-const HARNESS_FRAME = /^\s*(?:Another Claude session sent a message:|<agent-message[\s>]|<task-notification>)/;
+const FRAME_OPEN = /<task-notification>|<agent-message[\s>]|^\s*Another Claude session sent a message:/;
+const FRAME_CLOSE = /<\/(?:task-notification|agent-message)>/g;
+const PEER_NOTE = /^\s*That "other Claude session"[^\n]*/;
 export function promptOf(input) {
-  const text = input.prompt ?? "";
-  const harness = (input.prompt_source != null && input.prompt_source !== "user") || HARNESS_FRAME.test(text);
-  return { author: harness ? "harness" : "owner", text };
+  const prompt = input.prompt ?? "";
+  const open = prompt.search(FRAME_OPEN);
+  let text = prompt;
+  if (open >= 0) {
+    const close = [...prompt.slice(open).matchAll(FRAME_CLOSE)].at(-1);
+    const after = close ? prompt.slice(open + close.index + close[0].length).replace(PEER_NOTE, "") : "";
+    text = [prompt.slice(0, open), after].filter((part) => part.trim()).join("\n");
+  }
+  return { owner: input.prompt_source == null || input.prompt_source === "user", text };
 }
 
 /**
- * Switches the modes, and returns the notes for the chief. Only the owner's message switches sage mode or autopilot on,
- * or sage mode off. An autopilot off counts from any prompt, because off is the safe direction: so the owner's off
- * also counts when the harness sends it with another prompt_source or joins it to a notification.
+ * Switches the modes on the prompt's own text, and returns the notes for the chief. Only the owner's prompt switches
+ * sage mode or autopilot on, or sage mode off. An autopilot off counts from any prompt, because off is the safe
+ * direction: so the owner's off also counts when the harness sends it with another prompt_source.
  */
 function switchModes(text, state, owner) {
   const notes = [];
@@ -88,8 +98,8 @@ export function handle(input, state, slots) {
   if (main && CHIEF.test(input.agent_type ?? "")) state.sage = true;
 
   if (event === "UserPromptSubmit") {
-    const { author, text } = promptOf(input);
-    const notes = switchModes(text, state, author === "owner");
+    const { owner, text } = promptOf(input);
+    const notes = switchModes(text, state, owner);
     if (state.sage && !state.given) {
       state.given = true;
       notes.unshift(chiefText());
@@ -125,18 +135,84 @@ export function handle(input, state, slots) {
   return undefined;
 }
 
-/** A git push, also with git's own options first: git -C <dir> push, git -c <key=value> push. */
-const PUSH = String.raw`\bgit(?:\s+-[Cc]\s+\S+)*\s+push\b`;
-/** A force push: --force (and its forms), -f in a group of short options, or a refspec that starts with "+". */
-const FORCE_PUSH = new RegExp(String.raw`${PUSH}[^;&|]*\s(?:--force\S*|-[a-zA-Z]*f[a-zA-Z]*|\+\S+)(?=\s|$)`);
-/** A push to main or master: as a branch, the destination of a refspec (HEAD:main, x:refs/heads/main), or --all/--mirror. */
-const MAIN_PUSH = new RegExp(String.raw`${PUSH}[^;&|]*(?:[\s:+](?:refs/heads/)?(?:main|master)(?=\s|$|[;&|])|\s--(?:all|mirror)\b)`);
+/**
+ * The problem with the git pushes of a command line, read as shell words: a force push, or a push to main or master.
+ * It reads git's own options before "push", and the command text of sh -c, bash -c and eval. A push with no refspec
+ * is refused when the line also names a remote.*.push setting, which could send it to main.
+ */
+const FORCE = "sage mode never force-pushes. Push a new commit instead.";
+const TO_MAIN = "work reaches main only through a pull request. Push the task's branch and open a pull request.";
+function pushProblem(command) {
+  let commands;
+  try {
+    commands = shellCommands(command);
+  } catch (e) {
+    return /\bgit\b/.test(command) && /\bpush\b/.test(command) ? `the hook cannot read this push command (${e.message}), so it refuses it.` : undefined;
+  }
+  const pushConfig = commands.some((c) => c.words.some((w) => /^remote\..+\.push\b/i.test(w)));
+  for (const { words } of commands) {
+    const shell = /^(?:sh|bash|zsh|dash)$/.test(words[0] ?? "") ? words.indexOf("-c") : -1;
+    const inner = shell > 0 ? words[shell + 1] : words[0] === "eval" ? words.slice(1).join(" ") : undefined;
+    const problem = inner ? pushProblem(inner) : undefined;
+    if (problem) return problem;
+    const push = pushOf(words);
+    if (push?.force) return FORCE;
+    if (push?.main || (push?.bare && pushConfig)) return TO_MAIN;
+  }
+  return undefined;
+}
+
+/** The words before git that still run it, and the options that take the next word as their value. */
+const RUNNER = /^(?:command|exec|nohup|env|time)$/;
+const GIT_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)$/;
+const PUSH_VALUE = /^(?:--repo|--receive-pack|--exec|--push-option)$/;
+/** A destination ref that git reads as main or master: main, heads/main, refs/heads/main. */
+const MAIN_REF = /^(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
+/** git accepts a long option by any unambiguous start of its name, such as --forc. */
+const longOption = (word, names) => {
+  const name = word.split("=")[0];
+  return name.length > 3 && names.some((n) => n.startsWith(name));
+};
+
+/** A git push in one command's words: { force, main, bare }, or undefined. */
+function pushOf(words) {
+  let k = 0;
+  while (k < words.length && (/^\w+=/.test(words[k]) || RUNNER.test(words[k]))) k++;
+  if (!/(?:^|\/)git$/.test(words[k] ?? "")) return undefined;
+  for (k++; words[k]?.startsWith("-"); k++) if (GIT_VALUE.test(words[k])) k++;
+  if (words[k] !== "push") return undefined;
+  const args = [];
+  let force = false;
+  let all = false;
+  for (k++; k < words.length; k++) {
+    const w = words[k];
+    if (w === "--") {
+      args.push(...words.slice(k + 1));
+      break;
+    }
+    if (w.startsWith("--")) {
+      if (longOption(w, ["--force", "--force-with-lease", "--force-if-includes"])) force = true;
+      else if (longOption(w, ["--mirror", "--all", "--branches"])) all = true;
+      else if (!w.includes("=") && PUSH_VALUE.test(w)) k++;
+    } else if (w.startsWith("-") && w.length > 1) {
+      const o = w.indexOf("o"); // -o takes a value: the rest of the word, or the next word
+      if (w.slice(1, o < 0 ? undefined : o).includes("f")) force = true;
+      if (o === w.length - 1) k++;
+    } else args.push(w);
+  }
+  const refspecs = args.slice(1);
+  return {
+    force: force || refspecs.some((r) => r.startsWith("+")),
+    main: all || refspecs.some((r) => MAIN_REF.test(r.slice(r.indexOf(":") + 1).replace(/^\+/, ""))),
+    bare: !refspecs.length,
+  };
+}
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
 function gitGate(event, command, state) {
-  if (FORCE_PUSH.test(command)) return deny(event, "sage mode never force-pushes. Push a new commit instead.");
-  if (MAIN_PUSH.test(command)) return deny(event, "work reaches main only through a pull request. Push the task's branch and open a pull request.");
+  const push = pushProblem(command);
+  if (push) return deny(event, push);
   const merge = mergeIn(command);
   if (!merge) return undefined;
   if (merge.problem) return deny(event, merge.problem);
@@ -172,8 +248,11 @@ export function mergeIn(command) {
   } catch (e) {
     return mentionsMerge(command.replace(/\\\n/g, "").replace(/['"\\]/g, "")) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
   }
-  return mentionsMerge(codeText(commands)) ? { problem: CANNOT } : undefined;
+  return mentionsMerge(codeText(commands)) || commands.some(expandedMerge) ? { problem: CANNOT } : undefined;
 }
+
+/** A command whose name comes from an expansion ($'…', $( ), a backtick or $VAR), with the word merge in its words. */
+const expandedMerge = ({ words, bodies }) => /\$/.test(words.find((w) => !/^\w+=/.test(w)) ?? "") && /\bmerge\b/i.test([...words, ...bodies].join(" "));
 
 /** The merge form, when the command is one gh pr merge with plain words only: { pr, sha }, or { problem }. */
 function mergeForm(command) {
@@ -208,21 +287,25 @@ function harmless([a, b, c, ...rest]) {
   if ((a === "git" && b === "commit") || (a === "node" && b === TOOL)) return 2;
   return a === "gh" && b === "pr" && /^(?:create|comment|view|edit)$/.test(c ?? "") ? 3 : 0;
 }
+/** The commands that may end a pipe after a harmless command: they only cut, count or sort its text. */
+const FILTER = /^(?:head|tail|wc|sort|uniq|less)$/;
+const filters = (c) => FILTER.test(c.words[0] ?? "") && c.words.slice(1).every((w) => /^(?:-\w*|\d+)$/.test(w) && !/^-o|^--output/.test(w));
 /** Shell structure that can send a command's output somewhere other than its own line: then no text is harmless. */
 const STRUCTURE = /^(?:[{}!]|if|then|elif|else|fi|for|while|until|do|done|case|esac|select|function|time|coproc|alias|shopt|enable)$/;
 
 /**
  * The text of a command line that can run: every word and heredoc body, except the arguments and heredocs of a
- * harmless command whose output stays harmless. That command is not piped, not in a group, not written to a file
- * that a later command could run, and, in a substitution, lands in a harmless argument itself. A local "git merge"
+ * harmless command whose output stays harmless. That command is not in a group, not written to a file that a later
+ * command could run, is piped on only through filters, and, in a substitution, lands in a harmless argument itself. A local "git merge"
  * is not a merge of a pull request, so its subcommand word is left out.
  */
 function codeText(commands) {
   const structure = commands.some((c) => STRUCTURE.test(c.words[0] ?? ""));
   const last = commands.at(-1);
+  const stays = (c) => !(c.writes && c !== last) && (!c.piped || (c.pipeTo && filters(c.pipeTo) && stays(c.pipeTo)));
   const contained = (c) => {
     const n = harmless(c.words);
-    if (!n || structure || c.piped || c.grouped || (c.writes && c !== last)) return false;
+    if (!n || structure || c.grouped || !stays(c)) return false;
     return !c.host || (contained(c.host.cmd) && (c.host.index < 0 || c.host.index >= harmless(c.host.cmd.words)));
   };
   return commands
@@ -235,7 +318,7 @@ function codeText(commands) {
 }
 
 /**
- * The simple commands of a shell command line: { words, bodies, host, piped, grouped, writes }. The words lose their
+ * The simple commands of a shell command line: { words, bodies, host, piped, pipeTo, grouped, writes }. The words lose their
  * quotes; the bodies are the command's heredocs, which stay text. A command substitution, $( ) or a backtick, gives
  * commands of its own, whose host is the command and word they land in (index -1: a heredoc). Throws when it cannot
  * read the line: an open quote, substitution or heredoc, or a ")" with no "(".
@@ -307,8 +390,10 @@ function readCommands(src, i, close, out, host) {
       add(src.slice(i, i + n));
       i += n;
     } else if (c === "|" && src[i + 1] !== "|") {
-      cmd.piped = true;
+      const from = cmd;
+      from.piped = true;
       endCommand();
+      from.pipeTo = cmd;
       i++;
     } else if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
       if (c === ")" && !depth) throw new Error('a ")" with no "("');
