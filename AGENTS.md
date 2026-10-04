@@ -1,17 +1,23 @@
-# Working on agent-kit
+# Working on sage
 
-- **Edit the sources only:** `principles/`, `writing/` and `preferences/`.
+- **Edit the sources only:** `principles/`, `writing/`, `preferences/`, and the agents, skills and hooks that are not generated.
   - Never edit a generated file: a skill marked "Generated", or `instructions/core.md`.
-  - Run `npm run build`, then `npm run check`. CI runs the check.
+  - Never edit `upstream/pstack/` by hand. `npm run sync` owns it.
+  - Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests.
 - **Principles:**
-  - The body is 200 words or fewer.
-  - The frontmatter has `id`, `name`, `applyWhen` and `source`.
+  - The body is 200 words or fewer. The frontmatter has `id`, `name`, `applyWhen` and `source`.
+  - An override of a pstack principle also has `upstream:`, the fingerprint of the pstack text it was reviewed against. Update it after each review.
   - Credit the source.
 - **Skills:**
   - Use only the shared frontmatter keys: `name`, `description`, `license`, `allowed-tools`, `metadata`.
-  - `name` equals the folder name.
-- **Hooks** (`plugins/agent-kit/hooks/`):
-  - The hook is hand-written, not generated. It reads each principle's text from its skill.
-  - Run `npm test` after a change. The tests run the hook as both tools do.
+  - `name` equals the folder name. A Claude-only skill says "Claude Code only" in its description.
+- **Hooks** (`plugins/sage/hooks/`):
+  - `hooks.json` and `principles-hook.mjs` run in Claude Code and Codex. `claude.json` and `sage-hook.mjs` run in Claude Code only.
+  - The hooks are hand-written. The principle hook reads each principle's text from its skill.
+- **Sage mode:**
+  - A rule that matters goes into code (the sage hook or the state tool), with a test. An instruction in a prompt alone is not enough.
+  - The brief fields live in the sage hook (`BRIEF_FIELDS`) and the report fields there too (`REPORT_FIELDS`). The chief's brief template and the `report` skill must list the same fields; `npm run check` checks this.
+  - The routes, states and verdict kinds live in the state tool. The design page and the chief's instructions describe them; change all three together.
+- **Codex** gets only what is verified there. When in doubt, keep a part Claude-only.
 - **`instructions/core.md`** stays under 8 KiB, because Codex shares a 32 KiB budget with each project's AGENTS.md.
 - **Write** at 80% of Simplified Technical English (`writing/ste-80.md`).

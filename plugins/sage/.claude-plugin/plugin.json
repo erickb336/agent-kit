@@ -1,0 +1,17 @@
+{
+  "name": "sage",
+  "description": "Principles, a writing standard, and sage mode: a chief of staff that runs a team of specialist agents, with the important rules enforced in code.",
+  "author": {
+    "name": "Erick Benitez-Ramos"
+  },
+  "homepage": "https://github.com/erickb336/sage",
+  "repository": "https://github.com/erickb336/sage",
+  "license": "MIT",
+  "keywords": [
+    "principles",
+    "writing",
+    "simplified technical english",
+    "skills"
+  ],
+  "hooks": "./hooks/claude.json"
+}

@@ -3,6 +3,7 @@ id: boundary-discipline
 name: Boundary discipline
 applyWhen: reviewing or writing validation, error handling or framework adapters.
 source: pstack principle-boundary-discipline, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 62ac2862c2caa22d
 ---
 
 Put validation, type narrowing and error handling at the system's boundaries. Trust internal code. Keep business logic in pure functions; keep the shell thin and mechanical.

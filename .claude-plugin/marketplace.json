@@ -1,13 +1,13 @@
 {
-  "name": "agent-kit",
+  "name": "sage",
   "description": "Principles, a writing standard (80% of Simplified Technical English) and skills for coding agents.",
   "owner": {
     "name": "Erick Benitez-Ramos"
   },
   "plugins": [
     {
-      "name": "agent-kit",
-      "source": "./plugins/agent-kit",
+      "name": "sage",
+      "source": "./plugins/sage",
       "description": "Working principles and a writing standard (80% of Simplified Technical English) as skills."
     }
   ]

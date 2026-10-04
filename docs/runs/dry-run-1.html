@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sage Dry Run 1</title>
+<style>
+:root{--bg:#fbfaf7;--surface:#fff;--text:#1d1d1b;--muted:#5f5e58;--line:#e3e0d8;--accent:#6b4fd8;--soft:#efeafd;--ok:#1f7a4d;--bad:#b3261e;--code:#f3f1ec}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#151514;--surface:#1d1d1b;--text:#ecebe6;--muted:#a7a59d;--line:#34332f;--accent:#a995ff;--soft:#2a2442;--ok:#5cc28e;--bad:#ff8a80;--code:#262522}}
+:root[data-theme="dark"]{--bg:#151514;--surface:#1d1d1b;--text:#ecebe6;--muted:#a7a59d;--line:#34332f;--accent:#a995ff;--soft:#2a2442;--ok:#5cc28e;--bad:#ff8a80;--code:#262522}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 16px 80px}h1{font-size:1.9rem;margin:0 0 4px}h2{font-size:1.3rem;margin:44px 0 10px;padding-top:8px;border-top:1px solid var(--line)}h3{font-size:1.02rem;margin:20px 0 6px}
+p,li{max-width:74ch}.sub{color:var(--muted);margin:0 0 18px}.lead{background:var(--soft);border-left:4px solid var(--accent);padding:12px 18px;border-radius:6px}.lead p{margin:6px 0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:16px 0}.kpi{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 14px}.kpi b{display:block;font-size:1.4rem}.kpi span{color:var(--muted);font-size:.85rem}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:.9rem;background:var(--surface)}th,td{text-align:left;vertical-align:top;padding:7px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}
+.scroll{overflow-x:auto}code{font-family:ui-monospace,Menlo,monospace;font-size:.86em;background:var(--code);padding:1px 5px;border-radius:4px}
+.chart{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px;overflow-x:auto}
+.chart svg{min-width:720px;font-family:inherit}.chart .ax{fill:var(--muted);font-size:11px}.chart .grid{stroke:var(--line);stroke-width:1}.chart .lane{fill:var(--text);font-weight:600;font-size:13px}.chart .bar{fill:#fff;font-size:10.5px;font-weight:600}.chart .ok{fill:var(--ok)}.chart .bad{fill:var(--bad)}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.82rem;color:var(--muted);margin-top:8px}.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.good{color:var(--ok);font-weight:600}.badt{color:var(--bad);font-weight:600}
+</style></head><body><main>
+<h1>Sage dry run 1</h1>
+<p class="sub">4 Oct 2026 · sage mode in one headless Claude Code session · every agent on Sonnet 5.5 · <strong>sample project and sample data: every trip and email address is made up</strong></p>
+<div class="lead">
+<p><strong>What this is.</strong> The first full run of the sage loop. The chief of staff got two requests on a demo command-line tool: a bug and a CSV export. It ran them through the team without any human in the loop.</p>
+<p><strong>Result.</strong> The bug fix (T1) is verified, and the merge gate allows it. The CSV export (T2) is built and passes its tests, but the session ended during its last review. That's a limit of the headless test mode, not of sage. The gates held without having to block once. The run also showed nine things to fix, listed below.</p>
+<p><strong>What I need from you.</strong> Nothing. The fixes go into the merge of agent-kit and sage.</p>
+</div>
+<div class="kpis">
+<div class="kpi"><b>28</b><span>agent runs in 10 minutes</span></div>
+<div class="kpi"><b>$5.28</b><span>whole run, API price</span></div>
+<div class="kpi"><b>3</b><span>most agents at once (cap 3)</span></div>
+<div class="kpi"><b class="good">T1 may merge</b><span>2 clean cycles on 4787c81</span></div>
+<div class="kpi"><b class="badt">T2 not done</b><span>session ended in review</span></div>
+</div>
+
+<h2>The loop, as it ran</h2>
+<p>Each bar is one agent run, from the moment the chief recorded its start to the moment it recorded its report. Each dot is a verdict in the ledger: green is clean, red is findings. Hover a bar or a dot for details.</p>
+<div class="chart"><svg viewBox="0 0 920 234" width="100%" role="img" aria-label="Timeline of the dry run: agent runs per task, and verdicts"><text x="70" y="16" class="ax">0 min</text>
+<line x1="151.0" y1="22" x2="151.0" y2="224" class="grid"/><text x="151.0" y="16" class="ax" text-anchor="middle">1</text>
+<line x1="232.0" y1="22" x2="232.0" y2="224" class="grid"/><text x="232.0" y="16" class="ax" text-anchor="middle">2</text>
+<line x1="312.9" y1="22" x2="312.9" y2="224" class="grid"/><text x="312.9" y="16" class="ax" text-anchor="middle">3</text>
+<line x1="393.9" y1="22" x2="393.9" y2="224" class="grid"/><text x="393.9" y="16" class="ax" text-anchor="middle">4</text>
+<line x1="474.9" y1="22" x2="474.9" y2="224" class="grid"/><text x="474.9" y="16" class="ax" text-anchor="middle">5</text>
+<line x1="555.9" y1="22" x2="555.9" y2="224" class="grid"/><text x="555.9" y="16" class="ax" text-anchor="middle">6</text>
+<line x1="636.8" y1="22" x2="636.8" y2="224" class="grid"/><text x="636.8" y="16" class="ax" text-anchor="middle">7</text>
+<line x1="717.8" y1="22" x2="717.8" y2="224" class="grid"/><text x="717.8" y="16" class="ax" text-anchor="middle">8</text>
+<line x1="798.8" y1="22" x2="798.8" y2="224" class="grid"/><text x="798.8" y="16" class="ax" text-anchor="middle">9</text>
+<line x1="879.8" y1="22" x2="879.8" y2="224" class="grid"/><text x="879.8" y="16" class="ax" text-anchor="middle">10</text>
+<text x="8" y="46" class="lane">T1</text>
+<g><title>R1 implementer · round 0 · 00:58:57–00:59:43</title><rect x="70.0" y="30" width="62.1" height="18" rx="3" fill="#4f46e5"/><text x="74.0" y="43" class="bar">build</text></g>
+<g><title>R4 code-reviewer · round 0 · 00:59:44–01:00:18</title><rect x="133.4" y="30" width="45.9" height="18" rx="3" fill="#059669"/><text x="137.4" y="43" class="bar">code</text></g>
+<g><title>R5 security-reviewer · round 0 · 01:00:18–01:01:07</title><rect x="179.3" y="30" width="66.1" height="18" rx="3" fill="#d97706"/><text x="183.3" y="43" class="bar">security</text></g>
+<g><title>R6 qa · round 0 · 01:00:18–01:00:57</title><rect x="179.3" y="52" width="52.6" height="18" rx="3" fill="#2563eb"/><text x="183.3" y="65" class="bar">QA</text></g>
+<g><title>R8 implementer · round 1 · 01:01:09–01:01:53</title><rect x="248.1" y="30" width="59.4" height="18" rx="3" fill="#4f46e5"/><text x="252.1" y="43" class="bar">build</text></g>
+<g><title>R10 code-reviewer · round 1 · 01:01:54–01:02:32</title><rect x="308.9" y="30" width="51.3" height="18" rx="3" fill="#059669"/><text x="312.9" y="43" class="bar">code</text></g>
+<g><title>R11 security-reviewer · round 1 · 01:01:54–01:02:49</title><rect x="308.9" y="52" width="74.2" height="18" rx="3" fill="#d97706"/><text x="312.9" y="65" class="bar">security</text></g>
+<g><title>R13 qa · round 1 · 01:02:32–01:03:13</title><rect x="360.2" y="30" width="55.3" height="18" rx="3" fill="#2563eb"/><text x="364.2" y="43" class="bar">QA</text></g>
+<g><title>R14 implementer · round 2 · 01:02:53–01:03:49</title><rect x="388.5" y="52" width="75.6" height="18" rx="3" fill="#4f46e5"/><text x="392.5" y="65" class="bar">build</text></g>
+<g><title>R15 code-reviewer · round 2 · 01:03:49–01:04:21</title><rect x="464.1" y="30" width="43.2" height="18" rx="3" fill="#059669"/><text x="468.1" y="43" class="bar">code</text></g>
+<g><title>R16 security-reviewer · round 2 · 01:03:49–01:04:34</title><rect x="464.1" y="52" width="60.7" height="18" rx="3" fill="#d97706"/><text x="468.1" y="65" class="bar">security</text></g>
+<g><title>R17 qa · round 2 · 01:03:49–01:04:41</title><rect x="464.1" y="74" width="70.2" height="18" rx="3" fill="#2563eb"/><text x="468.1" y="87" class="bar">QA</text></g>
+<g><title>R19 code-reviewer · round 2 · 01:04:46–01:05:32</title><rect x="541.0" y="30" width="62.1" height="18" rx="3" fill="#059669"/><text x="545.0" y="43" class="bar">code</text></g>
+<g><title>R20 security-reviewer · round 2 · 01:04:46–01:06:00</title><rect x="541.0" y="52" width="99.9" height="18" rx="3" fill="#d97706"/><text x="545.0" y="65" class="bar">security</text></g>
+<g><title>R23 qa · round 2 · 01:06:00–01:06:41</title><rect x="640.9" y="30" width="55.3" height="18" rx="3" fill="#2563eb"/><text x="644.9" y="43" class="bar">QA</text></g>
+<g><title>checks-pass · e5739e7 · cycle 1 · 00:59:43</title><circle cx="132.1" cy="104" r="5" class="ok"/></g>
+<g><title>review-clean · e5739e7 · cycle 1 · 01:00:18</title><circle cx="179.3" cy="104" r="5" class="ok"/></g>
+<g><title>qa-pass · e5739e7 · cycle 1 · 01:00:57</title><circle cx="232.0" cy="104" r="5" class="ok"/></g>
+<g><title>findings · e5739e7 · cycle 1 · 01:01:07</title><circle cx="245.4" cy="104" r="5" class="bad"/></g>
+<g><title>checks-pass · a4a1387 · cycle 1 · 01:01:53</title><circle cx="307.5" cy="104" r="5" class="ok"/></g>
+<g><title>review-clean · a4a1387 · cycle 1 · 01:02:32</title><circle cx="360.2" cy="104" r="5" class="ok"/></g>
+<g><title>findings · a4a1387 · cycle 1 · 01:02:49</title><circle cx="383.1" cy="104" r="5" class="bad"/></g>
+<g><title>checks-pass · 4787c81 · cycle 1 · 01:03:49</title><circle cx="464.1" cy="104" r="5" class="ok"/></g>
+<g><title>review-clean · 4787c81 · cycle 1 · 01:04:22</title><circle cx="508.6" cy="104" r="5" class="ok"/></g>
+<g><title>security-clean · 4787c81 · cycle 1 · 01:04:34</title><circle cx="524.8" cy="104" r="5" class="ok"/></g>
+<g><title>qa-pass · 4787c81 · cycle 1 · 01:04:41</title><circle cx="534.3" cy="104" r="5" class="ok"/></g>
+<g><title>review-clean · 4787c81 · cycle 2 · 01:05:32</title><circle cx="603.1" cy="104" r="5" class="ok"/></g>
+<g><title>security-clean · 4787c81 · cycle 2 · 01:06:00</title><circle cx="640.9" cy="104" r="5" class="ok"/></g>
+<g><title>qa-pass · 4787c81 · cycle 2 · 01:06:41</title><circle cx="696.2" cy="104" r="5" class="ok"/></g>
+<text x="64" y="108" class="ax" text-anchor="end">verdicts</text>
+<text x="8" y="148" class="lane">T2</text>
+<g><title>R2 designer · round 0 · 00:58:57–01:00:09</title><rect x="70.0" y="132" width="97.2" height="18" rx="3" fill="#db2777"/><text x="74.0" y="145" class="bar">design 1</text></g>
+<g><title>R3 designer · round 0 · 00:58:57–01:00:44</title><rect x="70.0" y="154" width="144.4" height="18" rx="3" fill="#db2777"/><text x="74.0" y="167" class="bar">design 2</text></g>
+<g><title>R7 pe · round 0 · 01:00:44–01:01:30</title><rect x="214.4" y="132" width="62.1" height="18" rx="3" fill="#0891b2"/><text x="218.4" y="145" class="bar">PE</text></g>
+<g><title>R9 implementer · round 0 · 01:01:30–01:02:19</title><rect x="276.5" y="132" width="66.1" height="18" rx="3" fill="#4f46e5"/><text x="280.5" y="145" class="bar">build</text></g>
+<g><title>R12 code-reviewer · round 0 · 01:02:19–01:03:13</title><rect x="342.6" y="132" width="72.9" height="18" rx="3" fill="#059669"/><text x="346.6" y="145" class="bar">code</text></g>
+<g><title>R18 implementer · round 1 · 01:04:38–01:05:39</title><rect x="530.2" y="132" width="82.3" height="18" rx="3" fill="#4f46e5"/><text x="534.2" y="145" class="bar">build</text></g>
+<g><title>R21 code-reviewer · round 1 · 01:05:39–01:06:20</title><rect x="612.5" y="132" width="55.3" height="18" rx="3" fill="#059669"/><text x="616.5" y="145" class="bar">code</text></g>
+<g><title>R22 security-reviewer · round 1 · 01:05:39–01:06:37</title><rect x="612.5" y="154" width="78.3" height="18" rx="3" fill="#d97706"/><text x="616.5" y="167" class="bar">security</text></g>
+<g><title>R24 ux-reviewer · round 1 · 01:06:20–01:07:01</title><rect x="667.9" y="132" width="55.3" height="18" rx="3" fill="#7c3aed"/><text x="671.9" y="145" class="bar">UX</text></g>
+<g><title>R25 implementer · round 2 · 01:07:01–01:07:45</title><rect x="723.2" y="132" width="59.4" height="18" rx="3" fill="#4f46e5"/><text x="727.2" y="145" class="bar">build</text></g>
+<g><title>R26 code-reviewer · round 2 · 01:07:45–01:08:34</title><rect x="782.6" y="132" width="66.1" height="18" rx="3" fill="#059669"/><text x="786.6" y="145" class="bar">code</text></g>
+<g><title>R27 security-reviewer · round 2 · 01:07:45–01:08:52</title><rect x="782.6" y="154" width="90.4" height="18" rx="3" fill="#d97706"/><text x="786.6" y="167" class="bar">security</text></g>
+<g><title>R28 qa · round 2 · 01:07:45–01:08:37</title><rect x="782.6" y="176" width="70.2" height="18" rx="3" fill="#2563eb"/><text x="786.6" y="189" class="bar">QA</text></g>
+<g><title>R29 ux-reviewer · round 2 · 01:08:34–ng</title><rect x="848.7" y="132" width="24.3" height="18" rx="3" fill="#7c3aed" stroke-dasharray="3 2" fill-opacity="0.45"/></g>
+<g><title>checks-pass · ddfb86b · cycle 1 · 01:02:19</title><circle cx="342.6" cy="206" r="5" class="ok"/></g>
+<g><title>findings · ddfb86b · cycle 1 · 01:03:13</title><circle cx="415.5" cy="206" r="5" class="bad"/></g>
+<g><title>checks-pass · 0ece3eb · cycle 1 · 01:05:39</title><circle cx="612.5" cy="206" r="5" class="ok"/></g>
+<g><title>review-clean · 0ece3eb · cycle 1 · 01:06:20</title><circle cx="667.9" cy="206" r="5" class="ok"/></g>
+<g><title>findings · 0ece3eb · cycle 1 · 01:06:37</title><circle cx="690.8" cy="206" r="5" class="bad"/></g>
+<g><title>checks-pass · fc1f4bf · cycle 1 · 01:07:45</title><circle cx="782.6" cy="206" r="5" class="ok"/></g>
+<g><title>review-clean · fc1f4bf · cycle 1 · 01:08:34</title><circle cx="848.7" cy="206" r="5" class="ok"/></g>
+<g><title>qa-pass · fc1f4bf · cycle 1 · 01:08:38</title><circle cx="854.1" cy="206" r="5" class="ok"/></g>
+<g><title>security-clean · fc1f4bf · cycle 1 · 01:08:52</title><circle cx="873.0" cy="206" r="5" class="ok"/></g>
+<text x="64" y="210" class="ax" text-anchor="end">verdicts</text></svg>
+
+<div class="legend"><span><i style="background:#4f46e5"></i>build</span><span><i style="background:#db2777"></i>design</span><span><i style="background:#0891b2"></i>PE</span><span><i style="background:#059669"></i>code review</span><span><i style="background:#d97706"></i>security review</span><span><i style="background:#7c3aed"></i>UX review</span><span><i style="background:#2563eb"></i>QA</span><span>faded bar: still running when the session ended</span></div></div>
+
+<h2>T1: the bug</h2>
+<p><code>trips list --since ""</code> and <code>--since 2026-13-40</code> crashed. Required: a clear error and exit code 2. The chief sized it small and added the security review, because the fix handles user input.</p>
+<div class="scroll"><table>
+<tr><th>Step</th><th>What happened</th></tr>
+<tr><td>Build</td><td>The implementer validated the date and printed an error. The checks passed.</td></tr>
+<tr><td>Cycle on e5739e7</td><td>Code review clean, QA pass. The security review found that the error message repeated the raw input, so terminal escape codes could reach the screen.</td></tr>
+<tr><td>Repair round 1 → a4a1387</td><td>A fresh implementer escaped the input. The security review found that some control characters and Unicode direction marks still got through.</td></tr>
+<tr><td>Repair round 2 → 4787c81</td><td>A fresh implementer allowed only printable characters, with one shared helper for the whole tool. The chief logged why: "A denylist missed C1/bidi. An allowlist closes the whole class."</td></tr>
+<tr><td>2 clean cycles on 4787c81</td><td>Code review, security review and QA were clean twice. The merge check says "T1 may merge: 2 clean cycles on this SHA".</td></tr>
+</table></div>
+<h3>My own check, outside the agents</h3>
+<p class="good">21 of 21 tests pass. <code>--since ""</code> and <code>--since 2026-13-40</code> print a clear error and exit with 2. A valid date lists the trips. An escape code in the input is shown as <code>\u001b</code>.</p>
+
+<h2>T2: the CSV export</h2>
+<p>Required: <code>trips export --format csv</code>, without deleted trips. The chief sized it large, with risk flags for personal data and input, and ran an arena of 2 for the design.</p>
+<div class="scroll"><table>
+<tr><th>Step</th><th>What happened</th></tr>
+<tr><td>Arena</td><td>Two designers worked side by side. The PE picked candidate 2 as the base and took one test from candidate 1. Its reason: "built, 16 tests pass, one validation point, merges clean with the --since fix".</td></tr>
+<tr><td>Design approval</td><td>Recorded as gate G10, "keep (dry run)", because no user was present.</td></tr>
+<tr><td>Build and review</td><td>The code review found a weak test and a number exported as text. Both were fixed. Three low findings were dismissed, each with a reason.</td></tr>
+<tr><td>Shared code</td><td>The chief held T2's repair until T1 was final, so T2 could reuse T1's safe error helper instead of writing a second one.</td></tr>
+<tr><td>Round 2 → fc1f4bf</td><td>Code review clean, security review clean, QA pass. The UX review was still running when the session ended. Two findings marked "fix" were repaired but never closed, so the merge gate correctly refused T2.</td></tr>
+<tr><td>Self-correction</td><td>The chief dismissed a security finding, then saw that its reason was wrong, and logged the correction.</td></tr>
+</table></div>
+<h3>My own check</h3>
+<p class="good">43 of 43 tests pass. The export prints 3 trips, without the deleted one, and escapes quote marks correctly. A missing <code>--format</code> prints an error with an example and exits with 2.</p>
+
+<h2>What went wrong, and the fix for each</h2>
+<p>Each fix goes into code or into the instructions, so the next run doesn't repeat it.</p>
+<div class="scroll"><table>
+<tr><th>Problem</th><th>Evidence</th><th>Fix</th></tr>
+<tr><td>The headless session ended while an agent was still running</td><td>The last message: "The UX review on fc1f4bf is still running"</td><td>For tests: drive the session until no run is open. Interactive sessions on the desktop or phone wait by themselves.</td></tr>
+<tr><td>Too many questions: 12 gates for 2 tasks</td><td>"LF or CRLF?", "UTF-8 BOM?" are engineering defaults, not product questions</td><td>The chief decides and logs engineering defaults, and asks at most one batched question per task.</td></tr>
+<tr><td>Low findings started repair rounds</td><td>T1's first repair was for a low finding. 11 of 16 findings were low</td><td>The state tool: a repair round needs a medium or high finding. Low ones join a round or get dismissed.</td></tr>
+<tr><td>2 cycles ran without autopilot</td><td>T1 ran a second full cycle, and autopilot was off</td><td>"Verified" needs 1 clean cycle. Only an autopilot merge needs 2.</td></tr>
+<tr><td>No token counts</td><td>status: "about 0k tokens"</td><td>The chief records each agent's tokens from its result.</td></tr>
+<tr><td>A value starting with "--" was lost</td><td>2 findings have the summary "true"</td><td>Fix the state tool's argument parser.</td></tr>
+<tr><td>The chief's first state tool calls failed</td><td>"Zsh doesn't split the variable; I'll use a function."</td><td>The hook gives a ready shell function line.</td></tr>
+<tr><td>Repaired findings stayed open</td><td>T2: 2 findings open on a clean head</td><td>A clean verdict lists the open fix findings, so the chief closes them.</td></tr>
+<tr><td>status.md was out of date</td><td>It still said T1 "repairing"</td><td>Write status.md after every change.</td></tr>
+</table></div>
+
+<h2>Cost</h2>
+<p>$5.28 for the whole run, at API prices. On your subscription, it counts against your usage limits instead. By number of runs, each task took about half: T1 used 15 runs and T2 14. The design's estimates were too low for small tasks: a small task with a risk flag, 2 repair rounds and 2 cycles cost about $2.60, against an estimate of $0.30 to $1.50. The fixes above (no repair rounds for low findings, 1 cycle unless autopilot) cut that most.</p>
+<p class="sub">Basis: the session's own total. The split by task is an estimate from run counts.</p>
+</main></body></html>

@@ -1,0 +1,16 @@
+{
+  "name": "sage",
+  "version": "0.3.0",
+  "description": "Working principles and a writing standard (80% of Simplified Technical English) as skills, plus your own skills.",
+  "author": { "name": "Erick Benitez-Ramos" },
+  "homepage": "https://github.com/erickb336/sage",
+  "license": "MIT",
+  "keywords": ["principles", "writing", "simplified technical english", "skills"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "sage",
+    "shortDescription": "Principles and a writing standard for your agents",
+    "developerName": "Erick Benitez-Ramos",
+    "category": "Productivity"
+  }
+}

@@ -3,6 +3,7 @@ id: never-block-on-the-human
 name: Never block on the human
 applyWhen: tempted to ask "should I do X?" about reversible work.
 source: pstack principle-never-block-on-the-human, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: f2764bb9338cbfc7
 ---
 
 The user supervises asynchronously. Stay unblocked: make a reasonable decision, proceed, and let the user correct course afterwards.

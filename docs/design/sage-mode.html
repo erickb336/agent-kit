@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sage Mode Design</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #ffffff; --text: #1d1d1b; --muted: #5f5e58; --line: #e3e0d8;
+    --accent: #6b4fd8; --accent-soft: #efeafd; --ok: #1f7a4d; --warn: #9a5b00; --stop: #b3261e;
+    --code-bg: #f3f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --surface: #1d1d1b; --text: #ecebe6; --muted: #a7a59d; --line: #34332f;
+      --accent: #a995ff; --accent-soft: #2a2442; --ok: #5cc28e; --warn: #e3a447; --stop: #ff8a80;
+      --code-bg: #262522;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --surface: #1d1d1b; --text: #ecebe6; --muted: #a7a59d; --line: #34332f;
+    --accent: #a995ff; --accent-soft: #2a2442; --ok: #5cc28e; --warn: #e3a447; --stop: #ff8a80;
+    --code-bg: #262522;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.35rem; margin: 48px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 24px 0 8px; }
+  p, li { max-width: 72ch; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .lead { background: var(--accent-soft); border-left: 4px solid var(--accent); padding: 14px 18px; border-radius: 6px; }
+  .lead p { margin: 6px 0; }
+  .tag { display: inline-block; font-size: .75rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); margin-right: 6px; }
+  .code { color: var(--ok); font-weight: 600; } .prompt { color: var(--warn); font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 8px; font-size: .92rem; background: var(--surface); }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+  .scroll { overflow-x: auto; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: 14px; border-radius: 8px; overflow-x: auto; line-height: 1.45; }
+  .diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .diagram .cap { color: var(--muted); font-size: .85rem; margin: 8px 0 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .card h4 { margin: 0 0 6px; font-size: .95rem; }
+  .card p { margin: 0; font-size: .9rem; color: var(--muted); }
+  .ask { border: 2px solid var(--accent); border-radius: 10px; padding: 12px 16px; background: var(--surface); }
+  .rec { color: var(--ok); font-weight: 600; }
+  nav { font-size: .88rem; color: var(--muted); margin: 0 0 8px; }
+  nav a { color: var(--accent); text-decoration: none; margin-right: 10px; white-space: nowrap; }
+  footer { margin-top: 56px; color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Sage mode</h1>
+<p class="sub">Design v3 · the sage plugin · 4 Oct 2026 · status: <strong>the kitchen and the team are built; dry run 1 is done; the pilot is next</strong></p>
+
+<div class="lead">
+  <p><strong>What this is.</strong> The design of sage mode: you say "sage mode", and the session becomes your chief of staff. The chief of staff runs a factory of specialist agents, like Orchestrator, but inside any Claude Code session, from your phone or your desktop. There is no app and no dashboard: the chat is the interface, and the state is plain files.</p>
+  <p><strong>Main point.</strong> Use one coordinator that never writes code, with specialists that write one at a time. Code enforces the important rules: hooks, plus one small state tool. Each task gets a route made from building blocks, sized to the task, instead of a fixed flow.</p>
+  <p><strong>New in v2.</strong> Your decisions (<a href="#decide">section 15</a>), autopilot as "everything merges through a pull request after a set number of cycles", the <a href="#arena">arena</a> block, and a <a href="#prototype">sample session</a> that shows the experience.</p>
+  <p><strong>What I need from you.</strong> Two details and your go to build, in <a href="#decide">the last section</a>.</p>
+</div>
+
+<nav>
+  <a href="#fit">Where it fits</a><a href="#loop">The loop</a><a href="#sources">What we take</a><a href="#team">The team</a><a href="#routes">Routes</a><a href="#arena">Arena</a><a href="#life">A task's life</a><a href="#data">The data</a><a href="#brief">Brief and report</a><a href="#rules">Rules</a><a href="#trust">Trust and autopilot</a><a href="#cost">Cost</a><a href="#options">Options</a><a href="#prototype">Sample session</a><a href="#plan">Plan</a><a href="#decide">Decide</a>
+</nav>
+
+<h2 id="fit">1. Where it fits</h2>
+<ul>
+  <li><strong>The goal.</strong> Make this your default way to design and build. You say what you want, answer the few product questions, and look at results: screens, recordings, test results. You don't read code.</li>
+  <li><strong>What came before.</strong>
+    <ul>
+      <li><em>agent-kit</em> gave every session its principles, the writing standard and the prove-it-works gate. It is now the same plugin as sage mode, named sage: the kitchen and the orchestration layer in one place, with pstack's principles followed by a weekly sync.</li>
+      <li><em>Orchestrator</em> proved the factory ideas: a PE, reviews running side by side, no dropped findings. It's a heavy app with fixed flows.</li>
+      <li><em>The Remote Control server</em> in <code>~/workspace</code> lets you start sessions from your phone.</li>
+      <li><em>A first prototype</em> showed that a folder setting can start a session as the chief of staff.</li>
+    </ul>
+  </li>
+  <li><strong>What comes next.</strong> You decide the five questions. Then I build it in small checked steps (<a href="#plan">the plan</a>), with a pilot task first.</li>
+</ul>
+
+<h2 id="loop">2. The loop</h2>
+<p>There are two loops. The inner loop turns a request into verified work. The outer loop improves the kitchen, so the inner loop gets better over time.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+  U(["You · phone, desktop or terminal"])
+  C["Chief of staff · routes, briefs, ledger, gates"]
+  U -->|"request · answers"| C
+  C -->|"questions with a default · results · status"| U
+  C -->|"brief"| D
+  subgraph F["The factory · one writer at a time"]
+    D["Design · designer, PE, UX review"] --> B["Build · implementer in its own worktree"]
+    B --> R["Review · code, security, UX"]
+    R -->|"findings"| B
+    R --> V["Verify · QA on the real app"]
+    V -->|"fail"| B
+  end
+  V -->|"report + evidence"| C
+  C --- S[("Store · tasks, ledger, gates, trail")]
+  V --> M{"Land"}
+  M -->|"autopilot lane"| G["Merge"]
+  M -->|"otherwise"| P["Pull request for you"]
+  C -.->|"a lesson comes back twice"| K["Improve the kitchen · test, lint, check, skill, principle"]
+  K -.-> F
+</pre><p class="cap">The chief of staff never edits files. It writes briefs, records verdicts and asks you only product questions and irreversible actions.</p></div>
+
+<h2 id="sources">3. What we take from each source</h2>
+<div class="scroll"><table>
+<tr><th>Idea</th><th>From</th><th>In sage mode</th></tr>
+<tr><td>A coordinator that owns the program, never the code</td><td>pstack orchestrate, Cursor projects</td><td>The chief of staff has no edit tools. In phrase mode, the hook blocks its edits.</td></tr>
+<tr><td>"The brief is the product." A missing field stops the spawn</td><td>pstack orchestrate</td><td>A brief template with required fields. The hook refuses an agent spawn when a field is missing.</td></tr>
+<tr><td>Verdicts recorded by head SHA. A new commit voids them</td><td>pstack ledger, Orchestrator "merge the exact checked commit"</td><td>A ledger in the store. A merge is blocked unless the current SHA has the verdicts its route needs.</td></tr>
+<tr><td>A mode switched on by name, with playbooks copied into the to-do list</td><td>poteto mode</td><td>"sage mode" in any message. Each route's blocks go into the task list.</td></tr>
+<tr><td>Scale the ceremony to the unit</td><td>pstack, Anthropic research system</td><td>Routes come in sizes: tiny, small, large, program.</td></tr>
+<tr><td>A PE that separates "changes" from "questions for you"</td><td>Orchestrator, after the PE loop failed to converge</td><td>The same verdict shape. A later PE pass checks its earlier asks first.</td></tr>
+<tr><td>Code review and security review side by side. No dropped findings</td><td>Orchestrator ORC-021 and ORC-028</td><td>Each finding gets a triage: fix, dismiss with a reason, or ask you. A task can't finish with an open finding.</td></tr>
+<tr><td>One writer. Reviewers in a fresh context</td><td>Cognition 2026, Claude Code docs</td><td>Only the implementer and the designer write, each in their own worktree.</td></tr>
+<tr><td>Rules as prompts decay. Encode them in structure</td><td>Orchestrator lessons, poteto's trust ladder</td><td>The important rules are code: hooks and the state tool (<a href="#rules">rules</a>).</td></tr>
+<tr><td>Completions are queue events. Never review inline</td><td>pstack orchestrate</td><td>The chief records a report and starts a reviewer. It doesn't read the diff itself.</td></tr>
+<tr><td>A pilot before fan-out</td><td>pstack orchestrate</td><td>A program-sized route runs one unit end to end first.</td></tr>
+<tr><td>Build verification first</td><td>poteto, Anthropic harness posts</td><td>QA needs a live run of the real app for behaviour changes, not only tests.</td></tr>
+</table></div>
+
+<h2 id="team">4. The team</h2>
+<div class="scroll"><table>
+<tr><th>Agent</th><th>Does</th><th>Writes?</th><th>Principles it loads</th></tr>
+<tr><td><strong>chief-of-staff</strong></td><td>Frames the work, picks routes, writes briefs, drains reports, triages findings, keeps the ledger, asks you the questions</td><td>No: the state tool only</td><td>never-block-on-the-human, encode-lessons-in-structure, contextualize-and-write-for-the-reader</td></tr>
+<tr><td><strong>designer</strong></td><td>A clickable prototype with sample data, 2–3 options when the answer isn't clear, every state</td><td>Design files, own worktree</td><td>experience-first, exhaust-the-design-space, writing-standard</td></tr>
+<tr><td><strong>pe</strong></td><td>Checks feasibility, data, risks and cost before the build. Verdict: OK, CHANGE or QUESTION</td><td>No</td><td>foundational-thinking, boundary-discipline, laziness-protocol</td></tr>
+<tr><td><strong>implementer</strong></td><td>Builds one task, runs the checks, opens the pull request, repairs findings</td><td>Code, own worktree</td><td>laziness, subtract-before-you-add, test-behaviour, prove-it-works, fix-root-causes</td></tr>
+<tr><td><strong>code-reviewer</strong></td><td>Correctness, data safety, regressions, test evidence</td><td>No</td><td>test-behaviour, minimize-reader-load, migrate-callers</td></tr>
+<tr><td><strong>security-reviewer</strong></td><td>Input at the boundaries, injection, secrets, access, dependencies</td><td>No</td><td>boundary-discipline</td></tr>
+<tr><td><strong>ux-reviewer</strong></td><td>The flow, the states, the copy and accessibility, against the design</td><td>No</td><td>experience-first</td></tr>
+<tr><td><strong>qa</strong></td><td>Runs the checks and the real app, tries to break it. Verdict: PASS or FAIL with evidence</td><td>No</td><td>prove-it-works, test-behaviour</td></tr>
+<tr><td><strong>arena-judge</strong></td><td>Scores an arena's candidates against the rubric, picks the base, grafts the best parts of the others into it, and checks the result (Opus)</td><td>The base branch</td><td>exhaust-the-design-space, experience-first, laziness, prove-it-works</td></tr>
+</table></div>
+<p>Each agent is a file in <code>plugins/sage/agents/</code>. Each loads the plugin's own principle skills that its role needs. An agent that doesn't change outcomes gets cut after the pilot. Anthropic's harness post found that each role encodes a guess about what the model can't do alone.</p>
+
+<h2 id="routes">5. Building blocks and routes</h2>
+<p>This is where sage mode is more flexible than Orchestrator. Orchestrator has six fixed flows, and changing a task's flow starts it over. In sage mode, the chief of staff builds a route for each task from blocks. A route has a minimum for each size and risk, and the gates enforce that minimum.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+  T["New task"] --> S{"Size and risk"}
+  S -->|"tiny: one obvious edit"| T1["Build + checks · the chief checks the receipts"]
+  S -->|"small: one bounded change"| T2["Build → code review (+ security if a risk flag) → QA"]
+  S -->|"large: new screens, flows, data"| T3["Design → PE → you approve → Build → code, security, UX review → repair → QA live"]
+  S -->|"cause unknown"| T4["Investigate, no changes → evidence review → a proposal to you"]
+  S -->|"program: many tasks, days"| T5["Plan → PE → pilot one unit → tracks in a rolling window"]
+</pre><p class="cap">Risk flags: auth, personal data, a schema or migration, money, secrets, input from outside. Any flag adds the security review and keeps the task off autopilot.</p></div>
+
+<div class="grid">
+  <div class="card"><h4>The blocks</h4><p>Frame · Design · Arena · PE check · Build · Code review · Security review · UX review · QA · Repair · Land · Learn</p></div>
+  <div class="card"><h4>The chief may add</h4><p>Any block, with a one-line reason in the trail. For example: a PE check on a small task that touches a migration.</p></div>
+  <div class="card"><h4>The chief may not remove</h4><p>The minimum of the size and the risk flags. The ledger gate blocks the merge when a required verdict is missing.</p></div>
+</div>
+
+<h3>Design: your default way to design</h3>
+<p>The Design block is Orchestrator's Vision, made smaller. It works in rounds, one focus at a time: the experience, the data, the flows. The designer makes a prototype you can click, with sample data. The PE checks it. You mark each part keep, change or drop, as a choice with previews. The parts you keep go into the decision log. Implementers then build against it, and QA checks against it.</p>
+
+<h3 id="arena">Arena: N candidates, a judge takes the best of each</h3>
+<p>For a design with no clear answer, or for an implementation that's hard to undo, the chief can run an arena. It follows pstack's arena, within Claude's models:</p>
+<ol>
+<li><strong>The rubric first.</strong> The chief writes 3 to 6 criteria that a judge can grade. The candidates don't see it.</li>
+<li><strong>N candidates</strong> (3 by default) get the same brief with a different angle each, on a mix of models (<code>arena_models</code>, by default Opus, Sonnet, Sonnet), each in its own worktree. Each ends with a rationale: what it considered and rejected.</li>
+<li><strong>The arena judge</strong> (Opus) scores each candidate, picks the base, and grafts the best parts of the others into it by hand. If all candidates converge, it keeps the shared shape. If they diverge wildly, it stops: the chief re-frames the brief once, then asks you.</li>
+<li><strong>The final version</strong> then goes through reviews and QA like any build.</li>
+</ol>
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+  B["One brief + N angles"] --> C1["Candidate 1 · own worktree"]
+  B --> C2["Candidate 2 · own worktree"]
+  B --> C3["Candidate N · own worktree"]
+  C1 --> J{"The arena judge scores against the rubric"}
+  C2 --> J
+  C3 --> J
+  J -->|"base + grafts, on the base branch"| G["The arena judge makes the final version"]
+  G --> N["Normal route: review, QA, land"]
+  J -.->|"screenshots and scores"| T[("Trail")]
+</pre><p class="cap">Candidates never merge. Only the final version goes on. Their branches are deleted after the PE's verdict, and their screenshots stay in the trail.</p></div>
+<div class="scroll"><table>
+<tr><th>Question</th><th>Design</th></tr>
+<tr><td>When does it run?</td><td>When you say "arena" (for example "arena 4"), for a Design block that has no clear answer, or for an implementation the PE marks as hard to undo</td></tr>
+<tr><td>How many?</td><td>N = 3 by default, at most 5. Each candidate costs a full design or build</td></tr>
+<tr><td>How are the candidates different?</td><td>The chief gives each one an angle, for example "fewest taps", "most control", "reuse existing screens". N copies of one prompt give N similar answers</td></tr>
+<tr><td>What does the judge return?</td><td>A score per candidate against each rubric line, the base, each graft with its source, what it rejected, and the check of the final version</td></tr>
+<tr><td>For a design, who decides?</td><td>The arena judge makes the final version. You then keep, change or drop it, as in every design round</td></tr>
+<tr><td>Why is this safe now?</td><td>Orchestrator removed best-of copies (ORC-025) because they caused many edge-case bugs in the app's state. Here a candidate is only a throwaway branch and a report, and nothing else depends on it</td></tr>
+</table></div>
+
+<h2 id="life">6. A task's life</h2>
+<div class="diagram"><pre class="mermaid">
+stateDiagram-v2
+  [*] --> framed
+  framed --> designing: needs a design
+  designing --> awaiting_you: design ready
+  awaiting_you --> briefed: you keep it
+  framed --> briefed: no design needed
+  briefed --> building
+  building --> held: product question
+  held --> building: you answer, or the default applies
+  building --> reviewing: report + evidence
+  reviewing --> repairing: findings to fix
+  repairing --> reviewing: next round, at most 3
+  repairing --> replan: 2 rounds with no progress
+  replan --> briefed: a new premise
+  reviewing --> verifying: all findings triaged
+  verifying --> repairing: QA fail
+  verifying --> verified: QA pass on this head SHA
+  verified --> merged: autopilot lane allows it
+  verified --> pr_ready: otherwise
+  pr_ready --> merged: you merge
+  merged --> [*]
+</pre><p class="cap">A new commit after "verified" voids the verdicts, and the task goes back to reviewing.</p></div>
+
+<h2 id="data">7. The data</h2>
+<div class="diagram"><pre class="mermaid">
+erDiagram
+  PROJECT ||--|| STANDING_ORDERS : keeps
+  PROJECT ||--o{ TASK : has
+  TASK ||--o{ BRIEF : "one per round"
+  TASK ||--o{ RUN : "agents on it"
+  RUN ||--|| REPORT : returns
+  REPORT ||--o{ FINDING : lists
+  FINDING ||--|| TRIAGE : "fix, dismiss or ask"
+  TASK ||--o{ VERDICT : "by head SHA"
+  TASK }o--o{ GATE : "waits on"
+  GATE ||--o| DECISION : "your answer"
+  PROJECT ||--o{ LESSON : learns
+  LESSON ||--o| TASK : "kitchen change"
+</pre></div>
+<div class="scroll"><table>
+<tr><th>Thing</th><th>Main fields</th><th>Store file</th><th>Writer</th></tr>
+<tr><td>Standing orders</td><td>Numbered lines, one rule each: models, concurrency cap, autopilot lanes, forbidden paths</td><td><code>standing.md</code></td><td>The chief, through the state tool</td></tr>
+<tr><td>Task</td><td>id, title, size, risk flags, route, state, branch, worktree, PR, head SHA, round</td><td><code>tasks.tsv</code></td><td>The state tool</td></tr>
+<tr><td>Brief</td><td>The template fields (<a href="#brief">next section</a>)</td><td><code>briefs/&lt;task&gt;-&lt;round&gt;.md</code></td><td>The chief</td></tr>
+<tr><td>Run and report</td><td>role, model, tokens, status, report path</td><td><code>runs.tsv</code>, <code>reports/</code></td><td>The state tool, from the agent's report</td></tr>
+<tr><td>Finding</td><td>key (it carries across rounds), source, severity, location, triage, reason</td><td><code>findings.tsv</code></td><td>The state tool</td></tr>
+<tr><td>Verdict</td><td>task, PR, head SHA, kind (review-clean, security-clean, qa-live, qa-tests), by which run</td><td><code>ledger.tsv</code></td><td>The state tool</td></tr>
+<tr><td>Gate and decision</td><td>question, options, recommendation, default on no answer, your answer</td><td><code>gates.md</code>, <code>decisions.tsv</code></td><td>The chief, and you</td></tr>
+<tr><td>Lesson</td><td>problem, times seen, trust-ladder layer, kitchen task</td><td><code>lessons.tsv</code></td><td>The chief</td></tr>
+<tr><td>Status</td><td>Made from the tables at each drain. Nobody edits it by hand</td><td><code>status.md</code></td><td>The state tool</td></tr>
+</table></div>
+<p><strong>The state tool</strong> is a small script in the plugin (<code>sage</code>). The chief of staff calls it through the shell: one command in, one line out, like pstack's <code>orch</code>. Each file has one writer. The files are plain TSV and Markdown, so you or any session can read them. A session on your phone picks up the work from the store, not from a conversation.</p>
+
+<h2 id="brief">8. The brief and the report</h2>
+<div class="grid">
+<div><h3>The brief (chief → agent)</h3>
+<pre>GOAL        one sentence a stranger can act on
+SCOPE       paths it may write · its branch and worktree
+CONTEXT     file pointers · upstream reports in full
+DECISIONS   what you already decided
+ACCEPTANCE  checkable lines: what you will see
+VERIFY      exact commands · how to run the app
+BUDGET      time and turns · stop and report on expiry
+FORBIDDEN   no merge · no force-push · no edits out of scope
+REPORT      the report shape below
+STANDING    standing.md, word for word</pre>
+<p>A tiny task gets the same fields in one short paragraph. The hook refuses a spawn in sage mode when a field is missing.</p></div>
+<div><h3>The report (agent → chief)</h3>
+<pre>STATUS      done · blocked · question
+RESULT      what you can do now
+EVIDENCE    commands run + output · screenshots
+FINDINGS    key · severity · location · steps
+QUESTIONS   options · recommendation
+NOT VERIFIED
+BRANCH      branch · head SHA · PR</pre>
+<p>About 2,000 tokens or fewer, with long material in files. A hook stops an agent from finishing when its report has no EVIDENCE. That needs a check in the pilot (<a href="#plan">plan</a>, step 2).</p></div>
+</div>
+
+<h2 id="rules">9. Rules and edge cases</h2>
+<p><span class="code">Code</span> means a hook or the state tool enforces it. <span class="prompt">Prompt</span> means only the instructions carry it.</p>
+<div class="scroll"><table>
+<tr><th>Rule</th><th>Enforced by</th><th>Why</th></tr>
+<tr><td>The chief never edits files</td><td><span class="code">Code</span> agent tools + hook</td><td>It keeps the big picture. Tested in the prototype.</td></tr>
+<tr><td>A brief has every field</td><td><span class="code">Code</span> hook on the agent spawn</td><td>A vague brief fails quietly (pstack)</td></tr>
+<tr><td>One writer per worktree or branch</td><td><span class="code">Code</span> the state tool refuses a second open writer on a branch</td><td>Parallel writers conflict (Cognition)</td></tr>
+<tr><td>At most N agents at once (default 3)</td><td><span class="code">Code</span> the hook counts running agents</td><td>Cost and focus. Orchestrator used 3</td></tr>
+<tr><td>Every finding is triaged before QA</td><td><span class="code">Code</span> the state tool refuses "verifying" with open findings</td><td>No dropped findings (ORC-028)</td></tr>
+<tr><td>At most 3 repair rounds. After 2 rounds with the same finding keys, re-plan</td><td><span class="code">Code</span> the state tool counts rounds and keys</td><td>Loops must converge. attack-the-premise</td></tr>
+<tr><td>A merge needs the route's verdicts on the current head SHA</td><td><span class="code">Code</span> hook on <code>gh pr merge</code></td><td>Merge only the checked commit (Orchestrator, pstack)</td></tr>
+<tr><td>Autopilot merges only through a pull request, after the set number of clean cycles on the current head SHA</td><td><span class="code">Code</span> the same hook counts the cycles in the ledger</td><td>Your decision. Merge only the checked commit</td></tr>
+<tr><td>An arena candidate never merges, and its branch is deleted after the verdict</td><td><span class="code">Code</span> the state tool marks candidates; the merge gate refuses them</td><td>Keep best-of simple (ORC-025)</td></tr>
+<tr><td>A fresh agent for each round, with the consolidated brief</td><td><span class="prompt">Prompt</span></td><td>Resumed agents drop directives (pstack)</td></tr>
+<tr><td>Product questions go to you, with a default</td><td><span class="prompt">Prompt</span> + the QUESTIONS report field</td><td>Orchestrator's designer invented answers</td></tr>
+<tr><td>A PE pass checks its earlier asks first. Only new risks may add asks</td><td><span class="prompt">Prompt</span> in v1</td><td>PE loop convergence (ORC-029)</td></tr>
+<tr><td>Instruction files come from the main branch, not the agent's worktree</td><td><span class="prompt">Prompt</span>: the brief points at main</td><td>Agents write the worktree (ORC-013)</td></tr>
+</table></div>
+
+<h3>Edge cases</h3>
+<div class="scroll"><table>
+<tr><th>Case</th><th>What happens</th></tr>
+<tr><td>The project has no GitHub remote</td><td>The task ends at "verified" on its branch. The chief tells you the branch and how to look at the result.</td></tr>
+<tr><td>The project has no checks</td><td>The first task is "add a check". In poteto's words, build verification first. Until then QA is live-only, and autopilot is off.</td></tr>
+<tr><td>You don't answer a gate</td><td>Reversible work goes on around it. The default applies only where the gate says so, and the chief reports it.</td></tr>
+<tr><td>An agent goes silent</td><td>Liveness is judged by side effects: a pushed branch, a ledger row. After its budget, it's marked dead, and a fresh agent gets the brief once. Two failures, then re-plan.</td></tr>
+<tr><td>The session ends or you switch devices</td><td>The store keeps the state. "sage mode" in a new session reads <code>status.md</code> and goes on.</td></tr>
+<tr><td>Context fills up</td><td>The chief keeps reports short and files long. After a compaction, the hook gives the chief its instructions again (built in the prototype).</td></tr>
+<tr><td>Two tasks need the same files</td><td>The chief puts them in order, or merges them into one task. Never two writers.</td></tr>
+<tr><td>A reviewer reports noise</td><td>The chief dismisses it with a reason in the trail. Reviewers report only correctness, requirements and security, not style.</td></tr>
+</table></div>
+
+<h2 id="trust">10. Autopilot</h2>
+<p><strong>Your decision.</strong> With autopilot on, everything can merge by itself. It always merges through a pull request, after a set number of cycles. Without autopilot, every pull request waits for you.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+  PR["Pull request at head SHA"] --> C1["Cycle: fresh code review + security review + QA live"]
+  C1 -->|"findings"| R["Repair · a new head SHA"]
+  R --> C1
+  C1 -->|"clean"| K{"Clean cycles in a row on this SHA = the set number?"}
+  K -->|"not yet"| C1
+  K -->|"yes, autopilot on"| M["Merge, and log it in the trail"]
+  K -->|"yes, autopilot off"| Y["Wait for you"]
+  R -->|"3 repair rounds and still findings"| S["Stop and ask you"]
+</pre><p class="cap">A cycle is a full set of fresh reviewers and QA on one head SHA. Each cycle uses new agents that didn't see the earlier verdicts.</p></div>
+<ul>
+  <li><strong>"autopilot on"</strong> and <strong>"autopilot off"</strong> switch it in a message. "autopilot off" is the kill switch, and work in flight stops at "verified".</li>
+  <li><strong>Still always ask you</strong>, even on autopilot: deploys, deleting data, force-pushes, and closing pull requests that aren't sage mode's. These can't be undone. A merge can be reverted.</li>
+  <li><strong>Risk flags</strong> (auth, personal data, schema, money, secrets) don't stop autopilot. They add the security review to every cycle.</li>
+</ul>
+
+<h2 id="cost">11. Cost</h2>
+<div class="scroll"><table>
+<tr><th>Route</th><th>Agent runs</th><th>Estimate (API-equivalent)</th></tr>
+<tr><td>Tiny</td><td>1</td><td>$0.05 – $0.30</td></tr>
+<tr><td>Small</td><td>3 – 5</td><td>$0.30 – $1.50</td></tr>
+<tr><td>Large</td><td>8 – 16</td><td>$1 – $5</td></tr>
+<tr><td>Program</td><td>tens to hundreds</td><td>No basis yet. The pilot measures one unit</td></tr>
+</table></div>
+<p><strong>Measured in dry run 1</strong> (before its fixes): 28 agent runs for 2 tasks, $5.28 in all. A small task with a risk flag, 2 repair rounds and 2 cycles cost about $2.60, which is above the estimate. The fixes (no repair rounds for low findings, 1 cycle unless autopilot) cut that most. <strong>Earlier basis.</strong> Orchestrator's real factory trial: one Feature task, 16 agent runs, $0.61–$0.83 of Claude. Anthropic's research system post: multi-agent runs use about 15× the tokens of a chat. With your subscription, this counts against your usage limits, not money. The ranges are guesses until the pilot measures real tasks, and I'll replace them with those numbers.</p>
+
+<h2 id="options">12. The options I considered</h2>
+<div class="scroll"><table>
+<tr><th>Option</th><th>For</th><th>Against</th><th>Verdict</th></tr>
+<tr><td><strong>A.</strong> Instructions only: a chief with playbooks in its prompt (the first prototype)</td><td>Simplest, very flexible</td><td>Rules in prompts decay (the PE loop, dropped findings). No state across sessions</td><td>Rejected as the whole design. It's the starting layer</td></tr>
+<tr><td><strong>B.</strong> Workflow scripts as fixed flows</td><td>Deterministic, structured output, can resume</td><td>Can't take your input mid-run, so each question needs a new run. Flows live in code, as rigid as Orchestrator's</td><td>Rejected for routes. Maybe later for large fan-outs (program size)</td></tr>
+<tr><td><strong>C.</strong> A chief + building blocks + a state tool + hook gates</td><td>Flexible routes, key rules enforced, state survives sessions and devices, cheap for small tasks</td><td>More parts: agents, a CLI and hooks. Hooks see only what tools expose</td><td class="rec">Recommended</td></tr>
+<tr><td><strong>D.</strong> Agent teams</td><td>Peers can message each other</td><td>Experimental, no nesting, the lead approves plans by itself</td><td>Rejected for now</td></tr>
+<tr><td><strong>E.</strong> Orchestrator as the engine (its ORC-023)</td><td>Reuses all of Orchestrator</td><td>A heavy app, a separate sign-in, fixed flows</td><td>Rejected. Orchestrator stays your separate playground</td></tr>
+</table></div>
+
+<h2 id="prototype">13. Prototype: a sample session</h2>
+<p><strong>Sample data. This is made up to show the experience, not a real run.</strong> You're on your phone, in a session in <code>~/workspace</code>.</p>
+<pre>You     sage mode. TrackMe: add CSV export of trips, and fix the 3 crash reports from this week.
+
+Chief   Sage mode on. Store: ~/.claude/sage/trackme/ (new).
+        2 tasks:
+        T1  CSV export       large · personal data
+            Design (arena 3) → PE → you → Build → code, security, UX review → QA live
+        T2  3 crash reports  small · probably one cause (date parsing)
+            Build → code review → QA live
+        T2 starts now. One question before T1's build:
+        ▸ Should the export include deleted trips?  Recommended: no.  Default if no answer: no.
+
+You     no
+
+Chief   T2: implementer started (branch claude/t2-date-crash).
+        T1: 3 designers started: one-tap export · export screen with filters · share sheet.
+        status · T1 designing · T2 building · 0 gates open
+
+        … 20 minutes later …
+
+Chief   T1: the PE picked "export screen with filters" as the base, plus the
+        one-tap button from candidate 1.  [3 screenshots]  Keep, change or drop?
+
+You     keep
+
+Chief   T1: implementer started on the kept design.
+        T2: code review found 1 finding (F-T2-1: an empty date still crashes). Repair round 2.
+
+        … later …
+
+Chief   T2 verified: QA live PASS on a1b2c3d, 2 clean cycles. Autopilot is on: merged PR #41.
+        T1: security review found 1 high finding (F-T1-3: the file name contains the user's
+        email). Repair round 2 of 3.
+        Lesson: date parsing caused 2 of the 3 crashes. Proposed kitchen change: a lint rule
+        against raw date parsing.  ▸ Approve?  Default: no.
+        status · T1 repairing 2/3 · T2 merged · 1 gate open</pre>
+<div class="grid">
+<div><h3>status.md (sample)</h3>
+<pre>sage · trackme · 14:32
+tasks   2 · merged 1 · repairing 1
+gates   1 open · G-3 lint rule, default no
+agents  11 runs · about 410k tokens</pre></div>
+<div><h3>ledger.tsv (sample)</h3>
+<pre>task pr  sha     verdict       cycle
+T2   41  a1b2c3d review-clean  1
+T2   41  a1b2c3d qa-live-pass  1
+T2   41  a1b2c3d review-clean  2
+T2   41  a1b2c3d qa-live-pass  2</pre></div>
+</div>
+
+<h2 id="plan">14. The plan</h2>
+<p>Each step ends in a check. The next step starts only when that check passes.</p>
+<div class="scroll"><table>
+<tr><th>Step</th><th>What</th><th>The check</th></tr>
+<tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the store. The hook gates: brief fields, edits, the agent cap, the merge gate</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
+<tr><td>2. The team <strong>(done: <a href="../runs/dry-run-1.html">dry run 1</a>)</strong></td><td>The eight agents, the route rules, the brief and report shapes. Test whether a stop hook can see a subagent's report</td><td>A dry run on a demo project with sample data. You read the transcript</td></tr>
+<tr><td>3. Pilot</td><td>One small real task on one of your projects. You watch from your phone</td><td>The task merges, or reaches a PR, with a ledger verdict on its head SHA. Measured cost</td></tr>
+<tr><td>4. Design rounds and arena</td><td>The Design block with prototypes and keep, change or drop. The arena block</td><td>One real design round with an arena of 3 that you mark</td></tr>
+<tr><td>5. Autopilot and Learn</td><td>Autopilot cycles and the merge gate. Lessons into the kitchen</td><td>One auto-merge after the set cycles. One lesson turned into a check</td></tr>
+<tr><td>6. Program size</td><td>Tracks, a rolling window, the pilot rule. Built only when a real program needs it</td><td>One program with a pilot unit</td></tr>
+</table></div>
+
+<h2 id="decide">15. Decisions</h2>
+<h3>Made</h3>
+<div class="scroll"><table>
+<tr><th>Decision</th><th>Your answer</th></tr>
+<tr><td>Architecture</td><td>C: a chief of staff, building blocks, a state tool and hook gates</td></tr>
+<tr><td>Where the store lives</td><td><code>~/.claude/sage/&lt;project&gt;/</code>, outside the repository</td></tr>
+<tr><td>Independent review</td><td>Claude reviewers in a fresh context for v1</td></tr>
+<tr><td>Autopilot</td><td>Everything can merge, through a pull request, after a set number of cycles</td></tr>
+<tr><td>Arena</td><td>Yes: N agents make a design or an implementation, and the PE takes the best of each</td></tr>
+<tr><td>Agents at the same time</td><td>3 by default, a line in the standing orders (my default, you can change it)</td></tr>
+</table></div>
+<h3>Still open</h3>
+<div class="ask">
+<ol>
+  <li><strong>How many clean cycles before autopilot merges?</strong> <span class="rec">2 in a row on the same head SHA (recommended)</span>, 1, or 3.</li>
+  <li><strong>When does the arena run by itself?</strong> <span class="rec">Only for designs with no clear answer, and when you say "arena" (recommended)</span>, or also for implementations that are hard to undo, or only when you say "arena".</li>
+  <li><strong>Your go to build</strong>, starting with step 1 of the plan: the kitchen (the state tool, the store and the hook gates, with tests).</li>
+</ol>
+</div>
+
+<footer>
+<p><strong>Sources.</strong> pstack v0.15.9 (github.com/cursor/plugins, poteto-mode SKILL.md and the orchestrate playbook) · Orchestrator docs: TEAM.md, flows/, ORC-013, 021, 024, 025, 028, 029, 031, real-runs · Anthropic: Building effective agents, the multi-agent research system, context engineering, harness design · Claude Code docs: subagents, agent teams, workflows, hooks, costs · Cognition: Don't build multi-agents (2025), multi-agents working (2026) · Anthropic: measuring agent autonomy · the Matt Pocock × poteto live stream (transcript).</p>
+<p>The costs are estimates with the basis above. The design is not built or tested, except the parts marked as tested in the prototype.</p>
+</footer>
+</main>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "strict", flowchart: { htmlLabels: true, curve: "basis" } });
+</script>
+</body>
+</html>

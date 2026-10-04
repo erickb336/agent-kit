@@ -1,10 +1,10 @@
 {
-  "name": "agent-kit",
-  "interface": { "displayName": "agent-kit" },
+  "name": "sage",
+  "interface": { "displayName": "sage" },
   "plugins": [
     {
-      "name": "agent-kit",
-      "source": { "source": "local", "path": "./plugins/agent-kit" },
+      "name": "sage",
+      "source": { "source": "local", "path": "./plugins/sage" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     }

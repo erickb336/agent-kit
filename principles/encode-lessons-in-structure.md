@@ -3,6 +3,7 @@ id: encode-lessons-in-structure
 name: Encode lessons in structure
 applyWhen: writing the same instruction a second time, or noticing a correction that keeps recurring.
 source: pstack principle-encode-lessons-in-structure, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 77044c83a9ac6df7
 ---
 
 Encode a recurring fix in a mechanism (a check, a type, a script, a lint rule) instead of in more text. Every error, correction and unexpected outcome is a lesson: capture it, put it in the right place, and close the loop.

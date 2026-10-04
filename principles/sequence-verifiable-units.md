@@ -3,6 +3,7 @@ id: sequence-verifiable-units
 name: Sequence verifiable units
 applyWhen: multi-step work (a sweep, a migration, a run of similar edits) or the order of commits in a change.
 source: pstack principle-sequence-verifiable-units, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 2ccbbacc56ace5af
 ---
 
 Order the work as a sequence of small units, each ending in a state you can check, and do not advance until the current one passes.
