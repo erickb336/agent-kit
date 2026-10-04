@@ -50,16 +50,18 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 
 A worktree goes beside the main checkout, never inside the repository: `<project folder>-<task id>`, for example `~/workspace/sage-t45`. Its branch is `<area>/<task id>-<slug>`, in lowercase. Set the branch on the task: `task <T> set branch=<b>`.
 
-A worktree or a local branch is stale when its task is merged, concluded or abandoned, or its pull request is merged or closed. It is never stale while its pull request is open or a run of its task or branch is running. sage removes a stale one only when all of these are true:
+A worktree or a local branch is stale when every task that owns its branch is merged, concluded or abandoned. While a task owns the branch, only the task's state decides: a pull request that the owner closed does not end a task that is still building. A branch that no task owns is stale when its pull request is merged or closed, and only a pull request from the same repository whose head is the branch's head counts. It is never stale while a pull request of the branch or its task is open, or a run of its task or branch is running. sage never deletes `main`, `master`, the branch of the main checkout, or the remote's default branch. sage removes a stale one only when all of these are true:
 
 - It has no changes that are not committed, also no new file (`git status --porcelain` prints nothing).
+- No file is marked skip-worktree or assume-unchanged (`git ls-files -v`): git status hides their edits. The line names the first 3.
 - Each file that git ignores is in a rebuildable folder, at any depth: `node_modules`, `dist`, `build`, `.next`, `.nuxt`, `.turbo`, `.cache`, `coverage`, `.parcel-cache`, `__pycache__`, `.pytest_cache`, `.venv`, `target` or `.gradle`. `git worktree remove` deletes ignored files, so an ignored `.env`, a data folder or `.claude/` settings keep the worktree, and the line names the first 3 paths. When git cannot list them, sage keeps the worktree.
-- Its last commit is on the remote: it is the head of its pull request on GitHub, or a remote branch contains it. A squash merge puts other commits on main, so main does not prove it.
+- No ignored folder holds a nested git repository (a `.git` folder or file at any depth), also in a rebuildable folder: it can have commits that are on no remote.
+- The remote itself has its last commit: `git ls-remote origin` shows a branch or a pull request head (`refs/pull/<n>/head`) at that commit, or one that contains it after a fetch that changes no local branch. Local tracking refs prove nothing. A squash merge puts other commits on main, so main does not prove it. When the remote cannot be reached, sage keeps the worktree.
 - GitHub gives the state of the pull requests. When `gh` fails, sage keeps the worktree: the state of its pull request is unknown.
 
 Then sage runs `git worktree remove` without `--force`, deletes the local branch only at that commit, and runs `git worktree prune`. It never touches the main checkout, or a folder that git does not list as a worktree. Otherwise it keeps the worktree and says why. A second run gives the same lines and removes nothing more.
 
-Each command that changes a logbook records the project's main checkout in `checkout.txt`, so `sage worktrees` finds every project. A logbook without it is skipped: run `sage worktrees` in that project once.
+Each command that changes a logbook, and `sage worktrees`, records the project's main checkout in `checkout.txt`, so `sage worktrees` finds every project. A logbook without it is skipped: run `sage worktrees` in that project once.
 
 ## How an investigation ends
 

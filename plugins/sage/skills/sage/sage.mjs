@@ -538,10 +538,7 @@ export function sage(argv, env = process.env) {
     ready(dir, skip);
     const out = act(cmd, pos, opt, dir, env, skip);
     status(dir, true);
-    try {
-      const at = projectRoot(project); // for sage worktrees, which tidies every project
-      if (readRegular(join(dir, "checkout.txt"))?.trim() !== at) put(join(dir, "checkout.txt"), `${at}\n`);
-    } catch {}
+    nameCheckout(dir, project);
     return out;
   });
   // A task that reaches a last state gives up its worktree here, so the rule is in code. It never fails the move.
@@ -555,12 +552,20 @@ export function sage(argv, env = process.env) {
   }
 }
 
+/** Writes the project's main checkout to checkout.txt, for sage worktrees, which tidies every project. Never fails. */
+function nameCheckout(dir, project) {
+  try {
+    const at = projectRoot(project);
+    if (readRegular(join(dir, "checkout.txt"))?.trim() !== at) put(join(dir, "checkout.txt"), `${at}\n`);
+  } catch {}
+}
+
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
 /** The pull requests of a project, or null when gh cannot give them, for example offline. $SAGE_GH names another gh. */
 function pullRequests(root, env) {
   try {
-    return JSON.parse(execFileSync(env.SAGE_GH ?? "gh", ["pr", "list", "--state", "all", "--limit", "1000", "--json", "number,state,headRefName,headRefOid"], { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 }));
+    return JSON.parse(execFileSync(env.SAGE_GH ?? "gh", ["pr", "list", "--state", "all", "--limit", "1000", "--json", "number,state,headRefName,headRefOid,isCrossRepository"], { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 }));
   } catch {
     return null;
   }
@@ -569,20 +574,78 @@ function pullRequests(root, env) {
 /** Folders that a build or an install makes again, at any depth. An ignored file outside them may be the owner's only copy. */
 const REBUILDABLE = new Set(["node_modules", "dist", "build", ".next", ".nuxt", ".turbo", ".cache", "coverage", ".parcel-cache", "__pycache__", ".pytest_cache", ".venv", "target", ".gradle"]);
 
-/** The ignored paths of a worktree that are in no rebuildable folder. git remove deletes ignored files; a failed listing throws, so the caller keeps the worktree. */
-const notRebuildable = (path) =>
+/** The ignored paths of a worktree. git remove deletes ignored files; a failed listing throws, so the caller keeps the worktree. */
+const ignoredPaths = (path) =>
   execFileSync("git", ["-C", path, "status", "-z", "--porcelain", "--ignored=matching"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
     .split("\0")
     .filter((e) => e.startsWith("!! ")) // matching names the folder a pattern matches ("a/node_modules/"), not the untracked folder above it
-    .map((e) => e.slice(3))
-    .filter((p) => !p.split("/").slice(0, -1).some((folder) => REBUILDABLE.has(folder))); // "dist/" and "a/dist/b" end in a name or ""
+    .map((e) => e.slice(3));
+const rebuildable = (p) => p.split("/").slice(0, -1).some((folder) => REBUILDABLE.has(folder)); // "dist/" and "a/dist/b" end in a name or ""
+
+/** The first folder at or under rel (relative to root) that holds a .git entry, a folder or a file: a repository with its own commits. Links are not followed. */
+function nestedRepo(root, rel) {
+  const todo = [rel.replace(/\/$/, "")];
+  while (todo.length) {
+    const at = todo.pop();
+    if (basename(at) === ".git") return dirname(at);
+    const st = lstatSync(join(root, at), { throwIfNoEntry: false });
+    if (!st?.isDirectory()) continue;
+    for (const e of readdirSync(join(root, at), { withFileTypes: true })) {
+      if (e.name === ".git") return at;
+      if (e.isDirectory()) todo.push(join(at, e.name));
+    }
+  }
+}
+
+/** The branches that sage never deletes: main, master, the main checkout's, and the remote's default by its local and its remote HEAD. */
+function defaultBranches(root, main, remote) {
+  const out = new Set(["main", "master", main.branch?.slice(11), remote?.head]);
+  try {
+    out.add(git(root, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").replace(/^origin\//, ""));
+  } catch {}
+  return out;
+}
+
+/** The refs of origin as the remote itself gives them, and its default branch, or null when the remote cannot be reached. */
+function remoteRefs(root) {
+  try {
+    const lines = execFileSync("git", ["-C", root, "ls-remote", "--symref", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 }).split("\n");
+    const head = lines.find((l) => l.startsWith("ref: ") && l.endsWith("\tHEAD"))?.slice(5, -5).replace(/^refs\/heads\//, "");
+    const refs = lines.filter((l) => /^[0-9a-f]{40}\t(refs\/heads\/|refs\/pull\/\d+\/head$)/.test(l)).map((l) => l.split("\t"));
+    return { head, refs };
+  } catch {
+    return null;
+  }
+}
+
+/** True when the remote has the commit: a branch or a PR head of origin is the commit, or contains it after a fetch that changes no local branch. */
+function onRemote(root, remote, sha) {
+  if (remote.refs.some(([at]) => at === sha)) return true;
+  const known = (at) => {
+    try {
+      return git(root, "cat-file", "-t", at) === "commit";
+    } catch {
+      return false;
+    }
+  };
+  const fetch = remote.refs.filter(([at]) => !known(at)).map(([, ref]) => ref);
+  if (fetch.length) git(root, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "origin", ...fetch); // no destination: no local ref changes
+  return remote.refs.some(([at]) => {
+    try {
+      return git(root, "merge-base", "--is-ancestor", sha, at) === "";
+    } catch {
+      return false;
+    }
+  });
+}
 
 /**
  * Removes the worktrees and local branches of finished work in one project, and returns one line for each that it
- * removed or kept, with the reason. Finished: its task is merged, concluded or abandoned, or its PR is merged or closed.
- * Never while its PR is open or a run of its task or branch runs. It removes only a clean one whose last commit is on
- * the remote (its PR's head, or in a remote branch), whose ignored files are all in rebuildable folders, and only when
- * GitHub gives the PR state: it fails closed. It uses
+ * removed or kept, with the reason. Finished: every task that owns the branch is merged, concluded or abandoned; a branch
+ * that no task owns is finished when its PR (same head, same repository) is merged or closed. Never while its PR is open,
+ * a run of its task or branch runs, or it is a default branch. It removes only a clean one with no file hidden from git
+ * status, whose last commit the remote itself has, whose ignored files are all in rebuildable folders and hold no nested
+ * repository, and only when GitHub gives the PR state: it fails closed. It uses
  * git worktree remove without --force, deletes the branch only at that commit, and never touches the main checkout or a
  * folder that is not a registered worktree. With task, only that task's branch.
  */
@@ -607,25 +670,32 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
       }
     }),
   ].filter((c) => (only ? c.branch === only.branch : true) && main.worktree !== c.path && !seen.has(c.branch) && seen.add(c.branch));
-  let prs;
+  let prs, remote, keep;
   const lines = [];
   for (const c of all) {
     const own = tasks.filter((t) => t.branch === c.branch);
     const task = own.find((t) => !DONE.includes(t.state)) ?? only ?? own.at(-1); // a branch that two tasks share is done when both are
     if (runs.some((r) => r.status === "running" && (r.branch === c.branch || own.some((t) => t.id === r.task)))) continue;
-    if (prs === undefined) prs = pullRequests(root, env); // once, and only when a worktree needs it
-    const mine = (prs ?? []).filter((p) => p.headRefName === c.branch || (task?.pr && String(p.number) === task.pr));
-    if (mine.some((p) => p.state === "OPEN")) continue;
-    const ended = mine.find((p) => ["MERGED", "CLOSED"].includes(p.state));
-    const why = DONE.includes(task?.state) ? `${task.id} ${task.state}` : ended ? `PR ${ended.number} ${ended.state.toLowerCase()}` : "";
+    if (prs === undefined) [prs, remote] = [pullRequests(root, env), remoteRefs(root)]; // once, and only when a worktree needs them
+    keep ??= defaultBranches(root, main, remote);
+    if (keep.has(c.branch)) continue;
+    if ((prs ?? []).some((p) => p.state === "OPEN" && (p.headRefName === c.branch || (task?.pr && String(p.number) === task.pr)))) continue;
+    // A PR counts only for a branch that no task owns, and only the PR of this very head from this repository.
+    const ended = !own.length && (prs ?? []).find((p) => ["MERGED", "CLOSED"].includes(p.state) && p.headRefName === c.branch && p.headRefOid === c.head && p.isCrossRepository === false);
+    const why = own.length ? (DONE.includes(task.state) ? `${task.id} ${task.state}` : "") : ended ? `PR ${ended.number} ${ended.state.toLowerCase()}` : "";
     if (!why) continue;
     const line = (verdict) => lines.push(`${c.path ? `${c.path} · ${c.branch}` : `branch ${c.branch}`} · ${why}: ${verdict}`);
     try {
-      const ignored = c.path ? notRebuildable(c.path).slice(0, 3) : [];
+      const ignored = c.path ? ignoredPaths(c.path) : [];
+      const nested = ignored.map((p) => nestedRepo(c.path, p)).find((p) => p !== undefined);
+      const hidden = c.path ? git(c.path, "ls-files", "-v").split("\n").filter((l) => /^(S|[a-z]) /.test(l)).map((l) => l.slice(2)) : [];
       const reason =
         c.path && git(c.path, "status", "--porcelain") ? "it has changes that are not committed"
-        : ignored.length ? `ignored files that are not rebuildable: ${ignored.join(", ")}`
-        : !mine.some((p) => p.headRefOid === c.head) && !git(root, "branch", "-r", "--contains", c.head) ? `its last commit ${c.head.slice(0, 7)} is not on the remote`
+        : hidden.length ? `files hidden from git status: ${hidden.slice(0, 3).join(", ")}`
+        : nested !== undefined ? `a nested git repository: ${nested}`
+        : ignored.some((p) => !rebuildable(p)) ? `ignored files that are not rebuildable: ${ignored.filter((p) => !rebuildable(p)).slice(0, 3).join(", ")}`
+        : remote === null ? "the remote cannot be reached"
+        : !onRemote(root, remote, c.head) ? `its last commit ${c.head.slice(0, 7)} is not on the remote`
         : prs === null ? "GitHub cannot be reached, so its PR state is unknown"
         : "";
       if (reason || dry) {
@@ -652,11 +722,13 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
 
 /** sage worktrees: tidy in every project's logbook. A logbook names its main checkout in checkout.txt, which each change writes. */
 function worktrees(project, env, dry) {
+  const own = storeDir(project, env);
+  if (existsSync(join(own, "tasks.tsv"))) withLock(own, () => nameCheckout(own, project)); // so the hint below is true
   const root = sageRoot(env);
   const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((d) => existsSync(join(d, "tasks.tsv"))).sort() : [];
   const lines = dirs.flatMap((dir) => {
     try {
-      const at = dir === storeDir(project, env) ? projectRoot(project) : readRegular(join(dir, "checkout.txt"))?.trim();
+      const at = readRegular(join(dir, "checkout.txt"))?.trim();
       if (!at || storeDir(at, env) !== dir) return [`${dir}: skipped: it does not name its main checkout yet. Run sage worktrees in that project once.`];
       return tidy(dir, at, env, { dry });
     } catch (e) {

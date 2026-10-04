@@ -1410,7 +1410,7 @@ function rig() {
   };
   const dir = ok("init").replace(/^\S+ /, "");
   /** The next task, in state, with its branch and a worktree beside the main checkout that has one commit, pushed or not. */
-  const work = (state, { push = true, tree = true } = {}) => {
+  const work = (state, { push = true, tree = true, owned = true } = {}) => {
     const id = ok("task", "add", "--title", "work", "--size", "small").split(" ")[0];
     const branch = `tool/${id.toLowerCase()}-work`;
     ok("task", id, "set", `branch=${branch}`);
@@ -1422,13 +1422,16 @@ function rig() {
     if (push) git(path, "push", "-q", "origin", branch);
     if (!tree) git(main, "worktree", "remove", path);
     byHand(dir, "tasks", 0, id, (cells) => cells.with(5, state));
+    if (!owned) byHand(dir, "tasks", 0, id, (cells) => cells.with(6, "")); // no task owns the branch: only its PR can make it stale
     return { id, path, branch, head: git(main, "rev-parse", branch) };
   };
+  /** GitHub keeps each PR's head on the remote as refs/pull/<n>/head, also after the branch is deleted. */
+  const pull = (n, w) => git(main, "push", "-q", "origin", `${w.head}:refs/pull/${n}/head`);
   const prs = (list) => writeFileSync(join(top, "prs.json"), JSON.stringify(list));
   const offline = () => rmSync(join(top, "prs.json"), { force: true });
   const trees = () => git(main, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
   const branches = () => git(main, "branch", "--format=%(refname:short)").split("\n");
-  return { top, main, dir, git, run, ok, work, prs, offline, trees, branches };
+  return { top, main, dir, git, run, ok, work, pull, prs, offline, trees, branches };
 }
 
 test("T45: sage worktrees removes the clean worktrees of finished work that are on the remote, keeps the others with the reason, and gives the same result twice", () => {
@@ -1441,10 +1444,11 @@ test("T45: sage worktrees removes the clean worktrees of finished work that are 
   const local = r.work("merged", { push: false });
   const open = r.work("abandoned"); // its PR is still open
   const building = r.work("building");
-  const closed = r.work("building"); // its PR is closed
+  const closed = r.work("building", { owned: false }); // no task owns it, and its PR is closed
   const running = r.work("merged");
   r.ok("run", "add", running.id, "--role", "implementer", "--branch", running.branch);
   const squashed = r.work("merged"); // GitHub deleted its branch after the squash merge: only the PR head proves it
+  r.pull(9, squashed);
   r.git(r.main, "push", "-q", "origin", "--delete", squashed.branch);
   const branchOnly = r.work("concluded", { tree: false });
   r.ok("task", "add", "--title", "the main checkout", "--size", "small");
@@ -1452,9 +1456,9 @@ test("T45: sage worktrees removes the clean worktrees of finished work that are 
   byHand(r.dir, "tasks", 0, "T11", (cells) => cells.with(5, "merged"));
   mkdirSync(join(r.top, "app-t12")); // a folder that is no worktree
   r.prs([
-    { number: 5, state: "OPEN", headRefName: open.branch, headRefOid: open.head },
-    { number: 7, state: "CLOSED", headRefName: closed.branch, headRefOid: closed.head },
-    { number: 9, state: "MERGED", headRefName: squashed.branch, headRefOid: squashed.head },
+    { number: 5, state: "OPEN", headRefName: open.branch, headRefOid: open.head, isCrossRepository: false },
+    { number: 7, state: "CLOSED", headRefName: closed.branch, headRefOid: closed.head, isCrossRepository: false },
+    { number: 9, state: "MERGED", headRefName: squashed.branch, headRefOid: squashed.head, isCrossRepository: false },
   ]);
   const kept = [
     `${modified.path} · ${modified.branch} · T2 merged: kept: it has changes that are not committed`,
@@ -1555,7 +1559,6 @@ test("T45: moving a task to merged, concluded or abandoned tidies its worktree i
   assert.equal(plain.ok("task", "T1", "set", "state=abandoned"), "T1 abandoned · small · round 0 · route build,code-review,qa");
 });
 
-// Keep this test last: it reads every line that the tests above made the tool print.
 test("QA-2: every line the tool prints says logbook, never store, and merge check, never merge gate, and holds no control character", () => {
   const s = store();
   assert.equal(s.ok("init"), `logbook ${s.dir}`);
@@ -1640,3 +1643,133 @@ test("F-T42-2: a config write never lands on a link's target, also when a link r
   }
   assert.deepEqual(readdirSync(s.home).filter((n) => n.startsWith("config.json.") && !/\.(l|r)$/.test(n)), [], "no temp file is left");
 });
+
+test("T45-BUILDING-REMOVED: while a task owns the branch, only its state makes the worktree stale; a closed or merged PR counts only for a branch that no task owns", () => {
+  const r = rig();
+  const building = r.work("building");
+  const repairing = r.work("repairing");
+  const orphan = r.work("building", { owned: false });
+  const same = (n, state, w) => ({ number: n, state, headRefName: w.branch, headRefOid: w.head, isCrossRepository: false });
+  r.prs([same(1, "CLOSED", building), same(2, "MERGED", repairing), same(3, "CLOSED", orphan)]);
+  const lines = [`${orphan.path} · ${orphan.branch} · PR 3 closed: removed`];
+  assert.equal(r.ok("worktrees"), lines.join("\n"));
+  assert.deepEqual([existsSync(building.path), existsSync(repairing.path), existsSync(orphan.path)], [true, true, false]);
+  assert.equal(r.ok("worktrees"), "no stale worktrees", "a second run finds nothing");
+});
+
+test("T45-PR-NAME-MATCH: a PR makes a branch that no task owns stale only when its head is the branch's head and it comes from the same repository", () => {
+  const r = rig();
+  const moved = r.work("building", { owned: false });
+  const fork = r.work("building", { owned: false });
+  r.prs([
+    { number: 1, state: "MERGED", headRefName: moved.branch, headRefOid: "0".repeat(40), isCrossRepository: false },
+    { number: 2, state: "MERGED", headRefName: fork.branch, headRefOid: fork.head, isCrossRepository: true },
+  ]);
+  assert.equal(r.ok("worktrees"), "no stale worktrees");
+  assert.deepEqual([existsSync(moved.path), existsSync(fork.path)], [true, true]);
+});
+
+test("T45-REBUILDABLE-NAME: a nested git repository in a rebuildable folder keeps the worktree, as a folder or a .git file", () => {
+  const r = rig();
+  writeFileSync(join(r.main, ".git", "info", "exclude"), "node_modules/\n.venv/\n");
+  const dep = r.work("merged");
+  const venv = r.work("merged");
+  mkdirSync(join(dep.path, "node_modules", "dep"), { recursive: true });
+  r.git(join(dep.path, "node_modules", "dep"), "init", "-q");
+  writeFileSync(join(dep.path, "node_modules", "dep", "x.js"), "x\n");
+  r.git(join(dep.path, "node_modules", "dep"), "add", ".");
+  r.git(join(dep.path, "node_modules", "dep"), "commit", "-qm", "unpushed");
+  mkdirSync(join(venv.path, ".venv", "src", "pkg"), { recursive: true });
+  writeFileSync(join(venv.path, ".venv", "src", "pkg", ".git"), "gitdir: /elsewhere\n");
+  r.prs([]);
+  const kept = [
+    `${dep.path} · ${dep.branch} · T1 merged: kept: a nested git repository: node_modules/dep`,
+    `${venv.path} · ${venv.branch} · T2 merged: kept: a nested git repository: .venv/src/pkg`,
+  ].join("\n");
+  assert.equal(r.ok("worktrees"), kept);
+  assert.equal(r.ok("worktrees"), kept, "a second run prints the same lines");
+  assert.deepEqual([existsSync(join(dep.path, "node_modules", "dep", "x.js")), existsSync(join(venv.path, ".venv", "src", "pkg", ".git"))], [true, true]);
+});
+
+test("T45-SKIPWORKTREE-LOST: a file marked skip-worktree or assume-unchanged keeps the worktree, as git status hides its edits", () => {
+  const r = rig();
+  const skip = r.work("merged");
+  const assume = r.work("merged");
+  r.git(skip.path, "update-index", "--skip-worktree", "a.txt");
+  writeFileSync(join(skip.path, "a.txt"), "hidden edit\n");
+  r.git(assume.path, "update-index", "--assume-unchanged", "a.txt", "T2.txt");
+  writeFileSync(join(assume.path, "a.txt"), "hidden edit\n");
+  r.prs([]);
+  const kept = [
+    `${skip.path} · ${skip.branch} · T1 merged: kept: files hidden from git status: a.txt`,
+    `${assume.path} · ${assume.branch} · T2 merged: kept: files hidden from git status: T2.txt, a.txt`,
+  ].join("\n");
+  assert.equal(r.ok("worktrees"), kept);
+  assert.equal(r.ok("worktrees"), kept, "a second run prints the same lines");
+  assert.equal(readFileSync(join(skip.path, "a.txt"), "utf8"), "hidden edit\n");
+});
+
+test("T45-STALE-TRACKING-REF: the last commit must be on the remote itself: a forged tracking ref proves nothing, a remote branch that moved on proves it, and an unreachable remote keeps", () => {
+  const r = rig();
+  const forged = r.work("merged", { push: false });
+  r.git(r.main, "update-ref", "refs/remotes/origin/forged", forged.head); // a local tracking ref that the remote never had
+  const ahead = r.work("merged");
+  const other = join(r.top, "other");
+  r.git(r.top, "clone", "-q", "-b", ahead.branch, join(r.top, "remote.git"), "other");
+  writeFileSync(join(other, "more.txt"), "more\n");
+  r.git(other, "add", ".");
+  r.git(other, "commit", "-qm", "more");
+  r.git(other, "push", "-q", "origin", ahead.branch);
+  r.git(r.main, "update-ref", "-d", `refs/remotes/origin/${ahead.branch}`); // no local ref holds the remote's new commit
+  r.prs([]);
+  assert.equal(r.ok("worktrees"), [
+    `${forged.path} · ${forged.branch} · T1 merged: kept: its last commit ${forged.head.slice(0, 7)} is not on the remote`,
+    `${ahead.path} · ${ahead.branch} · T2 merged: removed`,
+  ].join("\n"));
+  assert.deepEqual(r.branches(), [forged.branch, "main"].sort(), "the fetch changes no local branch");
+
+  const away = r.work("merged");
+  r.git(r.main, "remote", "set-url", "origin", join(r.top, "gone.git"));
+  const kept = [
+    `${forged.path} · ${forged.branch} · T1 merged: kept: the remote cannot be reached`,
+    `${away.path} · ${away.branch} · T3 merged: kept: the remote cannot be reached`,
+  ].join("\n");
+  assert.equal(r.ok("worktrees"), kept);
+  assert.equal(r.ok("worktrees"), kept, "a second run prints the same lines");
+});
+
+test("T45-ANY-LOCAL-BRANCH: sage never deletes the remote's default branch, main, master, or the branch of the main checkout", () => {
+  const r = rig();
+  const develop = join(r.top, "app-develop");
+  r.git(r.main, "worktree", "add", "-q", develop, "-b", "develop");
+  r.git(r.main, "push", "-q", "origin", "develop");
+  r.git(join(r.top, "remote.git"), "symbolic-ref", "HEAD", "refs/heads/develop");
+  r.git(r.main, "branch", "master");
+  r.git(r.main, "push", "-q", "origin", "master");
+  for (const b of ["develop", "master"]) {
+    const id = r.ok("task", "add", "--title", b, "--size", "small").split(" ")[0];
+    r.ok("task", id, "set", `branch=${b}`);
+    byHand(r.dir, "tasks", 0, id, (cells) => cells.with(5, "merged"));
+  }
+  r.prs([]);
+  assert.equal(r.ok("worktrees"), "no stale worktrees");
+  assert.deepEqual([existsSync(develop), r.branches()], [true, ["develop", "main", "master"]]);
+});
+
+test("T45-CHECKOUT-HINT: sage worktrees names the main checkout of the project it runs in, so another project's run tidies it later", () => {
+  const a = rig();
+  a.prs([]);
+  const b = rig();
+  const done = b.work("merged");
+  b.prs([]);
+  rmSync(join(b.dir, "checkout.txt"));
+  const bHome = join(b.top, "home");
+  const env = { ...process.env, SAGE_HOME: bHome, SAGE_GH: join(b.top, "gh"), GIT_CONFIG_GLOBAL: join(b.top, "gitconfig") };
+  const dry = spawnSync("node", [TOOL, "worktrees", "--dry-run", "--project", b.main], { encoding: "utf8", env, timeout });
+  assert.equal(dry.stdout.trim(), `${done.path} · ${done.branch} · T1 merged: would remove`, dry.stderr);
+  assert.equal(readFileSync(join(b.dir, "checkout.txt"), "utf8"), `${b.main}\n`);
+  const r = spawnSync("node", [TOOL, "worktrees", "--project", a.main], { encoding: "utf8", env, timeout });
+  assert.equal(r.stdout.trim(), `${done.path} · ${done.branch} · T1 merged: removed`, r.stderr);
+});
+
+// Keep this test last: it reads every line that the tests above made the tool print.
