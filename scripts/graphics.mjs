@@ -220,11 +220,11 @@ function walkthrough(t) {
     return { svg: rect(x, y, w, h, { rx: 16, fill: you ? t.accent : t.chip }) + text(x + 16, y + 28, lines, { size: 16, fill: you ? "#FFFFFF" : t.ink, lh: 1.5 }), y: y + h / 2, n, x: x + w };
   };
   const b = [
-    bubble("you", py + 76, ["sage mode. TrackMe: add CSV export,", "and fix this week's crash."], 340, 1),
-    bubble("chief", py + 160, ["T1 export: large · data", "T2 crash: small · input", "T2 starts now."], 300, 2),
-    bubble("chief", py + 268, ["One question for T1: include deleted", "trips in the export? Recommended: no.", "Default if you don't answer: no."], 340, 3),
-    bubble("you", py + 380, ["no"], 58, 3),
-    bubble("chief", py + 438, ["T2: build → code review → security", "→ QA. Repair round 1: an empty date", "still crashed. Fixed in 4787c81."], 340, 4),
+    bubble("you", py + 76, ["sage mode. Ramen Finder: add a", "favourites list, and fix this week's crash."], 360, 1),
+    bubble("chief", py + 160, ["T1 favourites: large · data", "T2 crash: small · input", "T2 starts now."], 300, 2),
+    bubble("chief", py + 268, ["One question for T1: sync favourites", "across devices? Recommended: not now.", "Default if you don't answer: not now."], 360, 3),
+    bubble("you", py + 380, ["not now"], 100, 3),
+    bubble("chief", py + 438, ["T2: build → code review → security", "→ QA. Repair round 1: an empty", "search still crashed. Fixed in 4787c81."], 340, 4),
     bubble("chief", py + 550, ["T2 verified. QA ran the app: PASS.", "→ PR #41 is ready for you."], 312, 5),
   ];
   const notes = [

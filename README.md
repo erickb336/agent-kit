@@ -47,7 +47,7 @@ In the desktop app, run `claude plugin marketplace add erickb336/sage` and then 
 **3. Make the hand sign:** start a message with "sage mode", then say what you want.
 
 ```
-sage mode. TrackMe: add CSV export of trips, and fix this week's crash.
+sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 ```
 
 <picture>

@@ -346,53 +346,54 @@ flowchart TB
 
 <h2 id="prototype">13. Prototype: a sample session</h2>
 <p><strong>Sample data. This is made up to show the experience, not a real run.</strong> You're on your phone, in a session in <code>~/workspace</code>.</p>
-<pre>You     sage mode. TrackMe: add CSV export of trips, and fix the 3 crash reports from this week.
+<pre>You     sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 
-Chief   Sage mode on. Store: ~/.claude/sage/trackme/ (new).
+Chief   Sage mode on. Store: ~/.claude/sage/ramen-finder/ (new).
         2 tasks:
-        T1  CSV export       large · personal data
+        T1  Favourites list    large · personal data
             Design (arena 3) → PE → you → Build → code, security, UX review → QA live
-        T2  3 crash reports  small · probably one cause (date parsing)
-            Build → code review → QA live
+        T2  This week's crash  small · outside input · likely cause: search input
+            Build → code, security review → QA live
         T2 starts now. One question before T1's build:
-        ▸ Should the export include deleted trips?  Recommended: no.  Default if no answer: no.
+        ▸ Sync favourites across devices?  Recommended: not now.
+          Default if you don't answer: not now.
 
-You     no
+You     not now
 
-Chief   T2: implementer started (branch claude/t2-date-crash).
-        T1: 3 designers started: one-tap export · export screen with filters · share sheet.
+Chief   T2: implementer started (branch claude/t2-search-crash).
+        T1: 3 designers started: one-tap heart · favourites tab with sort · saved lists.
         status · T1 designing · T2 building · 0 gates open
 
         … 20 minutes later …
 
-Chief   T1: the PE picked "export screen with filters" as the base, plus the
-        one-tap button from candidate 1.  [3 screenshots]  Keep, change or drop?
+Chief   T1: the PE picked "favourites tab with sort" as the base, plus the
+        one-tap heart from candidate 1.  [3 screenshots]  Keep, change or drop?
 
 You     keep
 
 Chief   T1: implementer started on the kept design.
-        T2: code review found 1 finding (F-T2-1: an empty date still crashes). Repair round 2.
+        T2: code review found 1 finding (F-T2-1: an empty search still crashes). Repair round 1.
 
         … later …
 
-Chief   T2 verified: QA live PASS on a1b2c3d, 2 clean cycles. Autopilot is on: merged PR #41.
-        T1: security review found 1 high finding (F-T1-3: the file name contains the user's
-        email). Repair round 2 of 3.
-        Lesson: date parsing caused 2 of the 3 crashes. Proposed kitchen change: a lint rule
-        against raw date parsing.  ▸ Approve?  Default: no.
-        status · T1 repairing 2/3 · T2 merged · 1 gate open</pre>
+Chief   T2: an empty search still crashed. Fixed in 4787c81.
+        T2 verified. QA ran the app: PASS. → PR #41 is ready for you.
+        T1: security review found 1 high finding (F-T1-3: one user can read another
+        user's favourites). Repair round 2 of 3.
+        Lesson: input handling caused 2 of the last 3 crashes. Proposed kitchen change:
+        a lint rule against raw search input.  ▸ Approve?  Default: no.
+        status · T1 repairing 2/3 · T2 ready for you · 1 gate open</pre>
 <div class="grid">
 <div><h3>status.md (sample)</h3>
-<pre>sage · trackme · 14:32
-tasks   2 · merged 1 · repairing 1
+<pre>sage · ramen-finder · 14:32
+tasks   2 · verified 1 · repairing 1
 gates   1 open · G-3 lint rule, default no
 agents  11 runs · about 410k tokens</pre></div>
 <div><h3>ledger.tsv (sample)</h3>
-<pre>task pr  sha     verdict       cycle
-T2   41  a1b2c3d review-clean  1
-T2   41  a1b2c3d qa-live-pass  1
-T2   41  a1b2c3d review-clean  2
-T2   41  a1b2c3d qa-live-pass  2</pre></div>
+<pre>task pr  sha     verdict         cycle
+T2   41  4787c81 review-clean    1
+T2   41  4787c81 security-clean  1
+T2   41  4787c81 qa-pass         1</pre></div>
 </div>
 
 <h2 id="plan">14. The plan</h2>

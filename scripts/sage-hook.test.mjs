@@ -44,7 +44,7 @@ const denied = (out) => (out?.hookSpecificOutput?.permissionDecision === "deny" 
 test("sage mode makes the session the chief of staff, and only subagents may change files", () => {
   const s = session();
   assert.equal(denied(s.send(edit())), undefined, "before sage mode, the session may edit");
-  const on = context(s.send(prompt("sage mode. TrackMe: fix the crash reports")));
+  const on = context(s.send(prompt("sage mode. Ramen Finder: fix the crash reports")));
   assert.match(on, /sage mode is on/);
   assert.match(on, /# Chief of staff \(sage mode\)/);
   assert.match(on, /The state tool: node ".*skills\/sage\/sage\.mjs" <command> --project <path>\. Each shell call starts fresh, so write this full command every time/);
@@ -163,7 +163,7 @@ test("a phrase switches something on only at the start of a message; off works a
   const s = session();
   assert.equal(s.send(prompt("can you make it more playful and put naruto in sage mode somewhere")), undefined, "a real message that a mid-sentence trigger switched on by mistake");
   assert.equal(denied(s.send(edit())), undefined, "so the session may still edit");
-  assert.match(context(s.send(prompt("Sage mode. TrackMe: fix the crash"))), /sage mode is on/);
+  assert.match(context(s.send(prompt("Sage mode. Ramen Finder: fix the crash"))), /sage mode is on/);
   assert.match(context(s.send(prompt("should I turn autopilot on later?"))), /^$/, "a question about autopilot does not switch it on");
   const merge = () => denied(s.send(bash("gh pr merge 41 --squash --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")));
   assert.match(merge(), /autopilot is off/);
@@ -171,5 +171,5 @@ test("a phrase switches something on only at the start of a message; off works a
   assert.match(context(s.send(prompt("ok, please turn autopilot off now"))), /autopilot is off/, "off works mid-sentence");
   assert.match(context(s.send(prompt("thanks, you can switch sage mode off"))), /sage mode is off/);
   const fresh = session();
-  assert.match(context(fresh.send(prompt("sage mode autopilot. TrackMe: ship the export"))), /sage mode is on[\s\S]*autopilot is on/, "one message can switch both on");
+  assert.match(context(fresh.send(prompt("sage mode autopilot. Ramen Finder: ship the favourites list"))), /sage mode is on[\s\S]*autopilot is on/, "one message can switch both on");
 });
