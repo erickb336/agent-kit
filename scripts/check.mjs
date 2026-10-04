@@ -93,14 +93,15 @@ for (const o of overrides(ROOT)) {
 }
 
 // The README's graphics are exactly what scripts/graphics.mjs draws, so nobody edits or adds an SVG by hand. Each text
-// stays 7 px or more on a phone, where GitHub shows a graphic 358 px wide (a 390 px screen less the page margins).
+// stays 7 px or more on a phone, where GitHub shows a graphic 324 px wide (the README column on a 390 px screen).
 const drawn = new Map(graphics());
 for (const [f, svg] of drawn) {
   const file = join(ROOT, "docs/assets", f);
   if (!existsSync(file) || readFileSync(file, "utf8") !== svg) problems.push(`docs/assets/${f}: out of date; run npm run graphics`);
   const width = +/viewBox="0 0 ([\d.]+)/.exec(svg)[1];
   const small = Math.min(...[...svg.matchAll(/font-size="([\d.]+)"/g)].map((m) => +m[1]));
-  if ((small * 358) / width < 7) problems.push(`docs/assets/${f}: a ${small} px text is ${((small * 358) / width).toFixed(1)} px on a phone; make it ${Math.ceil((7 * width) / 358)} px or more`);
+  const PHONE = 324;
+  if ((small * PHONE) / width < 7) problems.push(`docs/assets/${f}: a ${small} px text is ${((small * PHONE) / width).toFixed(1)} px on a phone; make it ${Math.ceil((7 * width) / PHONE)} px or more`);
 }
 for (const f of readdirSync(join(ROOT, "docs/assets")).filter((f) => f.endsWith(".svg") && !drawn.has(f))) problems.push(`docs/assets/${f}: scripts/graphics.mjs does not draw it; draw it there, or delete it`);
 

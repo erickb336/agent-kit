@@ -44,7 +44,7 @@
 <rect x="213" y="22" width="14" height="186" rx="7" fill="#3D2D21" stroke="#120C08" stroke-width="1"/>
 <rect x="1059" y="22" width="14" height="186" rx="7" fill="#3D2D21" stroke="#120C08" stroke-width="1"/>
 <rect x="1014" y="150" width="20" height="20" rx="2" fill="#C2410C" opacity="0.85"/>
-<text x="262" y="91.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="22" font-weight="800" fill="#FFC93C" text-anchor="start" letter-spacing="2"><tspan x="262" dy="0">TIP</tspan></text>
+<text x="262" y="91.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="24" font-weight="800" fill="#FFC93C" text-anchor="start" letter-spacing="2"><tspan x="262" dy="0">TIP</tspan></text>
 <text x="262" y="127.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="24" font-weight="600" fill="#FFF3E6" text-anchor="start"><tspan x="262" dy="0">Try it on one small, real bug, from your phone.</tspan><tspan x="262" dy="33.599999999999994">Then look at the result, not the code.</tspan></text>
 </g>
 <rect x="0.75" y="0.75" width="1098.5" height="228.5" rx="23.25" fill="none" stroke="#3A2414" stroke-width="1.5"/>

@@ -1,7 +1,7 @@
-<picture>
+<a href="docs/assets/hero-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="sage: your chief of staff for Claude Code. Start a message with “sage mode”. A hooded toad sage with glowing gold eyes, the chief of staff, meditates in front of a big moon in a misty mountain world. Around it, its team on an arrowed loop: designer, PE, implementer, arena judge, code review, security, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
-</picture>
+  <img alt="sage: your chief of staff for Claude Code. Start a message with “sage mode”. A hooded toad sage with glowing gold eyes, the chief of staff, meditates in front of a big moon in a misty mountain world. Around it, its team on an arrowed loop: designer, PE, implementer, arena judge, code review, security review, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
+</picture></a>
 
 <p align="center">
   <a href="https://github.com/erickb336/sage/actions/workflows/check.yml"><img alt="checks" src="https://github.com/erickb336/sage/actions/workflows/check.yml/badge.svg"></a>
@@ -25,7 +25,7 @@ sage mode works the same way:
 
 - **The chief of staff stays still.** It never edits a file. It frames the work, writes the briefs and keeps the record.
 - **It gathers natural energy.** Here, that energy is the team's work: specialists work in parallel, each in its own git worktree.
-- **It sees the whole.** It groups related work, puts tasks that share code in order, and turns a mistake that repeats into a rule.
+- **It sees the whole.** It groups related work, puts tasks that share code in order, and gives a mistake that repeats a lasting fix.
 
 The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
 
@@ -50,10 +50,10 @@ In the desktop app, run `claude plugin marketplace add erickb336/sage` and then 
 sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 ```
 
-<picture>
+<a href="docs/assets/tip-start-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-start-dark.svg">
   <img alt="The toad sage's tip: start a message with “sage mode” to switch it on, and with “sage mode off” to switch it off. In the middle of a sentence, it does nothing." src="docs/assets/tip-start-light.svg" width="100%">
-</picture>
+</picture></a>
 
 That's all. The chief of staff asks you at most one question per task, then comes back with results and pull requests. From your phone, it works the same through [Remote Control](#remote-control).
 
@@ -61,10 +61,10 @@ That's all. The chief of staff asks you at most one question per task, then come
 
 This is one session, step by step. It is an illustration with sample data.
 
-<picture>
+<a href="docs/assets/walkthrough-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/walkthrough-dark.svg">
-  <img alt="Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with five numbered notes." src="docs/assets/walkthrough-light.svg" width="100%">
-</picture>
+  <img alt="Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with sample data. You: “sage mode. Ramen Finder: add a favourites list, and fix this week's crash.” The chief frames T1, favourites, as large with the data flag, and T2, the crash, as small with the input flag, and starts T2. It asks one question for T1: sync favourites across devices? Recommended, and the default if you don't answer: not now. You answer “not now”. T2 goes through build, code review, security review and QA; repair round 1 fixes an empty search that still crashed. T2 is verified: QA ran the app and passed. Not checked: the tablet layout. Pull request #41 is ready for you. Five numbered notes match the steps below." src="docs/assets/walkthrough-light.svg" width="100%">
+</picture></a>
 
 1. **Switch it on.** Start a message with "sage mode", then your request. sage mode stays on until you start a message with "sage mode off".
 2. **The chief frames each task.** It gives each task a size (tiny, small, large or investigate) and risk flags, such as `data` for personal data or `input` for outside input. The size and the flags give the task its [route](#routes): the steps it must go through.
@@ -74,29 +74,29 @@ This is one session, step by step. It is an illustration with sample data.
 
 **Try it yourself.** Pick one small, real bug in a project that has tests and a GitHub remote. Start a session from your phone, start your message with "sage mode", and describe the bug. Then look at the result, not the code.
 
-<picture>
+<a href="docs/assets/tip-try-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-try-dark.svg">
   <img alt="The toad sage's tip: try it on one small, real bug, from your phone. Then look at the result, not the code." src="docs/assets/tip-try-light.svg" width="100%">
-</picture>
+</picture></a>
 
 ## How it works
 
-<picture>
+<a href="docs/assets/loop-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/loop-dark.svg">
   <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the store, and the outer loop that seals each lesson." src="docs/assets/loop-light.svg" width="100%">
-</picture>
+</picture></a>
 
 There are two loops:
 
 - **The inner loop** turns a request into verified work. The chief briefs the team. The team designs, builds, reviews and tests. Findings go back to the build. A clean result becomes a pull request.
-- **The outer loop** seals the lesson. When the same kind of problem comes back twice, the chief proposes a change that stops it for good: a test, a lint, a check, a principle, or a standing order. That is how [the dojo](#concepts) gets stronger.
+- **The outer loop** [seals the lesson](#concepts): it gives a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes [the dojo](#concepts) stronger. The dojo is everything that makes the agents good: the principles, checks, tests and skills.
 
-<picture>
+<a href="docs/assets/tip-seal-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-seal-dark.svg">
-  <img alt="The toad sage's tip: seal the lesson. A mistake that comes back twice is sealed into code, as a test, a check or a rule. That is how the dojo gets stronger." src="docs/assets/tip-seal-light.svg" width="100%">
-</picture>
+  <img alt="The toad sage's tip: seal the lesson. Give a mistake that comes back twice a lasting fix: a test or a check in code first; a principle or a standing order only when code cannot hold it. That is how the dojo gets stronger." src="docs/assets/tip-seal-light.svg" width="100%">
+</picture></a>
 
-The state lives in plain files, in `~/.claude/sage/<project>-<hash>/`: the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
+The state lives in the store: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
 
 ### The team
 
@@ -118,17 +118,17 @@ Only one agent writes on a branch at a time. Reviewers start fresh, so they don'
 
 Each task gets the least route for its size. The chief can add steps, never remove these.
 
-<picture>
+<a href="docs/assets/routes-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/routes-dark.svg">
-  <img alt="Routes by size: tiny, small, large and investigate, each with its steps." src="docs/assets/routes-light.svg" width="100%">
-</picture>
+  <img alt="Routes by size. Tiny: build. Small: build, code review, QA. Large: design, PE check, you approve, build, code review, security review, UX review, QA. Investigate: gather evidence, evidence review, a proposal to you. A risk flag adds the security review to every size except investigate, which changes no code." src="docs/assets/routes-light.svg" width="100%">
+</picture></a>
 
 ### A task's life
 
-<picture>
+<a href="docs/assets/lifecycle-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lifecycle-dark.svg">
-  <img alt="A task's states, from framed to merged, with the repair loop and the held state." src="docs/assets/lifecycle-light.svg" width="100%">
-</picture>
+  <img alt="A task's states: framed, briefed, building, reviewing, verifying, verified, merged. A product question moves a building task to held until your answer. Findings to fix, or a QA fail, move it from verifying to repairing, and the next round goes back to reviewing, at most 3 rounds. Verified needs 1 clean cycle; autopilot merges after 2 in a row." src="docs/assets/lifecycle-light.svg" width="100%">
+</picture></a>
 
 A **cycle** is one full set of fresh reviews and QA on one commit. A task is **verified** after 1 clean cycle. With autopilot on, it **merges** after 2 clean cycles in a row on the same commit.
 
@@ -150,10 +150,10 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 
 When a design has no clear answer, the chief can run an **arena**. You can also ask for one: "arena" or "arena 4".
 
-<picture>
+<a href="docs/assets/arena-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/arena-dark.svg">
   <img alt="The arena: one brief and a hidden rubric, three candidates on a mix of Claude models, an arena judge, one final version." src="docs/assets/arena-light.svg" width="100%">
-</picture>
+</picture></a>
 
 1. The chief writes a rubric: 3 to 6 criteria that a judge can grade. The candidates don't see it.
 2. N candidates (3 by default) get the same brief, each with a different angle, on a mix of Claude models.
@@ -178,8 +178,8 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
 | **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. "autopilot off" works anywhere. |
-| **The dojo** | Everything that makes the agents good: principles, checks, tests, skills. |
-| **Seal the lesson** | Turn a mistake that comes back twice into code: a test, a check or a rule. Each sealed lesson makes the dojo stronger. |
+| **The dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
+| **Seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
 
 ## What to say
 
@@ -190,10 +190,10 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | `status` | Where each task is: running, waiting for you, verified. |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
 | `autopilot on` at the start of a message, or `sage mode autopilot` | Verified pull requests merge by themselves after 2 clean cycles. |
-| `autopilot off` or `stop autopilot`, anywhere in a message | Verified pull requests wait for you again. |
+| `autopilot off`, `stop autopilot` or `disable autopilot`, anywhere in a message | Verified pull requests wait for you again. |
 | `sage mode off` at the start of a message | A normal session again. |
 
-Only the start of a message switches a mode: "sage mode", "sage mode off" and "autopilot on". A mention in the middle of a sentence, or in an agent's report, switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after the phrase: "autopilot on?" and "autopilot on main" switch nothing. Only "autopilot off" works anywhere in a message, because a missed "off" lets merges go on.
+Only the start of a message switches a mode: "sage mode" (or "sage mode on"), "sage mode off" and "autopilot on". A mention in the middle of a sentence, or in an agent's report, switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after the phrase: "autopilot on?", "autopilot on main" and "sage mode off?" switch nothing. Only an autopilot off works anywhere in a message ("autopilot off", "stop autopilot", "disable autopilot", "no autopilot" and the like), because a missed "off" lets merges go on.
 
 To make every session in a folder start in sage mode, put this in the folder's `.claude/settings.json`:
 
@@ -258,10 +258,10 @@ The hook also has **one gate**. When the agent tries to finish, the code changed
 
 pstack changes often. sage follows it so that you don't have to.
 
-<picture>
+<a href="docs/assets/pstack-light.svg"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pstack-dark.svg">
-  <img alt="Following pstack: a weekly sync into upstream/pstack, your versions in principles/, one build, the sage plugin." src="docs/assets/pstack-light.svg" width="100%">
-</picture>
+  <img alt="Following pstack: a weekly sync into upstream/pstack, local versions in principles/ that win, one build, the sage plugin. If pstack changed a local version, the update waits for review; otherwise it merges." src="docs/assets/pstack-light.svg" width="100%">
+</picture></a>
 
 1. `upstream/pstack/` holds pstack's principles and its MIT licence, at the commit in `upstream/pstack.json`.
 2. The build takes each pstack principle as it is, unless `principles/` has my version with the same name.

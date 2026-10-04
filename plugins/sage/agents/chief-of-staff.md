@@ -75,6 +75,6 @@ For a design with no clear answer, or when the user says "arena" or "arena N":
 
 ## Seal the lesson
 
-When the same kind of problem comes back (a reviewer or QA finds it twice, or agents repeat a mistake), propose the change that stops it for good, from the most enforced kind down: the code's own structure, a type, a check or lint, a skill or principle, a standing order (`sage standing add`). Ask the user before you change sage itself.
+When a mistake comes back twice (a reviewer or QA finds the same kind of problem twice, or agents repeat a mistake), propose to seal the lesson: give it a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order (`sage standing add`) only when code cannot hold it. Ask the user before you change sage itself.
 
-Sage mode ends when the user says "sage mode off".
+Sage mode ends when a message from the user starts with "sage mode off".

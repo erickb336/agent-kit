@@ -3,7 +3,8 @@
 // Every graphic shows the same misty mountain world (see "The misty mountain world" below), with the hooded toad sage
 // and its team as toad spirits in medallions. The look is inspired by Sage Mode in Naruto (orange markings, a toad-like
 // eye, natural energy) with original shapes only: no characters, logos, clothing patterns or village symbols.
-// Each text is 7 px or more on a phone, where a graphic is 358 px wide: `npm run check` checks it.
+// Each text is 7 px or more on a phone, where a graphic is 324 px wide: `npm run check` checks it. So the smallest
+// text is SMALL (24) in a graphic 1100 wide, and 28 in the hero, which is 1280 wide.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,7 @@ const THEMES = {
 };
 const SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif";
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+const SMALL = 24;
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const attrs = (o) => Object.entries(o).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => `${k}="${v}"`).join(" ");
@@ -281,7 +283,7 @@ function toadSage(cx, cy, s, id, { bust = false } = {}) {
 }
 
 // The roles on the ring, clockwise from one o'clock. The writers (true) work in their own worktrees.
-const RING = [["Designer", true, "scroll"], ["PE", false, "square"], ["Implementer", true, "anvil"], ["Arena judge", true, "scales"], ["Code review", false, "lens"], ["Security", false, "shield"], ["UX review", false, "mirror"], ["QA", false, "orb"]];
+const RING = [["Designer", true, "scroll"], ["PE", false, "square"], ["Implementer", true, "anvil"], ["Arena judge", true, "scales"], ["Code review", false, "lens"], ["Security review", false, "shield"], ["UX review", false, "mirror"], ["QA", false, "orb"]];
 // Where the spirit's hand goes for each tool, in medallion units (the medallion has a radius of 50).
 const HANDS = { scroll: [10, 6], square: [13, 6], anvil: [8, 2], scales: [12, 10], lens: [9, 7], shield: [12, 6], mirror: [19, 16], orb: [18, 11] };
 
@@ -339,8 +341,9 @@ function medallion(x, y, r, tool, writes, id) {
 }
 
 /** A name plaque: a dark tablet with the label. anchor says which edge x is: "start", "middle" or "end". */
+const plaqueW = (label, size = 28) => Math.round(label.length * size * 0.55 + 36);
 function plaque(x, y, label, writes, anchor = "middle", o = {}) {
-  const size = o.size ?? 26, w = Math.round(label.length * size * 0.6 + 36), h = o.h ?? 44;
+  const size = o.size ?? 28, w = plaqueW(label, size), h = o.h ?? 44;
   const x0 = anchor === "start" ? x : anchor === "end" ? x - w : x - w / 2;
   return rect(f1(x0), f1(y - h / 2), w, h, { rx: 8, fill: o.fill ?? "#110B08", stroke: writes ? EMBER.gold : "#8E7560", sw: writes ? 2.2 : 1.4 }) +
     text(f1(x0 + w / 2), f1(y + size * 0.35), label, { size, weight: o.weight ?? 700, fill: o.ink ?? EMBER.ink, anchor: "middle", ls: o.ls });
@@ -384,7 +387,7 @@ const markers = (id, t) => [["hot", t.edge], ["muted", t.line], ["bad", t.bad], 
 const flow = (id, d, color, marker, o = {}) => `<path d="${d}" fill="none" stroke="${color}" stroke-width="${o.sw ?? 2.5}"${o.dash ? ` stroke-dasharray="${o.dash}"` : ""} stroke-linecap="round" stroke-linejoin="round"${marker ? ` marker-end="url(#${id}-${marker})"` : ""}/>`;
 
 /** A tile with a title and a smaller line or two under it. A hot tile has a glowing ember edge. */
-function tile(t, id, x, y, w, h, title, sub, hot, { titleY = 40, size = 26, subSize = 22, gap = 34, fill = t.tile, ink = t.ink, subInk = t.muted } = {}) {
+function tile(t, id, x, y, w, h, title, sub, hot, { titleY = 40, size = 26, subSize = SMALL, gap = 34, fill = t.tile, ink = t.ink, subInk = t.muted } = {}) {
   return (hot ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="none" stroke="${t.edge}" stroke-width="4" opacity="${t.glowOp}" filter="url(#${id}-glow)"/>` : "") +
     rect(x, y, w, h, { rx: 8, fill, stroke: hot ? t.edge : t.line, sw: hot ? 2 : 1.5 }) +
     text(x + w / 2, y + titleY, title, { size, weight: 800, fill: ink, anchor: "middle" }) +
@@ -395,14 +398,14 @@ const chiefTile = (id) => ({ fill: `url(#${id}-chief)`, ink: "#160902", subInk: 
 
 /** A flat plaque with one label. kind: "you" (an ember fill: a step for you), "hot" (an ember edge), "bad" (a red edge),
  *  "wait" (a dashed edge), or "plain". */
-function pill(t, id, x, y, w, h, label, kind = "plain", size = 22) {
+function pill(t, id, x, y, w, h, label, kind = "plain", size = SMALL) {
   const box = kind === "you" ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="url(#${id}-chief)"/>`
     : rect(x, y, w, h, { rx: 8, fill: t.tile, stroke: { hot: t.edge, bad: t.bad }[kind] ?? t.line, sw: kind === "hot" || kind === "bad" ? 2 : 1.5, dash: kind === "wait" ? "6 5" : undefined });
   return box + text(f1(x + w / 2), f1(y + h / 2 + size * 0.35), label, { size, weight: 700, fill: kind === "you" ? "#160902" : t.ink, anchor: "middle" });
 }
 
 /** A label in capitals, the heading inside a graphic. */
-const heading = (t, x, y, s) => text(x, y, s, { size: 22, weight: 800, fill: t.loop, ls: 2 });
+const heading = (t, x, y, s) => text(x, y, s, { size: SMALL, weight: 800, fill: t.loop, ls: 2 });
 
 /** The world behind a graphic: a moon, two rows of misty peaks with pagodas and waterfalls, mist, and embers at night.
  *  Draw it first, so that every label sits on top of it. seeds: the far peaks, the near peaks, the mist and embers.
@@ -446,11 +449,15 @@ function hero(t, id) {
   const near = ridge(seeded(55), W, H, 930, 60, 200, 110, 200);
   const at = (k) => { const a = ((22.5 + k * 45) * Math.PI) / 180; return [f1(cx + rx * Math.sin(a)), f1(cy - ry * Math.cos(a))]; };
   const meds = RING.map(([name, writes, tool], k) => ({ name, writes, tool, xy: at(k) }));
-  // Plaques face away from the sage: outward for the top and bottom pairs, below for the four at the sides.
-  const plaqueOf = ({ name, writes, xy: [x, y] }, k) =>
-    k === 0 || k === 3 ? plaque(x + mr + 12, y, name, writes, "start") :
-    k === 4 || k === 7 ? plaque(x - mr - 12, y, name, writes, "end") :
-    plaque(x, y + mr + 32, name, writes);
+  // Plaques face away from the sage: outward for the top and bottom pairs, below for the four at the sides. The bottom
+  // pair keeps its text off the sage's lap; a plaque below stays 8 px clear of the hanging scrolls (x 26 to 98, 1182 to 1254).
+  const clear = (x, name) => Math.min(Math.max(x, 106 + plaqueW(name) / 2), W - 106 - plaqueW(name) / 2);
+  const plaqueOf = ({ name, writes, xy: [x, y] }, k) => {
+    const off = mr + (k === 3 || k === 4 ? 34 : 12);
+    return k === 0 || k === 3 ? plaque(x + off, y, name, writes, "start") :
+      k === 4 || k === 7 ? plaque(x - off, y, name, writes, "end") :
+      plaque(clear(x, name), y + mr + 32, name, writes);
+  };
   const body = [
     // The sky, the moon and the far world.
     embers(r, 70, W, 20, 640),
@@ -492,11 +499,11 @@ function hero(t, id) {
     ...meds.map(plaqueOf),
     `<rect x="${cx - 128}" y="990" width="256" height="48" rx="8" fill="url(#${id}-chief)" filter="url(#${id}-glow)"/>`,
     text(cx, 1023, "Chief of staff", { size: 28, weight: 800, fill: "#160902", anchor: "middle" }),
-    rect(40, 1068, 390, 44, { rx: 8, stroke: EMBER.orange, sw: 1.5 }),
-    text(235, 1099, "Claude Code plugin · MIT", { size: 26, weight: 700, fill: EMBER.hot, anchor: "middle" }),
-    text(W - 40, 1099, "Built on pstack and poteto mode, by Lauren Tan", { size: 26, fill: EMBER.muted, anchor: "end" }),
+    rect(40, 1068, 410, 44, { rx: 8, stroke: EMBER.orange, sw: 1.5 }),
+    text(245, 1099, "Claude Code plugin · MIT", { size: 28, weight: 700, fill: EMBER.hot, anchor: "middle" }),
+    text(W - 40, 1099, "Built on pstack and poteto mode, by Lauren Tan", { size: 28, fill: EMBER.muted, anchor: "end" }),
   ].join("\n");
-  return worldSvg(W, H, id, worldDefs(id), body, "sage: your chief of staff for Claude Code. Start a message with sage mode. A hooded toad sage, the chief of staff, meditates on a rock in a misty mountain world, with glowing gold toad eyes. Around it, its team on a loop: designer, PE, implementer, arena judge, code review, security, UX review and QA. Claude Code plugin, MIT. Built on pstack and poteto mode, by Lauren Tan.", { border: t.dark ? "#3A2414" : undefined });
+  return worldSvg(W, H, id, worldDefs(id), body, "sage: your chief of staff for Claude Code. Start a message with sage mode. A hooded toad sage, the chief of staff, meditates on a rock in a misty mountain world, with glowing gold toad eyes. Around it, its team on a loop: designer, PE, implementer, arena judge, code review, security review, UX review and QA. Claude Code plugin, MIT. Built on pstack and poteto mode, by Lauren Tan.", { border: t.dark ? "#3A2414" : undefined });
 }
 
 /** How it works: you, the chief of staff (the toad sage), the team's flow to a pull request, the store, and the outer
@@ -505,11 +512,11 @@ function loop(t, id) {
   const W = 1100, H = 864;
   const defs = [worldDefs(id), markers(id, t), `<clipPath id="${id}-chiefclip"><rect x="402" y="26" width="296" height="276" rx="7"/></clipPath>`].join("\n");
   const line = (d, color, marker, o) => flow(id, d, color, marker, o);
-  const label = (x, y, s, o = {}) => text(x, y, s, { size: 22, fill: o.fill ?? t.muted, anchor: o.anchor ?? "middle", weight: o.weight, lh: 1.2, ls: o.ls });
+  const label = (x, y, s, o = {}) => text(x, y, s, { size: SMALL, fill: o.fill ?? t.muted, anchor: o.anchor ?? "middle", weight: o.weight, lh: 1.2, ls: o.ls });
 
   // The team's stages, left to right, each with the medallion of its role.
   let sx = 60;
-  const S = [["Design", ["designer", "PE"], 140, "scroll"], ["Build", "implementer", 150, "anvil"], ["Review", ["code", "security · UX"], 160, "lens"], ["QA", "the real app", 140, "orb"]].map(([title, sub, w, tool]) => {
+  const S = [["Design", ["designer", "PE"], 140, "scroll"], ["Build", "implementer", 160, "anvil"], ["Review", ["code", "security · UX"], 180, "lens"], ["QA", "the real app", 160, "orb"]].map(([title, sub, w, tool]) => {
     const st = { title, sub, w, tool, x: sx, c: sx + w / 2 };
     sx += w + 30;
     return st;
@@ -528,7 +535,7 @@ function loop(t, id) {
     rect(402, 26, 296, 276, { rx: 8, fill: "#0A0604", stroke: t.edge, sw: 2 }),
     `<g clip-path="url(#${id}-chiefclip)">${toadSage(550, 104, 0.36, id, { bust: true })}</g>`,
     text(550, 226, "Chief of staff", { size: 32, weight: 800, fill: EMBER.ink, anchor: "middle" }),
-    text(550, 258, ["routes · briefs", "ledger · gates"], { size: 22, fill: "#CDB6A0", anchor: "middle", lh: 1.2 }),
+    text(550, 258, ["routes · briefs", "ledger · gates"], { size: SMALL, fill: "#CDB6A0", anchor: "middle", lh: 1.2 }),
     line("M706 164 L 758 164", t.line, "muted"),
     `<path d="M766 104 L766 216 A148 18 0 0 0 1062 216 L1062 104" fill="${t.tile}" stroke="${t.line}" stroke-width="1.5"/>`,
     ellipse(914, 104, 148, 18, { fill: t.tile, stroke: t.line, sw: 1.5 }),
@@ -549,11 +556,11 @@ function loop(t, id) {
     // The pull request.
     line(`M${qa.x + qa.w + 5} ${ty + th / 2} L ${panelR + 30} ${ty + th / 2}`, t.edge, "hot"),
     tile(t, id, panelR + 36, ty - 20, W - 40 - panelR - 36, th + 40, "Pull request", ["you merge, or", "autopilot after", "2 clean cycles"], true),
-    // The outer loop: a mistake that comes back twice is sealed into code.
+    // The outer loop: a mistake that comes back twice gets a lasting fix.
     line(`M1064 160 L 1072 160 Q 1080 160 1080 170 L 1080 770 Q 1080 780 1070 780 L 340 780 Q 330 780 330 770 L 330 756`, t.loop, "loop", { dash: "8 8", sw: 2.5 }),
     label(W / 2, 828, "a mistake that comes back twice → seal the lesson", { fill: t.loop, weight: 700 }),
   ].join("\n");
-  return worldSvg(W, H, id, defs, body, "How sage works: you send a request to the chief of staff, the hooded toad sage, which briefs the team (design, build, review, QA) and keeps the store. Findings and QA failures go back to the build. A clean result becomes a pull request. In the outer loop, a mistake that comes back twice is sealed into code: a test, a check or a rule.", { rx: 24, bg: t.bg, border: t.border });
+  return worldSvg(W, H, id, defs, body, "How sage works: you send a request to the chief of staff, the hooded toad sage, which briefs the team (design, build, review, QA) and keeps the store. Findings and QA failures go back to the build. A clean result becomes a pull request. In the outer loop, the chief seals the lesson: a mistake that comes back twice gets a lasting fix, a test or a check in code first, a principle or a standing order only when code cannot hold it.", { rx: 24, bg: t.bg, border: t.border });
 }
 
 /** A world panel in the reader's theme, with the world's defs and arrowheads. */
@@ -561,25 +568,25 @@ const panel = (t, id, W, H, body, label) => worldSvg(W, H, id, [worldDefs(id), m
 
 /** Learn sage in 5 minutes: one session in a chat card, and five numbered notes. Sample data. */
 function walkthrough(t, id) {
-  const W = 1100, H = 864, px = 36, py = 36, pw = 500, nx = 600, size = 22, lh = 1.4, LH = size * lh;
+  const W = 1100, px = 36, py = 36, pw = 500, nx = 600, size = SMALL, lh = 1.4, LH = size * lh;
   let by = py + 84;
   const b = [
     ["you", 1, ["sage mode. Ramen Finder: add a", "favourites list, and fix this", "week's crash."]],
     ["chief", 2, ["T1 favourites: large · data", "T2 crash: small · input", "T2 starts now."]],
-    ["chief", 3, ["One question for T1: sync favourites", "across devices? Recommended: not now.", "Default if you don't answer: not now."]],
+    ["chief", 3, ["One question for T1: sync favourites", "across devices? Recommended and", "default if no answer: not now."]],
     ["you", 0, ["not now"]],
-    ["chief", 4, ["T2: build → code → security → QA.", "Repair round 1: an empty search", "still crashed. Fixed in 4787c81."]],
-    ["chief", 5, ["T2 verified. QA ran the app: PASS.", "→ PR #41 is ready for you."]],
+    ["chief", 4, ["T2: build → code review →", "security review → QA.", "Repair round 1: an empty search", "still crashed. Fixed in 4787c81."]],
+    ["chief", 5, ["T2 verified. QA ran the app: PASS.", "Not checked: the tablet layout.", "→ PR #41 is ready for you."]],
   ].map(([side, n, lines]) => {
     const w = Math.max(...lines.map((l) => tw(l, size, side === "you"))) + 36, h = f1(22 + lines.length * LH);
     const bubble = { side, n, lines, x: side === "you" ? px + pw - 22 - w : px + 22, y: f1(by), w, h, mid: f1(by + h / 2) };
     by += h + 18;
     return bubble;
   });
-  const ph = f1(by - py + 6);
+  const ph = f1(by - py + 6), H = Math.round(py + ph + 36);
   const notes = [
     [1, "Switch it on", ["Start a message with “sage mode”,", "then say what you want."]],
-    [2, "The chief frames each task", ["A size, risk flags and a route.", "A risk flag such as input adds", "the security review to a code change."]],
+    [2, "The chief frames each task", ["A size, risk flags and a route.", "A flag such as input adds the", "security review to a code change."]],
     [3, "One question, at most", ["Only a product question, with a", "recommendation and a default."]],
     [4, "The team works", ["Fresh agents build, review and test.", "Findings go back for a repair."]],
     [5, "You get results, not code", ["Evidence, what was not checked,", "and a pull request to merge."]],
@@ -612,12 +619,12 @@ function walkthrough(t, id) {
       text(nx + 48, y + 32, lines, { size, fill: t.muted, lh }),
     ].join("")),
   ].join("\n");
-  return panel(t, id, W, H, body, "Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with numbered notes. 1, switch it on: start a message with sage mode. 2, the chief frames each task. 3, one product question at most. 4, the team works. 5, you get results and a pull request.");
+  return panel(t, id, W, H, body, "Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with numbered notes. You: sage mode. Ramen Finder: add a favourites list, and fix this week's crash. The chief frames T1, favourites, large, with the data flag, and T2, the crash, small, with the input flag, and starts T2. It asks one question for T1: sync favourites across devices? Recommended, and the default if you don't answer: not now. You answer: not now. T2 goes through build, code review, security review and QA; repair round 1 fixes an empty search that still crashed. T2 is verified: QA ran the app and passed. Not checked: the tablet layout. Pull request 41 is ready for you. The notes: 1, switch it on: start a message with sage mode. 2, the chief frames each task. 3, one product question at most. 4, the team works. 5, you get results, not code.");
 }
 
 /** Routes: the least route for each size of task. */
 function routes(t, id) {
-  const W = 1100, H = 770, size = 22, ph = 48, gap = 30, x0 = 272;
+  const W = 1100, size = SMALL, ph = 48, gap = 26, x0 = 272;
   const STEP = { design: "Design", pe: "PE check", approve: "You approve", build: "Build", code: "Code review", security: "Security review", ux: "UX review", qa: "QA", evidence: "Gather evidence", review: "Evidence review", propose: "A proposal to you" };
   const rows = [
     ["tiny", ["one obvious edit"], [["build"]]],
@@ -625,10 +632,7 @@ function routes(t, id) {
     ["large", ["new screens,", "flows or data"], [["design", "pe", "approve", "build"], ["code", "security", "ux", "qa"]]],
     ["investigate", ["the cause", "is unknown"], [["evidence", "review", "propose"]]],
   ];
-  const out = [
-    backdrop(t, id, W, H, { moon: [930, 150, 120], seeds: [23, 41, 6], far: [H - 120, 60, 200, 70, 140], near: [H + 20, 90, 240, 80, 170], mist: [140, 280, H - 160], mistK: 0.6 }),
-    heading(t, 36, 62, "THE LEAST ROUTE FOR EACH SIZE"),
-  ];
+  const out = [heading(t, 36, 62, "THE LEAST ROUTE FOR EACH SIZE")];
   let y = 96;
   for (const [name, sub, lines] of rows) {
     out.push(text(36, y + 32, name, { size: 28, weight: 800, fill: t.ink }), text(36, y + 64, sub, { size, fill: t.muted, lh: 1.25 }));
@@ -637,7 +641,7 @@ function routes(t, id) {
       const ly = y + li * 88;
       let x = x0;
       steps.forEach((k, j) => {
-        const label = STEP[k], w = tw(label, size, true) + 32;
+        const label = STEP[k], w = tw(label, size, true) + 28;
         if (li > 0 && j === 0) out.push(flow(id, `M${end.cx} ${end.y + ph + 4} L ${end.cx} ${end.y + ph + 20} L ${x + w / 2} ${end.y + ph + 20} L ${x + w / 2} ${ly - 6}`, t.edge, "hot", { sw: 2 }));
         out.push(pill(t, id, x, ly, w, ph, label, k === "approve" || k === "propose" ? "you" : "plain", size));
         if (j < steps.length - 1) out.push(flow(id, `M${x + w + 4} ${ly + ph / 2} L ${x + w + gap - 6} ${ly + ph / 2}`, t.edge, "hot", { sw: 2 }));
@@ -645,22 +649,23 @@ function routes(t, id) {
         x += w + gap;
       });
     });
-    y += Math.max(lines.length * 88 - 8, 40 + sub.length * 27.5) + 22;
+    y += Math.max(lines.length * 88 - 8, 40 + sub.length * size * 1.25) + 22;
   }
-  const ny = y + 10, nh = 3 * 30.8 + 34;
+  const ny = y + 10, nh = 3 * size * 1.4 + 34, H = Math.round(ny + nh + 30);
   out.push(
     rect(36, ny, W - 72, nh, { rx: 8, fill: t.tile, stroke: t.edge, sw: 1.5 }),
     medallion(100, ny + nh / 2, 38, "shield", false, id),
-    text(160, ny + 42, ["A risk flag (auth, personal data, schema, money, secrets, outside input) adds", "the security review to every size except investigate, which changes no code.", "The chief may add steps to a route, never remove these."], { size, fill: t.ink, lh: 1.4 }),
+    text(160, ny + 42, ["A risk flag (auth, personal data, schema, money, secrets or outside", "input) adds the security review to every size except investigate,", "which changes no code. The chief may add steps, never remove these."], { size, fill: t.ink, lh: 1.4 }),
   );
+  out.unshift(backdrop(t, id, W, H, { moon: [930, 150, 120], seeds: [23, 41, 6], far: [H - 120, 60, 200, 70, 140], near: [H + 20, 90, 240, 80, 170], mist: [140, 280, H - 160], mistK: 0.6 }));
   return panel(t, id, W, H, out.join("\n"), "Routes by size. Tiny: build. Small: build, code review, QA. Large: design, PE check, you approve, build, code review, security review, UX review, QA. Investigate: gather evidence, evidence review, a proposal to you. A risk flag adds the security review to every size except investigate, which changes no code.");
 }
 
 /** A task's life: the states, with the repair loop and the held state. */
 function lifecycle(t, id) {
-  const W = 1100, H = 530, size = 22, ph = 50, y = 104, by = 256;
+  const W = 1100, H = 530, size = SMALL, ph = 50, y = 104, by = 256;
   const names = ["framed", "briefed", "building", "reviewing", "verifying", "verified", "merged"];
-  const ws = names.map((n) => tw(n, size, true) + 24);
+  const ws = names.map((n) => tw(n, size, true) + 16);
   const gap = (W - 72 - ws.reduce((a, b) => a + b)) / (names.length - 1);
   let x = 36;
   const S = Object.fromEntries(names.map((n, i) => { const s = { x: f1(x), w: ws[i], cx: f1(x + ws[i] / 2) }; x += ws[i] + gap; return [n, s]; }));
@@ -668,7 +673,7 @@ function lifecycle(t, id) {
   const held = { w: tw("held", size, true) + 64 }, rep = { w: tw("repairing", size, true) + 64 };
   held.x = f1(bu.cx - held.w / 2);
   rep.x = f1((re.cx + ve.cx) / 2 - rep.w / 2);
-  const fy = 372, fh = 3 * 30.8 + 32;
+  const fy = 372, fh = 3 * size * 1.4 + 32;
   const body = [
     backdrop(t, id, W, H, { moon: [990, 250, 100], seeds: [17, 52, 4], far: [H - 60, 60, 180, 70, 140], near: [H + 60, 90, 220, 80, 170], mist: [140, 280, H - 130], mistK: 0.6 }),
     heading(t, 36, 62, "THE STATES OF A TASK"),
@@ -689,18 +694,18 @@ function lifecycle(t, id) {
     // The rules of the states.
     rect(36, fy, W - 72, fh, { rx: 8, fill: t.tile, stroke: t.edge, sw: 1.5 }),
     text(64, fy + 40, "Verified needs 1 clean cycle. Autopilot merges after 2 in a row.", { size, weight: 700, fill: t.ink }),
-    text(64, f1(fy + 40 + 30.8), ["The state tool checks each move. A new commit voids the verdicts,", "so the task is reviewed again."], { size, fill: t.muted, lh: 1.4 }),
+    text(64, f1(fy + 40 + size * 1.4), ["The state tool checks each move. A new commit voids the verdicts,", "so the task is reviewed again."], { size, fill: t.muted, lh: 1.4 }),
   ].join("\n");
   return panel(t, id, W, H, body, "A task's life: framed, briefed, building, reviewing, verifying, verified, merged. A product question holds the task until your answer. Findings or a QA failure send it to repairing, then to review again, at most 3 rounds. Verified needs one clean cycle; autopilot merges after two.");
 }
 
 /** The arena: one brief, N candidates on a mix of Claude models, a judge, one final version. */
 function arena(t, id) {
-  const W = 1100, H = 740, size = 22, my = 236, mr = 44, jx = 550, jy = 506, jr = 56;
+  const W = 1100, H = 740, size = SMALL, my = 236, mr = 44, jx = 550, jy = 506, jr = 56;
   const cands = [["Candidate 1", "Opus · fewest taps", 190], ["Candidate 2", "Sonnet · most control", 550], ["Candidate 3", "Sonnet · reuse screens", 910]];
   const body = [
-    backdrop(t, id, W, H, { moon: [jx, jy, 150], seeds: [29, 58, 7], far: [H - 110, 60, 200, 70, 140], near: [H + 30, 90, 240, 80, 170], pagodas: [[1010, H - 130, 0.85, 1.6], [92, H - 120, 0.75, 1.6]], mist: [140, 280, H - 160], mistK: 0.6 }),
-    tile(t, id, 340, 36, 420, 100, "One brief", "+ a rubric the candidates don't see", true, { titleY: 42, ...chiefTile(id) }),
+    backdrop(t, id, W, H, { moon: [jx, jy, 150], seeds: [29, 58, 7], far: [H - 110, 60, 200, 70, 140], near: [H + 30, 90, 240, 80, 170], pagodas: [[1040, H - 130, 0.85, 1.6], [92, H - 120, 0.75, 1.6]], mist: [140, 280, H - 160], mistK: 0.6 }),
+    tile(t, id, 330, 36, 440, 100, "One brief", "+ a rubric the candidates don't see", true, { titleY: 42, ...chiefTile(id) }),
     ...cands.map(([, , cx], i) => flow(id, `M${550 + (i - 1) * 110} 140 C ${550 + (i - 1) * 110} 168, ${cx} 150, ${cx} ${my - mr - 14}`, t.edge, "hot", { sw: 2 })),
     ...cands.map(([name, sub, cx]) => medallion(cx, my, mr, "scroll", true, id) + tile(t, id, cx - 150, 300, 300, 92, name, sub, false, { titleY: 36, size: 24 })),
     ...cands.map(([, , cx], i) => flow(id, `M${cx} 396 C ${cx} 424, ${jx + (i - 1) * 36} 410, ${jx + (i - 1) * 36} ${jy - jr - 14}`, t.edge, "hot", { sw: 2 })),
@@ -710,7 +715,7 @@ function arena(t, id) {
     tile(t, id, 666, jy - 46, 220, 92, "Final version", "one design", true, { titleY: 36, size: 24 }),
     flow(id, `M892 ${jy} L 936 ${jy}`, t.edge, "hot", { sw: 2 }),
     text(946, jy - 6, ["reviews", "and QA"], { size, fill: t.muted, lh: 1.25 }),
-    rect(36, 616, W - 72, 2 * 30.8 + 34, { rx: 8, fill: t.tile, stroke: t.line, sw: 1.5 }),
+    rect(36, 616, W - 72, 2 * size * 1.4 + 34, { rx: 8, fill: t.tile, stroke: t.line, sw: 1.5 }),
     text(W / 2, 656, ["All converge → keep the shared shape.", "Wildly different → re-frame the brief once, then ask you."], { size, fill: t.ink, anchor: "middle", lh: 1.4 }),
   ].join("\n");
   return panel(t, id, W, H, body, "The arena: one brief and a hidden rubric go to three candidates on a mix of Claude models, each with a different angle. The arena judge scores them, picks a base and grafts the best parts into one final version, which then goes through reviews and QA.");
@@ -722,10 +727,10 @@ function pstack(t, id) {
   const body = [
     backdrop(t, id, W, H, { moon: [972, 140, 110], seeds: [37, 66, 3], far: [H - 80, 60, 180, 70, 140], near: [H + 40, 90, 220, 80, 170], pagodas: [[150, H - 40, 0.9, 1.6]], mist: [140, 280, H - 140], mistK: 0.6 }),
     heading(t, 36, 62, "FOLLOWING PSTACK, EVERY WEEK"),
-    tile(t, id, 36, 140, 170, 120, "pstack", ["by Lauren Tan", "(poteto)"], false, { titleY: 42 }),
-    flow(id, "M212 200 L 322 200", t.edge, "hot"), text(267, 184, "weekly", { size: 22, fill: t.muted, anchor: "middle" }),
+    tile(t, id, 36, 140, 180, 120, "pstack", ["by Lauren Tan", "(poteto)"], false, { titleY: 42 }),
+    flow(id, "M222 200 L 322 200", t.edge, "hot"), text(272, 184, "weekly", { size: SMALL, fill: t.muted, anchor: "middle" }),
     tile(t, id, 330, 140, 240, 120, "upstream/pstack", ["pinned commit", "+ licence"], false, { titleY: 42 }),
-    tile(t, id, 330, 300, 240, 100, "principles/", "your versions win", true, { titleY: 42 }),
+    tile(t, id, 330, 300, 240, 100, "principles/", "local versions win", true, { titleY: 42 }),
     flow(id, "M576 200 C 606 200, 606 262, 634 262", t.line, "muted"),
     flow(id, "M576 350 C 606 350, 606 298, 634 298", t.line, "muted"),
     tile(t, id, 642, 224, 184, 112, "Build", "checks + tests", true, { titleY: 44, ...chiefTile(id) }),
@@ -734,27 +739,27 @@ function pstack(t, id) {
     tile(t, id, 880, 224, 184, 112, "sage plugin", "25 principles", false, { titleY: 44 }),
     path("M734 342 L 734 446", { stroke: t.edge, sw: 2, dash: "5 6" }),
     rect(330, 452, 734, 96, { rx: 8, fill: t.tile, stroke: t.edge, sw: 1.5 }),
-    text(697, 490, "pstack changed one of your versions?", { size: 22, weight: 700, fill: t.ink, anchor: "middle" }),
-    text(697, 524, "The update waits for you. Otherwise, it merges.", { size: 22, fill: t.muted, anchor: "middle" }),
+    text(697, 490, "pstack changed a local version?", { size: SMALL, weight: 700, fill: t.ink, anchor: "middle" }),
+    text(697, 524, "The update waits for review. Otherwise it merges.", { size: SMALL, fill: t.muted, anchor: "middle" }),
   ].join("\n");
-  return panel(t, id, W, H, body, "Following pstack: every week, pstack's principles come into upstream/pstack at a pinned commit. Your versions in principles/ win. The build runs the checks and tests and makes the sage plugin. If pstack changed a principle you override, the update waits for you; otherwise it merges.");
+  return panel(t, id, W, H, body, "Following pstack: every week, pstack's principles come into upstream/pstack at a pinned commit. Local versions in principles/ win. The build runs the checks and tests and makes the sage plugin. If pstack changed a principle that has a local version, the update waits for review; otherwise it merges.");
 }
 
 /** A tip from the toad sage: its emblem on the left, and the tip on a hanging scroll to the right. */
 const tip = (lines, label) => (t, id) => {
-  const W = 1100, H = 230, size = 24, lh = 1.4;
+  const W = 1100, H = 230 + Math.max(0, lines.length - 3) * 34, size = 24, lh = 1.4;
   const sx = 222, sy = 32, sw = W - 36 - sx, sh = H - 64;
   const ty = f1(sy + (sh - (34 + (lines.length - 1) * size * lh + size)) / 2 + 22);
   const body = [
-    backdrop(t, id, W, H, { moon: [120, 115, 96], seeds: [31, 47, 5], far: [H - 30, 30, 90, 60, 120], near: [H + 50, 40, 110, 80, 150], mist: [80, 280, H - 80], mistK: 0.6, embersTo: H - 20 }),
-    emblem(120, 115, 74, id),
+    backdrop(t, id, W, H, { moon: [120, H / 2, 96], seeds: [31, 47, 5], far: [H - 30, 30, 90, 60, 120], near: [H + 50, 40, 110, 80, 150], mist: [80, 280, H - 80], mistK: 0.6, embersTo: H - 20 }),
+    emblem(120, H / 2, 74, id),
     `<rect x="${sx}" y="${sy}" width="${sw}" height="${sh}" rx="4" fill="${t.edge}" opacity="${t.glowOp}" filter="url(#${id}-glow)"/>`,
     rect(sx, sy, sw, sh, { rx: 4, fill: t.tile, stroke: t.edge, sw: 1.5 }),
     rect(sx + 9, sy + 9, sw - 18, sh - 18, { rx: 2, stroke: t.line, sw: 1, opacity: 0.6 }),
     rect(sx - 9, sy - 10, 14, sh + 20, { rx: 7, fill: "#3D2D21", stroke: "#120C08", sw: 1 }),
     rect(sx + sw - 5, sy - 10, 14, sh + 20, { rx: 7, fill: "#3D2D21", stroke: "#120C08", sw: 1 }),
     rect(sx + sw - 50, sy + sh - 48, 20, 20, { rx: 2, fill: EMBER.deep, opacity: 0.85 }),
-    text(sx + 40, ty, "TIP", { size: 22, weight: 800, fill: t.loop, ls: 2 }),
+    text(sx + 40, ty, "TIP", { size: SMALL, weight: 800, fill: t.loop, ls: 2 }),
     text(sx + 40, ty + 36, lines, { size, weight: 600, fill: t.ink, lh }),
   ].join("\n");
   return panel(t, id, W, H, body, label);
@@ -764,7 +769,7 @@ const GRAPHICS = {
   hero, loop, walkthrough, routes, lifecycle, arena, pstack,
   "tip-start": tip(["Start a message with “sage mode” to switch it on,", "and with “sage mode off” to switch it off.", "In the middle of a sentence, it does nothing."], "The toad sage's tip: start a message with sage mode to switch it on, and with sage mode off to switch it off. In the middle of a sentence, it does nothing."),
   "tip-try": tip(["Try it on one small, real bug, from your phone.", "Then look at the result, not the code."], "The toad sage's tip: try it on one small, real bug from your phone, then look at the result, not the code."),
-  "tip-seal": tip(["Seal the lesson: a mistake that comes back twice", "is sealed into code, as a test, a check or a rule.", "That's how the dojo gets stronger."], "The toad sage's tip: seal the lesson. A mistake that comes back twice is sealed into code, as a test, a check or a rule. That is how the dojo gets stronger, one lesson at a time."),
+  "tip-seal": tip(["Seal the lesson: give a mistake that comes back twice", "a lasting fix. A test or a check in code first; a principle", "or a standing order only when code cannot hold it.", "That's how the dojo gets stronger."], "The toad sage's tip: seal the lesson. Give a mistake that comes back twice a lasting fix: a test or a check in code first; a principle or a standing order only when code cannot hold it. That is how the dojo gets stronger."),
 };
 
 /** Every graphic in both themes, as [file name, SVG]. The ids in a file start with its own name and theme, so that
