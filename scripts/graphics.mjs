@@ -587,7 +587,7 @@ function walkthrough(t, id) {
   const notes = [
     [1, "Switch it on", ["Start a message with “sage mode”,", "then say what you want."]],
     [2, "The chief frames each task", ["A size, risk flags and a route.", "A flag such as input adds the", "security review to a code change."]],
-    [3, "One question, at most", ["Only a product question, with a", "recommendation and a default."]],
+    [3, "One batch of questions, at most", ["One interruption per task. Each", "product question has a", "recommendation and a default."]],
     [4, "The team works", ["Fresh agents build, review and test.", "Findings go back for a repair."]],
     [5, "You get results, not code", ["Evidence, what was not checked,", "and a pull request to merge."]],
   ];
@@ -619,7 +619,7 @@ function walkthrough(t, id) {
       text(nx + 48, y + 32, lines, { size, fill: t.muted, lh }),
     ].join("")),
   ].join("\n");
-  return panel(t, id, W, H, body, "Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with numbered notes. You: sage mode. Ramen Finder: add a favourites list, and fix this week's crash. The chief frames T1, favourites, large, with the data flag, and T2, the crash, small, with the input flag, and starts T2. It asks one question for T1: sync favourites across devices? Recommended, and the default if you don't answer: not now. You answer: not now. T2 goes through build, code review, security review and QA; repair round 1 fixes an empty search that still crashed. T2 is verified: QA ran the app and passed. Not checked: the tablet layout. Pull request 41 is ready for you. The notes: 1, switch it on: start a message with sage mode. 2, the chief frames each task. 3, one product question at most. 4, the team works. 5, you get results, not code.");
+  return panel(t, id, W, H, body, "Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with numbered notes. You: sage mode. Ramen Finder: add a favourites list, and fix this week's crash. The chief frames T1, favourites, large, with the data flag, and T2, the crash, small, with the input flag, and starts T2. It asks one question for T1: sync favourites across devices? Recommended, and the default if you don't answer: not now. You answer: not now. T2 goes through build, code review, security review and QA; repair round 1 fixes an empty search that still crashed. T2 is verified: QA ran the app and passed. Not checked: the tablet layout. Pull request 41 is ready for you. The notes: 1, switch it on: start a message with sage mode. 2, the chief frames each task. 3, one batch of product questions at most, in one interruption per task. 4, the team works. 5, you get results, not code.");
 }
 
 /** Routes: the least route for each size of task. */
