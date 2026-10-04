@@ -10,14 +10,14 @@ The chief of staff keeps the work in the project's logbook, not in the conversat
 
 Run it as `node "${CLAUDE_SKILL_DIR}/sage.mjs" <command> --project <path to the project>`.
 
-Each option takes a value: `--name value`, or `--name=value` for a value that starts with `--`. A command refuses an option that it does not take, and names the options that it takes.
+Each option takes a value: `--name value`, or `--name=value` for a value that starts with `--`. A command refuses an option that it does not take, and names the options that it takes. It refuses an option given twice.
 
 ## Commands
 
 | Command | Does |
 | --- | --- |
 | `init` | Makes the project's logbook and its standing orders. A new logbook has each table with only its header line. `init` writes tasks.tsv last, so a folder with tasks.tsv has every table. On an existing logbook it makes no table: a lost one refuses (see "The logbook check"). |
-| `logbook` · `logbook repair --accept-loss <table>` | Prints the logbook's folder. `repair` starts a table that fails the logbook check again, without rows. Run it only after the user accepts the loss of its rows. The old file stays beside it as `<table>.tsv.lost-<n>`, and the decision trail records the repair. |
+| `logbook` · `logbook repair --accept-loss <table>[,<table>...]` | Prints the logbook's folder. `repair` starts each named table that fails the logbook check again, without rows. Run it only after the user accepts the loss of their rows. Name every damaged table in one command, joined by commas (`--accept-loss tasks,ledger`): a repair refuses when another table fails too, and names the command with both. The old file stays beside each as `<table>.tsv.lost-<n>`, and the decision trail records each repair before the table starts again. A named table that passes the check refuses the whole command. |
 | `standing` · `standing add "<order>"` | Prints the standing orders as written, or adds one. Paste them into every brief. Tabs stay, CRLF line ends print as plain lines, and hidden characters are removed (see "Hidden characters"). |
 | `task add --title "<t>" --size tiny\|small\|large\|investigate [--risk auth,data,schema,money,secrets,input] [--add <blocks> --why "<reason>"]` | Frames a task and its route. The size gives the least route. A risk adds the security review. An investigation takes no build block: a build that it needs is its own task. |
 | `task <T> set state=<state> [branch=<b>] [pr=<n>]` | Moves the task. The tool refuses a move that the design does not allow, and "verifying" or "concluded" while a finding is open. A PR number is only digits. An investigation takes no PR number; `pr=` clears one. |
@@ -54,7 +54,7 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 - The next command clears a lock that a crashed command left. A lock from another machine, a live process that is not sage, or an odd owner file stays. Remove the folder in the message only when no sage command runs.
 - The next command also removes the temp folder (`.lock.<id>`) of a command that was killed while it waited.
 - `status`, `logbook`, `standing` and `merge-check` take no lock. They work while another command runs.
-- The sessions may run two versions of sage. A version refuses to change a logbook whose tables have columns that it does not know: its write would lose them. The refusal says to update the sage plugin and restart the session. Reading goes on.
+- The sessions may run two versions of sage. A version refuses to change a logbook whose tables have columns that it does not know: its write would lose them. The refusal says to update the sage plugin and restart the session, and that `status`, `logbook`, `standing` and `merge-check` still work.
 - A command refuses, before any change, when status.md or standing.md is not a regular file, also a link to nothing.
 
 ## The logbook check
@@ -70,7 +70,9 @@ A table that fails refuses every merge and every write, and the refusal names th
 
 - Restore the file from a copy.
 - A table that cannot be read (EACCES): fix its permissions. Do not remove it: its rows are there.
-- If no copy is left and the user accepts the loss: `logbook repair --accept-loss <table>`. Repair the table that the refusal names; then the next one, if there is one.
+- If no copy is left and the user accepts the loss: `logbook repair --accept-loss <table>`. Run the command that the refusal prints. When a second table fails too, the repair refuses and prints the command with both tables: run that one.
+
+After a repair of tasks.tsv, the verdicts of its lost tasks stay in ledger.tsv. The merge check refuses their SHA, says that tasks.tsv was started again, and asks for a new commit with its verdicts under a task that the logbook has.
 
 Limit: a table cut to only its header line is a table without rows. The check cannot tell it from a new table.
 
@@ -81,10 +83,11 @@ A folder without tasks.tsv is no logbook: `init` has not finished it. `init` fin
 The tool keeps no hidden character in a cell, and removes them from the standing orders. Hidden characters are those that a person does not see but a terminal or an agent acts on:
 
 - the control characters (C0, DEL and C1), except a tab and a line end in the standing orders;
-- the bidi embeddings, overrides and isolates (U+202A to U+202E, U+2066 to U+2069);
+- the bidi embeddings, overrides, isolates and marks (U+202A to U+202E, U+2066 to U+2069, U+200E, U+200F, U+061C);
 - the zero-width characters (U+200B to U+200D, U+2060, U+FEFF);
+- the variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF);
 - the tag characters (U+E0000 to U+E007F), text that only an agent reads.
 
-Other text stays: each script, and emoji. A zero-width joiner between two emoji stays, so a joined emoji stays whole. A subdivision flag (England, Scotland, Wales) shows as a black flag.
+Other text stays: each script, and emoji. A zero-width joiner or non-joiner between two letters stays: Persian and Indic text needs it. A zero-width joiner between two emoji stays, so a joined emoji stays whole, and the emoji selector (U+FE0F) stays after an emoji or a keycap base (`1️⃣`). A subdivision flag (England, Scotland, Wales) shows as a black flag.
 
 The tool prints each hidden character in an id, a column or a path as `\xNN` or `\u{N}`. For a project path with a control character, it prints no command to paste.
