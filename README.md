@@ -28,6 +28,7 @@ The files in `principles/`, `writing/` and `preferences/` are the sources. The s
    ```
    @~/agent-kit/instructions/core.md
    ```
+3. Optional: to follow and steer your sessions from the Claude app on your phone, run `/agent-kit:remote-control`. See [Remote Control](#remote-control).
 
 **Codex:**
 
@@ -69,6 +70,29 @@ The other principles have no moment that a hook can see. They stay on the skill 
 - Codex does not give hooks the exit code. In Codex, the hook finds a failed check from the failure lines that common test tools print.
 
 To turn the hooks off for a session, set `AGENT_KIT_HOOKS=off`. Orchestrator does this for its workers, because it gives each step its principles itself.
+
+## Remote Control
+
+Remote Control lets you follow, steer and start Claude Code sessions from the Claude app on your phone, or from claude.ai/code. The `remote-control` skill sets it up. It is for Claude Code only.
+
+| Command | What it does |
+| --- | --- |
+| `/agent-kit:remote-control` | Turns Remote Control on for every new session. |
+| `/agent-kit:remote-control off` | Turns it off again. |
+| `/agent-kit:remote-control status` | Shows the setting and changes nothing. |
+| `/agent-kit:remote-control server ~/workspace` | Runs a Remote Control server in `~/workspace`, now and at each login (macOS). From the phone, you can then start new sessions that open in that folder. |
+| `/agent-kit:remote-control server off` | Stops the server and removes its login item. |
+| `/agent-kit:remote-control server status` | Shows the server's state and folder. |
+
+The skill sets `remoteControlAtStartup` in `~/.claude/settings.json`, the same setting that `/config` changes. It cannot change the desktop app. There, turn on **Settings → Claude Code → Connect new sessions to Remote Control** once.
+
+Before the first `server`, do three things once, in the macOS Terminal app:
+
+1. Run `claude auth login`. Remote Control needs this full login. A `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` does not work for it. If your `~/.zshrc` sets that token, the token overrides the login in your shell, so run step 3 as `env -u CLAUDE_CODE_OAUTH_TOKEN claude remote-control`.
+2. Run `claude` in the server's folder, and answer Yes to the trust question.
+3. Run `claude remote-control` in the same folder, answer `y` to "Enable Remote Control?", then press Ctrl+C. A login item cannot answer this question.
+
+While the server runs, your claude.ai account can start sessions on your computer, and the sessions can reach everything in the folder.
 
 ## Change it
 
