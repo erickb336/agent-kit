@@ -17,9 +17,11 @@ import { config, mergeCheck } from "../skills/sage/sage.mjs";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // The mode phrases. "sage mode" (also "sage mode on"), "sage mode off" and "autopilot on" count only at the start of the
 // message, so that a mention, a quote or an agent's report ("<task-notification>…") switches nothing: "sage mode off"
-// also drops the git gates. Each must stand alone or end at ".", ",", ":", ";", "!" or the end of its line, so
-// "autopilot on?", "autopilot on main" and "sage mode off?" switch nothing. Only an autopilot off ("autopilot off",
-// "disable autopilot", "no autopilot" and the like) works anywhere, because a missed off is the unsafe one.
+// also drops the git gates. "sage mode" and "autopilot on" must stand alone or end at ".", ",", ":", ";", "!" or the end
+// of their line, so "autopilot on?" and "autopilot on main" switch nothing. "sage mode off" must not run on into a longer
+// word ("sage mode off-topic"), and its line must have no "?" ("sage mode off? what does it do?"). Because a missed off
+// is the unsafe one, a message that starts with "sage mode off" always switches autopilot off, even as a question, and
+// so does any sentence that has the word autopilot and an off word, in either order and anywhere in the message.
 // No mode-phrase regex has the m flag: with it, "^" would also match the start of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
@@ -27,9 +29,14 @@ const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
 const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
 const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
 const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
-const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off${END}`, "i");
+const SAGE_MODE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off\\b`, "i");
+const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
-const AUTOPILOT_OFF = /\b(?:autopilot(?:\s*[:,=]\s*|\s+is(?:\s+now)?\s+|\s+)(?:off|disabled)|(?:turn\s+off|switch\s+off|stop|disable|pause|end|no)\s+(?:the\s+)?autopilot)\b/i;
+// The sentences of a message, the word autopilot, and the off words ("no more", "turn off" and "hold off" have one too).
+const SENTENCE_END = /[.!?\r\n\u2028\u2029]/;
+const AUTOPILOT = /\bauto[-\s]?pilot\b/i;
+const OFF_WORD = /\b(?:off|disabled?|stop(?:ped)?|kill|cancel|deactivate|pause|end|halt|no)\b/i;
+const autopilotOff = (prompt) => SAGE_MODE_OFF.test(prompt) || prompt.split(SENTENCE_END).some((s) => AUTOPILOT.test(s) && OFF_WORD.test(s));
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
@@ -47,11 +54,12 @@ export function handle(input, state, slots) {
   if (event === "UserPromptSubmit") {
     const prompt = input.prompt ?? "";
     const notes = [];
-    if (SAGE_OFF.test(prompt)) {
+    const sageOff = SAGE_OFF.test(prompt);
+    if (sageOff) {
       Object.assign(state, { sage: false, given: false, autopilot: false });
       notes.push("sage: sage mode is off. You may change files yourself again.");
     } else if (SAGE_ON.test(prompt)) state.sage = true;
-    if (AUTOPILOT_OFF.test(prompt)) {
+    if (!sageOff && autopilotOff(prompt)) {
       state.autopilot = false;
       notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     } else if (state.sage && AUTOPILOT_ON.test(prompt)) {
