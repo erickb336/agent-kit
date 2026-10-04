@@ -28,22 +28,23 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // off" also drops the git rules. "sage mode" and "autopilot on" must stand alone or end at ".", ",", ":", ";", "!" or
 // the end of their line, so "autopilot on?" and "autopilot on main" switch nothing. "sage mode off" must not run on into
 // a longer word ("sage mode off-topic"), and its line must have no "?" ("sage mode off? what does it do?"). Because a
-// missed off is the unsafe one, any line of a prompt that starts with "sage mode off" switches autopilot off, even as a
-// question or in a frame, and so does any prompt that mentions autopilot and has an off word anywhere. Off wins over on.
-// Only SAGE_MODE_OFF has the m flag: with it, "^" also matches the start of each later line.
+// missed off is the unsafe one, any line that starts with "sage mode off" or "autopilot off" switches autopilot off,
+// even as a question or in a frame. The owner's own text also switches it off when it mentions autopilot and has an off
+// word anywhere. A frame does not, because its boilerplate has off words ("NOT a message from the user"). Off wins over
+// on. Only OFF_LINE has the m flag: with it, "^" also matches the start of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
 const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
 const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
 const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
-const SAGE_MODE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off\\b`, "im"); // in any text, at the start of any line
+const OFF_LINE = new RegExp(`${START}(?:sage${SP}+mode|autopilot)${SP}+off\\b`, "im"); // in any text, at the start of any line
 const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
 // The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
 const AUTOPILOT = /\bauto[-\s]?pilots?\b/i;
 const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit(?:s|ting)?|exit(?:s|ed|ing)?)\b|\b(?:stop|disabl|paus|cancel|kill|halt|deactivat|abort|suspend)|\bauto[-\s]?pilots?\s*=\s*false\b/i;
-const autopilotOff = (text) => SAGE_MODE_OFF.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));
+const broadOff = (text) => OFF_LINE.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
@@ -65,6 +66,8 @@ const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*
  *     while it works (QUEUED) is the owner's text, although it comes in a system reminder.
  *   - owner: false when the hook cannot read the frames (fail closed): a kind with more opens than closes or more
  *     closes than opens, or a frame's marker in the text. Then nothing in the prompt switches a mode on.
+ *   - queued: the owner's queued messages, also when they come between two frames. They count only for an off,
+ *     because an agent can write the queued shape in its report.
  */
 const FRAMES = [
   [/<task-notification>/g, /<\/task-notification>/g],
@@ -81,21 +84,23 @@ export function promptOf(input) {
   const ends = marks.flatMap(([, c]) => c).map((m) => m.index + m[0].length);
   const text = opens.length ? [prompt.slice(0, Math.min(...opens)), prompt.slice(Math.max(...ends, 0))].join("\n") : prompt;
   const balanced = marks.every(([o, c]) => o.length === c.length);
-  return { owner: balanced && !MARKERS.test(text), text, all: prompt };
+  const queued = [...(input.prompt ?? "").matchAll(QUEUED)].map((m) => m[1]);
+  return { owner: balanced && !MARKERS.test(text), text, queued, all: prompt };
 }
 
 /**
  * Switches the modes, and returns the notes for the chief. Only the owner's own text switches sage mode or autopilot
- * on, or sage mode off. An autopilot off counts in any text of the prompt, also in a frame, because off is the safe
- * direction. A sage mode off that is not the owner's switches only autopilot off, so that the git rules stay.
+ * on, or sage mode off. Off is the safe direction, so an autopilot off counts in more text: the broad off rule in the
+ * owner's text and queued messages (in the whole prompt when the hook cannot read the frames), and an off line
+ * anywhere. A sage mode off that is not the owner's switches only autopilot off, so that the git rules stay.
  */
-function switchModes({ owner, text, all }, state) {
+function switchModes({ owner, text, queued, all }, state) {
   const notes = [];
   if (owner && SAGE_OFF.test(text)) {
     Object.assign(state, { sage: false, given: false, autopilot: false });
     notes.push("sage: sage mode is off. You may change files yourself again.");
   } else if (owner && SAGE_ON.test(text)) state.sage = true;
-  if (autopilotOff(all)) {
+  if (OFF_LINE.test(all) || broadOff(owner ? [text, ...queued].join("\n") : all)) {
     if (state.autopilot) notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     state.autopilot = false;
   } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {

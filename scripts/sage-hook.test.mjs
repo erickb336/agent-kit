@@ -459,8 +459,8 @@ test("only the user's own words switch a mode on or sage mode off; an autopilot 
   const cases = Object.entries(FRAMES).flatMap(([frame, wrap]) =>
     PHRASES.flatMap((phrase) => Object.entries(BODIES).flatMap(([where, body]) => Object.entries(STATES).map(([state, [before, expected]]) => {
       // An agent's text in a frame switches nothing on and never switches sage mode off. Its off phrase switches autopilot
-      // off. A sage mode off counts only at the start of a line, and a notification puts "<result>" before the report.
-      const off = phrase.endsWith("off") && !(frame === "task notification" && phrase === "sage mode off" && where === "at the start of the report");
+      // off only at the start of a line, and a notification puts "<result>" before the report.
+      const off = phrase.endsWith("off") && !(frame === "task notification" && where === "at the start of the report");
       const autopilot = expected.endsWith("autopilot on");
       return { why: `${frame}, "${phrase}" ${where}, from ${state}`, before, message: wrap(body(phrase)), expected: off ? expected.replace("autopilot on", "autopilot off") : expected, note: off && autopilot };
     }))),
@@ -555,13 +555,29 @@ test("owner: an unbalanced or unknown frame makes the whole prompt not the owner
 
 test("owner: the off-phrase inside a frame still switches autopilot off, but not sage mode", async () => {
   const BOTH = ["sage mode", ON];
-  const frames = { "a hand-back report": HAND_BACK(`STATUS done\n${OFF}`), "a task notification": NOTIFICATION(OFF), "an unbalanced frame": `<agent-message from="x">\n  ${OFF}` };
+  const frames = { "a hand-back report": HAND_BACK(`STATUS done\n${OFF}`), "a task notification": NOTIFICATION(`STATUS done\n${OFF}`), "an unbalanced frame": `<agent-message from="x">\n  ${OFF}` };
   const results = Object.fromEntries(await Promise.all(Object.entries(frames).map(async ([why, text]) => [why, await modesAfter([...BOTH, CAPTURED(text)], { notes: true })])));
   for (const [why, { modes, note }] of Object.entries(results)) {
     assert.equal(modes, "sage mode on, autopilot off", why);
     assert.match(note, /^sage: autopilot is off\./m, why);
   }
   assert.equal(await modesAfter([...BOTH, CAPTURED(HAND_BACK("sage mode off"))]), "sage mode on, autopilot off", "a report's sage mode off keeps the gates, and switches autopilot off");
+});
+
+test("owner: in a frame only the off-phrase at the start of a line switches autopilot off; the owner's text keeps the broad off rule (T27 FRAME-OFF-NOISY)", async () => {
+  const BOTH = ["sage mode", ON];
+  const cases = [
+    // [why, the prompt, the modes after]
+    ["a report that says autopilot near no and not", HAND_BACK("STATUS done\nRESULT autopilot can merge it: no findings, and the checks do not fail."), "sage mode on, autopilot on"],
+    ["a notification that says autopilot and stop", NOTIFICATION("STATUS done. The autopilot run did not stop."), "sage mode on, autopilot on"],
+    ["a report with the off-phrase at the start of a line", HAND_BACK(`STATUS done\n${OFF}`), "sage mode on, autopilot off"],
+    ["a report with the off-phrase after a list marker", HAND_BACK(`STATUS done\n- ${OFF}, as asked`), "sage mode on, autopilot off"],
+    ["the owner's broad off after a frame", `${NOTIFICATION("STATUS done")}\nplease stop the autopilot`, "sage mode on, autopilot off"],
+    ["the owner's broad off before a frame", `no more autopilot today\n${HAND_BACK("STATUS done")}`, "sage mode on, autopilot off"],
+    ["the owner's queued broad off between two frames", `${NOTIFICATION("a")}\n${QUEUED("please stop the autopilot")}\n${NOTIFICATION("b")}`, "sage mode on, autopilot off"],
+  ];
+  const results = await Promise.all(cases.map(([, text]) => modesAfter([...BOTH, CAPTURED(text)])));
+  assert.deepEqual(Object.fromEntries(cases.map(([why], i) => [why, results[i]])), Object.fromEntries(cases.map(([why, , expected]) => [why, expected])));
 });
 
 /** A session in sage mode with autopilot on, and 2 clean cycles on SHA for task T1 of PR 41. */
