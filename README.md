@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="sage: your chief of staff for Claude Code. The toad sage, the chief of staff, says “sage mode!” above its team: designer, PE, implementer, arena judge, code review, security, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
+  <img alt="sage: your chief of staff for Claude Code. Start a message with “sage mode”. A hooded toad sage with glowing gold eyes, the chief of staff, meditates in front of a big moon in a misty mountain world. Around it, its team on an arrowed loop: designer, PE, implementer, arena judge, code review, security, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
 </picture>
 
 <p align="center">
@@ -15,7 +15,7 @@ It also gives every session, in Claude Code and in Codex, 25 short working princ
 
 > **Built on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by [Lauren Tan (poteto)](https://github.com/poteto).** sage follows pstack's principles by itself, every week, and sage mode takes its ideas from poteto mode. The name is a nod to Sage Mode in *Naruto*. See [Credits](#credits).
 
-**Contents:** [Why "sage"?](#why-sage) · [Enter sage mode (quick start)](#enter-sage-mode-quick-start) · [Your first training (5 minutes)](#your-first-training-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say (the hand signs)](#what-to-say-the-hand-signs) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
+**Contents:** [Why "sage"?](#why-sage) · [Quick start](#quick-start) · [Learn sage in 5 minutes](#learn-sage-in-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say](#what-to-say) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
 
 ## Why "sage"?
 
@@ -24,14 +24,14 @@ In *Naruto*, a sage stays still to gather natural energy. In Sage Mode, the sage
 sage mode works the same way:
 
 - **The chief of staff stays still.** It never edits a file. It frames the work, writes the briefs and keeps the record.
-- **It gathers the team's energy.** Specialists do the work in parallel, each in its own git worktree.
+- **It gathers natural energy.** Here, that energy is the team's work: specialists work in parallel, each in its own git worktree.
 - **It sees the whole.** It groups related work, puts tasks that share code in order, and turns a mistake that repeats into a rule.
 
 The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
 
-And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing, with a ✓ on its headband, because it trusts only what it can check.
+And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing of a hooded toad that meditates while its team works.
 
-## Enter sage mode (quick start)
+## Quick start
 
 **1. Install** (in a Claude Code terminal):
 
@@ -44,7 +44,7 @@ In the desktop app, run `claude plugin marketplace add erickb336/sage` and then 
 
 **2. Start a new session** in a project folder, or in a folder of projects such as `~/workspace`.
 
-**3. Make the hand sign:** start a message with "sage mode", then say what you want.
+**3. Switch it on:** start a message with "sage mode", then say what you want.
 
 ```
 sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
@@ -52,18 +52,18 @@ sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-start-dark.svg">
-  <img alt="The toad sage's tip: start a message with “sage mode”. That is the whole hand sign. In the middle of a sentence, it does nothing. Start a message with “sage mode off” to switch it off." src="docs/assets/tip-start-light.svg" width="100%">
+  <img alt="The toad sage's tip: start a message with “sage mode” to switch it on, and with “sage mode off” to switch it off. In the middle of a sentence, it does nothing." src="docs/assets/tip-start-light.svg" width="100%">
 </picture>
 
 That's all. The chief of staff asks you at most one question per task, then comes back with results and pull requests. From your phone, it works the same through [Remote Control](#remote-control).
 
-## Your first training (5 minutes)
+## Learn sage in 5 minutes
 
 This is one session, step by step. It is an illustration with sample data.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/walkthrough-dark.svg">
-  <img alt="Your first training: an illustrative sage mode session with five numbered notes." src="docs/assets/walkthrough-light.svg" width="100%">
+  <img alt="Learn sage in 5 minutes: an illustrative sage mode session about a made-up app, Ramen Finder, with five numbered notes." src="docs/assets/walkthrough-light.svg" width="100%">
 </picture>
 
 1. **Switch it on.** Start a message with "sage mode", then your request. sage mode stays on until you start a message with "sage mode off".
@@ -76,20 +76,20 @@ This is one session, step by step. It is an illustration with sample data.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-try-dark.svg">
-  <img alt="The toad sage's tip: your first training is one small, real bug, from your phone. Then look at the result, not the code." src="docs/assets/tip-try-light.svg" width="100%">
+  <img alt="The toad sage's tip: try it on one small, real bug, from your phone. Then look at the result, not the code." src="docs/assets/tip-try-light.svg" width="100%">
 </picture>
 
 ## How it works
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/loop-dark.svg">
-  <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the store, and the kitchen." src="docs/assets/loop-light.svg" width="100%">
+  <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the store, and the outer loop that seals each lesson." src="docs/assets/loop-light.svg" width="100%">
 </picture>
 
 There are two loops:
 
 - **The inner loop** turns a request into verified work. The chief briefs the team. The team designs, builds, reviews and tests. Findings go back to the build. A clean result becomes a pull request.
-- **The outer loop** improves the kitchen. When the same kind of problem comes back twice, the chief proposes a change that stops it for good: a test, a lint, a check, a principle, or a standing order.
+- **The outer loop** seals the lesson. When the same kind of problem comes back twice, the chief proposes a change that stops it for good: a test, a lint, a check, a principle, or a standing order. That is how [the dojo](#concepts) gets stronger.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tip-seal-dark.svg">
@@ -178,9 +178,10 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
 | **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. "autopilot off" works anywhere. |
-| **The kitchen** | Everything that makes the agents good: principles, checks, tests, skills. A lesson that comes back twice improves it. |
+| **The dojo** | Everything that makes the agents good: principles, checks, tests, skills. |
+| **Seal the lesson** | Turn a mistake that comes back twice into code: a test, a check or a rule. Each sealed lesson makes the dojo stronger. |
 
-## What to say (the hand signs)
+## What to say
 
 | Say | What happens |
 | --- | --- |
