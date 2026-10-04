@@ -4,10 +4,11 @@
 // table has one writer: this tool. It holds the rules that prompts alone did not hold in Orchestrator: no dropped
 // findings, bounded repair rounds, one writer per branch, and a merge only of a head SHA with the clean cycles that
 // its route needs. The sage hook calls mergeCheck before any `gh pr merge` in sage mode.
-// Several chief sessions may share one store: each command that changes it holds the store's lock (withLock).
+// Several chief sessions may share one store: each command that changes it holds the store's lock (withLock). They may
+// run two versions of this tool, so a command refuses to change a logbook that a newer version wrote (ready).
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +24,10 @@ export const BLOCKS = ["design", "arena", "pe", "build", "code-review", "securit
 export const RISKS = ["auth", "data", "schema", "money", "secrets", "input"];
 /** The verdict a block gives on a head SHA. checks-pass is needed once per SHA; the others once per cycle. */
 const VERDICT = { build: "checks-pass", "code-review": "review-clean", "security-review": "security-clean", "ux-review": "ux-clean", qa: "qa-pass", "evidence-review": "evidence-clean" };
-const NOT_CLEAN = ["checks-fail", "findings", "qa-fail"];
+/** The verdicts of a review or QA that found a medium or high problem. A failed check needs no finding. */
+const FOUND = ["findings", "qa-fail"];
+const NOT_CLEAN = ["checks-fail", ...FOUND];
+const CLEAN = Object.values(VERDICT).filter((k) => k !== "checks-pass");
 export const KINDS = [...Object.values(VERDICT), ...NOT_CLEAN];
 const WRITERS = ["implementer", "designer"];
 /** A task's states and the moves between them (docs/design/sage-mode.html, "A task's life"). Any state may go to abandoned. */
@@ -56,6 +60,21 @@ const TABLES = {
   gates: ["id", "task", "question", "options", "recommendation", "default", "answer", "at"],
   decisions: ["at", "task", "decision", "why"],
 };
+const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config"];
+/** The options of each command, by its name or by its name and first word. Every command also takes --project. */
+const OPTIONS = {
+  "task add": ["title", "size", "risk", "add", "why"],
+  "run add": ["role", "branch", "candidate"],
+  "run done": ["status", "tokens", "report"],
+  "finding add": ["source", "severity", "summary", "key"],
+  "finding triage": ["reason"],
+  verdict: ["sha", "kind", "cycle", "pr", "run"],
+  "gate add": ["question", "options", "recommend", "default"],
+  log: ["why"],
+  "merge-check": ["sha", "pr", "cycles"],
+};
+/** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
+const PR = /^\d+$/;
 const STANDING = `# Standing orders
 
 Every brief carries these lines word for word. Add a line when you notice that you repeat an instruction.
@@ -101,9 +120,13 @@ function valid(key, value) {
   return Object.hasOwn(COUNTS, key) && /^[1-9]\d*$/.test(String(value)) ? Number(value) : undefined;
 }
 
+/** The refusal for a path that holds something other than a regular file: a folder, a FIFO or a device. */
+const notRegular = (path) => Object.assign(new Refusal(`${path} is not a regular file. Ask the user to fix or remove it.`), { path, code: "not a regular file" });
+
 /**
- * The text of a regular file, also through a link, or undefined when nothing is there or something else is: a FIFO, a
- * device or a folder. It never blocks: the open does not wait for a FIFO's writer, and the check is on the open file.
+ * The text of a regular file, also through a link, or undefined when nothing is there. Something else (a FIFO, a device
+ * or a folder) refuses, and so does a file it cannot read, with its path. It never blocks: the open does not wait for a
+ * FIFO's writer, and the check is on the open file.
  */
 function readRegular(path) {
   let fd;
@@ -114,41 +137,78 @@ function readRegular(path) {
     throw e;
   }
   try {
-    return fstatSync(fd).isFile() ? readFileSync(fd, "utf8") : undefined;
+    if (!fstatSync(fd).isFile()) throw notRegular(path);
+    return readFileSync(fd, "utf8");
+  } catch (e) {
+    e.path ??= path; // a file too long for a string, for one
+    throw e;
   } finally {
     closeSync(fd);
+  }
+}
+
+/** config.json as an object, or {} when it is missing, torn, not an object or not a regular file. It never throws or waits. */
+function saved(env) {
+  try {
+    const value = JSON.parse(readRegular(join(sageRoot(env), "config.json")));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
   }
 }
 
 /** The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, or a config.json that is not a regular file, gives the defaults. */
 export function config(env = process.env) {
   try {
-    const saved = JSON.parse(readRegular(join(sageRoot(env), "config.json"))) ?? {}; // undefined does not parse: the defaults
-    return Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, saved[k]) ?? d]));
+    const s = saved(env);
+    return Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]));
   } catch {
     return { ...DEFAULTS };
   }
 }
 
-/** Writes a whole file or nothing: readers take no lock, so they must never see half a file. A link stays a link: its target gets the text. */
-function put(file, text) {
+/** The file that a write to file replaces: file, or the target of its link. Something there that is not a regular file refuses. */
+function target(file) {
   let real = file;
   try {
     real = realpathSync(file);
   } catch {} // nothing there yet
+  if (lstatSync(real, { throwIfNoEntry: false })?.isFile() === false) throw notRegular(file); // a rename onto it would fail and leave the temp file
+  return real;
+}
+
+/** Writes a whole file or nothing: readers take no lock, so they must never see half a file. A link stays a link: its target gets the text. */
+function put(file, text) {
+  const real = target(file);
   writeFileSync(`${real}.${process.pid}`, text);
   renameSync(`${real}.${process.pid}`, real);
 }
 
 const cell = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ").trim();
 
+/** The lines of a table that are not blank: its header first. A missing table has none. */
+const lines = (dir, table) => (readRegular(join(dir, `${table}.tsv`)) ?? "").split("\n").filter(Boolean);
+
 function read(dir, table) {
-  const [head = "", ...lines] = (readRegular(join(dir, `${table}.tsv`)) ?? "").split("\n").filter(Boolean); // blank: no rows
+  const [head = "", ...rows] = lines(dir, table);
   const cols = head.split("\t");
-  return lines.map((line) => {
+  return rows.map((line) => {
     const v = line.split("\t");
     return Object.fromEntries(cols.map((c, i) => [c, v[i] ?? ""]));
   });
+}
+
+/**
+ * Refuses, before any change, a logbook that a command could not change whole: a table or status.md that is not a
+ * regular file, or a table that a newer version of this tool wrote. A write keeps only the columns that this version
+ * knows, so another chief session's values would be lost in silence. Reading such a logbook is safe.
+ */
+function ready(dir) {
+  target(join(dir, "status.md"));
+  for (const [table, cols] of Object.entries(TABLES)) {
+    const extra = (lines(dir, table)[0] ?? "").split("\t").filter((c) => c && !cols.includes(c));
+    if (extra.length) refuse(`${join(dir, `${table}.tsv`)} has columns that this version of sage does not know (${extra.join(", ")}): a newer sage wrote this logbook. Update the sage plugin and restart this session. Nothing changed.`);
+  }
 }
 
 function write(dir, table, rows) {
@@ -173,23 +233,44 @@ const list = (s) => (s ? s.split(",").map((x) => x.trim()).filter(Boolean) : [])
 /** Does a task build code? Only a route with build has commits, a pull request and a merge. */
 const builds = (task) => list(task.route).includes("build");
 
-function parse(args) {
+/**
+ * A command's words and options. Every option takes a value: --name value, or --name=value. The value may start with
+ * "--", but it may not be another option of the command: then the value is missing. A command refuses an option that
+ * it does not take, so a typo or an option of a newer version is never dropped in silence.
+ */
+function parse(cmd, args) {
   const pos = [];
-  const opt = {};
+  const opt = Object.create(null);
+  const spaced = []; // the options whose value is the next word
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (!a.startsWith("--")) pos.push(a);
     else if (a.includes("=")) opt[a.slice(2, a.indexOf("="))] = a.slice(a.indexOf("=") + 1);
-    else opt[a.slice(2)] = i + 1 < args.length ? args[++i] : "true"; // every option takes a value, which may start with "--"
+    else {
+      spaced.push(a.slice(2));
+      opt[a.slice(2)] = args[++i];
+    }
+  }
+  const name = OPTIONS[`${cmd} ${pos[0]}`] ? `${cmd} ${pos[0]}` : cmd;
+  const takes = [...(OPTIONS[name] ?? []), "project"];
+  for (const o of Object.keys(opt)) if (!takes.includes(o)) refuse(`${name} takes no --${o}. Its options: ${takes.map((t) => `--${t}`).join(", ")}.`);
+  for (const o of spaced) {
+    const v = opt[o];
+    if (v === undefined || (v.startsWith("--") && takes.includes(v.slice(2).split("=")[0]))) refuse(`--${o} needs a value. A value that starts with -- goes after =: --${o}=<value>.`);
   }
   return { pos, opt };
 }
 
 const need = (value, what) => value || refuse(`missing ${what}`);
+/** A word as a shell reads it: in single quotes when it holds anything but letters, digits and ._/-, so a pasted command does only what it says. */
+const shell = (word) => (/^[\w./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`);
+
+/** Refuses an id that the logbook does not have, and names the latest ids that it has, to pick from. */
+const missing = (what, ids) => refuse(`no ${what}. ${ids.length ? `The latest: ${ids.slice(-10).join(", ")}.` : "There is none yet."}`);
 
 function taskOf(dir, id) {
   const tasks = read(dir, "tasks");
-  const task = tasks.find((t) => t.id === id) ?? refuse(`no task ${id}`);
+  const task = tasks.find((t) => t.id === id) ?? missing(`task ${id}`, tasks.map((t) => t.id));
   return { tasks, task };
 }
 
@@ -201,6 +282,7 @@ function move(task, to) {
 /** Gives a task its pull request, or clears it with "". An investigation changes no code, so it may only clear one. */
 function setPr(task, pr) {
   if (pr && !builds(task)) refuse(`${task.id} is an investigation: it changes no code, so it has no pull request. A build is its own task: sage task add --size tiny, small or large, then give that task the PR.`);
+  if (pr && !PR.test(pr)) refuse(`${JSON.stringify(pr)} is not a pull request number. Give only its digits, for example pr=5 or --pr 5.`);
   task.pr = pr;
 }
 
@@ -208,17 +290,18 @@ function setPr(task, pr) {
 const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(sha)} is not a full commit SHA: a short one can match another commit. Give all 40 characters: git rev-parse <branch>.`);
 
 /**
- * Does one task have the clean cycles its route needs on one SHA? rows are only that task's ledger rows for the SHA.
- * A task without rows is in the merge gate only through its PR number.
+ * Does one task have the clean cycles its route needs on one SHA? tasks and findings are its logbook's tables, read once
+ * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge gate only through
+ * its PR number.
  */
-function judge(dir, id, rows, cycles) {
-  const task = read(dir, "tasks").find((t) => t.id === id);
+function judge(dir, tasks, findings, id, rows, cycles) {
+  const task = tasks.find((t) => t.id === id);
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the gate fails closed
   const clear = `clear its PR (sage task ${task.id} set pr=)`;
   if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: ${clear}.` };
   if (!rows.length) return { ok: false, reason: `${who} is a task of PR ${task.pr} but has no verdicts on this SHA. Record them, or, if it is no longer part of PR ${task.pr}, ${clear}.` };
-  const open = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
+  const open = findings.filter((f) => f.task === task.id && f.status === "open");
   if (open.length) return { ok: false, reason: `${who} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
   const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
   if (bad) return { ok: false, reason: `${who}: cycle ${bad.cycle} found problems on this SHA (${bad.kind}). Repair, then review the new SHA.` };
@@ -246,13 +329,16 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
     cycles ??= config(env).autopilot_cycles;
     pr &&= String(pr); // the tasks table holds it as text
-    const dirs = existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(root, d.name)).sort() : [];
+    // A logbook may be a link to a folder: the writes go through it, so the gate reads through it too.
+    const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path).isDirectory()).sort() : [];
     const each = dirs.flatMap((dir) => {
       const rows = read(dir, "ledger").filter((r) => r.sha === sha);
-      const ofPr = rows.length && pr ? read(dir, "tasks").filter((t) => t.pr === pr).map((t) => t.id) : [];
+      if (!rows.length) return [];
+      const [tasks, findings] = [read(dir, "tasks"), read(dir, "findings")];
+      const ofPr = pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : [];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const own = rows.filter((r) => r.task === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, id, own, cycles) };
+        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, cycles) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -264,8 +350,9 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     const out = bad.some((r) => r.own) ? ", or push a new commit and record its verdicts under the live tasks only" : ""; // a new commit leaves behind only verdicts
     return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass${out}.` };
   } catch (e) {
-    const at = e?.path ?? root;
-    return { ok: false, reason: `the merge gate cannot read ${at} (${e?.code ?? e?.message ?? e}), so it refuses every merge. Ask the user to fix or remove ${at}.` };
+    const [at, why] = [e?.path, e?.code ?? e?.message ?? e];
+    if (at === undefined) return { ok: false, reason: `the merge gate failed (${why}), so it refuses every merge.` };
+    return { ok: false, reason: `the merge gate cannot read ${at} (${why}), so it refuses every merge. Ask the user to fix ${at === root ? "" : "or remove "}${at}.` }; // never the root: it holds every logbook
   }
 }
 
@@ -291,29 +378,30 @@ function status(dir, save) {
 /** Runs one command and returns its output line(s). A refused command throws, with the reason. */
 export function sage(argv, env = process.env) {
   const [cmd, ...rest] = argv;
-  const { pos, opt } = parse(rest);
+  if (!COMMANDS.includes(cmd)) refuse(`unknown command "${cmd ?? ""}". Commands: ${COMMANDS.join(", ")}`);
+  const { pos, opt } = parse(cmd, rest);
   if (cmd === "merge-check") {
     const cycles = opt.cycles === undefined ? undefined : (valid("autopilot_cycles", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more"));
-    if (opt.pr !== undefined && !/^\d+$/.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
+    if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
     const r = mergeCheck(opt.sha ?? refuse("merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
   }
   if (cmd === "config") {
-    const cfg = config(env);
+    const set = {};
     for (const kv of pos) {
       const [k, v = ""] = kv.split("=");
       if (Object.hasOwn(COUNTS, k) && valid(k, v) === undefined) refuse(`${k} must be a whole number of 1 or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k]}` : `, not ${JSON.stringify(v)}`}`);
-      cfg[k] = valid(k, v) ?? refuse(`config takes max_agents, autopilot_cycles, max_rounds and arena as key=number, and arena_models as a list of ${MODELS.join(", ")}`);
+      set[k] = valid(k, v) ?? refuse(`config takes max_agents, autopilot_cycles, max_rounds and arena as key=number, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
       mkdirSync(sageRoot(env), { recursive: true });
-      put(join(sageRoot(env), "config.json"), JSON.stringify(cfg, null, 2) + "\n");
+      put(join(sageRoot(env), "config.json"), JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n"); // a key of a newer version stays
     }
-    return Object.entries(cfg).map(([k, v]) => `${k}=${v}`).join(" ");
+    return Object.entries({ ...config(env), ...set }).map(([k, v]) => `${k}=${v}`).join(" ");
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
   const dir = storeDir(project, env);
-  if (cmd !== "init" && !existsSync(join(dir, "tasks.tsv"))) refuse(`no logbook for the project ${project}. Run: sage init --project ${project}`);
+  if (cmd !== "init" && !existsSync(join(dir, "tasks.tsv"))) refuse(`no logbook for the project ${project}. Run: sage init --project ${shell(project)}`);
   // A read takes no lock: every file is replaced whole, so it sees the store before or after a change, never half of one.
   if (["logbook", "status"].includes(cmd) || (cmd === "standing" && pos[0] !== "add")) return act(cmd, pos, opt, dir, env);
   if (cmd === "init") {
@@ -321,6 +409,7 @@ export function sage(argv, env = process.env) {
     mkdirSync(join(dir, "reports"), { recursive: true });
   }
   return withLock(dir, () => {
+    ready(dir);
     const out = act(cmd, pos, opt, dir, env);
     status(dir, true);
     return out;
@@ -338,12 +427,12 @@ function act(cmd, pos, opt, dir, env) {
       return dir;
     case "standing": {
       if (sub === "add") {
-        const text = readFileSync(join(dir, "standing.md"), "utf8").trimEnd();
+        const text = (readRegular(join(dir, "standing.md")) ?? "").trimEnd();
         const n = (text.match(/^\d+\./gm) ?? []).length + 1;
         put(join(dir, "standing.md"), `${text}\n${n}. ${cell(need([id, ...more].join(" "), "the order's text"))}\n`);
         return `standing order ${n} added`;
       }
-      return readFileSync(join(dir, "standing.md"), "utf8").trimEnd();
+      return (readRegular(join(dir, "standing.md")) ?? "").trimEnd();
     }
     case "task": {
       if (sub === "add") {
@@ -381,7 +470,7 @@ function act(cmd, pos, opt, dir, env) {
             if (v === "verified") {
               const rows = read(dir, "ledger").filter((r) => r.task === task.id);
               const head = rows.at(-1)?.sha ?? refuse(`${task.id} has no verdicts yet`);
-              const r = judge(dir, task.id, rows.filter((r) => r.sha === head), 1);
+              const r = judge(dir, tasks, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
           } else if (k === "pr") setPr(task, v);
@@ -430,7 +519,7 @@ function act(cmd, pos, opt, dir, env) {
         return `${run.id} running · ${role} on ${task.id}${branch ? ` · ${branch}` : ""}${run.candidate ? ` · candidate ${run.candidate}` : ""}`;
       }
       if (sub === "done") {
-        const run = runs.find((r) => r.id === id) ?? refuse(`no run ${id}`);
+        const run = runs.find((r) => r.id === id) ?? missing(`run ${id}`, runs.map((r) => r.id));
         const st = need(opt.status, "--status");
         if (!["done", "blocked", "question", "failed"].includes(st)) refuse("status is done, blocked, question or failed");
         Object.assign(run, { status: st, tokens: opt.tokens ?? run.tokens, report: opt.report ?? run.report, ended: now() });
@@ -455,7 +544,7 @@ function act(cmd, pos, opt, dir, env) {
         write(dir, "findings", findings);
         return `${key} open${again ? " again" : ""} · ${severity} · ${task.id}`;
       }
-      const f = findings.find((x) => x.task === id && x.key === more[0]) ?? refuse(`no finding ${more[0]} on ${id}`);
+      const f = findings.find((x) => x.task === id && x.key === more[0]) ?? missing(`finding ${more[0]} on ${id}`, findings.filter((x) => x.task === id).map((x) => x.key));
       if (sub === "triage") {
         const t = need(more[1], "fix, dismiss or ask");
         if (!["fix", "dismiss", "ask"].includes(t)) refuse("triage is fix, dismiss or ask");
@@ -472,6 +561,12 @@ function act(cmd, pos, opt, dir, env) {
       const { tasks, task } = taskOf(dir, need(sub, "the task id"));
       const kind = need(opt.kind, "--kind");
       if (!KINDS.includes(kind)) refuse(`kind is one of ${KINDS.join(", ")}`);
+      // The clean rule: a cycle is clean when no medium or high finding is open. Low ones are fixed, moved or dismissed
+      // before a merge, and an open one blocks it. So a problem verdict needs an open finding that is not low.
+      const findings = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
+      if (FOUND.includes(kind) && findings.every((f) => f.severity === "low")) {
+        refuse(`${task.id} has no open medium or high finding, so this review's cycle is clean. Record its clean verdict (${CLEAN.join(", ")}); fix, move or dismiss each low finding before the merge. For a medium or high problem, record the finding first: sage finding add ${task.id}.`);
+      }
       // A route without build has no commit to judge. Its rows have no SHA, so the merge gate never reads them.
       if (builds(task) && !opt.sha) refuse(`${task.id} has a build block, so each verdict names its commit: add --sha with the full 40-character SHA (git rev-parse <branch>)`);
       if (!builds(task) && opt.sha) refuse(`${task.id} has no build block, so its verdicts name no commit: leave out --sha`);
@@ -480,7 +575,7 @@ function act(cmd, pos, opt, dir, env) {
       if (opt.pr) setPr(task, opt.pr);
       write(dir, "tasks", tasks);
       write(dir, "ledger", [...read(dir, "ledger"), { task: task.id, pr: task.pr, sha, kind, cycle: opt.cycle ?? "1", run: opt.run ?? "", at: now() }]);
-      const open = NOT_CLEAN.includes(kind) ? [] : read(dir, "findings").filter((f) => f.task === task.id && f.status === "open" && f.triage === "fix");
+      const open = NOT_CLEAN.includes(kind) ? [] : findings.filter((f) => f.triage === "fix");
       return `${task.id} ${kind}${sha ? ` · ${sha.slice(0, 7)}` : ""} · cycle ${opt.cycle ?? "1"}${open.length ? ` · still open: ${open.map((f) => f.key).join(", ")}. Close the ones that this review confirmed fixed.` : ""}`;
     }
     case "gate": {
@@ -491,7 +586,7 @@ function act(cmd, pos, opt, dir, env) {
         return `${g.id} open · ${g.question}`;
       }
       if (sub === "answer") {
-        const g = gates.find((x) => x.id === id) ?? refuse(`no gate ${id}`);
+        const g = gates.find((x) => x.id === id) ?? missing(`gate ${id}`, gates.map((x) => x.id));
         g.answer = need(more.join(" "), "the answer");
         write(dir, "gates", gates);
         write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: "the user's answer" }]);
@@ -505,8 +600,6 @@ function act(cmd, pos, opt, dir, env) {
     }
     case "status":
       return status(dir);
-    default:
-      refuse(`unknown command "${cmd ?? ""}". Commands: init, logbook, standing, task, round, run, finding, verdict, gate, log, status, merge-check, config`);
   }
 }
 
