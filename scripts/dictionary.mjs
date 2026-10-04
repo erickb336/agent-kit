@@ -55,8 +55,15 @@ export function yamlText(value) {
 // A blanked part keeps its line breaks, and its other characters become NUL, not spaces, so that a two-word term
 // such as "main agent" never joins across a tag or a code span ("main</td><td>Agents").
 const blank = (s) => s.replace(/[^\n]/g, "\0");
+// A tag as GitHub's Markdown reads one (CommonMark's raw HTML), which a browser reads as a tag too: a name, then
+// attributes, with at most one line break between parts, and each quoted value on one line. So "<owner's name>" and
+// "a<b and c>d" are text. Then Markdown's autolinks.
+const sp = "[ \\t]*(?:\\n[ \\t]*)?";
+const TAG = new RegExp(`<(?:[A-Za-z][A-Za-z0-9-]*(?:(?=\\s)${sp}[A-Za-z_:][\\w.:-]*(?:${sp}=${sp}(?:[^\\s"'=<>\`]+|'[^'\\n]*'|"[^"\\n]*"))?)*${sp}/?|/[A-Za-z][A-Za-z0-9-]*${sp}|![A-Za-z][^>\\n]*)>|<https?:[^>\\s]*>`, "g");
 /** A tag, blanked except the text of its alt, title and aria-label, which a person reads. */
 const tag = (t) => t.replace(/(\s(?:alt|title|aria-label)=)(?:"([^"]*)"|'([^']*)')|[^\n]/gi, (m, key, dq, sq) => (key ? `${blank(key)}\0${dq ?? sq}\0` : "\0"));
+/** A Markdown link's URL, blanked, but not its title, which GitHub shows: [text](url "title"), 'title' or (title). */
+const link = (l) => l.replace(/\s(?:"([^"]*)"|'([^']*)'|\(([^)]*)\))(?=\s*\)$)|[^\n]/g, (m, dq, sq, pq) => (m.length > 1 ? `\0\0${dq ?? sq ?? pq}\0` : "\0"));
 /** Markdown's indented code: after a blank line, lines indented 4 or more past the text before them (a list
  * item's text starts after its marker). In a list item, "    code" is still the item's text, as GitHub shows it. */
 function indentedCode(text) {
@@ -76,14 +83,14 @@ function prose(text, html) {
   const t = text.replace(/^---\n[\s\S]*?\n---(?:\n|$)/, (front) => front.replace(/^(description:)(.*)$/m, (all, key, value) => `${key} ${yamlText(value)}`));
   return (html ? t : indentedCode(t))
     .replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1/gm, blank) // fenced code blocks
-    .replace(/(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g, blank) // code spans, with one backtick or more
+    .replace(/(?<=(?:^|[^\\])(?:\\\\)*)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g, blank) // code spans, with one backtick or more, not escaped (\`)
     .replace(/<pre class="mermaid">[\s\S]*?<\/pre>/g, (m) => m.replace(/"/g, " ")) // a Mermaid label's quotes are syntax
     .replace(/<(script|style|code)\b[\s\S]*?<\/\1>/gi, blank)
     .replace(/<!--[\s\S]*?-->/g, blank)
-    .replace(/<[/!]?[A-Za-z](?:[^>"']|"[^"]*"|'[^']*')*>|<https?:[^>\s]*>/g, tag) // tags, and Markdown's autolinks
-    .replace(/\]\([^)\n]*\)/g, blank) // link URLs
-    // Quotes: double, but not an inch mark (5"); single, but not an apostrophe (it's, the owners'); and curly.
-    .replace(/(?<!\d)"[^"\n]*"|“[^”\n]*”|(?<![\p{L}\p{N}])'(?:[^'\n]|'(?=\p{L}))*'(?![\p{L}\p{N}])|‘(?:[^’\n]|’(?=\p{L}))*’/gu, blank);
+    .replace(TAG, tag)
+    .replace(/\]\([^()\n]*(?:\([^()\n]*\)[^()\n]*)?\)/g, link) // link URLs, with one level of parentheses
+    // Quotes: double, but not an inch mark (5"); single, but not an apostrophe (it's, the owners', `code`'s); and curly.
+    .replace(/(?<!\d)"[^"\n]*"|“[^”\n]*”|(?<![\p{L}\p{N}\0])'(?:[^'\n]|'(?=\p{L}))*'(?![\p{L}\p{N}])|‘(?:[^’\n]|’(?=\p{L}))*’/gu, blank);
 }
 
 /** Each flagged word, or its plural, in a text: its line, the word as written, and the approved words to use. A word

@@ -227,3 +227,23 @@ test("npm run build and npm run check refuse a dictionary that the check cannot 
     }
   }
 });
+
+test("a Markdown link or image title counts, as GitHub shows it; an escaped backtick is text, not code", () => {
+  assert.deepEqual(scan('See [the docs](https://a.org/x "the store").'), ["1:store"]);
+  assert.deepEqual(scan("![a graphic](docs/assets/loop-light.svg \"the store\") and [b](https://x.org/y (the pipeline))."), ["1:store", "1:pipeline"]);
+  assert.deepEqual(scan('See [the docs](https://a.org/store "the guide") and [it](https://a.org/Store_(x)).'), []);
+  assert.deepEqual(scan("Run \\`store\\` now."), ["1:store"]);
+  assert.deepEqual(scan("Run \\\\`store` now."), []); // an escaped backslash, then a code span
+});
+
+test("in Markdown, a tag is only what GitHub reads as a tag, and a quote in text does not make one run on", () => {
+  assert.deepEqual(scan("Fill in <owner's name> first.\nThe chief keeps it in the store.\nIt's done -> next."), ["2:store"]);
+  assert.deepEqual(scan("Use a<b and the store, c>d."), ["1:store"]);
+  assert.deepEqual(scan('Use <b class="store">x</b>, <owner name> and <img\nalt="the pipeline" src="a.png">.'), ["2:pipeline"]);
+});
+
+test("an apostrophe right after a code span, a link or a tag opens no quote", () => {
+  assert.deepEqual(scan("Read `sage:report`'s fields in the store, not in the agents' notes."), ["1:store"]);
+  assert.deepEqual(scan("[agent](x.md)'s fields go in the store, not the 'logbook' draft."), ["1:store"]);
+  assert.deepEqual(scan("The <b>chief</b>'s store, and the 'store' word."), ["1:store"]);
+});
