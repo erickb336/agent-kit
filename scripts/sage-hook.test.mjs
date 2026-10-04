@@ -327,13 +327,20 @@ test("only a merge command is a merge: its words in quoted text, a heredoc or a 
     `cat > notes.md <<'EOF'\n${MERGE}\nEOF`,
     `gh pr create --title "Fix the search" --body 'After the reviews: ${MERGE}'`,
     `echo ok # ${MERGE}`,
+    `git ls-files | xargs grep -n "${MERGE}"`,
   ];
   for (const command of text) assert.equal(s.send(bash(command)), undefined, command);
   // A merge in any form of a shell command is still a merge.
   const merges = [MERGE, `cd /x && ${MERGE}`, `g'h' pr merge 41 --match-head-commit ${SHA}`, `echo "$(${MERGE})"`, `sudo ${MERGE}`, `GH_TOKEN=x ${MERGE}`];
   for (const command of merges) assert.match(denied(s.send(bash(command))) ?? "", /autopilot is off/, command);
   // A command that the hook cannot read well enough is refused.
-  const unsure = [`bash -c "${MERGE}"`, `sh <<'EOF'\n${MERGE}\nEOF`, `node -e "require('child_process').execSync('${MERGE}')"`, `echo "${MERGE}`];
+  const unsure = [
+    `bash -c "${MERGE}"`,
+    `sh <<'EOF'\n${MERGE}\nEOF`,
+    `node -e "require('child_process').execSync('${MERGE}')"`,
+    `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(["gh", "pr", "merge", "41"])\nEOF`,
+    `echo "${MERGE}`,
+  ];
   for (const command of unsure) assert.match(denied(s.send(bash(command))) ?? "", /the merge check cannot tell whether this command merges/, command);
 });
 

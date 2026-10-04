@@ -145,11 +145,15 @@ function gitGate(event, command, state) {
 /** Text that may name a merge: the merge command, or a merge through the GitHub API (REST or GraphQL). */
 const API_MERGE = /\/pulls\/\d+\/merge\b|\/merges\b|\b(?:mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b/i;
 const mentionsMerge = (text) => /\bgh\b[\s\S]*\bmerge\b/i.test(text.replace(/['"\\]/g, "")) || API_MERGE.test(text);
-/** A command that runs text as code: a shell, eval, source, xargs, or an interpreter with inline code (node -e). */
-const RUNNER = /^(?:sh|bash|zsh|dash|ksh|fish|eval|source|xargs)$/;
+/**
+ * A command that runs text as code: a shell, eval or source, or an interpreter that runs inline code (node -e) or its
+ * standard input (python3 - <<EOF) instead of a script file.
+ */
+const RUNNER = /^(?:sh|bash|zsh|dash|ksh|fish|eval|source)$/;
 const INTERPRETER = /^(?:node|deno|bun|python[\d.]*|perl|ruby)$/;
 const name = (word) => word.slice(word.lastIndexOf("/") + 1);
-const runsText = (words) => words.some((w) => RUNNER.test(name(w))) || (words.some((w) => INTERPRETER.test(name(w))) && words.some((w) => /^-\w*[cepE]\w*$|^--(?:eval|print)\b/.test(w)));
+const readsCode = (args) => args.some((a) => /^-\w*[cepE]\w*$|^--(?:eval|print)\b/.test(a)) || (args.find((a) => a === "-" || !a.startsWith("-")) ?? "-") === "-";
+const runsText = (words) => words.some((w, i) => RUNNER.test(name(w)) || (INTERPRETER.test(name(w)) && readsCode(words.slice(i + 1))));
 
 /**
  * The merge in a Bash command, read from its shell words, so that the merge command's words in quoted text or in a
