@@ -3,7 +3,8 @@
 //   - "sage mode" makes the session the user's chief of staff (agents/chief-of-staff.md) until "sage mode off". A
 //     session that starts as the sage:chief-of-staff agent is in sage mode from its first event. Only the user's own
 //     words switch a mode on, or sage mode off: never an agent's report, a task notification or another session's
-//     message (promptOf). An autopilot off counts in any text that the owner wrote, also joined to a frame.
+//     message (promptOf). When the hook cannot read the frames of a prompt, nothing in it switches a mode on (fail
+//     closed). An autopilot off counts in any text, also in a frame.
 //   - In sage mode it holds the rules that prompts alone did not hold in Orchestrator (docs/design/sage-mode.html,
 //     "Rules"): the chief never edits files, every brief has all its fields, at most max_agents sage agents run at
 //     once, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
@@ -27,22 +28,22 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // off" also drops the git rules. "sage mode" and "autopilot on" must stand alone or end at ".", ",", ":", ";", "!" or
 // the end of their line, so "autopilot on?" and "autopilot on main" switch nothing. "sage mode off" must not run on into
 // a longer word ("sage mode off-topic"), and its line must have no "?" ("sage mode off? what does it do?"). Because a
-// missed off is the unsafe one, a message that starts with "sage mode off" always switches autopilot off, even as a
-// question, and so does any message that mentions autopilot and has an off word anywhere. Off wins over on.
-// No mode-phrase regex has the m flag: with it, "^" would also match the start of each later line.
+// missed off is the unsafe one, any line of a prompt that starts with "sage mode off" switches autopilot off, even as a
+// question or in a frame, and so does any prompt that mentions autopilot and has an off word anywhere. Off wins over on.
+// Only SAGE_MODE_OFF has the m flag: with it, "^" also matches the start of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
 const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
 const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
 const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
-const SAGE_MODE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off\\b`, "i");
+const SAGE_MODE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off\\b`, "im"); // in any text, at the start of any line
 const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
 // The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
 const AUTOPILOT = /\bauto[-\s]?pilots?\b/i;
 const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit(?:s|ting)?|exit(?:s|ed|ing)?)\b|\b(?:stop|disabl|paus|cancel|kill|halt|deactivat|abort|suspend)|\bauto[-\s]?pilots?\s*=\s*false\b/i;
-const autopilotOff = (parts) => parts.some((part) => SAGE_MODE_OFF.test(part)) || (AUTOPILOT.test(parts.join("\n")) && OFF_WORD.test(parts.join("\n")));
+const autopilotOff = (text) => SAGE_MODE_OFF.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
@@ -53,66 +54,48 @@ export const REPORT_FIELDS = ["STATUS", "RESULT", "EVIDENCE", "FINDINGS", "QUEST
 const missingFields = (fields, text) => fields.filter((f) => !new RegExp(`^[\\s*_#|>-]*${f}\\b`, "m").test(text ?? ""));
 
 /**
- * A prompt: whether its author is the owner, its own text, and the parts that the owner can have written. Claude Code
- * also sends agents' reports, task notifications and other sessions' messages as prompts, in frames, and it can join
- * the owner's message to them. In 2.1.288 its hook input has no author field (the docs name prompt_source, which that
- * build does not send). A frame closes only with a close of its own kind. Another session's message closes with the
- * note that Claude Code puts after it, so the note is part of the frame.
- *   - text, for a switch on or a sage mode off: the text before the first frame and after the last close. An agent
- *     cannot write there, also when it writes a close in its report, because the real close comes after it.
- *   - parts, for an autopilot off: all the text outside the closed frames. A frame ends at the last close of its kind
- *     before the next open of its kind, so the owner's text between two frames counts. An open with no close is text:
- *     Claude Code always closes its frames, so only the owner can write one (a quote, or half of a pasted report).
+ * A prompt: whether the owner wrote it, and the owner's text. Claude Code sends no sender field: a live capture of a
+ * UserPromptSubmit hook in 2.1.289 has session_id, transcript_path, cwd, prompt_id, permission_mode, hook_event_name
+ * and prompt, and its docs name no sender field either. So the hook reads the sender from the prompt. Claude Code puts
+ * an agent's report, a task notification, another session's message and a system reminder in frames, and it can join
+ * the owner's message to them. A frame closes only with a close of its own kind. Another session's message closes with
+ * the note that Claude Code puts after it, so the note is part of the frame.
+ *   - text: the text before the first frame and after the last close. An agent cannot write there, also when it
+ *     writes a close in its report, because the real close comes after it. The owner's message that Claude Code queues
+ *     while it works (QUEUED) is the owner's text, although it comes in a system reminder.
+ *   - owner: false when the hook cannot read the frames (fail closed): a kind with more opens than closes or more
+ *     closes than opens, or a frame's marker in the text. Then nothing in the prompt switches a mode on.
  */
 const FRAMES = [
   [/<task-notification>/g, /<\/task-notification>/g],
   [/<agent-message[\s>]/g, /<\/agent-message>/g],
   [/^[^\S\n]*Another Claude session sent a message:/gm, /^[^\S\n]*That "other Claude session"[^\n]*/gm],
+  [/<system-reminder>/g, /<\/system-reminder>/g],
 ];
-const marks = (prompt) =>
-  FRAMES.flatMap(([open, close], kind) =>
-    [open, close].flatMap((re, k) => [...prompt.matchAll(re)].map((m) => ({ kind, open: k === 0, at: m.index, end: m.index + m[0].length }))),
-  ).sort((a, b) => a.at - b.at);
+const QUEUED = /<system-reminder>\s*The user sent a new message while you were working:\n([\s\S]*?)(?:\n\nThis is how Claude Code surfaces messages[^<]*)?<\/system-reminder>/g;
+const MARKERS = /\[Subagent hand-back\]|\[SYSTEM NOTIFICATION/i;
 export function promptOf(input) {
-  const prompt = input.prompt ?? "";
-  const all = marks(prompt);
-  const first = all.findIndex((m) => m.open);
-  let text = prompt;
-  if (first >= 0) {
-    const opened = new Set();
-    let last;
-    for (const m of all.slice(first)) if (m.open) opened.add(m.kind);
-    else if (opened.has(m.kind)) last = m;
-    text = [prompt.slice(0, all[first].at), last ? prompt.slice(last.end) : ""].filter((part) => part.trim()).join("\n");
-  }
-  const parts = [];
-  let from = 0;
-  for (const open of all) {
-    if (!open.open || open.at < from) continue;
-    const closes = all.filter((m) => !m.open && m.kind === open.kind && m.at > open.at);
-    if (!closes.length) continue;
-    const next = all.find((m) => m.open && m.kind === open.kind && m.at > closes[0].at);
-    const close = closes.filter((m) => !next || m.at < next.at).at(-1);
-    parts.push(prompt.slice(from, open.at));
-    from = close.end;
-  }
-  parts.push(prompt.slice(from));
-  return { owner: input.prompt_source == null || input.prompt_source === "user", text, parts };
+  const prompt = (input.prompt ?? "").replace(QUEUED, "\n$1\n");
+  const marks = FRAMES.map(([open, close]) => [[...prompt.matchAll(open)], [...prompt.matchAll(close)]]);
+  const opens = marks.flatMap(([o]) => o).map((m) => m.index);
+  const ends = marks.flatMap(([, c]) => c).map((m) => m.index + m[0].length);
+  const text = opens.length ? [prompt.slice(0, Math.min(...opens)), prompt.slice(Math.max(...ends, 0))].join("\n") : prompt;
+  const balanced = marks.every(([o, c]) => o.length === c.length);
+  return { owner: balanced && !MARKERS.test(text), text, all: prompt };
 }
 
 /**
  * Switches the modes, and returns the notes for the chief. Only the owner's own text switches sage mode or autopilot
- * on, or sage mode off. An autopilot off counts in every part that the owner can have written, from any prompt,
- * because off is the safe direction: so the owner's off also counts when the harness sends it with another
- * prompt_source, or joins it to a frame.
+ * on, or sage mode off. An autopilot off counts in any text of the prompt, also in a frame, because off is the safe
+ * direction. A sage mode off that is not the owner's switches only autopilot off, so that the git rules stay.
  */
-function switchModes({ text, parts }, state, owner) {
+function switchModes({ owner, text, all }, state) {
   const notes = [];
   if (owner && SAGE_OFF.test(text)) {
     Object.assign(state, { sage: false, given: false, autopilot: false });
     notes.push("sage: sage mode is off. You may change files yourself again.");
   } else if (owner && SAGE_ON.test(text)) state.sage = true;
-  if (autopilotOff(parts)) {
+  if (autopilotOff(all)) {
     if (state.autopilot) notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     state.autopilot = false;
   } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
@@ -128,8 +111,7 @@ export function handle(input, state, slots) {
   if (main && CHIEF.test(input.agent_type ?? "")) state.sage = true;
 
   if (event === "UserPromptSubmit") {
-    const prompt = promptOf(input);
-    const notes = switchModes(prompt, state, prompt.owner);
+    const notes = switchModes(promptOf(input), state);
     if (state.sage && !state.given) {
       state.given = true;
       notes.unshift(chiefText());
