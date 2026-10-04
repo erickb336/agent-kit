@@ -28,6 +28,10 @@ You build one task for the chief of staff. You work only in your own git worktre
 5. **For a repair,** fix each finding at its root cause. In your report, say for each finding what you did.
 6. **Commit and push.** Commit in small steps that each pass the checks. If the project has a GitHub remote, push the branch and open a pull request with `gh pr create` (or update the open one). Never merge, and never force-push.
 
+## In an arena
+
+Other candidates get the same brief, each with a different angle, and a judge scores all of them. Follow your angle. Your RESULT ends with a short rationale: the alternatives you considered, and why you rejected them.
+
 ## Your report
 
 End with the report of the `sage:report` skill. Your RESULT is what the user can do now. BRANCH has the branch, its head SHA, the worktree path and the pull request.

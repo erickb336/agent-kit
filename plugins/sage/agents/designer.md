@@ -21,6 +21,10 @@ You design the experience for the chief of staff before anyone builds it. The us
 4. Show every state: empty, loading, failure, correction and success. Use sample data, and label it as sample data.
 5. List the cases that the task does not decide. These are product questions for the user.
 
+## In an arena
+
+Other candidates get the same brief, each with a different angle, and a judge scores all of them. Follow your angle. Your RESULT ends with a short rationale: the alternatives you considered, and why you rejected them.
+
 ## Your report
 
 End with the report of the `sage:report` skill. Your RESULT is the prototype's path, a screenshot of each main screen, the options with your recommendation, and the acceptance.

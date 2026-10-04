@@ -47,7 +47,7 @@ test("sage mode makes the session the chief of staff, and only subagents may cha
   const on = context(s.send(prompt("sage mode. TrackMe: fix the crash reports")));
   assert.match(on, /sage mode is on/);
   assert.match(on, /# Chief of staff \(sage mode\)/);
-  assert.match(on, /The state tool: node ".*skills\/sage\/sage\.mjs" <command>/);
+  assert.match(on, /The state tool: node ".*skills\/sage\/sage\.mjs" <command> --project <path>\. Each shell call starts fresh, so write this full command every time/);
   assert.match(on, /Load these skills now: sage:sage, sage:principle-never-block-on-the-human/);
   assert.doesNotMatch(on, /^disallowedTools:/m, "the agent's frontmatter is left out");
   assert.match(denied(s.send(edit())), /Give this change to a sage:implementer/);

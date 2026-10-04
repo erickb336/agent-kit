@@ -3,7 +3,7 @@
 // The store is plain TSV and Markdown in ~/.claude/sage/<project>-<hash>/ ($SAGE_HOME overrides the root), and every
 // table has one writer: this tool. It holds the rules that prompts alone did not hold in Orchestrator: no dropped
 // findings, bounded repair rounds, one writer per branch, and a merge only of a head SHA with the clean cycles that
-// its route needs. The agent-kit hook calls mergeCheck before any `gh pr merge` in sage mode.
+// its route needs. The sage hook calls mergeCheck before any `gh pr merge` in sage mode.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
@@ -42,7 +42,8 @@ const NEXT = {
   merged: [],
   abandoned: [],
 };
-export const DEFAULTS = { max_agents: 3, autopilot_cycles: 2, max_rounds: 3, arena: 3 };
+export const DEFAULTS = { max_agents: 3, autopilot_cycles: 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet" };
+const MODELS = ["opus", "sonnet", "haiku", "inherit"];
 const TABLES = {
   tasks: ["id", "title", "size", "risk", "route", "state", "branch", "pr", "round", "keys"],
   runs: ["id", "task", "role", "round", "candidate", "branch", "status", "tokens", "report", "started", "ended"],
@@ -122,7 +123,7 @@ function parse(args) {
     const a = args[i];
     if (!a.startsWith("--")) pos.push(a);
     else if (a.includes("=")) opt[a.slice(2, a.indexOf("="))] = a.slice(a.indexOf("=") + 1);
-    else opt[a.slice(2)] = i + 1 < args.length && !args[i + 1].startsWith("--") ? args[++i] : "true";
+    else opt[a.slice(2)] = i + 1 < args.length ? args[++i] : "true"; // every option takes a value, which may start with "--"
   }
   return { pos, opt };
 }
@@ -140,8 +141,11 @@ function move(task, to) {
   task.state = to;
 }
 
-/** The judgment of the merge gate: may this head SHA merge? Searches every project's ledger for the SHA. */
-export function mergeCheck(sha, env = process.env) {
+/**
+ * The judgment of the merge gate: does this head SHA have the clean cycles its route needs? Searches every project's
+ * ledger for the SHA. One clean cycle makes a task verified; an autopilot merge wants autopilot_cycles of them.
+ */
+export function mergeCheck(sha, env = process.env, cycles = config(env).autopilot_cycles) {
   const root = sageRoot(env);
   const same = (a) => a && (a.startsWith(sha) || sha.startsWith(a)) && Math.min(a.length, sha.length) >= 7;
   const dirs = existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join(root, d.name)) : [];
@@ -156,7 +160,7 @@ export function mergeCheck(sha, env = process.env) {
     if (bad) return { ok: false, reason: `${task.id}: cycle ${bad.cycle} found problems on this SHA (${bad.kind}). Repair, then review the new SHA.` };
     if (!rows.some((r) => r.kind === "checks-pass")) return { ok: false, reason: `${task.id}: no checks-pass on this SHA.` };
     const perCycle = list(task.route).map((b) => VERDICT[b]).filter((k) => k && k !== "checks-pass");
-    const want = perCycle.length ? config(env).autopilot_cycles : 1;
+    const want = perCycle.length ? cycles : 1;
     const clean = perCycle.length ? [...new Set(rows.map((r) => r.cycle))].filter((c) => perCycle.every((k) => rows.some((r) => r.cycle === c && r.kind === k))).length : 1;
     if (clean < want) {
       const missing = perCycle.filter((k) => !rows.some((r) => r.kind === k));
@@ -190,15 +194,16 @@ export function sage(argv, env = process.env) {
   const [cmd, ...rest] = argv;
   const { pos, opt } = parse(rest);
   if (cmd === "merge-check") {
-    const r = mergeCheck(need(opt.sha, "--sha"), env);
+    const r = mergeCheck(need(opt.sha, "--sha"), env, opt.cycles ? Number(opt.cycles) : undefined);
     return r.ok ? r.reason : refuse(r.reason);
   }
   if (cmd === "config") {
     const cfg = config(env);
     for (const kv of pos) {
-      const [k, v] = kv.split("=");
-      if (!(k in DEFAULTS) || !/^\d+$/.test(v ?? "")) refuse(`config takes ${Object.keys(DEFAULTS).join(", ")} as key=number`);
-      cfg[k] = Number(v);
+      const [k, v = ""] = kv.split("=");
+      if (k === "arena_models" && list(v).length && list(v).every((m) => MODELS.includes(m))) cfg[k] = list(v).join(",");
+      else if (k in DEFAULTS && k !== "arena_models" && /^\d+$/.test(v)) cfg[k] = Number(v);
+      else refuse(`config takes max_agents, autopilot_cycles, max_rounds and arena as key=number, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
       mkdirSync(sageRoot(env), { recursive: true });
@@ -216,8 +221,13 @@ export function sage(argv, env = process.env) {
     return `store ${dir}`;
   }
   if (!existsSync(join(dir, "tasks.tsv"))) refuse(`no store for this project. Run: sage init --project <path>`);
-  const [sub, id, ...more] = pos;
+  const out = act(cmd, pos, opt, dir, env);
+  if (!["store", "standing", "status"].includes(cmd)) status(dir); // status.md never lags behind the tables
+  return out;
+}
 
+function act(cmd, pos, opt, dir, env) {
+  const [sub, id, ...more] = pos;
   switch (cmd) {
     case "store":
       return dir;
@@ -251,12 +261,17 @@ export function sage(argv, env = process.env) {
         for (const kv of more) {
           const [k, v] = [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)];
           if (k === "state") {
+            if (v === "repairing") refuse("start a repair with: sage round <task>");
+            move(task, v); // the design's states first; the table is written only if every check below passes
             if (v === "verifying") {
               const open = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open");
               if (open.length) refuse(`${task.id} has open findings: ${open.map((f) => `${f.key} (${f.triage || "not triaged"})`).join(", ")}. Close or dismiss each one first.`);
             }
-            if (v === "repairing") refuse("start a repair with: sage round <task>");
-            move(task, v);
+            if (v === "verified") {
+              const head = read(dir, "ledger").filter((r) => r.task === task.id).at(-1)?.sha ?? refuse(`${task.id} has no verdicts yet`);
+              const r = mergeCheck(head, env, 1);
+              if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
+            }
           } else if (["branch", "pr", "title"].includes(k)) task[k] = v;
           else refuse(`task set takes state=, branch=, pr= or title=`);
         }
@@ -267,8 +282,10 @@ export function sage(argv, env = process.env) {
     case "round": {
       const { tasks, task } = taskOf(dir, need(sub, "the task id"));
       if (!["reviewing", "verifying"].includes(task.state)) refuse(`${task.id} is ${task.state}. A repair starts from reviewing or verifying.`);
-      const keys = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open" && f.triage === "fix").map((f) => f.key).sort().join(",");
+      const fix = read(dir, "findings").filter((f) => f.task === task.id && f.status === "open" && f.triage === "fix");
+      const keys = fix.map((f) => f.key).sort().join(",");
       if (!keys) refuse(`${task.id} has no open findings marked fix`);
+      if (fix.every((f) => f.severity === "low")) refuse(`${task.id}: only low findings are marked fix (${keys}). A repair round needs a medium or high finding. Dismiss the low ones with a reason, or let them join the next round.`);
       const round = Number(task.round) + 1;
       if (round > config(env).max_rounds) {
         task.state = "held";
@@ -344,7 +361,8 @@ export function sage(argv, env = process.env) {
       if (opt.pr) task.pr = opt.pr;
       write(dir, "tasks", tasks);
       write(dir, "ledger", [...read(dir, "ledger"), { task: task.id, pr: task.pr, sha, kind, cycle: opt.cycle ?? "1", run: opt.run ?? "", at: now() }]);
-      return `${task.id} ${kind} · ${sha.slice(0, 7)} · cycle ${opt.cycle ?? "1"}`;
+      const open = NOT_CLEAN.includes(kind) ? [] : read(dir, "findings").filter((f) => f.task === task.id && f.status === "open" && f.triage === "fix");
+      return `${task.id} ${kind} · ${sha.slice(0, 7)} · cycle ${opt.cycle ?? "1"}${open.length ? ` · still open: ${open.map((f) => f.key).join(", ")}. Close the ones that this review confirmed fixed.` : ""}`;
     }
     case "gate": {
       const gates = read(dir, "gates");

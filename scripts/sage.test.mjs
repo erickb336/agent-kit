@@ -68,23 +68,26 @@ test("repair rounds are bounded, and a round that fixes nothing re-plans the tas
   s.ok("task", "add", "--title", "t", "--size", "small");
   toReviewing(s, "T1");
   assert.match(s.no("round", "T1"), /no open findings marked fix/);
-  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "crash");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "a typo in the error");
   s.ok("finding", "triage", "T1", "F-T1-1", "fix");
-  assert.equal(s.ok("round", "T1"), "T1 repairing · round 1 of 3 · fix F-T1-1");
+  assert.match(s.no("round", "T1"), /only low findings are marked fix \(F-T1-1\)\. A repair round needs a medium or high finding/);
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "crash");
+  s.ok("finding", "triage", "T1", "F-T1-2", "fix");
+  assert.equal(s.ok("round", "T1"), "T1 repairing · round 1 of 3 · fix F-T1-1,F-T1-2", "the low finding joins the round");
   s.ok("task", "T1", "set", "state=reviewing");
-  assert.equal(s.ok("round", "T1"), "T1 replan: round 1 did not fix F-T1-1. Attack the premise, then brief again.");
+  assert.equal(s.ok("round", "T1"), "T1 replan: round 1 did not fix F-T1-1,F-T1-2. Attack the premise, then brief again.");
 
   const b = store();
   b.ok("task", "add", "--title", "t", "--size", "small");
   toReviewing(b, "T1");
   for (let n = 1; n <= 3; n++) {
-    b.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", `problem ${n}`);
+    b.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", `problem ${n}`);
     b.ok("finding", "triage", "T1", `F-T1-${n}`, "fix");
     if (n > 1) b.ok("finding", "close", "T1", `F-T1-${n - 1}`);
     assert.match(b.ok("round", "T1"), new RegExp(`round ${n} of 3`));
     b.ok("task", "T1", "set", "state=reviewing");
   }
-  b.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "problem 4");
+  b.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", "problem 4");
   b.ok("finding", "triage", "T1", "F-T1-4", "fix");
   b.ok("finding", "close", "T1", "F-T1-3");
   assert.equal(b.ok("round", "T1"), "T1 held: 3 repair rounds did not make it clean. Stop and ask the user.");
@@ -132,8 +135,9 @@ test("a tiny task needs only its checks once", () => {
 
 test("config, gates, standing orders and status", () => {
   const s = store();
-  assert.equal(s.ok("config"), "max_agents=3 autopilot_cycles=2 max_rounds=3 arena=3");
-  assert.equal(s.ok("config", "max_agents=5"), "max_agents=5 autopilot_cycles=2 max_rounds=3 arena=3");
+  assert.equal(s.ok("config"), "max_agents=3 autopilot_cycles=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet");
+  assert.equal(s.ok("config", "max_agents=5", "arena_models=opus,opus,sonnet"), "max_agents=5 autopilot_cycles=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet");
+  assert.match(s.no("config", "arena_models=gpt-5"), /arena_models as a list of opus, sonnet, haiku, inherit/);
   assert.match(s.no("config", "colour=5"), /config takes max_agents/);
   s.ok("task", "add", "--title", "Export trips", "--size", "large");
   assert.equal(s.ok("gate", "add", "T1", "--question", "Include deleted trips?", "--options", "yes|no", "--recommend", "no", "--default", "no"), "G1 open · Include deleted trips?");
@@ -156,4 +160,29 @@ test("a command without a store tells how to make one", () => {
   assert.equal(existsSync(join(home, "config.json")), false);
   writeFileSync(join(home, "x"), ""); // the root holds only stores and config.json; a stray file is ignored
   assert.match(spawnSync("node", [TOOL, "merge-check", "--sha", SHA], { encoding: "utf8", env: { ...process.env, SAGE_HOME: home } }).stderr, /no verdicts recorded/);
+});
+
+test("fixes from dry run 1: a value may start with --, status.md never lags, and a clean verdict lists open fix findings", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  assert.match(readFileSync(join(s.dir, "status.md"), "utf8"), /\| T1 \| framed \|/, "status.md follows a change without a status command");
+  s.ok("finding", "add", "T1", "--source", "code-reviewer", "--severity", "medium", "--summary", "--since=DATE is ignored");
+  assert.match(readFileSync(join(s.dir, "findings.tsv"), "utf8"), /\t--since=DATE is ignored\t/);
+  s.ok("finding", "triage", "T1", "F-T1-1", "fix");
+  assert.match(s.ok("verdict", "T1", "--sha", SHA, "--kind", "review-clean"), /still open: F-T1-1\. Close the ones that this review confirmed fixed\./);
+  assert.doesNotMatch(s.ok("verdict", "T1", "--sha", SHA, "--kind", "findings"), /still open/, "a findings verdict does not remind");
+});
+
+test("verified needs one clean cycle on the latest SHA; an autopilot merge needs two", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  toReviewing(s, "T1");
+  s.ok("task", "T1", "set", "state=verifying");
+  assert.match(s.no("task", "T1", "set", "state=verified"), /T1 has no verdicts yet/);
+  for (const kind of ["checks-pass", "review-clean"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.match(s.no("task", "T1", "set", "state=verified"), /not verified on a1b2c3d: T1: 0 of 1 clean cycles on this SHA; never recorded: qa-pass/);
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "qa-pass");
+  assert.match(s.ok("task", "T1", "set", "state=verified"), /^T1 verified/);
+  assert.match(s.no("merge-check", "--sha", SHA), /1 of 2 clean cycles/, "autopilot wants 2");
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T1 may merge: 1 clean cycle on this SHA");
 });

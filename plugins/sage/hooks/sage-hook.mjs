@@ -102,7 +102,7 @@ export function chiefText() {
   const skills = [...m[1].matchAll(/^\s+-\s+(\S+)\s*$/gm)].map((x) => x[1]);
   return [
     `sage: sage mode is on. You are the user's chief of staff until the user says "sage mode off".`,
-    `The state tool: node "${join(ROOT, "skills/sage/sage.mjs")}" <command>. Load these skills now: ${skills.join(", ")}.`,
+    `The state tool: node "${join(ROOT, "skills/sage/sage.mjs")}" <command> --project <path>. Each shell call starts fresh, so write this full command every time; do not keep it in a variable. Load these skills now: ${skills.join(", ")}.`,
     m[2].trim(),
   ].join("\n\n");
 }
