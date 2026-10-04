@@ -555,7 +555,7 @@ function loop(t, id) {
     label((qa.c + build.c) / 2, ty + th + 62, "QA fail", { fill: t.bad }),
     // The pull request.
     line(`M${qa.x + qa.w + 5} ${ty + th / 2} L ${panelR + 30} ${ty + th / 2}`, t.edge, "hot"),
-    tile(t, id, panelR + 36, ty - 20, W - 40 - panelR - 36, th + 40, "Pull request", ["you merge, or", "autopilot after", "2 clean cycles"], true),
+    tile(t, id, panelR + 36, ty - 20, W - 40 - panelR - 36, th + 40, "Pull request", ["you merge, or", "autopilot after", "its clean cycles"], true),
     // The outer loop: a mistake that comes back twice gets a lasting fix.
     line(`M1064 160 L 1072 160 Q 1080 160 1080 170 L 1080 770 Q 1080 780 1070 780 L 340 780 Q 330 780 330 770 L 330 756`, t.loop, "loop", { dash: "8 8", sw: 2.5 }),
     label(W / 2, 828, "a mistake that comes back twice → seal the lesson", { fill: t.loop, weight: 700 }),
@@ -663,7 +663,7 @@ function routes(t, id) {
 
 /** A task's life: the states, with the repair loop and the held state. */
 function lifecycle(t, id) {
-  const W = 1100, H = 530, size = SMALL, ph = 50, y = 104, by = 256;
+  const W = 1100, H = 564, size = SMALL, ph = 50, y = 104, by = 256;
   const names = ["framed", "briefed", "building", "reviewing", "verifying", "verified", "merged"];
   const ws = names.map((n) => tw(n, size, true) + 16);
   const gap = (W - 72 - ws.reduce((a, b) => a + b)) / (names.length - 1);
@@ -673,7 +673,7 @@ function lifecycle(t, id) {
   const held = { w: tw("held", size, true) + 64 }, rep = { w: tw("repairing", size, true) + 64 };
   held.x = f1(bu.cx - held.w / 2);
   rep.x = f1((re.cx + ve.cx) / 2 - rep.w / 2);
-  const fy = 372, fh = 3 * size * 1.4 + 32;
+  const fy = 372, fh = 4 * size * 1.4 + 32;
   const body = [
     backdrop(t, id, W, H, { moon: [990, 250, 100], seeds: [17, 52, 4], far: [H - 60, 60, 180, 70, 140], near: [H + 60, 90, 220, 80, 170], mist: [140, 280, H - 130], mistK: 0.6 }),
     heading(t, 36, 62, "THE STATES OF A TASK"),
@@ -693,10 +693,10 @@ function lifecycle(t, id) {
     text(f1(rep.x + rep.w / 2), by + ph + 34, "next round, at most 3", { size, fill: t.muted, anchor: "middle" }),
     // The rules of the states.
     rect(36, fy, W - 72, fh, { rx: 8, fill: t.tile, stroke: t.edge, sw: 1.5 }),
-    text(64, fy + 40, "Verified needs 1 clean cycle. Autopilot merges after 2 in a row.", { size, weight: 700, fill: t.ink }),
-    text(64, f1(fy + 40 + size * 1.4), ["The state tool checks each move. A new commit voids the verdicts,", "so the task is reviewed again."], { size, fill: t.muted, lh: 1.4 }),
+    text(64, fy + 40, ["Verified needs 1 clean cycle. Autopilot merges after the task's clean cycles:", "1 for a tiny or small task, 2 for a large task or a task with a risk flag."], { size, weight: 700, fill: t.ink, lh: 1.4 }),
+    text(64, f1(fy + 40 + 2 * size * 1.4), ["The state tool checks each move. A new commit voids the verdicts,", "so the task is reviewed again."], { size, fill: t.muted, lh: 1.4 }),
   ].join("\n");
-  return panel(t, id, W, H, body, "A task's life: framed, briefed, building, reviewing, verifying, verified, merged. A product question holds the task until your answer. Findings or a QA failure send it to repairing, then to review again, at most 3 rounds. Verified needs one clean cycle; autopilot merges after two.");
+  return panel(t, id, W, H, body, "A task's life: framed, briefed, building, reviewing, verifying, verified, merged. A product question holds the task until your answer. Findings or a QA failure send it to repairing, then to review again, at most 3 rounds. Verified needs one clean cycle; autopilot merges after one for a tiny or small task, two for a large or risky one.");
 }
 
 /** The arena: one brief, N candidates on a mix of Claude models, a judge, one final version. */

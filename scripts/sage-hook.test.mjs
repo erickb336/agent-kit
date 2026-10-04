@@ -105,7 +105,7 @@ test("the cap comes from the sage config", () => {
   s.sage("config", "max_agents=1");
   s.send(prompt("sage mode"));
   assert.equal(s.send(spawnAgent("sage:pe", BRIEF, "tu1")), undefined);
-  assert.match(denied(s.send(spawnAgent("sage:pe", BRIEF, "tu2"))), /its cap is 1/);
+  assert.match(denied(s.send(spawnAgent("sage:pe", BRIEF, "tu2"))), /^sage: 1 sage agent is running for other, and its cap is 1 /, "singular when one agent runs");
 });
 
 // Acceptance (1) of T38: an agent that is stopped or dies fires no SubagentStop, and still frees its slot at once.
@@ -683,7 +683,13 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   s.send(prompt("autopilot on"));
   s.send(prompt("sage mode"));
   assert.match(merge(), /autopilot is off, so the user merges/, "autopilot on before sage mode does not count");
-  assert.match(context(s.send(prompt("autopilot on"))), /autopilot is on\. A pull request merges after 2 clean cycles/);
+  assert.match(context(s.send(prompt("autopilot on"))), /autopilot is on\. A pull request merges after 1 clean cycle for tiny and small tasks, 2 for large or risky ones, on its head SHA\./);
+  s.send(prompt("autopilot off"));
+  s.sage("config", "cycles.small=2", "cycles.large=3");
+  assert.match(context(s.send(prompt("autopilot on"))), /merges after 2 clean cycles for tiny and small tasks, 3 for large or risky ones/, "the note reads cycles.small and cycles.large from the config");
+  s.sage("config", "cycles.small=1", "cycles.large=2");
+  s.send(prompt("autopilot off"));
+  assert.match(context(s.send(prompt("autopilot on"))), /merges after 1 clean cycle/);
   assert.match(merge(""), /add --match-head-commit/);
   assert.match(merge(), /^sage: the merge check refuses: no verdicts recorded/);
 

@@ -140,10 +140,14 @@ function switchModes({ owner, text, outside, all }, state) {
     state.autopilot = false;
   } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
     state.autopilot = true;
-    notes.push(`sage: autopilot is on. A pull request merges after ${stateTool.config().autopilot_cycles} clean cycles on its head SHA, with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
+    const { "cycles.small": small, "cycles.large": large } = stateTool.config();
+    notes.push(`sage: autopilot is on. A pull request merges after ${small} clean cycle${small === 1 ? "" : "s"} for tiny and small tasks, ${large} for large or risky ones, on its head SHA. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
   }
   return notes;
 }
+
+/** "1 sage agent is running", "3 sage agents are running". */
+const running = (n) => `${n} sage ${n === 1 ? "agent is" : "agents are"} running`;
 
 export function handle(input, state, slots) {
   const event = input.hook_event_name;
@@ -195,8 +199,8 @@ export function handle(input, state, slots) {
       slots.log(`${project} ${r.project}/${cap} total ${r.total}/${caps.cap_total}`);
       const raise = (key, n) => `Wait for one to finish, or raise the cap: node "${join(ROOT, "skills/sage/sage.mjs")}" config ${key}=${n + 1}`;
       if (r.refused === "mark") return deny(event, `the agent cap could not mark its slot (${r.error}), so it refuses this spawn. Tell the user.`);
-      if (r.refused === "total") return deny(event, `${r.total} sage agents are running across all projects, and the total cap is ${caps.cap_total} (${project} has ${r.project}). ${raise("cap_total", caps.cap_total)}`);
-      return deny(event, `${r.project} sage agents are running for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
+      if (r.refused === "total") return deny(event, `${running(r.total)} across all projects, and the total cap is ${caps.cap_total} (${project} has ${r.project}). ${raise("cap_total", caps.cap_total)}`);
+      return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
     }
   }
   if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
