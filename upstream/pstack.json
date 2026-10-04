@@ -1,0 +1,11 @@
+{
+  "repo": "cursor/plugins",
+  "path": "pstack",
+  "include": [
+    "LICENSE",
+    "skills/principle-*/SKILL.md"
+  ],
+  "sha": "e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a",
+  "version": "0.15.9",
+  "synced": "2026-10-04"
+}

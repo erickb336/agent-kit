@@ -3,6 +3,7 @@ id: exhaust-the-design-space
 name: Exhaust the design space
 applyWhen: a new interaction or an architectural choice has no precedent in the code.
 source: pstack principle-exhaust-the-design-space, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 8583310d7297b782
 ---
 
 When the right answer is not obvious, do not build the first idea. Sketch two or three competing designs and compare them side by side before you commit. Building the wrong thing costs more than exploring three options. A second flavour of the first shape does not count as an alternative.

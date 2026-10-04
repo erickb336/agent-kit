@@ -3,6 +3,7 @@ id: migrate-callers-then-delete-legacy-apis
 name: Migrate callers, then delete legacy APIs
 applyWhen: a change introduces a new internal API while callers of the old one still exist.
 source: pstack principle-migrate-callers-then-delete-legacy-apis, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 09978915a4a11990
 ---
 
 When a new internal API is the right design, migrate its callers and remove the old one in the same change, instead of keeping a compatibility layer.

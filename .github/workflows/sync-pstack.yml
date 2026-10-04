@@ -1,0 +1,47 @@
+name: sync pstack
+# Every Monday: bring pstack's principles up to date (scripts/sync-pstack.mjs), rebuild, and run the checks and tests.
+# The update merges by itself when nothing that sage overrides changed upstream. Otherwise its pull request waits for
+# a person, with the changed overrides listed.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+concurrency: sync-pstack
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - id: sync
+        run: node scripts/sync-pstack.mjs --summary "$RUNNER_TEMP/summary.md"
+      - if: steps.sync.outputs.changed == 'true'
+        run: |
+          node -e 'const f="plugins/sage/.codex-plugin/plugin.json",fs=require("fs"),j=JSON.parse(fs.readFileSync(f));const v=j.version.split(".").map(Number);v[2]++;j.version=v.join(".");fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")'
+          npm run build
+          npm run check
+          npm test
+      - if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOUCHED: ${{ steps.sync.outputs.touched }}
+          VERSION: ${{ steps.sync.outputs.version }}
+        run: |
+          branch="sync/pstack-$VERSION-$(date +%Y%m%d%H%M)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add -A
+          git commit -qm "Sync pstack $VERSION"
+          git push -q origin "$branch"
+          url=$(gh pr create --title "Sync pstack $VERSION" --body-file "$RUNNER_TEMP/summary.md")
+          if [ "$TOUCHED" = "0" ]; then
+            gh pr merge "$url" --squash --delete-branch --match-head-commit "$(git rev-parse HEAD)"
+          else
+            gh pr comment "$url" --body "This update changes $TOUCHED pstack principle(s) that sage overrides. Compare each one, update the override if needed, set its upstream: fingerprint, then merge."
+          fi

@@ -3,6 +3,7 @@ id: test-behavior-not-implementation
 name: Test behaviour, not implementation
 applyWhen: writing, changing or keeping a test.
 source: pstack principle-test-behavior-not-implementation, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 87e40efe4e486f7e
 ---
 
 A test calls the code the way its users do and compares what they observe with a literal expected value. A test that asserts which calls the code made, or restates a constant the code contains, does neither.

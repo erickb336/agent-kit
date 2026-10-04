@@ -3,6 +3,7 @@ id: experience-first
 name: Experience first
 applyWhen: a product, UX or scope trade-off comes up.
 source: pstack principle-experience-first, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 58903529d733b1c1
 ---
 
 When implementation convenience conflicts with the user's experience, choose the experience.

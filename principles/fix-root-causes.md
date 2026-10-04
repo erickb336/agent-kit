@@ -3,6 +3,7 @@ id: fix-root-causes
 name: Fix root causes
 applyWhen: debugging a failure or repairing a finding.
 source: pstack principle-fix-root-causes, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: ba4cd38da1dcc8fe
 ---
 
 Do not fix symptoms. Trace each problem to its root cause and fix it there.

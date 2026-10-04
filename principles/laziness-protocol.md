@@ -3,6 +3,7 @@ id: laziness-protocol
 name: Laziness protocol
 applyWhen: refactoring, judging a diff's size, or tempted to add an abstraction, a layer or a threaded signal.
 source: pstack principle-laziness-protocol, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at 12d587d, adapted
+upstream: 9006579e9e3f3395
 ---
 
 Aim for the most result with the least code and complexity.

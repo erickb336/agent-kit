@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ROOT, outputs, parseSource } from "./build.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
+import { fingerprint, overrides } from "./sync-pstack.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -15,6 +16,7 @@ for (const f of readdirSync(join(ROOT, "principles")).filter((f) => f.endsWith("
     if (meta.id && `${meta.id}.md` !== f) problems.push(`principles/${f}: id "${meta.id}" does not match the file name`);
     if (meta.id && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(meta.id)) problems.push(`principles/${f}: id must be lowercase words joined by hyphens`);
     if (words(body) > 200) problems.push(`principles/${f}: ${words(body)} words; the limit is 200`);
+    if (/^pstack /.test(meta.source ?? "") && !/^[0-9a-f]{16}$/.test(meta.upstream ?? "")) problems.push(`principles/${f}: overrides pstack, so it needs upstream: <the fingerprint of the pstack text it was reviewed against>`);
   } catch (e) { problems.push(String(e.message)); }
 }
 
@@ -75,6 +77,19 @@ for (const cfg of ["hooks.json", "claude.json"]) {
   }
 }
 if (JSON.parse(readFileSync(join(PLUGIN, ".claude-plugin/plugin.json"), "utf8")).hooks !== "./hooks/claude.json") problems.push("plugin.json: Claude Code must load hooks/claude.json, the sage mode hook");
+
+// pstack: its licence ships with the vendored files, every link between skills resolves, and an override whose
+// upstream text changed since its review is reported (the weekly sync's pull request waits for a person then).
+if (!existsSync(join(ROOT, "upstream/pstack/LICENSE"))) problems.push("upstream/pstack/LICENSE: missing; pstack's MIT licence must ship with its text");
+for (const d of readdirSync(skillsDir)) {
+  const f = join(skillsDir, d, "SKILL.md");
+  if (!existsSync(f)) continue;
+  for (const [, target] of readFileSync(f, "utf8").matchAll(/\]\(\.\.\/([a-z0-9-]+)\/SKILL\.md\)/g)) if (!existsSync(join(skillsDir, target, "SKILL.md"))) problems.push(`skills/${d}: links to ${target}, which does not ship`);
+}
+for (const o of overrides(ROOT)) {
+  const now = existsSync(join(ROOT, "upstream/pstack", o.upstream)) ? fingerprint(readFileSync(join(ROOT, "upstream/pstack", o.upstream))) : undefined;
+  if (now && now !== o.reviewed) console.warn(`! ${o.file}: pstack changed ${o.upstream} since this override's review (now ${now})`);
+}
 
 for (const [rel, text] of outputs()) {
   const f = join(ROOT, rel);

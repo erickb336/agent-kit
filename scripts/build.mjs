@@ -1,6 +1,8 @@
 // Builds the generated files from the sources, so each principle has one copy:
 //   principles/*.md, writing/ste-80.md, preferences/working-preferences.md  (the sources)
+//   upstream/pstack/skills/principle-*/SKILL.md  (pstack, kept up to date by scripts/sync-pstack.mjs)
 //   → plugins/sage/skills/<name>/SKILL.md   (one skill per principle, plus the writing standard)
+// A principle in principles/ overrides pstack's principle of the same id. pstack's other principles go in as they are.
 //   → instructions/core.md                        (the always-on file: preferences + writing standard)
 // Run `npm run build` after editing a source; `npm run check` fails when a generated file is out of date.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
@@ -28,14 +30,39 @@ const q = (s) => JSON.stringify(s); // YAML accepts JSON strings
 const skill = (name, description, source, body) =>
   `---\nname: ${name}\ndescription: ${q(description)}\nlicense: MIT\nmetadata:\n  source: ${q(source)}\n---\n\n${GENERATED}\n\n${body}\n`;
 
+/** pstack's principles that no file in principles/ overrides, from upstream/pstack at the pinned commit. */
+function upstreamPrinciples(own) {
+  const base = join(ROOT, "upstream/pstack/skills");
+  const { sha } = JSON.parse(readFileSync(join(ROOT, "upstream/pstack.json"), "utf8"));
+  if (!existsSync(base)) return [];
+  return readdirSync(base)
+    .filter((d) => d.startsWith("principle-") && !own.has(d.slice("principle-".length)))
+    .sort()
+    .map((d) => {
+      const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(readFileSync(join(base, d, "SKILL.md"), "utf8"));
+      const desc = /^description:\s*(.+)$/m.exec(m[1])[1].trim();
+      const body = m[2].trim();
+      const title = /^#\s+(.+)$/m.exec(body)[1].trim();
+      return { name: d, title, description: desc.startsWith('"') ? JSON.parse(desc) : desc, body, source: `pstack ${d}, MIT, Copyright (c) 2026 Lauren Tan, github.com/cursor/plugins at ${sha.slice(0, 7)}, as it is` };
+    });
+}
+
+/** A link to another skill stays only when that skill ships: [text](../<skill>/SKILL.md) becomes text otherwise. */
+const keepLinks = (body, ships) => body.replace(/\[([^\]]+)\]\(\.\.\/([a-z0-9-]+)\/SKILL\.md\)/g, (all, text, target) => (ships.has(target) ? all : text));
+
 export function outputs() {
   const out = new Map();
   const principles = readdirSync(join(ROOT, "principles")).filter((f) => f.endsWith(".md") && f !== "README.md").sort();
+  const own = new Set();
   for (const f of principles) {
     const { meta, body } = parseSource(readFileSync(join(ROOT, "principles", f), "utf8"), f);
     const name = `principle-${meta.id}`;
+    own.add(meta.id);
     out.set(join("plugins/sage/skills", name, "SKILL.md"), skill(name, `${meta.name}. Apply when ${meta.applyWhen}`, meta.source, `# ${meta.name}\n\n${body}`));
   }
+  const upstream = upstreamPrinciples(own);
+  const ships = new Set([...readdirSync(SKILLS), ...[...own].map((id) => `principle-${id}`), ...upstream.map((u) => u.name)]);
+  for (const u of upstream) out.set(join("plugins/sage/skills", u.name, "SKILL.md"), skill(u.name, `${u.title}. ${u.description}`, u.source, keepLinks(u.body, ships)));
   const w = parseSource(readFileSync(join(ROOT, "writing/ste-80.md"), "utf8"), "writing/ste-80.md");
   out.set("plugins/sage/skills/writing-standard/SKILL.md", skill("writing-standard", `${w.meta.name}. Apply to ${w.meta.applyWhen}`, w.meta.source, `# ${w.meta.name}\n\n${w.body}`));
   const p = parseSource(readFileSync(join(ROOT, "preferences/working-preferences.md"), "utf8"), "preferences/working-preferences.md");
