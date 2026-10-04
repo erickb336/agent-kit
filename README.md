@@ -195,7 +195,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Gate** | A question parked for you, with options, a recommendation and a default. |
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
-| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. "autopilot off" works anywhere. |
+| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. Any message that mentions autopilot with an off word turns it off. |
 | **The dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
 | **Seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
 
@@ -207,11 +207,11 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | Your answer to a question, for example `no` | The chief applies your decision and goes on. |
 | `status` | Where each task is: running, waiting for you, verified. |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
-| `autopilot on` at the start of a message, or `sage mode autopilot` | Verified pull requests merge by themselves after 2 clean cycles. |
-| `autopilot off`, `stop autopilot` or `disable autopilot`, anywhere in a message | Verified pull requests wait for you again. |
+| A message that starts with `autopilot on`, or with `sage mode` followed by `autopilot`: `sage mode autopilot`, `sage mode on, autopilot on` | Verified pull requests merge by themselves after 2 clean cycles. |
+| Any message that mentions autopilot with an off word, for example `autopilot off`, `stop autopilot` or `pause autopilot` | Verified pull requests wait for you again. |
 | `sage mode off` at the start of a message | A normal session again. |
 
-Only the start of a message switches a mode: "sage mode" (or "sage mode on"), "sage mode off" and "autopilot on". A mention in the middle of a sentence, or in an agent's report, switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after "sage mode" or "autopilot on": "autopilot on?" and "autopilot on main" switch nothing. A "?" on the line of "sage mode off" keeps sage mode on, but autopilot goes off. Autopilot off also works anywhere: a sentence with "autopilot" and an off word ("off", "stop", "disable", "no", "pause" and the like) switches it off, because a missed "off" lets merges go on.
+Only the start of a message switches a mode: "sage mode" (or "sage mode on"), "sage mode off" and "autopilot on". A mention in the middle of a sentence, or in an agent's report, switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after "sage mode" or "autopilot on": "autopilot on?" and "autopilot on main" switch nothing. A "?" on the line of "sage mode off" keeps sage mode on, but autopilot goes off. Autopilot off works anywhere: any message that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, because a missed "off" lets merges go on. Off wins over on: "autopilot on, don't stop until done" leaves autopilot off. "turn on autopilot" and "enable autopilot" switch nothing.
 
 To make every session in a folder start in sage mode, put this in the folder's `.claude/settings.json`:
 
@@ -312,7 +312,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 **What does it cost?** It uses your Claude plan's usage limits, or API credits. Every agent is a separate run. In [the first dry run](docs/runs/dry-run-1.html), a small bug fix with a security risk took 15 agent runs, about $2.60 at API prices, before the fixes that came from that run. I don't have numbers from real projects yet.
 
-**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. It switches on only when a message starts with a phrase that ends in "autopilot" or "autopilot on", for example "autopilot on", "sage mode autopilot" or "sage mode on, autopilot on". Any message that pairs autopilot with an off word switches it off. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
+**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. It switches on only when a message starts with "autopilot on", or with "sage mode" followed by "autopilot", for example "sage mode autopilot" or "sage mode on, autopilot on". Any message that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, also when the message turns it on. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
 
 **Which projects fit?** A project with tests and a GitHub remote. Without tests, QA can only check by running the app. Without a remote, the work stops at a verified branch.
 

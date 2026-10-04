@@ -129,6 +129,16 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   assert.match(merge(), /autopilot is off/, "the kill switch");
 });
 
+test("the autopilot note comes only when autopilot goes from on to off, so never outside sage mode", () => {
+  const s = session();
+  assert.equal(s.send(prompt("the autopilot module has no tests")), undefined, "outside sage mode a mention adds nothing");
+  s.send(prompt("sage mode"));
+  assert.equal(s.send(prompt("stop autopilot")), undefined, "autopilot is already off");
+  s.send(prompt("autopilot on"));
+  assert.equal(context(s.send(prompt("the autopilot module has no tests"))), "sage: autopilot is off. Work stops at verified, and the user merges.");
+  assert.equal(s.send(prompt("autopilot off")), undefined, "and only once");
+});
+
 test("SAGE_HOOKS=off turns the hook off", () => {
   const s = session({ SAGE_HOOKS: "off" });
   assert.equal(s.send(prompt("sage mode")), undefined);
@@ -205,6 +215,7 @@ test("only the start of a message switches a mode, except autopilot off, which w
     [SAGE, "can you explain sage mode autopilot", "sage mode on, autopilot off", "sage mode autopilot in the middle of a sentence"],
     [SAGE, NOTE, "sage mode on, autopilot off", "an agent's report switches nothing"],
     [[], NOTE, "sage mode off, autopilot off", "an agent's report switches nothing"],
+    [BOTH, NOTE, "sage mode on, autopilot off", "an agent's report with autopilot and an off word switches autopilot off, like any message"],
     [BOTH, "don't switch sage mode off, just keep going", "sage mode on, autopilot on", "a mention of sage mode off keeps the gates"],
     [BOTH, "what does sage mode off do?", "sage mode on, autopilot on", "a question about sage mode off"],
     [BOTH, "sage mode off", "sage mode off, autopilot off", "sage mode off"],
@@ -229,9 +240,18 @@ test("only the start of a message switches a mode, except autopilot off, which w
     [BOTH, "autopilot  off", "sage mode on, autopilot off", "two spaces"],
     [BOTH, "autopilot off", "sage mode on, autopilot off", "a no-break space"],
     ...["kill autopilot", "cancel autopilot", "deactivate autopilot", "halt autopilot", "no more autopilot", "auto-pilot off", "auto pilot off", "turn off auto-pilot", "set autopilot to off", "autopilot should be off", "autopilot is turned off", "autopilot -> off", "autopilot—off", "autopilot stop", "hold off on autopilot", "autopilot stopped", "there is no autopilot here"].map((m) => [BOTH, m, "sage mode on, autopilot off", m]),
-    [BOTH, "Autopilot stays on. Stop the build only if it fails", "sage mode on, autopilot on", "the off word is in the next sentence"],
-    [BOTH, "autopilot is fine\nstop the build if it fails", "sage mode on, autopilot on", "the off word is on the next line"],
+    // The whole message counts, not one sentence: autopilot and an off word anywhere in it switch autopilot off.
+    ...["I'm worried about autopilot. Please turn it off.", "Autopilot? Off.", "Autopilot. Turn it off.", "Autopilot. Stop it.", "autopilot\noff", "Autopilot\r\nOff", "turn off\nautopilot", "stop\nautopilot"].map((m) => [BOTH, m, "sage mode on, autopilot off", m]),
+    [BOTH, "Autopilot stays on. Stop the build only if it fails", "sage mode on, autopilot off", "the off word is in the next sentence"],
+    [BOTH, "autopilot is fine\nstop the build if it fails", "sage mode on, autopilot off", "the off word is on the next line"],
+    // Each form of an off word.
+    ...["Disabling autopilot.", "Stopping autopilot now", "autopilot paused", "autopilot is paused", "autopilot cancelled", "autopilot canceled", "autopilot killed", "autopilot ended", "autopilot halted", "autopilot deactivated", "abort autopilot", "quit autopilot", "exit autopilot", "suspend autopilot", "don't use autopilot", "do not use autopilot", "without autopilot", "autopilots off", "autopilot=false"].map((m) => [BOTH, m, "sage mode on, autopilot off", m]),
+    [BOTH, "autopilot on, don't stop until done", "sage mode on, autopilot off", "off wins over on in the same message"],
+    [SAGE, "sage mode autopilot. Stop when the tests pass", "sage mode on, autopilot off", "off wins over on in the same message"],
     [[], "no autopilot", "sage mode off, autopilot off", "an autopilot off switches nothing on"],
+    [[], "the autopilot module has no tests", "sage mode off, autopilot off", "an autopilot off outside sage mode switches nothing on"],
+    [SAGE, "turn on autopilot", "sage mode on, autopilot off", "only a message that starts with autopilot on switches it on"],
+    [SAGE, "enable autopilot", "sage mode on, autopilot off", "only a message that starts with autopilot on switches it on"],
   ];
   const results = await Promise.all(cases.map(([before, message]) => modesAfter([...before, message])));
   const wrong = cases.flatMap(([, message, expected, why], i) => (results[i] === expected ? [] : [`${why}: ${JSON.stringify(message)} gives "${results[i]}", not "${expected}"`]));

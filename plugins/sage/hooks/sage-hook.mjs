@@ -21,7 +21,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // of their line, so "autopilot on?" and "autopilot on main" switch nothing. "sage mode off" must not run on into a longer
 // word ("sage mode off-topic"), and its line must have no "?" ("sage mode off? what does it do?"). Because a missed off
 // is the unsafe one, a message that starts with "sage mode off" always switches autopilot off, even as a question, and
-// so does any sentence that has the word autopilot and an off word, in either order and anywhere in the message.
+// so does any message that mentions autopilot and has an off word anywhere. Off wins over on in the same message.
 // No mode-phrase regex has the m flag: with it, "^" would also match the start of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
@@ -32,11 +32,10 @@ const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
 const SAGE_MODE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off\\b`, "i");
 const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
-// The sentences of a message, the word autopilot, and the off words ("no more", "turn off" and "hold off" have one too).
-const SENTENCE_END = /[.!?\r\n\u2028\u2029]/;
-const AUTOPILOT = /\bauto[-\s]?pilot\b/i;
-const OFF_WORD = /\b(?:off|disabled?|stop(?:ped)?|kill|cancel|deactivate|pause|end|halt|no)\b/i;
-const autopilotOff = (prompt) => SAGE_MODE_OFF.test(prompt) || prompt.split(SENTENCE_END).some((s) => AUTOPILOT.test(s) && OFF_WORD.test(s));
+// The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
+const AUTOPILOT = /\bauto[-\s]?pilots?\b/i;
+const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit(?:s|ting)?|exit(?:s|ed|ing)?)\b|\b(?:stop|disabl|paus|cancel|kill|halt|deactivat|abort|suspend)|\bauto[-\s]?pilots?\s*=\s*false\b/i;
+const autopilotOff = (prompt) => SAGE_MODE_OFF.test(prompt) || (AUTOPILOT.test(prompt) && OFF_WORD.test(prompt));
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
@@ -54,14 +53,13 @@ export function handle(input, state, slots) {
   if (event === "UserPromptSubmit") {
     const prompt = input.prompt ?? "";
     const notes = [];
-    const sageOff = SAGE_OFF.test(prompt);
-    if (sageOff) {
+    if (SAGE_OFF.test(prompt)) {
       Object.assign(state, { sage: false, given: false, autopilot: false });
       notes.push("sage: sage mode is off. You may change files yourself again.");
     } else if (SAGE_ON.test(prompt)) state.sage = true;
-    if (!sageOff && autopilotOff(prompt)) {
+    if (autopilotOff(prompt)) {
+      if (state.autopilot) notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
       state.autopilot = false;
-      notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     } else if (state.sage && AUTOPILOT_ON.test(prompt)) {
       state.autopilot = true;
       notes.push(`sage: autopilot is on. A pull request merges after ${config().autopilot_cycles} clean cycles on its head SHA, with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
