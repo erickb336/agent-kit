@@ -2,11 +2,13 @@
 // The sage hook. Claude Code sends one JSON event on stdin; the hook answers with one JSON object on stdout, or nothing.
 //   - "sage mode" makes the session the user's chief of staff (agents/chief-of-staff.md) until "sage mode off". A
 //     session that starts as the sage:chief-of-staff agent is in sage mode from its first event. Only the user's own
-//     messages switch a mode: never an agent's report, a task notification or another session's message (promptOf).
+//     messages switch a mode on, or sage mode off: never an agent's report, a task notification or another session's
+//     message (promptOf). An autopilot off counts from any prompt, because off is the safe direction.
 //   - In sage mode it holds the rules that prompts alone did not hold in Orchestrator (docs/design/sage-mode.html,
 //     "Rules"): the chief never edits files, every brief has all its fields, at most max_agents sage agents run at
 //     once, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
-//     cycles that the ledger records for it (the merge check).
+//     cycles that the ledger records for it (the merge check). The merge rule is an allow-list: a command that names a
+//     merge is refused unless it is exactly the merge form, or the merge text stands only in a harmless command's text.
 //   - A sage agent may finish only with the full report of the sage:report skill.
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge.
 import { mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -59,17 +61,21 @@ export function promptOf(input) {
   return { author: harness ? "harness" : "owner", text };
 }
 
-/** Switches the modes by the user's own message, and returns the notes for the chief. */
-function switchModes(text, state) {
+/**
+ * Switches the modes, and returns the notes for the chief. Only the owner's message switches sage mode or autopilot on,
+ * or sage mode off. An autopilot off counts from any prompt, because off is the safe direction: so the owner's off
+ * also counts when the harness sends it with another prompt_source or joins it to a notification.
+ */
+function switchModes(text, state, owner) {
   const notes = [];
-  if (SAGE_OFF.test(text)) {
+  if (owner && SAGE_OFF.test(text)) {
     Object.assign(state, { sage: false, given: false, autopilot: false });
     notes.push("sage: sage mode is off. You may change files yourself again.");
-  } else if (SAGE_ON.test(text)) state.sage = true;
+  } else if (owner && SAGE_ON.test(text)) state.sage = true;
   if (autopilotOff(text)) {
     if (state.autopilot) notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     state.autopilot = false;
-  } else if (state.sage && AUTOPILOT_ON.test(text)) {
+  } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
     state.autopilot = true;
     notes.push(`sage: autopilot is on. A pull request merges after ${stateTool.config().autopilot_cycles} clean cycles on its head SHA, with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
   }
@@ -83,7 +89,7 @@ export function handle(input, state, slots) {
 
   if (event === "UserPromptSubmit") {
     const { author, text } = promptOf(input);
-    const notes = author === "owner" ? switchModes(text, state) : [];
+    const notes = switchModes(text, state, author === "owner");
     if (state.sage && !state.given) {
       state.given = true;
       notes.unshift(chiefText());
@@ -121,17 +127,20 @@ export function handle(input, state, slots) {
 
 /** A git push, also with git's own options first: git -C <dir> push, git -c <key=value> push. */
 const PUSH = String.raw`\bgit(?:\s+-[Cc]\s+\S+)*\s+push\b`;
+/** A force push: --force (and its forms), -f in a group of short options, or a refspec that starts with "+". */
+const FORCE_PUSH = new RegExp(String.raw`${PUSH}[^;&|]*\s(?:--force\S*|-[a-zA-Z]*f[a-zA-Z]*|\+\S+)(?=\s|$)`);
+/** A push to main or master: as a branch, the destination of a refspec (HEAD:main, x:refs/heads/main), or --all/--mirror. */
+const MAIN_PUSH = new RegExp(String.raw`${PUSH}[^;&|]*(?:[\s:+](?:refs/heads/)?(?:main|master)(?=\s|$|[;&|])|\s--(?:all|mirror)\b)`);
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
 function gitGate(event, command, state) {
-  if (new RegExp(`${PUSH}[^;&|]*\\s(--force\\S*|-f)(?=\\s|$)`).test(command)) return deny(event, "sage mode never force-pushes. Push a new commit instead.");
-  if (new RegExp(`${PUSH}[^;&|]*[\\s:](main|master)(?=\\s|$|[;&|])`).test(command)) return deny(event, "work reaches main only through a pull request. Push the task's branch and open a pull request.");
+  if (FORCE_PUSH.test(command)) return deny(event, "sage mode never force-pushes. Push a new commit instead.");
+  if (MAIN_PUSH.test(command)) return deny(event, "work reaches main only through a pull request. Push the task's branch and open a pull request.");
   const merge = mergeIn(command);
   if (!merge) return undefined;
-  if (merge.unsure) return deny(event, `the merge check cannot tell whether this command merges: ${merge.unsure}. Run a merge as a command of its own: ${MERGE_FORM}.`);
-  if (!state.autopilot) return deny(event, 'autopilot is off, so the user merges. Report the pull request as ready. The user turns it on with a message that starts with "autopilot on".');
   if (merge.problem) return deny(event, merge.problem);
+  if (!state.autopilot) return deny(event, 'autopilot is off, so the user merges. Report the pull request as ready. The user turns it on with a message that starts with "autopilot on".');
   let verdict;
   try {
     if (stateTool.error) throw stateTool.error;
@@ -142,100 +151,119 @@ function gitGate(event, command, state) {
   return verdict?.ok === true ? undefined : deny(event, `the merge check refuses: ${verdict?.reason}`);
 }
 
-/** Text that may name a merge: the merge command, or a merge through the GitHub API (REST or GraphQL). */
-const API_MERGE = /\/pulls\/\d+\/merge\b|\/merges\b|\b(?:mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b/i;
-const mentionsMerge = (text) => /\bgh\b[\s\S]*\bmerge\b/i.test(text.replace(/['"\\]/g, "")) || API_MERGE.test(text);
 /**
- * A command that runs text as code: a shell, eval or source, or an interpreter that runs inline code (node -e) or its
- * standard input (python3 - <<EOF) instead of a script file.
+ * Text that names a merge: the word gh and the word merge in any order (so also "$G pr merge" or "gh pr $(echo merge)"),
+ * a merge path of the REST API, or a GraphQL merge mutation. Each test is one linear scan.
  */
-const RUNNER = /^(?:sh|bash|zsh|dash|ksh|fish|eval|source)$/;
-const INTERPRETER = /^(?:node|deno|bun|python[\d.]*|perl|ruby)$/;
-const name = (word) => word.slice(word.lastIndexOf("/") + 1);
-const readsCode = (args) => args.some((a) => /^-\w*[cepE]\w*$|^--(?:eval|print)\b/.test(a)) || (args.find((a) => a === "-" || !a.startsWith("-")) ?? "-") === "-";
-const runsText = (words) => words.some((w, i) => RUNNER.test(name(w)) || (INTERPRETER.test(name(w)) && readsCode(words.slice(i + 1))));
+const mentionsMerge = (text) =>
+  (/\bgh\b/i.test(text) && /\bmerge\b/i.test(text)) || (/\bpulls\//i.test(text) && /\/merge\b/i.test(text)) || /\/merges\b|\b(?:mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b/i.test(text);
+const CANNOT = `the hook cannot prove that this command is only the merge command, so it refuses it. Merge only with ${MERGE_FORM}, as a command of its own: not through the GitHub API, a variable, a script or another program. Merge text may stand only in the text of echo, printf, cat, grep, git commit, gh pr create, comment, view or edit, or the state tool, and not piped on or written to a file that a later command could run.`;
 
 /**
- * The merge in a Bash command, read from its shell words, so that the merge command's words in quoted text or in a
- * heredoc are not a merge. Undefined when the command merges nothing. Else { pr, sha } for one well-formed merge,
- * { problem } for a merge that the check refuses, or { unsure } when the hook cannot read the command well enough.
+ * The merge in a Bash command, by an allow-list. Undefined when the command names no merge outside harmless text.
+ * Else { pr, sha } when the whole command is the one merge form, which the merge check then decides, or { problem }.
  */
 export function mergeIn(command) {
-  let commands, bodies;
+  const form = mergeForm(command);
+  if (form) return form;
+  let commands;
   try {
-    ({ commands, bodies } = shellCommands(command));
+    commands = shellCommands(command);
   } catch (e) {
-    return mentionsMerge(command) ? { unsure: `the hook cannot read it (${e.message})` } : undefined;
+    return mentionsMerge(command.replace(/\\\n/g, "").replace(/['"\\]/g, "")) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
   }
-  if (commands.some(runsText) && [...commands.flat(), ...bodies].some(mentionsMerge)) return { unsure: "it gives text that names a merge to a shell or an interpreter" };
-  const merges = commands.map(mergeOf).filter(Boolean);
-  if (!merges.length) return undefined;
-  if (merges.length > 1) return { problem: `run one merge per command; this command has ${merges.length}.` };
-  const [{ api, targets, shas }] = merges;
-  if (api) return { problem: `merge only with ${MERGE_FORM}, not through the GitHub API: the merge check needs the pull request's number and its head SHA.` };
-  const pr = targets.length === 1 ? /^#?(\d+)$|^https:\/\/\S+\/pull\/(\d+)(?:[/?#]\S*)?$/.exec(targets[0])?.slice(1).find(Boolean) : undefined;
-  if (!pr) return { problem: `name the pull request by its number: ${MERGE_FORM}.` };
+  return mentionsMerge(codeText(commands)) ? { problem: CANNOT } : undefined;
+}
+
+/** The merge form, when the command is one gh pr merge with plain words only: { pr, sha }, or { problem }. */
+function mergeForm(command) {
+  const text = command.trim();
+  const words = text.split(/[ \t]+/);
+  if (words.slice(0, 3).join(" ") !== "gh pr merge" || /[^\w \t=-]/.test(text)) return undefined;
+  const [, , , pr, ...flags] = words;
+  if (!/^\d+$/.test(pr ?? "")) return { problem: `name the pull request by its number: ${MERGE_FORM}.` };
+  const shas = [];
+  const modes = new Set();
+  for (let k = 0; k < flags.length; k++) {
+    const f = flags[k];
+    if (f === "--match-head-commit") shas.push(flags[++k] ?? "");
+    else if (f.startsWith("--match-head-commit=")) shas.push(f.slice(f.indexOf("=") + 1));
+    else if (f === "--squash" || f === "--delete-branch") modes.add(f);
+    else return { problem: `merge only with ${MERGE_FORM}; "${f}" is not part of it.` };
+  }
   if (!shas.length) return { problem: "merge only the checked commit: add --match-head-commit <the head SHA that the ledger verified>." };
   if (shas.length > 1) return { problem: `give --match-head-commit once, not ${shas.length} times: gh uses the last one, and the merge check reads one.` };
   if (!/^[0-9a-f]{40}$/i.test(shas[0])) return { problem: `--match-head-commit needs the full 40-character head SHA that the ledger verified, not "${shas[0]}".` };
+  if (modes.size < 2) return { problem: `merge only with ${MERGE_FORM}: add --squash and --delete-branch.` };
   return { pr, sha: shas[0] };
 }
 
-/** The other flags of gh pr and gh pr merge that take a value. */
-const GH_VALUE = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email"]);
-const HTTP_TOOLS = /^(?:curl|wget|http|https|xh)$/;
+/**
+ * The known-harmless commands, which never run their arguments: the number of words of the command's name, or 0.
+ * printf -v sets a variable, so it is not harmless.
+ */
+const TOOL = join(ROOT, "skills/sage/sage.mjs");
+function harmless([a, b, c, ...rest]) {
+  if (a === "echo" || a === "cat" || a === "grep" || (a === "printf" && ![b, c, ...rest].some((w) => w?.startsWith("-v")))) return 1;
+  if ((a === "git" && b === "commit") || (a === "node" && b === TOOL)) return 2;
+  return a === "gh" && b === "pr" && /^(?:create|comment|view|edit)$/.test(c ?? "") ? 3 : 0;
+}
+/** Shell structure that can send a command's output somewhere other than its own line: then no text is harmless. */
+const STRUCTURE = /^(?:[{}!]|if|then|elif|else|fi|for|while|until|do|done|case|esac|select|function|time|coproc|alias|shopt|enable)$/;
 
-/** The merge in one simple command: gh pr merge (also after sudo, env or xargs), or a merge through the GitHub API. */
-function mergeOf(words) {
-  for (let i = 0; i < words.length; i++) {
-    if (name(words[i]) !== "gh") continue;
-    const positional = [];
-    const shas = [];
-    for (let k = i + 1; k < words.length; k++) {
-      const w = words[k];
-      if (w === "--") {
-        positional.push(...words.slice(k + 1));
-        break;
-      }
-      if (w.startsWith("--match-head-commit=")) shas.push(w.slice(w.indexOf("=") + 1));
-      else if (w === "--match-head-commit") shas.push(words[++k] ?? "");
-      else if (GH_VALUE.has(w)) k++;
-      else if (!w.startsWith("-")) positional.push(w);
-    }
-    if (positional[0] === "pr" && positional[1] === "merge") return { targets: positional.slice(2), shas };
-    if (positional[0] === "api" && words.some((w) => API_MERGE.test(w))) return { api: true };
-  }
-  if (words.some((w) => HTTP_TOOLS.test(name(w))) && words.some((w) => API_MERGE.test(w))) return { api: true };
-  return undefined;
+/**
+ * The text of a command line that can run: every word and heredoc body, except the arguments and heredocs of a
+ * harmless command whose output stays harmless. That command is not piped, not in a group, not written to a file
+ * that a later command could run, and, in a substitution, lands in a harmless argument itself. A local "git merge"
+ * is not a merge of a pull request, so its subcommand word is left out.
+ */
+function codeText(commands) {
+  const structure = commands.some((c) => STRUCTURE.test(c.words[0] ?? ""));
+  const last = commands.at(-1);
+  const contained = (c) => {
+    const n = harmless(c.words);
+    if (!n || structure || c.piped || c.grouped || (c.writes && c !== last)) return false;
+    return !c.host || (contained(c.host.cmd) && (c.host.index < 0 || c.host.index >= harmless(c.host.cmd.words)));
+  };
+  return commands
+    .map((c) => {
+      if (contained(c)) return c.words.slice(0, harmless(c.words)).join(" ");
+      const words = c.words[0] === "git" && /^merge(?:-base|-file|-tree)?$/.test(c.words[1] ?? "") ? [c.words[0], ...c.words.slice(2)] : c.words;
+      return [...words, ...c.bodies].join(" ");
+    })
+    .join("\n");
 }
 
 /**
- * The simple commands of a shell command line, as lists of words without their quotes, and the bodies of its
- * heredocs, which stay text. A command substitution, $( ) or a backtick, gives commands of its own: outside quotes,
- * in double quotes, and in a heredoc whose delimiter has no quotes. Throws when it cannot read the line: an open
- * quote, substitution or heredoc, or a ")" with no "(".
+ * The simple commands of a shell command line: { words, bodies, host, piped, grouped, writes }. The words lose their
+ * quotes; the bodies are the command's heredocs, which stay text. A command substitution, $( ) or a backtick, gives
+ * commands of its own, whose host is the command and word they land in (index -1: a heredoc). Throws when it cannot
+ * read the line: an open quote, substitution or heredoc, or a ")" with no "(".
  */
 export function shellCommands(src) {
-  const out = { commands: [], bodies: [] };
-  readCommands(src, 0, "", out);
+  const out = [];
+  readCommands(src, 0, "", out, undefined);
   return out;
 }
 
-function readCommands(src, i, close, out) {
-  let words = [];
+function readCommands(src, i, close, out, host) {
+  const fresh = () => ({ words: [], bodies: [], host, piped: false, grouped: false, writes: false, heredoc: false });
+  let cmd = fresh();
   let word;
   let depth = 0;
   const heredocs = [];
   const add = (text) => (word = (word ?? "") + text);
   const endWord = () => {
-    if (word !== undefined) words.push(word);
+    if (word !== undefined) cmd.words.push(word);
     word = undefined;
   };
   const endCommand = () => {
     endWord();
-    if (words.length) out.commands.push(words);
-    words = [];
+    cmd.grouped ||= depth > 0;
+    if (cmd.words.length || cmd.heredoc) out.push(cmd);
+    cmd = fresh();
   };
+  const here = () => ({ cmd, index: cmd.words.length });
   while (i < src.length) {
     const c = src[i];
     if (c === close && depth === 0) {
@@ -252,11 +280,11 @@ function readCommands(src, i, close, out) {
       add(src.slice(i + 1, j));
       i = j + 1;
     } else if (c === '"') {
-      const r = readExpanding(src, i + 1, '"', out);
+      const r = readExpanding(src, i + 1, '"', out, here());
       add(r.text);
       i = r.i;
     } else if (c === "`" || (c === "$" && src[i + 1] === "(")) {
-      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out);
+      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, here());
       add("$(…)");
     } else if (c === "#" && word === undefined) {
       while (i < src.length && src[i] !== "\n") i++;
@@ -265,18 +293,29 @@ function readCommands(src, i, close, out) {
       i += 3;
     } else if (src.startsWith("<<", i)) {
       endWord();
-      i = readDelimiter(src, i + 2, heredocs);
+      cmd.heredoc = true;
+      i = readDelimiter(src, i + 2, heredocs, cmd);
     } else if (c === "\n") {
       endCommand();
       i = readBodies(src, i + 1, heredocs, out);
     } else if (c === " " || c === "\t") {
       endWord();
       i++;
-    } else if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
-      if (c === ")" && !depth--) throw new Error('a ")" with no "("');
-      if (c === "(") depth++;
+    } else if (c === ">" || (c === "&" && src[i + 1] === ">")) {
+      cmd.writes = true; // a redirection: ">", ">>", "&>", and ">&2" or "2>&1", whose "&" ends nothing
+      const n = src[i + 1] === "&" ? 2 : 1;
+      add(src.slice(i, i + n));
+      i += n;
+    } else if (c === "|" && src[i + 1] !== "|") {
+      cmd.piped = true;
       endCommand();
       i++;
+    } else if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
+      if (c === ")" && !depth) throw new Error('a ")" with no "("');
+      endCommand();
+      if (c === "(") depth++;
+      if (c === ")") depth--;
+      i += (c === "|" || c === "&") && src[i + 1] === c ? 2 : 1;
     } else {
       add(c);
       i++;
@@ -289,7 +328,7 @@ function readCommands(src, i, close, out) {
 }
 
 /** Double-quoted text, or a heredoc body that expands (stop ""): its text, and the commands of its substitutions. */
-function readExpanding(src, i, stop, out) {
+function readExpanding(src, i, stop, out, host) {
   let text = "";
   while (i < src.length && src[i] !== stop) {
     const c = src[i];
@@ -297,7 +336,7 @@ function readExpanding(src, i, stop, out) {
       text += '$`"\\'.includes(src[i + 1]) ? src[i + 1] : src[i + 1] === "\n" ? "" : c + src[i + 1];
       i += 2;
     } else if (c === "`" || (c === "$" && src[i + 1] === "(")) {
-      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out);
+      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, host);
       text += "$(…)";
     } else {
       text += c;
@@ -309,7 +348,7 @@ function readExpanding(src, i, stop, out) {
 }
 
 /** The delimiter after "<<" or "<<-". A quoted delimiter makes the body plain text, with no substitutions. */
-function readDelimiter(src, i, heredocs) {
+function readDelimiter(src, i, heredocs, cmd) {
   const strip = src[i] === "-";
   if (strip) i++;
   while (src[i] === " " || src[i] === "\t") i++;
@@ -333,13 +372,13 @@ function readDelimiter(src, i, heredocs) {
     }
   }
   if (!delimiter) throw new Error("a heredoc with no delimiter");
-  heredocs.push({ delimiter, strip, expand: !quoted });
+  heredocs.push({ delimiter, strip, expand: !quoted, cmd });
   return i;
 }
 
-/** The bodies of the heredocs that the last line opened, read up to each delimiter line. */
+/** The bodies of the heredocs that the last line opened, read up to each delimiter line, given to their commands. */
 function readBodies(src, i, heredocs, out) {
-  for (const { delimiter, strip, expand } of heredocs.splice(0)) {
+  for (const { delimiter, strip, expand, cmd } of heredocs.splice(0)) {
     const lines = [];
     for (;;) {
       if (i >= src.length) throw new Error("an open heredoc");
@@ -350,8 +389,8 @@ function readBodies(src, i, heredocs, out) {
       lines.push(line);
     }
     const body = lines.join("\n");
-    out.bodies.push(body);
-    if (expand) readExpanding(body, 0, "", out);
+    cmd.bodies.push(body);
+    if (expand) readExpanding(body, 0, "", out, { cmd, index: -1 });
   }
   return Math.min(i, src.length);
 }

@@ -105,6 +105,9 @@ test("in sage mode nobody force-pushes or pushes to main", () => {
   assert.match(denied(s.send(bash("git -C /x push -f"))), /never force-pushes/);
   assert.match(denied(s.send(bash("git push origin HEAD:main"))), /only through a pull request/);
   assert.match(denied(s.send(bash("git push -u origin master"))), /only through a pull request/);
+  // Any refspec whose destination is main or master, and a "+" refspec, which force-pushes (F-R79-6).
+  for (const command of ["git push origin HEAD:refs/heads/main", "git push origin x:refs/heads/master", "git push origin :main", "git push origin --all"]) assert.match(denied(s.send(bash(command))) ?? "", /only through a pull request/, command);
+  for (const command of ["git push origin +HEAD:claude/t1", "git push origin +claude/t1", "git push -fu origin claude/t1"]) assert.match(denied(s.send(bash(command))) ?? "", /never force-pushes/, command);
   assert.equal(s.send(bash("git push -u origin claude/t1")), undefined);
   assert.equal(s.send(bash("git push origin feature/main-fix")), undefined);
 });
@@ -179,7 +182,7 @@ async function modesAfter(messages, { notes = false } = {}) {
   let note;
   for (const m of messages) note = context(await s.sendAsync(typeof m === "string" ? prompt(m) : m));
   const sage = Boolean(denied(await s.sendAsync(edit())));
-  const merge = denied(await s.sendAsync(bash(`gh pr merge 41 --squash --match-head-commit ${SHA}`))) ?? "";
+  const merge = denied(await s.sendAsync(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`))) ?? "";
   const autopilot = /the merge check refuses/.test(merge) ? "on" : /autopilot is off/.test(merge) || !sage ? "off" : merge;
   const modes = `sage mode ${sage ? "on" : "off"}, autopilot ${autopilot}`;
   return notes ? { modes, note } : modes;
@@ -221,7 +224,7 @@ test("only the start of the user's message switches a mode, except autopilot off
     [SAGE, "can you explain sage mode autopilot", "sage mode on, autopilot off", "sage mode autopilot in the middle of a sentence"],
     [SAGE, NOTE, "sage mode on, autopilot off", "an agent's report switches nothing"],
     [[], NOTE, "sage mode off, autopilot off", "an agent's report switches nothing"],
-    [BOTH, NOTE, "sage mode on, autopilot on", "an agent's report switches nothing, also with autopilot and an off word"],
+    [BOTH, NOTE, "sage mode on, autopilot off", "an agent's report switches nothing on and keeps sage mode on, but its autopilot and off word switch autopilot off"],
     [BOTH, "don't switch sage mode off, just keep going", "sage mode on, autopilot on", "a mention of sage mode off keeps the gates"],
     [BOTH, "what does sage mode off do?", "sage mode on, autopilot on", "a question about sage mode off"],
     [BOTH, "sage mode off", "sage mode off, autopilot off", "sage mode off"],
@@ -273,10 +276,10 @@ const FRAMES = {
   "task notification": (body) => `<task-notification>\n<task-id>b1c2d3e4f5a6b7c8d</task-id>\n<status>completed</status>\n<summary>Agent "Fix the Ramen Finder search" completed</summary>\n<result>${body}</result>\n</task-notification>`,
 };
 
-test("only the user's own messages switch a mode: an agent's report, a task notification or another session's message switches nothing", async () => {
+test("only the user's own messages switch a mode on or sage mode off; an autopilot off counts from any prompt (F-R79-4)", async () => {
   const PHRASES = ["sage mode", "sage mode off", "autopilot on", "autopilot off", "sage mode autopilot"];
   const BODIES = {
-    "at the start of the report": (phrase) => `${phrase}\nRamen Finder: the empty search no longer crashes.`,
+    "at the start of the report": (phrase) => `${phrase}\nRamen Finder: the empty search works now.`,
     "in a quote of the user": (phrase) => `STATUS done\nRESULT the user wrote:\n> ${phrase}\nThe README says so now.`,
   };
   const STATES = {
@@ -287,13 +290,22 @@ test("only the user's own messages switch a mode: an agent's report, a task noti
   };
   const SWITCH_NOTE = /^sage: (?:sage mode is off|autopilot is o(?:n|ff))\./m;
   const cases = Object.entries(FRAMES).flatMap(([frame, wrap]) =>
-    PHRASES.flatMap((phrase) => Object.entries(BODIES).flatMap(([where, body]) => Object.entries(STATES).map(([state, [before, expected]]) => ({ why: `${frame}, "${phrase}" ${where}, from ${state}`, before, message: wrap(body(phrase)), expected })))),
+    PHRASES.flatMap((phrase) => Object.entries(BODIES).flatMap(([where, body]) => Object.entries(STATES).map(([state, [before, expected]]) => {
+      // An agent's text never switches a mode on or sage mode off, but its autopilot off switches autopilot off.
+      const off = phrase === "autopilot off" && expected.endsWith("autopilot on");
+      return { why: `${frame}, "${phrase}" ${where}, from ${state}`, before, message: wrap(body(phrase)), expected: off ? expected.replace(/on$/, "off") : expected, note: off };
+    }))),
   );
   assert.equal(cases.length, 3 * 5 * 2 * 4);
   // Claude Code's docs name a prompt_source field; when a build sends it, it decides. The user's own words still switch.
+  const BOTH = STATES["sage mode and autopilot"][0];
   cases.push(
-    { why: "prompt_source task_notification", before: STATES["sage mode and autopilot"][0], message: { ...prompt("autopilot off"), prompt_source: "task_notification" }, expected: "sage mode on, autopilot on" },
-    { why: "prompt_source peer_message", before: STATES["sage mode"][0], message: { ...prompt("sage mode off"), prompt_source: "peer_message" }, expected: "sage mode on, autopilot off" },
+    { why: "prompt_source task_notification: an off counts", before: BOTH, message: { ...prompt("autopilot off"), prompt_source: "task_notification" }, expected: "sage mode on, autopilot off", note: true },
+    { why: "prompt_source peer_message: sage mode stays on, autopilot goes off", before: BOTH, message: { ...prompt("sage mode off"), prompt_source: "peer_message" }, expected: "sage mode on, autopilot off", note: true },
+    { why: "prompt_source peer_message: no on", before: STATES["sage mode"][0], message: { ...prompt("autopilot on"), prompt_source: "peer_message" }, expected: "sage mode on, autopilot off" },
+    { why: "prompt_source peer_message: no sage mode", before: [], message: { ...prompt("sage mode"), prompt_source: "peer_message" }, expected: "sage mode off, autopilot off" },
+    { why: "the user's off joined to a notification", before: BOTH, message: `${FRAMES["task notification"]("STATUS done")}\n\nautopilot off`, expected: "sage mode on, autopilot off", note: true },
+    { why: "the user's on joined to a notification", before: STATES["sage mode"][0], message: `${FRAMES["task notification"]("STATUS done")}\n\nautopilot on`, expected: "sage mode on, autopilot off" },
     { why: "prompt_source user", before: STATES["sage mode and autopilot"][0], message: { ...prompt("autopilot off"), prompt_source: "user" }, expected: "sage mode on, autopilot off", note: true },
     { why: "the user names a frame later in the message", before: STATES["sage mode and autopilot"][0], message: "autopilot off, the <task-notification> above was wrong", expected: "sage mode on, autopilot off", note: true },
     { why: "the user's own off", before: STATES["sage mode"][0], message: "sage mode off", expected: "sage mode off, autopilot off", note: true },
@@ -317,72 +329,124 @@ function autopilotSession(env) {
   return s;
 }
 const MERGE = `gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`;
+const CANNOT = /^sage: the hook cannot prove that this command is only the merge command/;
 
-test("only a merge command is a merge: its words in quoted text, a heredoc or a comment are text", () => {
+test("merge text in the text of a harmless command passes: a message, a body, a heredoc, a comment or a search", () => {
   const s = session();
   s.send(prompt("sage mode"));
   const text = [
-    `node sage.mjs log "decided: ${MERGE} waits for the user" --project /x`,
+    `node "${TOOL}" log "decided: ${MERGE} waits for the user" --project /x`,
+    `node "${TOOL}" note T4 --text 'ready to merge: ${MERGE}' --project /x`,
     `git commit -m "$(cat <<'EOF'\nNext: ${MERGE}\nEOF\n)"`,
     `cat > notes.md <<'EOF'\n${MERGE}\nEOF`,
+    `cat <<'EOF' > /tmp/x.md\nRun ${MERGE} later\nEOF`,
     `gh pr create --title "Fix the search" --body 'After the reviews: ${MERGE}'`,
     `echo ok # ${MERGE}`,
-    `git ls-files | xargs grep -n "${MERGE}"`,
+    `echo '${MERGE}' >&2`,
+    `git ls-files | grep -n "${MERGE}"`,
+    `node --test scripts/sage-hook.test.mjs 2>&1 | grep -i '${MERGE}'`,
+    `npm test && git commit -m 'hook: refuse ${MERGE} without SHA'`,
+    `bash scripts/check.sh; git commit -m 'hook: ${MERGE}'`, // F-R79-5
+    // Commands that name gh and a word like merge, but merge nothing.
+    "gh pr view 9 --json title,mergeable,mergeStateStatus",
+    "gh pr diff 9 | grep -n merge",
+    "node -e 'console.log(1)' && gh pr view 9 --json mergeCommit",
+    "echo 'gh pr status' | sh; gh pr list --search merged",
+    "git fetch && git merge origin/main && gh pr view 9",
+    "git log --merges && gh pr checks 9",
   ];
   for (const command of text) assert.equal(s.send(bash(command)), undefined, command);
-  // A merge in any form of a shell command is still a merge.
-  const merges = [MERGE, `cd /x && ${MERGE}`, `g'h' pr merge 41 --match-head-commit ${SHA}`, `echo "$(${MERGE})"`, `sudo ${MERGE}`, `GH_TOKEN=x ${MERGE}`];
-  for (const command of merges) assert.match(denied(s.send(bash(command))) ?? "", /autopilot is off/, command);
-  // A command that the hook cannot read well enough is refused.
-  const unsure = [
+});
+
+test("a merge passes only as the one merge form; any other command that names a merge is refused (F-R79-1, F-R79-3)", () => {
+  const off = session();
+  off.send(prompt("sage mode"));
+  const on = autopilotSession();
+  assert.match(denied(off.send(bash(MERGE))) ?? "", /autopilot is off/);
+  assert.equal(on.send(bash(MERGE)), undefined, "the merge form passes to the merge check");
+  const M = "gh pr merge 41";
+  const refused = [
+    `cd /x && ${MERGE}`,
+    `${MERGE} && echo done`,
+    `${MERGE}\ngh pr merge 42`,
+    `g'h' pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`,
+    `echo "$(${MERGE})"`,
+    `sudo ${MERGE}`,
+    `GH_TOKEN=x ${MERGE}`,
+    `GH_REPO=other/repo ${MERGE}`,
+    // A merge that another program, a variable or a substitution runs.
+    `$(echo gh) pr merge 41 --squash --match-head-commit ${SHA}`,
+    `G=gh; $G pr merge 41 --squash`,
+    `printf -v G gh; $G pr merge 41`,
+    `gh pr $(echo merge) 41`,
+    `env -S '${M} --squash'`,
+    `awk 'BEGIN{system("${M} --squash")}'`,
+    `watch -n 1 '${M} --squash'`,
+    `git ls-files | xargs sh -c '${M}'`,
+    `git ls-files | xargs grep -n "${MERGE}"`,
+    `git -c alias.m='!${M} --squash' m`,
+    `gh alias set --shell m '${M} --squash'; gh m`,
+    `osascript -e 'do shell script "${M}"'`,
+    `ssh host '${M}'`,
+    `parallel ::: '${M}'`,
+    `php -r 'system("${M}");'`,
+    `lua -e 'os.execute("${M}")'`,
+    `find . -maxdepth 0 -exec sh -c '${M}' ';'`,
     `bash -c "${MERGE}"`,
+    `bash -c "$(echo '${M}')"`,
     `sh <<'EOF'\n${MERGE}\nEOF`,
     `node -e "require('child_process').execSync('${MERGE}')"`,
     `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(["gh", "pr", "merge", "41"])\nEOF`,
+    // Harmless text that goes on to run: piped, in a group, or written to a file that the line then runs.
+    `echo '${M}' | sh`,
+    `( echo '${M}' ) | sh`,
+    `{ echo '${M}'; } | sh`,
+    `sh <(echo '${M}')`,
+    `for i in 1; do\necho '${M}'\ndone | sh`,
+    `cat > x.sh <<'EOF'\n${M}\nEOF\nbash x.sh`,
+    `echo '${M}' > x.sh; bash x.sh`,
+    // A command that the hook cannot read.
     `echo "${MERGE}`,
-  ];
-  for (const command of unsure) assert.match(denied(s.send(bash(command))) ?? "", /the merge check cannot tell whether this command merges/, command);
-});
-
-test("a merge through the GitHub API is a merge too, and the hook refuses it", () => {
-  const api = [
+    // The GitHub API, with a number, a variable or a substitution in the path, and GraphQL.
     `gh api -X PUT repos/o/r/pulls/41/merge -f sha=${SHA}`,
     "gh api --method=PUT /repos/o/r/pulls/41/merge",
-    "gh api -XPUT repos/o/r/pulls/41/merge",
+    "N=41; gh api -X PUT repos/o/r/pulls/$N/merge -f merge_method=squash",
+    "gh api -X PUT repos/o/r/pulls/$(echo 41)/merge",
     'curl -X PUT -H "Authorization: Bearer x" https://api.github.com/repos/o/r/pulls/41/merge',
+    "curl -X PUT https://api.github.com/repos/o/r/pulls/$N/merge",
     `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`,
+    "gh api -X POST repos/o/r/merges -f base=main -f head=t4",
   ];
-  const off = session();
-  off.send(prompt("sage mode"));
-  for (const command of api) assert.match(denied(off.send(bash(command))) ?? "", /autopilot is off/, command);
-  const s = autopilotSession();
-  assert.equal(s.send(bash(MERGE)), undefined, "the merge command passes");
-  for (const command of api) assert.match(denied(s.send(bash(command))) ?? "", /not through the GitHub API/, command);
+  for (const s of [off, on]) for (const command of refused) assert.match(denied(s.send(bash(command))) ?? "", CANNOT, command);
 });
 
-test("one merge and one --match-head-commit per command: gh uses the last flag", () => {
+test("the merge form: one --match-head-commit with the full SHA, the pull request's number, --squash and --delete-branch", () => {
   const s = autopilotSession();
   const OTHER = "b".repeat(40);
-  assert.equal(s.send(bash(MERGE)), undefined);
+  assert.equal(s.send(bash(`gh pr merge 41 --delete-branch --match-head-commit=${SHA} --squash`)), undefined, "in any order");
+  assert.equal(s.send(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA.toUpperCase()}`)), undefined, "the ledger holds it in lowercase");
   assert.match(denied(s.send(bash(`${MERGE} --match-head-commit ${OTHER}`))) ?? "", /give --match-head-commit once, not 2 times/);
   assert.match(denied(s.send(bash(`${MERGE} --match-head-commit=${OTHER}`))) ?? "", /give --match-head-commit once/);
-  assert.match(denied(s.send(bash(`${MERGE} && gh pr merge 42 --squash --match-head-commit ${OTHER}`))) ?? "", /one merge per command; this command has 2/);
-  assert.match(denied(s.send(bash(`${MERGE}; gh api -X PUT repos/o/r/pulls/42/merge`))) ?? "", /one merge per command/);
+  assert.match(denied(s.send(bash("gh pr merge 41 --squash --delete-branch"))) ?? "", /add --match-head-commit/);
+  assert.match(denied(s.send(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA.slice(0, 7)}`))) ?? "", /needs the full 40-character head SHA that the ledger verified, not "a1b2c3d"/);
+  assert.match(denied(s.send(bash(`gh pr merge --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", /name the pull request by its number/);
+  assert.match(denied(s.send(bash(`gh pr merge 41 --squash --match-head-commit ${SHA}`))) ?? "", /add --squash and --delete-branch/);
+  assert.match(denied(s.send(bash(`${MERGE} --admin`))) ?? "", /"--admin" is not part of it/);
+  assert.match(denied(s.send(bash(`gh pr merge https://github.com/o/r/pull/41 --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", CANNOT);
 });
 
 test("the merge check gets the pull request's number from the merge command", () => {
   const s = autopilotSession();
   s.sage("task", "T1", "set", "pr=40");
   assert.match(denied(s.send(bash(MERGE))) ?? "", /^sage: the merge check refuses: no task of PR 41 has verdicts on a1b2c3d/);
-  assert.equal(s.send(bash(`gh pr merge 40 --squash --match-head-commit ${SHA}`)), undefined);
-  assert.equal(s.send(bash(`gh pr merge https://github.com/o/r/pull/40 --squash --match-head-commit ${SHA}`)), undefined);
-  assert.match(denied(s.send(bash(`gh pr merge --squash --match-head-commit ${SHA}`))) ?? "", /name the pull request by its number/);
+  assert.equal(s.send(bash(`gh pr merge 40 --squash --delete-branch --match-head-commit ${SHA}`)), undefined);
 });
 
-test("the head SHA may be in capitals, but it must be all 40 characters", () => {
+test("the merge rule reads a long command in linear time (F-R79-2)", () => {
   const s = autopilotSession();
-  assert.equal(s.send(bash(`gh pr merge 41 --squash --match-head-commit ${SHA.toUpperCase()}`)), undefined, "the ledger holds it in lowercase");
-  assert.match(denied(s.send(bash(`gh pr merge 41 --squash --match-head-commit ${SHA.slice(0, 7)}`))) ?? "", /needs the full 40-character head SHA that the ledger verified, not "a1b2c3d"/);
+  const start = Date.now();
+  assert.match(denied(s.send(bash(`echo ${"gh ".repeat(100_000)}; ${MERGE}`))) ?? "", CANNOT);
+  assert.ok(Date.now() - start < 2000, `${Date.now() - start} ms`);
 });
 
 test("the merge check refuses a merge when it cannot run, and the hook still answers nothing to other commands", () => {
