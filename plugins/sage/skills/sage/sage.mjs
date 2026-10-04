@@ -50,6 +50,9 @@ const NEXT = {
 };
 export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
+/** The owner's floors (gate G18): a large or risk-flagged task needs at least 2 clean cycles. Only a code change lowers them; every other count is 1 or more. */
+const FLOOR = { "cycles.large": 2, "cycles.risk": 2 };
+const floor = (key) => FLOOR[key] ?? 1;
 const COUNTS = { max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" };
 /** One project's own agent cap, cap.<project>, with the project's name as projectName gives it. Without one, max_agents is the project's cap. */
 const CAP = /^cap\.[a-z0-9][a-z0-9-]*$/;
@@ -119,14 +122,14 @@ export function storeDir(project, env = process.env) {
   return join(sageRoot(env), `${projectName(root)}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`);
 }
 
-/** A config value in its stored form, or undefined when it is not valid. Only a number or a string can be valid. */
+/** A config value in its stored form, or undefined when it is not valid: a count below its floor is not valid. Only a number or a string can be valid. */
 function valid(key, value) {
   if (typeof value !== "number" && typeof value !== "string") return undefined;
   if (key === "arena_models") {
     const models = list(String(value));
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
   }
-  return (Object.hasOwn(COUNTS, key) || CAP.test(key)) && /^[1-9]\d*$/.test(String(value)) ? Number(value) : undefined;
+  return (Object.hasOwn(COUNTS, key) || CAP.test(key)) && /^[1-9]\d*$/.test(String(value)) && Number(value) >= floor(key) ? Number(value) : undefined;
 }
 
 /** The refusal for a path that holds something other than a regular file: a folder, a FIFO or a device. */
@@ -167,23 +170,24 @@ function saved(env) {
 }
 
 /**
- * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, or a
- * config.json that is not a regular file, gives the defaults. autopilot_cycles is the sage hook's name for cycles.large
- * (its note on autopilot prints it): remove it when the hook reads cycles.large.
+ * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, a count
+ * below its floor, or a config.json that is not a regular file, gives the default (each floor is its default). A file of
+ * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
   let c = { ...DEFAULTS };
   try {
     const s = saved(env);
+    if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles;
     const caps = Object.entries(s).filter(([k, v]) => CAP.test(k) && valid(k, v) !== undefined);
     c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]), ...caps]);
   } catch {}
-  return { ...c, autopilot_cycles: c["cycles.large"] };
+  return c;
 }
 
-/** The clean cycles that a task needs before its merge: 1 for a tiny or small task, 2 for a large one, and 2 for any task with a risk flag (the larger count wins). */
+/** The clean cycles that a task needs before its merge: cycles.small for every task, cycles.large for a large one, and cycles.risk for any task with a risk flag (the largest count wins). */
 function cyclesFor(task, c) {
-  return Math.max(c[task.size === "large" ? "cycles.large" : "cycles.small"], task.risk ? c["cycles.risk"] : 0);
+  return Math.max(c["cycles.small"], task.size === "large" ? c["cycles.large"] : 0, task.risk ? c["cycles.risk"] : 0);
 }
 
 /** The file that a write to file replaces: file, or the target of its link. Something there that is not a regular file refuses. */
@@ -405,7 +409,7 @@ function judge(dir, tasks, findings, id, rows, cycles, repaired) {
  * The judgment of the merge check: may this head SHA merge? Every task that has verdicts on the full SHA, in every
  * project's logbook, must pass on its own rows, also an abandoned one, so no other logbook or task can lend its verdicts.
  * With pr, the tasks of that pull request in those logbooks must pass too, and there must be one. Each task wants the
- * clean cycles of its size and risk (cyclesFor), or cycles for every task when it is given. The hook calls this, so it
+ * clean cycles of its size and risk (cyclesFor), or cycles when it is given and higher: cycles only raises. The hook calls this, so it
  * never throws: what it cannot read refuses the merge.
  */
 export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
@@ -431,7 +435,7 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const own = rows.filter((r) => r.task === id);
         const task = tasks.find((t) => t.id === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, cycles ?? (task && cyclesFor(task, cfg)), repaired) };
+        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -475,7 +479,7 @@ export function sage(argv, env = process.env) {
   if (!COMMANDS.includes(cmd)) refuse(`unknown command "${cmd ?? ""}". Commands: ${COMMANDS.join(", ")}`);
   const { pos, opt } = parse(cmd, rest);
   if (cmd === "merge-check") {
-    const cycles = opt.cycles === undefined ? undefined : (valid("cycles.large", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more"));
+    const cycles = opt.cycles === undefined ? undefined : (valid("cycles.small", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more")); // the chief's explicit count: it only raises a task's own count
     if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
     const r = mergeCheck(opt.sha ?? refuse("merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
@@ -484,14 +488,27 @@ export function sage(argv, env = process.env) {
     const set = {};
     for (const kv of pos) {
       const [k, v = ""] = kv.split("=");
-      if ((Object.hasOwn(COUNTS, k) || CAP.test(k)) && valid(k, v) === undefined) refuse(`${k} must be a whole number of 1 or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : `, not ${JSON.stringify(v)}`}`);
+      if ((Object.hasOwn(COUNTS, k) || CAP.test(k)) && valid(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
       set[k] = valid(k, v) ?? refuse(`config takes ${KEYS}, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
+      const file = join(sageRoot(env), "config.json");
       mkdirSync(sageRoot(env), { recursive: true });
-      put(join(sageRoot(env), "config.json"), JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n"); // a key of a newer version stays
+      const st = lstatSync(file, { throwIfNoEntry: false });
+      if (st && !st.isFile()) refuse(`${file} is ${st.isSymbolicLink() ? "a link" : st.isDirectory() ? "a folder" : st.isFIFO() ? "a named pipe" : st.isSocket() ? "a socket" : "a device"}, not a regular file, so config writes nothing. Replace it with a regular file.`);
+      // A write never follows a link (sec15d), also one that replaces config.json after the check above (F-T42-2): the new
+      // text goes to a new temp file in the sage folder (wx: never through a planted link), and a rename onto the path itself
+      // replaces whatever is there, a link too. put() would rename onto the link's target.
+      const temp = `${file}.${randomUUID()}`;
+      writeFileSync(temp, JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n", { flag: "wx" }); // a key of a newer version stays
+      try {
+        renameSync(temp, file);
+      } catch (e) {
+        rmSync(temp, { force: true });
+        throw e;
+      }
     }
-    const { autopilot_cycles: _alias, ...c } = { ...config(env), ...set }; // the real keys: the defaults and each cap.<project>, not the alias
+    const c = { ...config(env), ...set };
     return Object.entries(c).map(([k, v]) => `${k}=${v}`).join(" ");
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
