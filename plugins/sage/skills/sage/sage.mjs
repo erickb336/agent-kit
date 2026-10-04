@@ -549,11 +549,23 @@ function pullRequests(root, env) {
   }
 }
 
+/** Folders that a build or an install makes again, at any depth. An ignored file outside them may be the owner's only copy. */
+const REBUILDABLE = new Set(["node_modules", "dist", "build", ".next", ".nuxt", ".turbo", ".cache", "coverage", ".parcel-cache", "__pycache__", ".pytest_cache", ".venv", "target", ".gradle"]);
+
+/** The ignored paths of a worktree that are in no rebuildable folder. git remove deletes ignored files; a failed listing throws, so the caller keeps the worktree. */
+const notRebuildable = (path) =>
+  execFileSync("git", ["-C", path, "status", "-z", "--porcelain", "--ignored=matching"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+    .split("\0")
+    .filter((e) => e.startsWith("!! ")) // matching names the folder a pattern matches ("a/node_modules/"), not the untracked folder above it
+    .map((e) => e.slice(3))
+    .filter((p) => !p.split("/").slice(0, -1).some((folder) => REBUILDABLE.has(folder))); // "dist/" and "a/dist/b" end in a name or ""
+
 /**
  * Removes the worktrees and local branches of finished work in one project, and returns one line for each that it
  * removed or kept, with the reason. Finished: its task is merged, concluded or abandoned, or its PR is merged or closed.
  * Never while its PR is open or a run of its task or branch runs. It removes only a clean one whose last commit is on
- * the remote (its PR's head, or in a remote branch), and only when GitHub gives the PR state: it fails closed. It uses
+ * the remote (its PR's head, or in a remote branch), whose ignored files are all in rebuildable folders, and only when
+ * GitHub gives the PR state: it fails closed. It uses
  * git worktree remove without --force, deletes the branch only at that commit, and never touches the main checkout or a
  * folder that is not a registered worktree. With task, only that task's branch.
  */
@@ -592,8 +604,10 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
     if (!why) continue;
     const line = (verdict) => lines.push(`${c.path ? `${c.path} · ${c.branch}` : `branch ${c.branch}`} · ${why}: ${verdict}`);
     try {
+      const ignored = c.path ? notRebuildable(c.path).slice(0, 3) : [];
       const reason =
         c.path && git(c.path, "status", "--porcelain") ? "it has changes that are not committed"
+        : ignored.length ? `ignored files that are not rebuildable: ${ignored.join(", ")}`
         : !mine.some((p) => p.headRefOid === c.head) && !git(root, "branch", "-r", "--contains", c.head) ? `its last commit ${c.head.slice(0, 7)} is not on the remote`
         : prs === null ? "GitHub cannot be reached, so its PR state is unknown"
         : "";

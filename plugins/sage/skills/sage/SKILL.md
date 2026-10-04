@@ -53,6 +53,7 @@ A worktree goes beside the main checkout, never inside the repository: `<project
 A worktree or a local branch is stale when its task is merged, concluded or abandoned, or its pull request is merged or closed. It is never stale while its pull request is open or a run of its task or branch is running. sage removes a stale one only when all of these are true:
 
 - It has no changes that are not committed, also no new file (`git status --porcelain` prints nothing).
+- Each file that git ignores is in a rebuildable folder, at any depth: `node_modules`, `dist`, `build`, `.next`, `.nuxt`, `.turbo`, `.cache`, `coverage`, `.parcel-cache`, `__pycache__`, `.pytest_cache`, `.venv`, `target` or `.gradle`. `git worktree remove` deletes ignored files, so an ignored `.env`, a data folder or `.claude/` settings keep the worktree, and the line names the first 3 paths. When git cannot list them, sage keeps the worktree.
 - Its last commit is on the remote: it is the head of its pull request on GitHub, or a remote branch contains it. A squash merge puts other commits on main, so main does not prove it.
 - GitHub gives the state of the pull requests. When `gh` fails, sage keeps the worktree: the state of its pull request is unknown.
 

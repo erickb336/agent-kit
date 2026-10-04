@@ -1481,6 +1481,27 @@ test("T45: sage worktrees removes the clean worktrees of finished work that are 
   assert.equal(r.ok("worktrees", "--dry-run"), kept.join("\n"));
 });
 
+test("T45: sage worktrees removes a worktree whose ignored files are all in rebuildable folders, and keeps one with any other ignored file", () => {
+  const r = rig();
+  writeFileSync(join(r.main, ".git", "info", "exclude"), "node_modules/\ndist/\n.env\ndata/\n"); // shared by every worktree
+  const built = r.work("merged");
+  const env = r.work("merged");
+  const data = r.work("merged");
+  const put = (root, ...files) => files.forEach((f) => (mkdirSync(dirname(join(root, f)), { recursive: true }), writeFileSync(join(root, f), "x\n")));
+  put(built.path, "node_modules/x", "dist/y", "pkg/node_modules/z/index.js");
+  put(env.path, ".env", "node_modules/x");
+  put(data.path, "data/foo.db");
+  r.prs([]);
+  const kept = [
+    `${env.path} · ${env.branch} · T2 merged: kept: ignored files that are not rebuildable: .env`,
+    `${data.path} · ${data.branch} · T3 merged: kept: ignored files that are not rebuildable: data/`,
+  ];
+  assert.equal(r.ok("worktrees", "--dry-run"), [`${built.path} · ${built.branch} · T1 merged: would remove`, ...kept].join("\n"));
+  assert.equal(r.ok("worktrees"), [`${built.path} · ${built.branch} · T1 merged: removed`, ...kept].join("\n"));
+  assert.deepEqual([existsSync(built.path), readFileSync(join(env.path, ".env"), "utf8"), readFileSync(join(data.path, "data/foo.db"), "utf8")], [false, "x\n", "x\n"]);
+  assert.equal(r.ok("worktrees"), kept.join("\n"), "a second run keeps the same ones");
+});
+
 test("T45: when GitHub cannot be reached, a finished task's worktree is kept, as its PR state is unknown", () => {
   const r = rig();
   const done = r.work("merged");
