@@ -11,11 +11,13 @@
 //     once, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
 //     cycles that the ledger records for it (the merge check). The merge rule and the push rule are allow-lists: a
 //     command that names a merge or runs a push is refused unless it is exactly the merge form or the push form, or the
-//     merge text stands only in a harmless command's text.
+//     merge text stands only in a harmless command's text. One case asks the user instead of a refusal: the chief's
+//     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
+//     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -181,7 +183,7 @@ export function handle(input, state, slots) {
     const cap = stateTool.config().max_agents;
     if (!slots.take(cap, input.tool_use_id ?? String(Date.now()))) return deny(event, `${cap} sage agents are running, and the cap is ${cap}. Wait for one to finish, then start this one.`);
   }
-  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd());
+  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
   return undefined;
 }
 
@@ -207,7 +209,7 @@ function pushProblem(command, cwd) {
   for (const { cmd, words, bodies } of runnable(commands)) {
     if (cmd.words[0] === "cd" && cmd.words.length === 2) dir = resolve(dir, cmd.words[1]);
     const git = words.findIndex((w, k) => /(?:^|\/)git$/.test(w) && /^push$/i.test(subcommand(words, k + 1)));
-    const why = git >= 0 ? pushForm(words, git, dir) : [...words, ...bodies].some((w) => /\s/.test(w) && pushText(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
+    const why = git >= 0 ? pushForm(words, git, dir) : ghApi(words) && words.some((w) => REFS_ENDPOINT.test(w)) && words.some((w) => MAIN_FIELD.test(w)) ? TO_MAIN : [...words, ...bodies].some((w) => /\s/.test(w) && pushText(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
     if (why) return refuse(why);
   }
   return undefined;
@@ -230,7 +232,9 @@ const longOption = (word, names) => {
   return name.length > 3 && names.some((n) => n.startsWith(name));
 };
 const FORCE = "sage mode never force-pushes. Push a new commit instead.";
-const TO_MAIN = "work reaches main only through a pull request. Push the task's branch and open a pull request.";
+/** The one command that can create main or master (firstUpload). */
+const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
+const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief tries to turn on branch protection for that branch.)`;
 
 /** Why the git push at words[git] is not the push form, or undefined. dir is where the command runs. */
 function pushForm(words, git, dir) {
@@ -280,9 +284,121 @@ function branchAt(dir) {
   }
 }
 
+/** Whether the command is gh api: gh as the command word, as gh or a path that ends in /gh, after any NAME=value, env and command. */
+function ghApi(words) {
+  let k = 0;
+  while (/^(?:[A-Za-z_]\w*=|env$|command$)/.test(words[k] ?? "")) k++;
+  return /(?:^|\/)gh$/.test(words[k] ?? "") && words[k + 1] === "api";
+}
+
+/** A gh api endpoint of git refs: repos/<o>/<r>/git/refs or repos/<o>/<r>/git/refs/<ref>. */
+const REFS_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/git\/refs(?:\/|$)/;
+/** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
+const MAIN_FIELD = /^(?:-[fF]|--(?:raw-)?field=)?ref=(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
+
+/**
+ * The one exception to the push rule: the first creation of main or master on GitHub, for a blank project. The whole
+ * command is FIRST_FORM, its flags in any order, each once, with nothing before or after it. Every word in it is
+ * literal, so the user approves an immutable commit and a fixed destination. Returns { owner, repo, branch, sha }, or
+ * undefined: then the push rule refuses the command as before. firstCreation then checks it on GitHub.
+ */
+function firstUpload(command) {
+  if (!/^[\w./= -]+$/.test(command)) return undefined; // no quote, variable, newline, chain or redirection
+  const words = command.trim().split(/ +/);
+  if (words[0] !== "gh" || words[1] !== "api") return undefined; // no prefix: not env, an assignment or a path to gh
+  const f = {};
+  for (let k = 2; k < words.length; k++) {
+    const w = words[k];
+    let key;
+    let value;
+    if (w === "--hostname") [key, value] = ["host", words[++k]];
+    else if (w === "-X" || w === "--method") [key, value] = ["method", words[++k]];
+    else if (w.startsWith("--method=")) [key, value] = ["method", w.slice(9)];
+    else if (w === "-f") [, key, value] = /^(ref|sha)=(.*)$/.exec(words[++k] ?? "") ?? [];
+    else if (!w.startsWith("-")) [key, value] = ["endpoint", w];
+    if (!key || key in f || value === undefined) return undefined; // another flag or field, or one given twice
+    f[key] = value;
+  }
+  const [, owner, repo] = /^repos\/((?!\.+\/)[\w.-]+)\/((?!\.+\/)[\w.-]+)\/git\/refs$/.exec(f.endpoint ?? "") ?? [];
+  const [, branch] = /^refs\/heads\/(main|master)$/.exec(f.ref ?? "") ?? [];
+  if (!repo || !branch || f.host !== "github.com" || f.method !== "POST" || !/^[0-9a-f]{40}$/.test(f.sha ?? "")) return undefined;
+  return { owner, repo, branch, sha: f.sha };
+}
+
+/**
+ * One GET from the GitHub API through gh, by the deadline: { status, body }. The host is always github.com, whatever
+ * GH_HOST or GH_REPO say. SIGKILL ends a gh that ignores SIGTERM, so the timeout holds. It throws on an error, a timeout or an answer with no HTTP status.
+ */
+function githubGet(path, deadline) {
+  const timeout = Math.min(5000, deadline - Date.now());
+  if (timeout <= 0) throw new Error("no time was left");
+  const env = { ...process.env, GH_HOST: undefined, GH_REPO: undefined, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" };
+  const r = spawnSync("gh", ["api", "--hostname", "github.com", "--include", path], { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 256 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env });
+  if (r.error) throw new Error(r.error.code === "ETIMEDOUT" ? "gh did not answer in time" : r.error.message);
+  const status = /^HTTP\/\S+ (\d{3})/.exec(r.stdout)?.[1];
+  if (!status) throw new Error("gh gave no HTTP status");
+  const at = r.stdout.search(/\r?\n\r?\n/);
+  return { status: Number(status), body: at < 0 ? "" : r.stdout.slice(at).trim() };
+}
+
+/**
+ * A name from GitHub for the prompt: in double quotes, at most 60 characters (code points). It drops control and format
+ * characters, separators other than the plain space (such as U+2028), and quote characters (also the fullwidth U+FF02).
+ */
+const quoted = (name) => `"${[...String(name).replace(/(?! )[\p{Cc}\p{Cf}\p{Z}"'`‘-‟＂]/gu, "")].slice(0, 60).join("")}"`;
+
+/** The body of a 200 answer as JSON, or {} for another status. It throws a fixed reason, never the body's text. */
+function json({ status, body }) {
+  if (status !== 200) return {};
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error("GitHub's answer was not JSON");
+  }
+}
+
+/**
+ * The checks of the first creation, all on GitHub, never on the local repo: the branch is absent (404), the commit is
+ * there and has no parent, and its tree gives the file count and the top-level names. Returns { decision, reason }:
+ * "ask" with the prompt, or "deny". The deadline keeps the three calls inside the 10 seconds that Claude Code gives the hook.
+ */
+function firstCreation({ owner, repo, branch, sha }) {
+  const where = `github.com/${owner}/${repo}`;
+  const no = (why) => ({ decision: "deny", reason: `this command creates ${branch} on ${where}, and the hook asks the user only when GitHub shows that it is the first creation of ${branch} at one root commit: ${why}. ${TO_MAIN}` });
+  try {
+    const deadline = Date.now() + 7000;
+    const api = `repos/${owner}/${repo}/git`;
+    const ref = githubGet(`${api}/ref/heads/${branch}`, deadline);
+    if (ref.status !== 404) return no(`GitHub answered ${ref.status} for ${branch}, not 404 (no such branch)`);
+    const commit = githubGet(`${api}/commits/${sha}`, deadline);
+    const c = json(commit);
+    if (c.sha !== sha || !/^[0-9a-f]{40}$/.test(c.tree?.sha ?? "")) return no(`GitHub has no commit ${sha} in ${owner}/${repo} (answer ${commit.status}). Push it on a task branch first`);
+    // gh follows a redirect of a renamed or moved repository: then the answer is for another name than the prompt shows.
+    if (!String(c.url).toLowerCase().startsWith(`https://api.github.com/repos/${owner}/${repo}/`.toLowerCase())) return no(`GitHub answered for another repository than ${owner}/${repo}, as for a renamed or moved repository. Use its current name`);
+    if (!Array.isArray(c.parents)) return no(`GitHub's answer for commit ${sha} has no list of parents`);
+    if (c.parents.length) return no(`commit ${sha} has a parent, so it is not one root commit`);
+    const tree = githubGet(`${api}/trees/${c.tree.sha}?recursive=1`, deadline);
+    const t = json(tree);
+    if (!Array.isArray(t.tree)) return no(`GitHub did not give the files of commit ${sha} (answer ${tree.status})`);
+    const files = t.tree.filter((e) => e.type === "blob").length;
+    const top = t.tree.map((e) => String(e.path)).filter((p) => !p.includes("/"));
+    const more = top.length > 10 ? ` and ${t.truncated ? "more" : `${top.length - 10} more`}` : t.truncated ? " and more" : "";
+    const names = top.length ? `; top level: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
+    const count = `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}`;
+    return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it. After this, sage tries to turn on branch protection for ${branch} (GitHub offers it for public repos, and for private repos on paid plans).` };
+  } catch (e) {
+    return no(`the check on GitHub failed (${e.message})`);
+  }
+}
+
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
-function gitGate(event, command, state, cwd) {
+function gitGate(event, command, state, cwd, main) {
+  const first = main ? firstUpload(command) : undefined; // an agent never gets the exception
+  if (first) {
+    const { decision, reason } = firstCreation(first);
+    return decide(event, decision, reason);
+  }
   const push = pushProblem(command, cwd);
   if (push) return deny(event, push);
   const merge = mergeIn(command);
@@ -563,8 +679,9 @@ export function chiefText() {
 }
 
 const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
-/** A refusal. Its reason can quote the command, so its control characters are escaped: they can change what a terminal shows. */
-const deny = (event, reason) => ({ hookSpecificOutput: { hookEventName: event, permissionDecision: "deny", permissionDecisionReason: `sage: ${String(reason).replace(/\p{Cc}/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}` } });
+/** A refusal, or a question to the user. Its reason can quote the command, so its control characters are escaped: they can change what a terminal shows. */
+const decide = (event, decision, reason) => ({ hookSpecificOutput: { hookEventName: event, permissionDecision: decision, permissionDecisionReason: `sage: ${String(reason).replace(/\p{Cc}/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}` } });
+const deny = (event, reason) => decide(event, "deny", reason);
 
 /**
  * The agent cap. Each running sage agent holds one slot: a directory that mkdir creates atomically, so agents that

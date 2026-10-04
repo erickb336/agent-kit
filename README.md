@@ -172,7 +172,17 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
 | A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
 
-**The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. The merge rule and the push rule are allow-lists: a command that merges or pushes passes only in its one form, and each refusal names that form. A push names `origin` and the literal name of a branch that is not main or master; `HEAD`, `@`, a pattern, a variable or a refspec with `:` or `+` is refused. The hook also reads the branch of the checkout where the push runs (the `-C` folder, a `cd` before it, or the session's folder) with `git rev-parse`, and refuses a push from a checkout of main or master. When it cannot read a command, it refuses the command. It does not stop an agent that hides a merge or a push on purpose: for example, with a git editor or a git hook that runs a shell, a file that a later command runs, or a command name split across variables. The guard against that is identity: agents get a GitHub identity that cannot merge or change main, and main has branch protection. That identity is planned and not built yet.
+**The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. It does three things:
+
+1. **It refuses.** The merge rule and the push rule are allow-lists: a command that merges or pushes passes only in its one form, and each refusal names that form.
+   - A push names `origin` and the literal name of a branch that is not main or master. `HEAD`, `@`, a pattern, a variable or a refspec with `:` or `+` is refused.
+   - The hook reads the branch of the checkout where the push runs (the `-C` folder, a `cd` before it, or the session's folder), and refuses a push from main or master.
+   - A git push of main is refused. So is a `gh api` command that names main or master on a `git/refs` endpoint, also behind `env`, `command`, a `NAME=value` or a path to `gh`.
+   - When the hook cannot read a command, it refuses the command.
+2. **It asks you in one case.** For a blank project, the chief creates main or master on GitHub for the first time. Only this whole command, from the main session, asks you: `gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>`. An agent never gets this exception. The hook checks on GitHub, not in the local repo, that the branch is absent and that the commit has no parent. Then Claude Code's permission prompt shows you the repository, the commit, its number of files and its top-level names.
+3. **The lock is GitHub branch protection.** After the first main or master, sage tries to turn it on, so that the branch changes only through pull requests. GitHub offers it for public repos, and for private repos on paid plans.
+
+The limits, said once: the hook and the lock stop mistakes, not an agent that acts on purpose. An agent can hide a merge or a push from the hook, for example with a git editor or a git hook that runs a shell, a file that a later command runs, or a command name split across variables. An agent that holds your GitHub token can remove the protection or merge a pull request. The guard against that is identity: agents get a GitHub identity that cannot merge or change main. That identity is planned and not built yet.
 
 ### The arena
 
