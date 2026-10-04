@@ -10,16 +10,15 @@
   - Credit the source.
 - **Skills:**
   - Use only the shared frontmatter keys: `name`, `description`, `license`, `allowed-tools`, `metadata`.
-  - `name` equals the folder name. A Claude-only skill says "Claude Code only" in its description.
+  - `name` equals the folder name.
 - **Hooks** (`plugins/sage/hooks/`):
-  - `hooks.json` and `principles-hook.mjs` run in Claude Code and Codex. `claude.json` and `sage-hook.mjs` run in Claude Code only.
+  - `hooks.json` runs `principles-hook.mjs`, and `claude.json` runs `sage-hook.mjs`.
   - The hooks are hand-written. The principle hook reads each principle's text from its skill.
 - **Sage mode:**
   - A rule that matters goes into code (the sage hook or the state tool), with a test. An instruction in a prompt alone is not enough.
   - The brief fields live in the sage hook (`BRIEF_FIELDS`) and the report fields there too (`REPORT_FIELDS`). The chief's brief template and the `report` skill must list the same fields; `npm run check` checks this.
   - The routes, states and verdict kinds live in the state tool. The design page and the chief's instructions describe them; change all three together.
 - **The README's graphics** in `docs/assets/` are drawn by `scripts/graphics.mjs`, in light and dark. Change the script, then run `npm run graphics`; never edit an SVG by hand. `npm run check` checks that they match.
-- **Codex** gets only what is verified there. When in doubt, keep a part Claude-only.
-- **`instructions/core.md`** stays under 8 KiB, because Codex shares a 32 KiB budget with each project's AGENTS.md.
+- **`instructions/core.md`** stays under 8 KiB, because it loads into every session (through `~/.claude/CLAUDE.md`), so each byte costs context there.
 - **Write** at 80% of Simplified Technical English (`writing/ste-80.md`).
 - **Words:** use sage's approved words from `writing/dictionary.md`. It builds the `dictionary` skill and the README's word table; `npm run check` fails on a flagged word.

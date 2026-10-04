@@ -76,7 +76,7 @@
   <li><strong>The goal.</strong> Make this your default way to design and build. You say what you want, answer the few product questions, and look at results: screens, recordings, test results. You don't read code.</li>
   <li><strong>What came before.</strong>
     <ul>
-      <li><em>agent-kit</em> gave every session its principles, the writing standard and the prove-it-works gate. It is now the same plugin as sage mode, named sage: the kitchen and the orchestration layer in one place, with pstack's principles followed by a weekly sync.</li>
+      <li><em>agent-kit</em> gave every session its principles, the writing standard and the prove-it-works stop check. It is now the same plugin as sage mode, named sage: the kitchen and the orchestration layer in one place, with pstack's principles followed by a weekly sync.</li>
       <li><em>Orchestrator</em> proved the factory ideas: a PE, reviews running side by side, no dropped findings. It's a heavy app with fixed flows.</li>
       <li><em>The Remote Control server</em> in <code>~/workspace</code> lets you start sessions from your phone.</li>
       <li><em>A first prototype</em> showed that a folder setting can start a session as the chief of staff.</li>
@@ -92,7 +92,7 @@ flowchart TB
   U(["You · phone, desktop or terminal"])
   C["Chief of staff · routes, briefs, ledger, gates"]
   U -->|"request · answers"| C
-  C -->|"questions with a default · results · status"| U
+  C -->|"questions with a default · results · status when you ask"| U
   C -->|"brief"| D
   subgraph F["The factory · one writer at a time"]
     D["Design · designer, PE, UX review"] --> B["Build · implementer in its own worktree"]
@@ -143,7 +143,7 @@ flowchart TB
 <p>Each agent is a file in <code>plugins/sage/agents/</code>. Each loads the plugin's own principle skills that its role needs. An agent that doesn't change outcomes gets cut after the pilot. Anthropic's harness post found that each role encodes a guess about what the model can't do alone.</p>
 
 <h2 id="routes">5. Building blocks and routes</h2>
-<p>This is where sage mode is more flexible than Orchestrator. Orchestrator has six fixed flows, and changing a task's flow starts it over. In sage mode, the chief of staff builds a route for each task from blocks. A route has a minimum for each size and risk, and the gates enforce that minimum.</p>
+<p>This is where sage mode is more flexible than Orchestrator. Orchestrator has six fixed flows, and changing a task's flow starts it over. In sage mode, the chief of staff builds a route for each task from blocks. A route has a minimum for each size and risk, and checks in code enforce that minimum.</p>
 <div class="diagram"><pre class="mermaid">
 flowchart TB
   T["New task"] --> S{"Size and risk"}
@@ -319,7 +319,7 @@ flowchart TB
   R -->|"3 repair rounds and still findings"| S["Stop and ask you"]
 </pre><p class="cap">A cycle is a full set of fresh reviewers and QA on one head SHA. Each cycle uses new agents that didn't see the earlier verdicts.</p></div>
 <ul>
-  <li><strong>"autopilot on"</strong> at the start of a message switches it on, and <strong>"autopilot off"</strong> anywhere in a message switches it off. "autopilot off" is the kill switch, and work in flight stops at "verified".</li>
+  <li><strong>"autopilot on"</strong> at the start of your message switches it on, and <strong>"autopilot off"</strong> anywhere in your message switches it off. An agent's report or a task notification never switches it, on or off. When Claude Code joins your message to one, only your part counts. "autopilot off" is the kill switch, and work in flight stops at "verified".</li>
   <li><strong>Still always ask you</strong>, even on autopilot: deploys, deleting data, force-pushes, and closing pull requests that aren't sage mode's. These can't be undone. A merge can be reverted.</li>
   <li><strong>Risk flags</strong> (auth, personal data, schema, money, secrets) don't stop autopilot. They add the security review to every cycle.</li>
 </ul>
@@ -339,7 +339,7 @@ flowchart TB
 <tr><th>Option</th><th>For</th><th>Against</th><th>Verdict</th></tr>
 <tr><td><strong>A.</strong> Instructions only: a chief with playbooks in its prompt (the first prototype)</td><td>Simplest, very flexible</td><td>Rules in prompts decay (the PE loop, dropped findings). No state across sessions</td><td>Rejected as the whole design. It's the starting layer</td></tr>
 <tr><td><strong>B.</strong> Workflow scripts as fixed flows</td><td>Deterministic, structured output, can resume</td><td>Can't take your input mid-run, so each question needs a new run. Flows live in code, as rigid as Orchestrator's</td><td>Rejected for routes. Maybe later for large fan-outs (program size)</td></tr>
-<tr><td><strong>C.</strong> A chief + building blocks + a state tool + hook gates</td><td>Flexible routes, key rules enforced, state survives sessions and devices, cheap for small tasks</td><td>More parts: agents, a CLI and hooks. Hooks see only what tools expose</td><td class="rec">Recommended</td></tr>
+<tr><td><strong>C.</strong> A chief + building blocks + a state tool + hook checks</td><td>Flexible routes, key rules enforced, state survives sessions and devices, cheap for small tasks</td><td>More parts: agents, a CLI and hooks. Hooks see only what tools expose</td><td class="rec">Recommended</td></tr>
 <tr><td><strong>D.</strong> Agent teams</td><td>Peers can message each other</td><td>Experimental, no nesting, the lead approves plans by itself</td><td>Rejected for now</td></tr>
 <tr><td><strong>E.</strong> Orchestrator as the engine (its ORC-023)</td><td>Reuses all of Orchestrator</td><td>A heavy app, a separate sign-in, fixed flows</td><td>Rejected. Orchestrator stays your separate playground</td></tr>
 </table></div>
@@ -362,7 +362,6 @@ You     not now
 
 Chief   T2: implementer started (branch claude/t2-search-crash).
         T1: 3 designers started: one-tap heart · favourites tab with sort · saved lists.
-        status · T1 designing · T2 building · 0 gates open
 
         … 20 minutes later …
 
@@ -381,8 +380,7 @@ Chief   T2: an empty search still crashed. Fixed in 4787c81.
         T1: security review found 1 high finding (F-T1-3: one user can read another
         user's favourites). Repair round 2 of 3.
         Lesson: input handling caused 2 of the last 3 crashes. Proposed kitchen change:
-        a lint rule against raw search input.  ▸ Approve?  Default: no.
-        status · T1 repairing 2/3 · T2 ready for you · 1 gate open</pre>
+        a lint rule against raw search input.  ▸ Approve?  Default: no.</pre>
 <div class="grid">
 <div><h3>status.md (sample)</h3>
 <pre>sage · ramen-finder · 14:32
@@ -400,7 +398,7 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <p>Each step ends in a check. The next step starts only when that check passes.</p>
 <div class="scroll"><table>
 <tr><th>Step</th><th>What</th><th>The check</th></tr>
-<tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the logbook. The hook gates: brief fields, edits, the agent cap, the merge check</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
+<tr><td>1. The kitchen <strong>(done)</strong></td><td>The <code>sage</code> state tool and the logbook. The hook's checks: brief fields, edits, the agent cap, the merge check</td><td>Tests that run the hook and the tool as Claude Code does. No agents needed</td></tr>
 <tr><td>2. The team <strong>(done: <a href="../runs/dry-run-1.html">dry run 1</a>)</strong></td><td>The eight agents, the route rules, the brief and report shapes. Test whether a stop hook can see a subagent's report</td><td>A dry run on a demo project with sample data. You read the transcript</td></tr>
 <tr><td>3. Pilot</td><td>One small real task on one of your projects. You watch from your phone</td><td>The task merges, or reaches a PR, with a ledger verdict on its head SHA. Measured cost</td></tr>
 <tr><td>4. Design rounds and arena</td><td>The Design block with prototypes and keep, change or drop. The arena block</td><td>One real design round with an arena of 3 that you mark</td></tr>
@@ -412,7 +410,7 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <h3>Made</h3>
 <div class="scroll"><table>
 <tr><th>Decision</th><th>Your answer</th></tr>
-<tr><td>Architecture</td><td>C: a chief of staff, building blocks, a state tool and hook gates</td></tr>
+<tr><td>Architecture</td><td>C: a chief of staff, building blocks, a state tool and hook checks</td></tr>
 <tr><td>Where the logbook lives</td><td><code>~/.claude/sage/&lt;project&gt;/</code>, outside the repository</td></tr>
 <tr><td>Independent review</td><td>Claude reviewers in a fresh context for v1</td></tr>
 <tr><td>Autopilot</td><td>Everything can merge, through a pull request, after a set number of cycles</td></tr>
@@ -424,7 +422,7 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <ol>
   <li><strong>How many clean cycles before autopilot merges?</strong> <span class="rec">2 in a row on the same head SHA (recommended)</span>, 1, or 3.</li>
   <li><strong>When does the arena run by itself?</strong> <span class="rec">Only for designs with no clear answer, and when you say "arena" (recommended)</span>, or also for implementations that are hard to undo, or only when you say "arena".</li>
-  <li><strong>Your go to build</strong>, starting with step 1 of the plan: the kitchen (the state tool, the logbook and the hook gates, with tests).</li>
+  <li><strong>Your go to build</strong>, starting with step 1 of the plan: the kitchen (the state tool, the logbook and the hook's checks, with tests).</li>
 </ol>
 </div>
 

@@ -22,7 +22,6 @@ jobs:
         run: node scripts/sync-pstack.mjs --summary "$RUNNER_TEMP/summary.md"
       - if: steps.sync.outputs.changed == 'true'
         run: |
-          node -e 'const f="plugins/sage/.codex-plugin/plugin.json",fs=require("fs"),j=JSON.parse(fs.readFileSync(f));const v=j.version.split(".").map(Number);v[2]++;j.version=v.join(".");fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")'
           npm run build
           npm run check
           npm test

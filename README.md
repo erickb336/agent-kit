@@ -13,7 +13,7 @@
 
 **sage is a Claude Code plugin that turns any session into your chief of staff.** Start a message with "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
 
-It also gives every session, in Claude Code and in Codex, 25 short working principles at the moment they apply.
+It also gives every session 25 short working principles at the moment they apply.
 
 > **Built on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by [Lauren Tan (poteto)](https://github.com/poteto).** sage follows pstack's principles by itself, every week, and sage mode takes its ideas from poteto mode. The name is a nod to Sage Mode in *Naruto*. See [Credits](#credits).
 
@@ -157,10 +157,12 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | The chief of staff never edits a file. | It keeps the big picture; the team does the details. |
 | Every brief has all its fields; every report has its evidence. | A vague brief fails quietly. A claim without evidence is not a result. |
 | At most 3 sage agents run at once. | Cost and focus. |
-| One writer per branch. Nobody force-pushes or pushes to main. | Parallel writers conflict. Work reaches main only through a pull request. |
+| One writer per branch. Nobody force-pushes or pushes to main. A push is only `git push [-u] origin <branch>`, with the branch's own name. | Parallel writers conflict. Work reaches main only through a pull request. |
 | Every finding is triaged: fix, dismiss with a reason, or ask you. | No finding is dropped. |
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
 | A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
+
+**The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. The merge rule and the push rule are allow-lists: a command that merges or pushes passes only in its one form, and each refusal names that form. A push names `origin` and the literal name of a branch that is not main or master; `HEAD`, `@`, a pattern, a variable or a refspec with `:` or `+` is refused. The hook also reads the branch of the checkout where the push runs (the `-C` folder, a `cd` before it, or the session's folder) with `git rev-parse`, and refuses a push from a checkout of main or master. When it cannot read a command, it refuses the command. It does not stop an agent that hides a merge or a push on purpose: for example, with a git editor or a git hook that runs a shell, a file that a later command runs, or a command name split across variables. The guard against that is identity: agents get a GitHub identity that cannot merge or change main, and main has branch protection. That identity is planned and not built yet.
 
 ### The arena
 
@@ -205,7 +207,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Ledger** | The record of all verdicts, by commit. The merge check reads it. |
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
-| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message that starts with "autopilot on" or "sage mode autopilot" turns it on. Any message that mentions autopilot with an off word turns it off. |
+| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message of the owner that starts with "autopilot on" or "sage mode autopilot" turns it on. Any text that the owner wrote and that mentions autopilot with an off word turns it off, also the owner's part of a joined prompt. Text inside an agent's report, a notice or another session's message never switches it. |
 | **The dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
 | **Seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
 
@@ -222,10 +224,10 @@ sage uses each word in one meaning only. The [dictionary](writing/dictionary.md)
 | `status` | Where each task is: running, waiting for you, verified. |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
 | A message that starts with `autopilot on`, or with `sage mode` followed by `autopilot`: `sage mode autopilot`, `sage mode on, autopilot on` | Verified pull requests merge by themselves after 2 clean cycles. |
-| Any message that mentions autopilot with an off word, for example `autopilot off`, `stop autopilot` or `pause autopilot` | Verified pull requests wait for you again. |
+| Any text of yours that mentions autopilot with an off word, for example `autopilot off`, `stop autopilot` or `pause autopilot` | Verified pull requests wait for you again. |
 | `sage mode off` at the start of a message | A normal session again. |
 
-Only the start of a message switches a mode: "sage mode" (or "sage mode on"), "sage mode off" and "autopilot on". A mention in the middle of a sentence, or in an agent's report, switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after "sage mode" or "autopilot on": "autopilot on?" and "autopilot on main" switch nothing. A "?" on the line of "sage mode off" keeps sage mode on, but autopilot goes off. Autopilot off works anywhere: any message that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, because a missed "off" lets merges go on. Off wins over on: "autopilot on, don't stop until done" leaves autopilot off. "turn on autopilot" and "enable autopilot" switch nothing.
+Only your own text switches a mode. Text inside an agent's report, a task notification or a message from another session never switches anything, also when it quotes you. Autopilot off counts in any text that you wrote, also your part of a prompt that Claude Code joins to one of them, because off is the safe direction. In your message, only its start switches a mode: "sage mode" (or "sage mode on"), "sage mode off" and "autopilot on". A mention in the middle of a sentence switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after "sage mode" or "autopilot on": "autopilot on?" and "autopilot on main" switch nothing. A "?" on the line of "sage mode off" keeps sage mode on, but autopilot goes off. Autopilot off works anywhere in your message: any message that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, because a missed "off" lets merges go on. Off wins over on: "autopilot on, don't stop until done" leaves autopilot off. "turn on autopilot" and "enable autopilot" switch nothing.
 
 To make every session in a folder start in sage mode, put this in the folder's `.claude/settings.json`:
 
@@ -237,7 +239,7 @@ To make every session in a folder start in sage mode, put this in the folder's `
 
 A principle is a short rule for one kind of moment, for example "test behaviour, not implementation" when you change a test. There are 25. My own versions win over pstack's where both exist.
 
-Agents seldom load a skill by themselves, so a **hook** gives the principle at the moment it applies, once per session. It works in Claude Code and in Codex.
+Agents seldom load a skill by themselves, so a **hook** gives the principle at the moment it applies, once per session.
 
 | The moment | The principles it gets |
 | --- | --- |
@@ -249,7 +251,7 @@ Agents seldom load a skill by themselves, so a **hook** gives the principle at t
 | A check fails | fix-root-causes |
 | Two changes in a row do not make the same check pass | attack-the-premise |
 
-The hook also has **one gate**. When the agent tries to finish, the code changed, and no check ran after the change, it stops the agent once. The agent must run a check or say what it did not verify.
+The hook also has **one check**, the stop check. When the agent tries to finish, the code changed, and no check ran after the change, it stops the agent once. The agent must run a check or say what it did not verify.
 
 <details>
 <summary><strong>All 25 principles</strong></summary>
@@ -326,11 +328,11 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 **What does it cost?** It uses your Claude plan's usage limits, or API credits. Every agent is a separate run. In [the first dry run](docs/runs/dry-run-1.html), a small bug fix with a security risk took 15 agent runs, about $2.60 at API prices, before the fixes that came from that run. I don't have numbers from real projects yet.
 
-**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. It switches on only when a message starts with "autopilot on", or with "sage mode" followed by "autopilot", for example "sage mode autopilot" or "sage mode on, autopilot on". Any message that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, also when the message turns it on. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
+**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. It switches on only when a message starts with "autopilot on", or with "sage mode" followed by "autopilot", for example "sage mode autopilot" or "sage mode on, autopilot on". Any message of yours that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, also when the message turns it on. Text inside an agent's report, a task notification or another session's message never switches it. When Claude Code joins your message to one of them, your part counts. The hook lets a merge through only as the one merge command on its own: it refuses a merge through the GitHub API, a variable, a script or another program, and any command that names a merge outside the text of a harmless command, such as a commit message or a pull request body. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
 
 **Which projects fit?** A project with tests and a GitHub remote. Without tests, QA can only check by running the app. Without a remote, the work stops at a verified branch.
 
-**Does it work in Codex?** Codex gets the principles, the writing standard and the principle hooks. Sage mode is for Claude Code only, because it needs Claude Code's subagents and hooks.
+**Does it work in Codex?** Sage is for Claude Code.
 
 **How mature is it?** Early. It has done one dry run on a demo project ([the report](docs/runs/dry-run-1.html)). A pilot on a real project comes next. The full design is in [docs/design/sage-mode.html](docs/design/sage-mode.html).
 
@@ -340,7 +342,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 | --- | --- |
 | `plugins/sage/agents/` | Sage mode's team. |
 | `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, the state tool `sage`, and `report`. |
-| `plugins/sage/hooks/` | `hooks.json`: the principle hooks, for Claude Code and Codex. `claude.json`: the sage mode hook, for Claude Code only. |
+| `plugins/sage/hooks/` | `hooks.json`: the principle hooks. `claude.json`: the sage mode hook. |
 | `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
@@ -352,9 +354,6 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 1. Edit a source: `principles/`, `writing/`, `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
 2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`.
-3. For Codex to pick up a change, increase `version` in `plugins/sage/.codex-plugin/plugin.json`.
-
-**Codex install:** `codex plugin marketplace add erickb336/sage`, then `codex plugin add sage@sage`. Link the always-on file with `ln -s ~/sage/instructions/core.md ~/.codex/AGENTS.md` (from a clone of this repository), and trust the sage hooks in Codex's `/hooks`.
 
 ## Credits
 
