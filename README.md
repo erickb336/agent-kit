@@ -87,7 +87,7 @@ This is one session, step by step. It is an illustration with sample data.
      - The arena candidates do not converge.
 
    Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
-4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds. After a repair, only the roles that found the problems re-check the repair's diff. A new medium finding from a round goes to a follow-up task.
+4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds. After a repair, only the roles that found the problems re-check the repair's diff. A new medium or low finding from a round goes to a follow-up task; a high one blocks. Then the task needs its clean cycles on the final commit: 1 for a tiny or small task, 2 for a large task or a task with a risk flag.
 5. **You get results.** You get evidence (the commands that ran, screenshots), what was not checked, and a pull request. You merge it, or autopilot merges it.
 
 **Try it yourself.** Pick one small, real bug in a project that has tests and a GitHub remote. Start a session from your phone, start your message with "sage mode", and describe the bug. Then look at the result, not the code.
@@ -154,7 +154,7 @@ Each task gets the least route for its size. The chief can add steps, never remo
 <a href="docs/assets/lifecycle-light.svg">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lifecycle-dark.svg">
-  <img alt="A task's states: framed, briefed, building, reviewing, verifying, verified, merged. A product question moves a building task to held until your answer. Findings to fix, or a QA fail, move it from verifying to repairing, and the next round goes back to reviewing, at most 3 rounds. Verified needs 1 clean cycle; autopilot merges after 2 in a row." src="docs/assets/lifecycle-light.svg" width="100%">
+  <img alt="A task's states: framed, briefed, building, reviewing, verifying, verified, merged. A product question moves a building task to held until your answer. Findings to fix, or a QA fail, move it from verifying to repairing, and the next round goes back to reviewing, at most 3 rounds. Verified needs 1 clean cycle; autopilot merges after 1 for a tiny or small task, 2 for a large or risky one." src="docs/assets/lifecycle-light.svg" width="100%">
 </picture>
 </a>
 
@@ -168,11 +168,11 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | --- | --- |
 | The chief of staff never edits a file. | It keeps the big picture; the team does the details. |
 | Every brief has all its fields; every report has its evidence. | A vague brief fails quietly. A claim without evidence is not a result. |
-| At most 3 sage agents run at once for a project (`config cap.<project>=n` sets one project's cap), and at most 12 across all projects (`cap_total`). A slot frees as soon as its agent ends, fails or is stopped. | Cost and focus. Several sessions share the total. |
+| At most 3 sage agents run at once for a project (`max_agents`; `config cap.<project>=n` sets one project's own cap), and at most 12 across all projects (`cap_total`). A slot frees as soon as its agent ends, fails or is stopped. | Cost and focus. Several sessions share the total. |
 | One writer per branch. Nobody force-pushes or pushes to main. A push is only `git push [-u] origin <branch>`, with the branch's own name. | Parallel writers conflict. Work reaches main only through a pull request. |
 | Every finding is triaged: fix, dismiss with a reason, or ask you. | No finding is dropped. |
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
-| A repair round re-checks only the repair's diff, with the roles that found the problems. A new medium finding goes to a follow-up task; a high one blocks. | A round that re-reviews the whole branch finds new scope, not the fix. |
+| A repair round re-checks only the repair's diff, with the roles that found the problems. A new medium or low finding goes to a follow-up task; a high one blocks. | A round that re-reviews the whole branch finds new scope, not the fix. |
 | A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
 
 **The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. It does three things:
@@ -230,7 +230,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Ledger** | The record of all verdicts, by commit. The merge check reads it. |
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
-| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. A message of the owner that starts with "autopilot on" or "sage mode autopilot" turns it on. Your own text that mentions autopilot with an off word turns it off, also between two frames and in a message queued while Claude works. A queued message is yours only as a whole system reminder outside every other frame. It can stop autopilot, but it cannot start autopilot or sage mode: send an on again when Claude is idle. Inside an agent's report or a notice, only a line that starts with "autopilot off" or "sage mode off" turns it off. Text inside an agent's report, a notice or another session's message never turns it on. |
+| **Autopilot** | Verified pull requests merge by themselves after their clean cycles: 1 for a tiny or small task, 2 for a large task or a task with a risk flag. Off by default. A message of the owner that starts with "autopilot on" or "sage mode autopilot" turns it on. Your own text that mentions autopilot with an off word turns it off, also between two frames and in a message queued while Claude works. A queued message is yours only as a whole system reminder outside every other frame. It can stop autopilot, but it cannot start autopilot or sage mode: send an on again when Claude is idle. Inside an agent's report or a notice, only a line that starts with "autopilot off" or "sage mode off" turns it off. Text inside an agent's report, a notice or another session's message never turns it on. |
 | **The dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
 | **Seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
 
