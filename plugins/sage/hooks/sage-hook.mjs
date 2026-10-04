@@ -188,7 +188,7 @@ function pushProblem(command, cwd) {
   for (const { cmd, words, bodies } of runnable(commands)) {
     if (cmd.words[0] === "cd" && cmd.words.length === 2) dir = resolve(dir, cmd.words[1]);
     const git = words.findIndex((w, k) => /(?:^|\/)git$/.test(w) && /^push$/i.test(subcommand(words, k + 1)));
-    const why = git >= 0 ? pushForm(words, git, dir) : words[0] === "gh" && words[1] === "api" && words.some((w) => REFS_ENDPOINT.test(w)) && words.some((w) => MAIN_FIELD.test(w)) ? TO_MAIN : [...words, ...bodies].some((w) => /\s/.test(w) && PUSH_TEXT.test(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
+    const why = git >= 0 ? pushForm(words, git, dir) : ghApi(words) && words.some((w) => REFS_ENDPOINT.test(w)) && words.some((w) => MAIN_FIELD.test(w)) ? TO_MAIN : [...words, ...bodies].some((w) => /\s/.test(w) && PUSH_TEXT.test(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
     if (why) return refuse(why);
   }
   return undefined;
@@ -263,6 +263,13 @@ function branchAt(dir) {
   }
 }
 
+/** Whether the command is gh api: gh as the command word, as gh or a path that ends in /gh, after any NAME=value, env and command. */
+function ghApi(words) {
+  let k = 0;
+  while (/^(?:[A-Za-z_]\w*=|env$|command$)/.test(words[k] ?? "")) k++;
+  return /(?:^|\/)gh$/.test(words[k] ?? "") && words[k + 1] === "api";
+}
+
 /** A gh api endpoint of git refs: repos/<o>/<r>/git/refs or repos/<o>/<r>/git/refs/<ref>. */
 const REFS_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/git\/refs(?:\/|$)/;
 /** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
@@ -299,13 +306,13 @@ function firstUpload(command) {
 
 /**
  * One GET from the GitHub API through gh, by the deadline: { status, body }. The host is always github.com, whatever
- * GH_HOST or GH_REPO say. It throws on an error, a timeout or an answer with no HTTP status.
+ * GH_HOST or GH_REPO say. SIGKILL ends a gh that ignores SIGTERM, so the timeout holds. It throws on an error, a timeout or an answer with no HTTP status.
  */
 function githubGet(path, deadline) {
   const timeout = Math.min(5000, deadline - Date.now());
   if (timeout <= 0) throw new Error("no time was left");
   const env = { ...process.env, GH_HOST: undefined, GH_REPO: undefined, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" };
-  const r = spawnSync("gh", ["api", "--hostname", "github.com", "--include", path], { encoding: "utf8", timeout, maxBuffer: 256 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env });
+  const r = spawnSync("gh", ["api", "--hostname", "github.com", "--include", path], { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 256 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env });
   if (r.error) throw new Error(r.error.code === "ETIMEDOUT" ? "gh did not answer in time" : r.error.message);
   const status = /^HTTP\/\S+ (\d{3})/.exec(r.stdout)?.[1];
   if (!status) throw new Error("gh gave no HTTP status");
@@ -355,7 +362,7 @@ function firstCreation({ owner, repo, branch, sha }) {
     const files = t.tree.filter((e) => e.type === "blob").length;
     const top = t.tree.map((e) => String(e.path)).filter((p) => !p.includes("/"));
     const more = top.length > 10 ? ` and ${t.truncated ? "more" : `${top.length - 10} more`}` : t.truncated ? " and more" : "";
-    const names = top.length ? `: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
+    const names = top.length ? `; top level: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
     const count = `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}`;
     return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it. After this, sage tries to turn on branch protection for ${branch} (GitHub offers it for public repos, and for private repos on paid plans).` };
   } catch (e) {

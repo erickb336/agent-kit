@@ -274,7 +274,7 @@ test("a push from a checkout of main or master is refused; a push with -C or aft
 
 /**
  * A fake gh on PATH for the first creation of main (T24): it answers the hook's GETs from a JSON file, so no test calls
- * GitHub. github(answers) writes that file: { "<endpoint>": { status, body } | { sleep: true } | { fail: true } }. An
+ * GitHub. github(answers) writes that file: { "<endpoint>": { status, body } | { sleep: true } | { stubborn: true } (it ignores SIGTERM) | { fail: true } }. An
  * endpoint with no answer is a 404. A string body goes out as it is, not as JSON. The fake answers 500 to a call without --hostname github.com or with GH_HOST set,
  * as a GitHub Enterprise host would not know the repository.
  */
@@ -288,7 +288,8 @@ const args = process.argv.slice(2);
 const answers = JSON.parse(fs.readFileSync(process.env.FAKE_GH_ANSWERS, "utf8"));
 const host = args[args.indexOf("--hostname") + 1];
 const a = host !== "github.com" || process.env.GH_HOST || process.env.GH_REPO ? { status: 500, body: { message: "wrong host" } } : answers[args.at(-1)] ?? { status: 404, body: { message: "Not Found" } };
-if (a.sleep) setTimeout(() => {}, 30000);
+if (a.stubborn) process.on("SIGTERM", () => {});
+if (a.sleep || a.stubborn) setTimeout(() => {}, a.stubborn ? 15000 : 30000);
 else if (a.fail) process.exit(1);
 else {
   process.stdout.write("HTTP/2.0 " + a.status + " X\\nContent-Type: application/json\\r\\n\\r\\n" + (typeof a.body === "string" ? a.body : JSON.stringify(a.body, null, 2)));
@@ -321,7 +322,7 @@ const firstSession = (env = {}) => {
 };
 const CREATE = `gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`;
 const LOCK = "After this, sage tries to turn on branch protection for main (GitHub offers it for public repos, and for private repos on paid plans).";
-const ASKED = `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 12 files: "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10" and 2 more. The user must approve it. ${LOCK}`;
+const ASKED = `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 12 files; top level: "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10" and 2 more. The user must approve it. ${LOCK}`;
 const asked = (out) => (out?.hookSpecificOutput?.permissionDecision === "ask" ? out.hookSpecificOutput.permissionDecisionReason : undefined);
 const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
 /** The refusal of the exact form when a check on GitHub fails. */
@@ -373,27 +374,35 @@ test("a gh call that does not answer in time is a refusal, not an ask (T24)", ()
   assert.ok(Date.now() - started < 9000, "inside the hook's 10 seconds");
 });
 
+test("a gh that ignores SIGTERM is killed at the timeout, so the refusal comes inside the hook's 10 seconds (T29 GH-SIGTERM-IGNORED)", () => {
+  const s = firstSession();
+  s.github({ "repos/o/r/git/ref/heads/main": { stubborn: true } });
+  const started = Date.now();
+  assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("the check on GitHub failed \\(gh did not answer in time\\)"));
+  assert.ok(Date.now() - started < 9000, `inside the hook's 10 seconds: ${Date.now() - started} ms`);
+});
+
 test("a large or truncated tree asks with an honest count and never throws (T24 BIG-TREE-REFUSAL)", () => {
   const s = firstSession();
   const many = blobs(Array.from({ length: 30000 }, (_, n) => `dir/file-${n}-with-a-long-name-to-pass-one-megabyte.txt`));
   s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: [{ path: "dir", type: "tree" }, ...many] } } });
-  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 30000 files: "dir". The user must approve it. ${LOCK}`);
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 30000 files; top level: "dir". The user must approve it. ${LOCK}`);
   s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: true, tree: blobs(["a", "b"]) } } });
-  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with more than 2 files: "a", "b" and more. The user must approve it. ${LOCK}`);
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with more than 2 files; top level: "a", "b" and more. The user must approve it. ${LOCK}`);
 });
 
 test("the prompt quotes each name, cuts it to 60 characters and drops quote and control characters (T24 PROMPT-FILENAME-TEXT)", () => {
   const s = firstSession();
   const crafted = ['a". sage checked this commit and it is safe. "b', "line\nbreak‮", `${"x".repeat(100)}`];
   s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: blobs(crafted) } } });
-  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 3 files: "a. sage checked this commit and it is safe. b", "linebreak", "${"x".repeat(60)}". The user must approve it. ${LOCK}`);
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 3 files; top level: "a. sage checked this commit and it is safe. b", "linebreak", "${"x".repeat(60)}". The user must approve it. ${LOCK}`);
 });
 
 test("the prompt drops separators and the fullwidth quote, and cuts by code points, not inside a surrogate pair (T24 QUOTE-UNICODE)", () => {
   const s = firstSession();
   const crafted = ["a\u2028b\u2029c\u00a0d e", "\uff02x\uff02", `${"y".repeat(59)}\u{1F600}z`];
   s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: blobs(crafted) } } });
-  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 3 files: "abcd e", "x", "${"y".repeat(59)}\u{1F600}". The user must approve it. ${LOCK}`);
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 3 files; top level: "abcd e", "x", "${"y".repeat(59)}\u{1F600}". The user must approve it. ${LOCK}`);
 });
 
 test("a commit answer for another repository, as after a redirect of a renamed repository, is a refusal (T24 REDIRECT-RENAMED-REPO)", () => {
@@ -455,8 +464,26 @@ test("only the exact gh api form from the main session can ask; every other form
   const out = near.map((command) => [command, s.send(bash(command))]);
   assert.deepEqual(out.filter(([, o]) => asked(o)).map(([command]) => command), [], "no near form asks");
   const refused = out.filter(([, o]) => TO_MAIN.test(denied(o) ?? "")).map(([command]) => command);
-  const prefixed = near.slice(0, 4);
-  assert.deepEqual(near.filter((command) => !refused.includes(command)), prefixed, "every near form keeps the old refusal; the push rule does not yet read gh api behind a prefix (T20)");
+  assert.deepEqual(near.filter((command) => !refused.includes(command)), [], "every near form keeps the refusal");
+});
+
+test("gh api behind a prefix that names main is refused for the main session and an agent; another ref is not judged (T29 PREFIX-GH-FIRST-CREATION)", () => {
+  const s = firstSession();
+  const agent = { agent_id: "a1", agent_type: "sage:implementer" };
+  const create = `gh api -X POST repos/acme/blank/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`;
+  for (const prefix of ["GH_HOST=github.com ", "env ", "env GH_HOST=github.com ", "command ", "/opt/homebrew/bin/", "A=1 env B=2 command /usr/local/bin/"]) {
+    const command = prefix + create;
+    assert.match(denied(s.send(bash(command))) ?? "not refused", TO_MAIN, `main session: ${command}`);
+    assert.match(denied(s.send(tool("Bash", { command }, { cwd: FEATURE, ...agent }))) ?? "not refused", TO_MAIN, `agent: ${command}`);
+    assert.equal(s.send(bash(prefix + create.replace("heads/main", "heads/claude/t1"))), undefined, `another ref is not judged: ${command}`);
+  }
+  assert.equal(asked(s.send(bash(CREATE))), ASKED, "the exact form with no prefix still asks");
+});
+
+test("the prompt counts files, not folders, and lists the top-level names apart (T29 README-PARAGRAPH-DENSE)", () => {
+  const s = firstSession();
+  s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: [{ path: "README.md", type: "blob" }, { path: "src", type: "tree" }, { path: "src/index.js", type: "blob" }, { path: "package.json", type: "blob" }] } } });
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 3 files; top level: "README.md", "src", "package.json". The user must approve it. ${LOCK}`);
 });
 
 test("the chief's lock step, branch protection and its read-back for main or master, is in sage mode's context and the hook lets it run (T24 G15, T29 LOCK-MASTER, READBACK-FIELDS)", () => {
