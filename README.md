@@ -1,113 +1,265 @@
-# sage
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+  <img alt="sage: your chief of staff for Claude Code. The chief of staff above its team: designer, PE, implementer, arena judge, code review, security, UX review and QA." src="docs/assets/hero-light.svg" width="100%">
+</picture>
 
-Principles, a writing standard and **sage mode** for coding agents. **Claude Code** gets all of it. **Codex** gets the principles, the writing standard and the principle hooks: the parts that are verified there.
+<p align="center">
+  <a href="https://github.com/erickb336/sage/actions/workflows/check.yml"><img alt="checks" src="https://github.com/erickb336/sage/actions/workflows/check.yml/badge.svg"></a>
+  <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-E5600B">
+  <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-21160F">
+</p>
 
-- **Principles.** 25 short working principles, kept up to date with [pstack](https://github.com/cursor/plugins/tree/main/pstack) by a weekly sync. 16 are my own versions; the other 9 are pstack's text as it is.
-- **Hooks** give a principle to the agent at the moment it applies, and stop it once when it changed code and ran no check.
-- **Sage mode.** Say "sage mode" in any Claude Code session, and the session becomes your chief of staff. It runs a team of specialist agents, asks you only the product questions, and shows you results, not code. There is no app: it works on your desktop, in a terminal, or from your phone through Remote Control.
+**sage is a Claude Code plugin that turns any session into your chief of staff.** Say "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
 
-> **Sage mode is early.** One dry run is done ([the report](docs/runs/dry-run-1.html)). A pilot on a real project comes next. The design is in [docs/design/sage-mode.html](docs/design/sage-mode.html).
+It also gives every session, in Claude Code and in Codex, 25 short working principles at the moment they apply.
 
-## Install
+> **Built on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by [Lauren Tan (poteto)](https://github.com/poteto).** sage follows pstack's principles by itself, every week, and sage mode takes its ideas from poteto mode. The name is a nod to Sage Mode in *Naruto*. See [Credits](#credits).
 
-**Claude Code:**
+**Contents:** [Why "sage"?](#why-sage) · [Quick start](#quick-start) · [Learn sage in 5 minutes](#learn-sage-in-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say](#what-to-say) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
 
-1. Add the plugin:
-   ```
-   /plugin marketplace add erickb336/sage
-   /plugin install sage@sage
-   ```
-2. Clone this repository, for example to `~/sage`. Then add this line to `~/.claude/CLAUDE.md`, with the path to your clone, so the preferences and the writing standard apply to every session:
-   ```
-   @~/sage/instructions/core.md
-   ```
-3. Optional: to follow, steer and start sessions from the Claude app on your phone, run `/sage:remote-control`. See [Remote Control](#remote-control).
+## Why "sage"?
 
-**Codex:**
+In *Naruto*, a sage stays still to gather natural energy. In Sage Mode, the sage sees and senses more than in normal combat.
 
-1. Add the plugin:
-   ```
-   codex plugin marketplace add erickb336/sage
-   codex plugin add sage@sage
-   ```
-2. Link the always-on file from your clone:
-   ```
-   ln -s ~/sage/instructions/core.md ~/.codex/AGENTS.md
-   ```
-3. Trust the hooks: in Codex, open `/hooks` and trust the sage hooks. Codex does not run a plugin's hooks until you trust them, and again after each update that changes them.
+sage mode works the same way:
 
-## Sage mode (Claude Code)
+- **The chief of staff stays still.** It never edits a file. It frames the work, writes the briefs and keeps the record.
+- **It gathers the team's energy.** Specialists do the work in parallel, each in its own git worktree.
+- **It sees the whole.** It groups related work, puts tasks that share code in order, and turns a mistake that repeats into a rule.
+
+The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
+
+## Quick start
+
+**1. Install** (in a Claude Code terminal):
 
 ```
-You ──request──▶ Chief of staff ──brief──▶ Design ─▶ Build ─▶ Review ─▶ QA ─▶ Pull request
-     ◀─questions, results──┘    ◀──report + evidence───────────────────────┘      │
-                     │                                            autopilot: merge after 2 clean cycles
-                     └── a lesson comes back twice ──▶ improve the kitchen (test, lint, check, skill)
+/plugin marketplace add erickb336/sage
+/plugin install sage@sage
 ```
+
+In the desktop app, run `claude plugin marketplace add erickb336/sage` and then `claude plugin install sage@sage` in a terminal. The `/plugin` dialog opens only in a terminal.
+
+**2. Start a new session** in a project folder, or in a folder of projects such as `~/workspace`.
+
+**3. Say what you want:**
+
+```
+sage mode. TrackMe: add CSV export of trips, and fix this week's crash.
+```
+
+That's all. The chief of staff asks you at most one question per task, then comes back with results and pull requests. From your phone, it works the same through [Remote Control](#remote-control).
+
+## Learn sage in 5 minutes
+
+This is one session, step by step. It is an illustration with sample data.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/walkthrough-dark.svg">
+  <img alt="An illustrative sage mode session with five numbered notes." src="docs/assets/walkthrough-light.svg" width="100%">
+</picture>
+
+1. **Switch it on.** "sage mode" and your request, in one message. sage mode stays on until you say "sage mode off".
+2. **The chief frames each task.** It gives each task a size (tiny, small, large or investigate) and risk flags, such as `data` for personal data or `input` for outside input. The size and the flags give the task its [route](#routes): the steps it must go through.
+3. **One product question, at most.** A product question is one whose answer you would notice: what you see, which data is kept, who can do what. Each comes with a recommendation and a default. Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
+4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds.
+5. **You get results.** You get evidence (the commands that ran, screenshots), what was not checked, and a pull request. You merge it, or autopilot merges it.
+
+**Try it yourself.** Pick one small, real bug in a project that has tests and a GitHub remote. Start a session from your phone, say "sage mode" and describe the bug. Then look at the result.
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/loop-dark.svg">
+  <img alt="How sage works: you, the chief of staff, the team (design, build, review, QA), the pull request, the store, and the kitchen." src="docs/assets/loop-light.svg" width="100%">
+</picture>
+
+There are two loops:
+
+- **The inner loop** turns a request into verified work. The chief briefs the team. The team designs, builds, reviews and tests. Findings go back to the build. A clean result becomes a pull request.
+- **The outer loop** improves the kitchen. When the same kind of problem comes back twice, the chief proposes a change that stops it for good: a test, a lint, a check, a principle, or a standing order.
+
+The state lives in plain files, in `~/.claude/sage/<project>-<hash>/`: the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
+
+### The team
+
+| Agent | What it does | Changes files? |
+| --- | --- | --- |
+| **Chief of staff** | Frames the work, picks routes, writes briefs, records results, asks you the questions | No |
+| **Designer** | A clickable prototype with sample data, and every state of each screen | Yes, in its own worktree |
+| **PE** (principal engineer) | Checks a plan or a design before the build: feasibility, data, risks, cost | No |
+| **Implementer** | Builds one task, runs the checks, opens the pull request, repairs findings | Yes, in its own worktree |
+| **Code reviewer** | Correctness, data safety, regressions, test evidence | No |
+| **Security reviewer** | Input at the boundaries, injection, secrets, access | No |
+| **UX reviewer** | The flow, the states, the copy and accessibility | No |
+| **QA** | Runs the checks and the real app, and tries to break it | No |
+| **Arena judge** | Scores an arena's candidates and grafts the best parts into one | Yes, the final version |
+
+Only one agent writes on a branch at a time. Reviewers start fresh, so they don't share the builder's blind spots.
+
+### Routes
+
+Each task gets the least route for its size. The chief can add steps, never remove these.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/routes-dark.svg">
+  <img alt="Routes by size: tiny, small, large and investigate, each with its steps." src="docs/assets/routes-light.svg" width="100%">
+</picture>
+
+### A task's life
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lifecycle-dark.svg">
+  <img alt="A task's states, from framed to merged, with the repair loop and the held state." src="docs/assets/lifecycle-light.svg" width="100%">
+</picture>
+
+A **cycle** is one full set of fresh reviews and QA on one commit. A task is **verified** after 1 clean cycle. With autopilot on, it **merges** after 2 clean cycles in a row on the same commit.
+
+### Rules held in code
+
+A rule written only in a prompt fades over a long session. So sage keeps its important rules in code: a hook that checks each action, and a state tool that refuses a wrong move.
+
+| Rule | Why |
+| --- | --- |
+| The chief of staff never edits a file. | It keeps the big picture; the team does the details. |
+| Every brief has all its fields; every report has its evidence. | A vague brief fails quietly. A claim without evidence is not a result. |
+| At most 3 sage agents run at once. | Cost and focus. |
+| One writer per branch. Nobody force-pushes or pushes to main. | Parallel writers conflict. Work reaches main only through a pull request. |
+| Every finding is triaged: fix, dismiss with a reason, or ask you. | No finding is dropped. |
+| A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
+| A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
+
+### The arena
+
+When a design has no clear answer, the chief can run an **arena**. You can also ask for one: "arena" or "arena 4".
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/arena-dark.svg">
+  <img alt="The arena: one brief and a hidden rubric, three candidates on a mix of Claude models, an arena judge, one final version." src="docs/assets/arena-light.svg" width="100%">
+</picture>
+
+1. The chief writes a rubric: 3 to 6 criteria that a judge can grade. The candidates don't see it.
+2. N candidates (3 by default) get the same brief, each with a different angle, on a mix of Claude models.
+3. The arena judge scores each one, picks a base, and grafts the best parts of the others into it.
+4. The final version goes through reviews and QA like any build. The candidates never merge.
+
+## Concepts
+
+| Word | Meaning |
+| --- | --- |
+| **Sage mode** | The mode in which a session is your chief of staff. "sage mode" turns it on, "sage mode off" turns it off. |
+| **Chief of staff** | The session's coordinator. It plans, briefs, records and asks. It never edits files. |
+| **Route** | The steps a task goes through, set by its size and risk flags. |
+| **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review. |
+| **Brief** | What an agent gets: goal, scope, context, decisions, acceptance, how to verify, budget, what is forbidden, the report shape, and the standing orders. |
+| **Report** | What an agent returns: status, result, evidence, findings, questions, what was not verified, and the branch. |
+| **Finding** | A problem that a review or QA found, with a severity: high, medium or low. |
+| **Cycle** | One full set of fresh reviews and QA on one commit. |
+| **Verdict** | One review's or QA's result on one commit, kept in the ledger. |
+| **Ledger** | The record of all verdicts, by commit. The merge gate reads it. |
+| **Gate** | A question parked for you, with options, a recommendation and a default. |
+| **Standing orders** | Short rules for a project that every brief carries word for word. |
+| **Arena** | N candidates for one design, scored and combined by a judge. |
+| **Autopilot** | Verified pull requests merge by themselves after 2 clean cycles. Off by default. |
+| **The kitchen** | Everything that makes the agents good: principles, checks, tests, skills. A lesson that comes back twice improves it. |
+
+## What to say
 
 | Say | What happens |
 | --- | --- |
-| `sage mode` | The session becomes your chief of staff. |
-| `sage mode off` | It is a normal session again. |
-| `autopilot on` / `autopilot off` | A verified pull request merges by itself after 2 clean cycles, or waits for you. |
-| `arena` or `arena 4` | N agents on a mix of Claude models design the next thing; a judge scores them and grafts the best parts into one. |
+| `sage mode` + a request | The session becomes your chief of staff and starts the work. |
+| Your answer to a question, for example `no` | The chief applies your decision and goes on. |
+| `status` | Where each task is: running, waiting for you, verified. |
+| `arena` or `arena 4` | The next design goes to N candidates and a judge. |
+| `autopilot on` / `autopilot off` | Verified pull requests merge by themselves, or wait for you. |
+| `sage mode off` | A normal session again. |
 
-- **The team:** a chief of staff that never edits files, a PE, a designer, implementers, code, security and UX reviewers, QA and an arena judge (`plugins/sage/agents/`).
-- **Routes sized to the task:** a tiny fix gets a build and its checks; a large feature gets a design, a PE check, your approval, the build, three reviews and QA.
-- **Rules in code, not only in prompts.** The sage hook and the state tool hold them:
-  - The chief never edits files, and every brief and report has all its fields.
-  - At most 3 sage agents run at once.
-  - Nobody force-pushes or pushes to main.
-  - Every finding is triaged. A repair round needs a medium or high finding, and repairs are bounded.
-  - A merge needs the checked head SHA, with its clean cycles in the ledger.
-- **State in files:** `~/.claude/sage/<project>-<hash>/` holds the tasks, runs, findings, the verdict ledger, your questions and the decision trail. Any session can pick up the work.
-
-To make every session in a folder start as the chief of staff, put this in the folder's `.claude/settings.json`:
+To make every session in a folder start in sage mode, put this in the folder's `.claude/settings.json`:
 
 ```json
 { "agent": "sage:chief-of-staff" }
 ```
 
-## Principles and hooks
+## Principles
 
-A skill works only when the agent decides to load it, and agents seldom do. So the plugin also has hooks. A hook runs at a fixed moment, and the agent does not choose it. The same principle hook works in Claude Code and in Codex. It adds each principle once per session.
+A principle is a short rule for one kind of moment, for example "test behaviour, not implementation" when you change a test. There are 25. My own versions win over pstack's where both exist.
 
-| Moment | Principles |
+Agents seldom load a skill by themselves, so a **hook** gives the principle at the moment it applies, once per session. It works in Claude Code and in Codex.
+
+| The moment | The principles it gets |
 | --- | --- |
 | The request asks for a design, a plan or a new feature | exhaust-the-design-space, experience-first, foundational-thinking |
 | The request asks for a refactor or a cleanup | subtract-before-you-add, laziness-protocol, migrate-callers-then-delete-legacy-apis |
 | The agent is about to change a test file | test-behavior-not-implementation |
-| The agent is about to write a document (`.md`, `.txt`) | contextualize-and-write-for-the-reader |
+| The agent is about to write a document | contextualize-and-write-for-the-reader |
 | The agent is about to commit | sequence-verifiable-units |
-| A check fails (a test, a build, a type check or a lint) | fix-root-causes |
+| A check fails | fix-root-causes |
 | Two changes in a row do not make the same check pass | attack-the-premise |
 
-The hook also has **one gate**. When the agent tries to finish, the code changed in this turn, and no check ran after the change, the hook stops the agent once and gives it prove-it-works. The agent must run a check or say what it did not verify.
+The hook also has **one gate**. When the agent tries to finish, the code changed, and no check ran after the change, it stops the agent once. The agent must run a check or say what it did not verify.
 
-The other principles stay on the skill list, and sage's agents load the ones their role needs. The writing standard is always on through `core.md`.
+<details>
+<summary><strong>All 25 principles</strong></summary>
 
-**Limits.** The hook finds a request by its words, so it can miss one. The gate works only in a git repository. Codex does not give hooks the exit code, so in Codex the hook finds a failed check from the failure lines that common test tools print. To turn the principle hooks off for a session, set `AGENT_KIT_HOOKS=off` (the name stays from the kit's first name, agent-kit; Orchestrator uses it for its workers).
+| Principle | Apply when | Text |
+| --- | --- | --- |
+| attack-the-premise | two or more fixes that share one premise failed the same check | mine |
+| boundary-discipline | writing or reviewing validation, error handling or adapters | mine |
+| build-the-lever | any non-trivial work: build the tool that does it or proves it | pstack |
+| contextualize-and-write-for-the-reader | writing anything that someone reads later | mine |
+| encode-lessons-in-structure | you write the same instruction a second time | mine |
+| exhaust-the-design-space | a new interaction or architecture has no precedent | mine |
+| experience-first | a product, UX or scope trade-off comes up | mine |
+| explain-the-number | before you trust or report a number you measured | pstack |
+| fix-root-causes | debugging a failure or repairing a finding | mine |
+| foundational-thinking | before writing logic: types, data, order of work | mine |
+| guard-the-context-window | the context fills up with large outputs or many reads | pstack |
+| laziness-protocol | refactoring, judging a diff's size, or adding a layer | mine |
+| make-operations-idempotent | commands and loops that must survive crashes and retries | pstack |
+| migrate-callers-then-delete-legacy-apis | a new internal API replaces an old one | mine |
+| minimize-reader-load | code is hard to follow | mine |
+| model-the-domain | stateful logic, or the same shape assumed in many files | pstack |
+| never-block-on-the-human | tempted to ask "should I?" about reversible work | mine |
+| outcome-oriented-execution | a planned rewrite or migration in phases | pstack |
+| prove-it-works | before declaring a task done | mine |
+| redesign-from-first-principles | a new requirement meets an existing design | pstack |
+| separate-before-serializing-shared-state | several actors may write the same file, branch or key | pstack |
+| sequence-verifiable-units | multi-step work, and the order of commits | mine |
+| subtract-before-you-add | ordering an addition, a refactor or a rewrite | mine |
+| test-behavior-not-implementation | writing, changing or keeping a test | mine |
+| type-system-discipline | designing types or code in a typed language | pstack |
+
+"mine" is my rewrite of pstack's principle, or my own (contextualize-and-write-for-the-reader). "pstack" is pstack's text as it is.
+
+</details>
 
 ## Following pstack
 
-pstack changes often, so you don't follow it by hand:
+pstack changes often. sage follows it so that you don't have to.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pstack-dark.svg">
+  <img alt="Following pstack: a weekly sync into upstream/pstack, your versions in principles/, one build, the sage plugin." src="docs/assets/pstack-light.svg" width="100%">
+</picture>
 
 1. `upstream/pstack/` holds pstack's principles and its MIT licence, at the commit in `upstream/pstack.json`.
-2. The build takes each pstack principle as it is, unless `principles/` has an override with the same id. An override records the fingerprint of the pstack text it was reviewed against (`upstream:`).
-3. Every Monday, a workflow runs `npm run sync`, rebuilds, and runs the checks and tests. The update merges by itself, unless pstack changed a principle that you override. Then its pull request waits for you, with the change listed.
+2. The build takes each pstack principle as it is, unless `principles/` has my version with the same name.
+3. Every Monday, a workflow brings pstack up to date, rebuilds, and runs the checks and tests. The update merges by itself, unless pstack changed a principle that I rewrote. Then its pull request waits for me, with the change listed.
 
-Only principles come in for now. pstack's modes (poteto mode, orchestrate, autopilot) stay out, because sage mode is the orchestration layer here. Each other pstack skill comes in only when it works in Claude Code and has a test.
+Only principles come in for now. pstack's own modes (poteto mode, orchestrate, autopilot) stay out, because sage mode is the orchestration layer here. Each other pstack skill comes in only when it works in Claude Code and has a test.
 
-## Remote Control (Claude Code)
+## Remote Control
+
+With Remote Control, you can follow, steer and start Claude Code sessions from the Claude app on your phone. The `remote-control` skill sets it up.
 
 | Command | What it does |
 | --- | --- |
 | `/sage:remote-control` | Turns Remote Control on for every new session. |
 | `/sage:remote-control off` / `status` | Turns it off, or shows the setting. |
-| `/sage:remote-control server ~/workspace` | Runs a Remote Control server in `~/workspace`, now and at each login (macOS). From the phone, you can then start sessions that open in that folder. |
+| `/sage:remote-control server ~/workspace` | Runs a Remote Control server in `~/workspace`, now and at each login (macOS). From the phone, you can then start sessions in that folder. |
 | `/sage:remote-control server off` / `status` | Stops the server and removes its login item, or shows whether the phone can see it ("Ready"). |
 
-The skill cannot change the desktop app. There, turn on **Settings → Claude Code → Connect new sessions to Remote Control** once. Before the first `server`, do three things once, in the macOS Terminal app:
+In the desktop app, also turn on **Settings → Claude Code → Connect new sessions to Remote Control**. Before the first `server`, do three things once, in the macOS Terminal app:
 
 1. Run `claude auth login`. A `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` does not work for Remote Control. If your `~/.zshrc` sets it, run step 3 as `env -u CLAUDE_CODE_OAUTH_TOKEN claude remote-control`.
 2. Run `claude` in the server's folder, and answer Yes to the trust question.
@@ -115,29 +267,46 @@ The skill cannot change the desktop app. There, turn on **Settings → Claude Co
 
 While the server runs, your claude.ai account can start sessions on your computer, and they can reach everything in the folder.
 
-## What is where
+## FAQ
+
+**What does it cost?** It uses your Claude plan's usage limits, or API credits. Every agent is a separate run. In [the first dry run](docs/runs/dry-run-1.html), a small bug fix with a security risk took 15 agent runs, about $2.60 at API prices, before the fixes that came from that run. I don't have numbers from real projects yet.
+
+**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
+
+**Which projects fit?** A project with tests and a GitHub remote. Without tests, QA can only check by running the app. Without a remote, the work stops at a verified branch.
+
+**Does it work in Codex?** Codex gets the principles, the writing standard and the principle hooks. Sage mode is for Claude Code only, because it needs Claude Code's subagents and hooks.
+
+**How mature is it?** Early. It has done one dry run on a demo project ([the report](docs/runs/dry-run-1.html)). A pilot on a real project comes next. The full design is in [docs/design/sage-mode.html](docs/design/sage-mode.html).
+
+## Under the hood
 
 | Path | What it is |
 | --- | --- |
-| `principles/` | Your principles: your own, and your overrides of pstack's. |
+| `plugins/sage/agents/` | Sage mode's team. |
+| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, the state tool `sage`, and `report`. |
+| `plugins/sage/hooks/` | `hooks.json`: the principle hooks, for Claude Code and Codex. `claude.json`: the sage mode hook, for Claude Code only. |
+| `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
-| `preferences/` | How I work with agents. |
-| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, and sage mode's `sage` (the state tool) and `report`. |
-| `plugins/sage/agents/` | Sage mode's team (Claude Code only). |
-| `plugins/sage/hooks/` | `hooks.json`: the principle hooks, for both tools. `claude.json`: the sage mode hook, for Claude Code only. |
-| `instructions/core.md` | The always-on file: the preferences and the writing standard (generated). |
-| `docs/` | The design of sage mode and the dry run reports. |
+| `preferences/`, `instructions/core.md` | How I work with agents, and the always-on file made from it. |
+| `docs/` | The design, the dry run reports, and the README's graphics. |
+| `scripts/graphics.mjs` | Draws the graphics in this README, in light and dark. |
 
-## Change it
+**Change it:**
 
-1. Edit a source in `principles/`, `writing/` or `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<id>.md` with `source: pstack principle-<id>` and its `upstream:` fingerprint.
-2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests.
-3. For Codex to pick up the change, increase `version` in `plugins/sage/.codex-plugin/plugin.json`.
+1. Edit a source: `principles/`, `writing/`, `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
+2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`.
+3. For Codex to pick up a change, increase `version` in `plugins/sage/.codex-plugin/plugin.json`.
 
-## Thanks
+**Codex install:** `codex plugin marketplace add erickb336/sage`, then `codex plugin add sage@sage`. Link the always-on file with `ln -s ~/sage/instructions/core.md ~/.codex/AGENTS.md` (from a clone of this repository), and trust the sage hooks in Codex's `/hooks`.
 
-Thank you to [Lauren Tan (poteto)](https://github.com/poteto) for [pstack](https://github.com/cursor/plugins/tree/main/pstack) and poteto mode. Its principles inspired this kit, and sage mode takes many of its ideas: the coordinator that never writes code, the brief, the ledger by head SHA, the arena, and the trust ladder. Sage mode also takes the lessons of my [Orchestrator](https://github.com/erickb336/orchestrator).
+## Credits
+
+- **[pstack](https://github.com/cursor/plugins/tree/main/pstack) and poteto mode, by [Lauren Tan (poteto)](https://github.com/poteto).** sage's principles come from pstack, and sage mode takes its main ideas from poteto mode: the coordinator that never writes code, the brief, the ledger of verdicts by commit, the arena, and the trust ladder. Thank you, Lauren. I adopted pstack the day I found it.
+- **Sage Mode in *Naruto*, by Masashi Kishimoto**, gave the name and the look: the orange markings and the toad-like eye. The graphics are original drawings. sage is a fan's nod and is not affiliated with *Naruto* or its owners.
+- **My [Orchestrator](https://github.com/erickb336/orchestrator)** taught the lessons that sage keeps in code.
+- **Anthropic's and Cognition's writing on multi-agent systems** shaped the rules: one writer at a time, fresh reviewers, and evidence before a claim.
 
 ## Licence
 

@@ -5,6 +5,7 @@ import { ROOT, outputs, parseSource } from "./build.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
+import { GRAPHICS, THEMES } from "./graphics.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -89,6 +90,12 @@ for (const d of readdirSync(skillsDir)) {
 for (const o of overrides(ROOT)) {
   const now = existsSync(join(ROOT, "upstream/pstack", o.upstream)) ? fingerprint(readFileSync(join(ROOT, "upstream/pstack", o.upstream))) : undefined;
   if (now && now !== o.reviewed) console.warn(`! ${o.file}: pstack changed ${o.upstream} since this override's review (now ${now})`);
+}
+
+// The README's graphics match what scripts/graphics.mjs draws, so nobody edits an SVG by hand.
+for (const [name, draw] of Object.entries(GRAPHICS)) for (const [theme, t] of Object.entries(THEMES)) {
+  const f = join(ROOT, "docs/assets", `${name}-${theme}.svg`);
+  if (!existsSync(f) || readFileSync(f, "utf8") !== draw(t)) problems.push(`docs/assets/${name}-${theme}.svg: out of date; run npm run graphics`);
 }
 
 for (const [rel, text] of outputs()) {

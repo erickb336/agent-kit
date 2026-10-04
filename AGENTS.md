@@ -18,6 +18,7 @@
   - A rule that matters goes into code (the sage hook or the state tool), with a test. An instruction in a prompt alone is not enough.
   - The brief fields live in the sage hook (`BRIEF_FIELDS`) and the report fields there too (`REPORT_FIELDS`). The chief's brief template and the `report` skill must list the same fields; `npm run check` checks this.
   - The routes, states and verdict kinds live in the state tool. The design page and the chief's instructions describe them; change all three together.
+- **The README's graphics** in `docs/assets/` are drawn by `scripts/graphics.mjs`, in light and dark. Change the script, then run `npm run graphics`; never edit an SVG by hand. `npm run check` checks that they match.
 - **Codex** gets only what is verified there. When in doubt, keep a part Claude-only.
 - **`instructions/core.md`** stays under 8 KiB, because Codex shares a 32 KiB budget with each project's AGENTS.md.
 - **Write** at 80% of Simplified Technical English (`writing/ste-80.md`).

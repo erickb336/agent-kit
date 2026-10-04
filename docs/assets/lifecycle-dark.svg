@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 330" width="1180" height="330" role="img" aria-label="A task's life: framed, briefed, building, reviewing, verifying, verified, merged. Findings or a QA failure send it to repairing, at most 3 rounds. A product question holds it. Verified needs one clean cycle; autopilot merges after two.">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#BCAA98"/></marker>
+<marker id="arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#FF7A1F"/></marker>
+<marker id="arrow-bad" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#F08A78"/></marker>
+</defs>
+<rect width="1180" height="330" fill="#100B08"/>
+<rect x="40" y="110" width="130" height="50" rx="25" fill="#1A130F" stroke="#3A2B21" stroke-width="1.5"/>
+<text x="105" y="141" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="105" dy="0">framed</tspan></text>
+<path d="M174 135 L 186 135" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="190" y="110" width="130" height="50" rx="25" fill="#1A130F" stroke="#3A2B21" stroke-width="1.5"/>
+<text x="255" y="141" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="255" dy="0">briefed</tspan></text>
+<path d="M324 135 L 336 135" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="340" y="110" width="130" height="50" rx="25" fill="#1A130F" stroke="#3A2B21" stroke-width="1.5"/>
+<text x="405" y="141" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="405" dy="0">building</tspan></text>
+<path d="M474 135 L 496 135" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="500" y="110" width="130" height="50" rx="25" fill="#1A130F" stroke="#3A2B21" stroke-width="1.5"/>
+<text x="565" y="141" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="565" dy="0">reviewing</tspan></text>
+<path d="M634 135 L 666 135" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="670" y="110" width="130" height="50" rx="25" fill="#1A130F" stroke="#3A2B21" stroke-width="1.5"/>
+<text x="735" y="141" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="735" dy="0">verifying</tspan></text>
+<path d="M804 135 L 836 135" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="840" y="110" width="130" height="50" rx="25" fill="#2A190D" stroke="#FF7A1F" stroke-width="2"/>
+<text x="905" y="141" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="905" dy="0">verified</tspan></text>
+<path d="M974 135 L 1006 135" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<rect x="1010" y="110" width="130" height="50" rx="25" fill="#2A190D" stroke="#FF7A1F" stroke-width="2"/>
+<text x="1075" y="141" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="1075" dy="0">merged</tspan></text>
+<rect x="500" y="236" width="130" height="50" rx="25" fill="#1A130F" stroke="#F08A78" stroke-width="1.5"/>
+<text x="565" y="267" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="565" dy="0">repairing</tspan></text>
+<path d="M735 162 C 735 230, 690 262, 634 262" fill="none" stroke="#F08A78" stroke-width="2" marker-end="url(#arrow-bad)" stroke-linecap="round"/>
+<text x="742" y="218" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#F08A78" text-anchor="start"><tspan x="742" dy="0">findings to fix,</tspan><tspan x="742" dy="16.25">or QA fail</tspan></text>
+<path d="M528 236 L 552 164" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<text x="436" y="300" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#BCAA98" text-anchor="start"><tspan x="436" dy="0">next round, at most 3</tspan></text>
+<rect x="340" y="236" width="130" height="50" rx="25" fill="#1A130F" stroke="#3A2B21" stroke-width="1.5" stroke-dasharray="5 5"/>
+<text x="405" y="267" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="650" fill="#F6EEE6" text-anchor="middle"><tspan x="405" dy="0">held</tspan></text>
+<path d="M380 162 L 380 232" fill="none" stroke="#BCAA98" stroke-width="2" marker-end="url(#arrow)" stroke-linecap="round"/>
+<text x="250" y="214" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#BCAA98" text-anchor="start"><tspan x="250" dy="0">a product</tspan><tspan x="250" dy="16.25">question</tspan></text>
+<text x="40" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#BCAA98" text-anchor="start"><tspan x="40" dy="0">Each move is checked by the state tool. A new commit voids the verdicts, so the task is reviewed again.</tspan></text>
+<text x="840" y="214" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#FF7A1F" text-anchor="start"><tspan x="840" dy="0">needs 1 clean cycle;</tspan><tspan x="840" dy="16.900000000000002">autopilot merges</tspan><tspan x="840" dy="16.900000000000002">after 2</tspan></text>
+</svg>
