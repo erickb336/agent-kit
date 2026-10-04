@@ -134,7 +134,7 @@ test("repair rounds are bounded, and a round that fixes nothing re-plans the tas
   assert.match(s.no("round", "T1"), /only low findings are marked fix \(F-T1-1\)\. A repair round needs a medium or high finding/);
   s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "crash");
   s.ok("finding", "triage", "T1", "F-T1-2", "fix");
-  assert.equal(s.ok("round", "T1"), "T1 repairing · round 1 of 3 · fix F-T1-1,F-T1-2", "the low finding joins the round");
+  assert.equal(s.ok("round", "T1"), "T1 repairing · round 1 of 3 · fix F-T1-1,F-T1-2 · re-run qa on the repair's diff", "the low finding joins the round");
   s.ok("task", "T1", "set", "state=reviewing");
   assert.equal(s.ok("round", "T1"), "T1 replan: round 1 did not fix F-T1-1,F-T1-2. Attack the premise, then brief again.");
 
@@ -165,18 +165,17 @@ test("one writer per branch", () => {
   assert.match(s.ok("run", "add", "T1", "--role", "implementer", "--branch", "claude/t1"), /R3 running/);
 });
 
-test("the merge check needs no open findings, checks-pass, and the route's verdicts in 2 clean cycles on the SHA", () => {
+test("the merge check needs no open findings, checks-pass, and the route's verdicts in the task's clean cycles: 1 for a small task, 2 for a large one or one with a risk flag", () => {
   const s = store();
-  s.ok("task", "add", "--title", "t", "--size", "small");
+  s.ok("task", "add", "--title", "t", "--size", "large");
   const verdict = (kind, cycle, sha = SHA) => s.ok("verdict", "T1", "--sha", sha, "--kind", kind, "--cycle", String(cycle), "--pr", "41");
   assert.match(s.no("merge-check", "--sha", SHA), /no verdicts recorded/);
   verdict("checks-pass", 1);
   verdict("review-clean", 1);
-  assert.match(s.no("merge-check", "--sha", SHA), /T1: 0 of 2 clean cycles on this SHA; never recorded: qa-pass/);
-  verdict("qa-pass", 1);
-  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles/);
-  verdict("review-clean", 2);
-  verdict("qa-pass", 2);
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 0 of 2 clean cycles on this SHA; never recorded: security-clean, ux-clean, qa-pass/);
+  for (const kind of ["security-clean", "ux-clean", "qa-pass"]) verdict(kind, 1);
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles/, "a large task needs 2");
+  for (const kind of ["review-clean", "security-clean", "ux-clean", "qa-pass"]) verdict(kind, 2);
   assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 2 clean cycles on this SHA");
   assert.match(s.no("merge-check", "--sha", "ffffffffffffffffffffffffffffffffffffffff"), /no verdicts recorded/, "another SHA has none of these verdicts");
 
@@ -185,6 +184,62 @@ test("the merge check needs no open findings, checks-pass, and the route's verdi
   verdict("findings", 3);
   s.ok("finding", "triage", "T1", "F-T1-1", "dismiss", "--reason", "a test token");
   assert.match(s.no("merge-check", "--sha", SHA), /cycle 3 found problems on this SHA \(findings\)/);
+
+  // The clean cycles by size: tiny and small 1, large 2, and 2 for any task with a risk flag.
+  for (const [args, want] of [
+    [["--size", "small"], 1],
+    [["--size", "tiny"], 1],
+    [["--size", "large"], 2],
+    [["--size", "small", "--risk", "input"], 2],
+    [["--size", "tiny", "--risk", "data"], 2],
+  ]) {
+    const b = store();
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    assert.match(b.ok("task", "add", "--title", "t", ...args), /^T1 framed/);
+    const route = rows(b.dir, "tasks")[0].route.split(",");
+    const kinds = { build: "checks-pass", "code-review": "review-clean", "security-review": "security-clean", "ux-review": "ux-clean", qa: "qa-pass" };
+    for (const block of route.filter((x) => kinds[x])) b.ok("verdict", "T1", "--sha", sha, "--kind", kinds[block], "--cycle", "1");
+    const after1 = b.run("merge-check", "--sha", sha);
+    if (want === 1) assert.equal(after1.stdout.trim(), "T1 may merge: 1 clean cycle on this SHA", `${args.join(" ")} merges after 1 clean cycle`);
+    else assert.match(after1.stderr, /T1: 1 of 2 clean cycles on this SHA/, `${args.join(" ")} needs 2 clean cycles`);
+  }
+  const c = store();
+  c.ok("config", "cycles.small=2", "cycles.risk=3");
+  c.ok("task", "add", "--title", "t", "--size", "small", "--risk", "auth");
+  for (const kind of ["checks-pass", "review-clean", "security-clean", "qa-pass"]) c.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.match(c.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles/, "the config sets each count; a risk flag takes the larger one");
+});
+
+test("round names the roles to re-run on the repair's diff: the sources of the findings it fixes", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  toReviewing(s, "T1");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", "the empty search crashes");
+  s.ok("finding", "add", "T1", "--source", "code-reviewer", "--severity", "low", "--summary", "a typo in the error");
+  s.ok("finding", "add", "T1", "--source", "code-reviewer", "--severity", "medium", "--summary", "the date is off by one");
+  for (const k of ["F-T1-1", "F-T1-2"]) s.ok("finding", "triage", "T1", k, "fix");
+  s.ok("finding", "triage", "T1", "F-T1-3", "ask");
+  assert.equal(s.ok("round", "T1"), "T1 repairing · round 1 of 3 · fix F-T1-1,F-T1-2 · re-run code-reviewer,qa on the repair's diff");
+});
+
+test("finding move: a medium or low finding goes to a follow-up task, which holds it, and no longer blocks the merge; a high one cannot move", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "Fix the crash", "--size", "small");
+  toReviewing(s, "T1");
+  s.ok("finding", "add", "T1", "--source", "code-reviewer", "--severity", "medium", "--summary", "the export skips the last row");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "the save crashes");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.match(s.no("merge-check", "--sha", SHA), /T1 has open findings: F-T1-1, F-T1-2/);
+  assert.equal(s.no("finding", "move", "T1", "F-T1-2", "--to", "Fix the save"), "sage: F-T1-2 is high, so it blocks T1 until it is fixed: a high finding never moves to a follow-up task.");
+  assert.match(s.no("finding", "move", "T1", "F-T1-1"), /missing --to/);
+  assert.equal(s.ok("finding", "move", "T1", "F-T1-1", "--to", "Export every row"), "F-T1-1 moved to T2 as F-T2-1 · T2 framed · small · route build,code-review,qa");
+  assert.deepEqual(rows(s.dir, "findings").map((f) => `${f.task} ${f.key} ${f.severity} ${f.status} ${f.triage}|${f.summary}`), ["T2 F-T2-1 medium open |the export skips the last row", "T1 F-T1-2 high open |the save crashes"]);
+  assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /\tT1\tF-T1-1 moved to T2 as F-T2-1: the export skips the last row\tthe follow-up task: Export every row\n$/);
+  assert.match(s.no("finding", "move", "T1", "F-T1-1", "--to", "x"), /no finding F-T1-1 on T1/);
+  s.ok("finding", "triage", "T1", "F-T1-2", "dismiss", "--reason", "a test token");
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "the moved finding no longer blocks T1");
+  assert.match(s.no("finding", "move", "T1", "F-T1-2", "--to", "x"), /F-T1-2 is dismissed: only an open finding moves/);
+  assert.equal(s.ok("finding", "move", "T2", "F-T2-1", "--to", "Export later", "--size", "tiny"), "F-T2-1 moved to T3 as F-T3-1 · T3 framed · tiny · route build", "a moved finding can move again, with a size");
 });
 
 test("a tiny task needs only its checks once", () => {
@@ -196,11 +251,11 @@ test("a tiny task needs only its checks once", () => {
 
 test("config, gates, standing orders and status", () => {
   const s = store();
-  assert.equal(s.ok("config"), "max_agents=3 autopilot_cycles=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
-  assert.equal(s.ok("config", "max_agents=5", "arena_models=opus,opus,sonnet"), "max_agents=5 autopilot_cycles=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config", "max_agents=5", "arena_models=opus,opus,sonnet"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=12");
   assert.match(s.no("config", "arena_models=gpt-5"), /arena_models as a list of opus, sonnet, haiku, inherit/);
-  assert.match(s.no("config", "colour=5"), /config takes max_agents, autopilot_cycles, max_rounds, arena and cap_total as key=number, cap\.<project>=number/);
-  assert.equal(s.ok("config", "cap.ramen-finder=5", "cap_total=20"), "max_agents=5 autopilot_cycles=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=20 cap.ramen-finder=5", "one project's cap and the total");
+  assert.match(s.no("config", "colour=5"), /config takes max_agents, cycles.small, cycles.large, cycles.risk, max_rounds, arena and cap_total as key=number, cap\.<project>=number/);
+  assert.equal(s.ok("config", "cap.ramen-finder=5", "cap_total=20"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=20 cap.ramen-finder=5", "one project's cap and the total");
   assert.match(s.no("config", "cap.Ramen=5"), /config takes/, "a project's name is its slug");
   assert.match(s.no("config", "cap.ramen-finder=0"), /cap\.ramen-finder must be a whole number of 1 or more: with 0, no sage agent could start for that project/);
   s.ok("task", "add", "--title", "Export trips", "--size", "large");
@@ -238,13 +293,13 @@ test("fixes from dry run 1: a value may start with --, status.md never lags, and
   assert.doesNotMatch(s.ok("verdict", "T1", "--sha", SHA, "--kind", "findings"), /still open/, "a findings verdict does not remind");
 });
 
-test("verified needs one clean cycle on the latest SHA; an autopilot merge needs two", () => {
+test("verified needs one clean cycle on the latest SHA; an autopilot merge of a large task needs two", () => {
   const s = store();
-  s.ok("task", "add", "--title", "t", "--size", "small");
+  s.ok("task", "add", "--title", "t", "--size", "large");
   toReviewing(s, "T1");
   s.ok("task", "T1", "set", "state=verifying");
   assert.match(s.no("task", "T1", "set", "state=verified"), /T1 has no verdicts yet/);
-  for (const kind of ["checks-pass", "review-clean"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  for (const kind of ["checks-pass", "review-clean", "security-clean", "ux-clean"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.match(s.no("task", "T1", "set", "state=verified"), /not verified on a1b2c3d: T1: 0 of 1 clean cycles on this SHA; never recorded: qa-pass/);
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "qa-pass");
   assert.match(s.ok("task", "T1", "set", "state=verified"), /^T1 verified/);
@@ -374,22 +429,22 @@ test("ids after a gap are new: a lost row never gives its id again, and a new fi
 test("config: every count is 1 or more, config.json is written whole, and a torn or bad file gives the defaults", async () => {
   const s = store();
   const f = join(s.home, "config.json");
-  for (const [key, why] of Object.entries({ max_agents: "no sage agent could start", autopilot_cycles: "a merge would need no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" })) {
+  for (const [key, why] of Object.entries({ max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" })) {
     assert.equal(s.no("config", `${key}=0`), `sage: ${key} must be a whole number of 1 or more: with 0, ${why}`);
   }
   assert.match(s.no("config", "max_agents=-1"), /max_agents must be a whole number of 1 or more/);
   assert.match(s.no("config", "toString=5"), /config takes max_agents/);
   assert.equal(existsSync(f), false, "a refused change writes nothing");
 
-  s.ok("task", "add", "--title", "t", "--size", "small");
-  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
-  for (const text of ['{"autopilot_cycles": 1', "", "null", '{"autopilot_cycles": 0}']) {
+  s.ok("task", "add", "--title", "t", "--size", "small", "--risk", "data");
+  for (const kind of ["checks-pass", "review-clean", "security-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  for (const text of ['{"cycles.risk": 1', "", "null", '{"cycles.risk": 0}']) {
     writeFileSync(f, text);
     assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles/, `config.json ${JSON.stringify(text)} keeps the default of 2 cycles`);
   }
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "0"), /--cycles is a whole number of 1 or more/);
   writeFileSync(f, '{"max_agents": "x", "max_rounds": 5, "arena_models": "gpt-5", "cap.sage": 0, "cap.ramen": 4}');
-  assert.equal(s.ok("config"), "max_agents=3 autopilot_cycles=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.ramen=4", "each bad value gives its default, and a bad project cap is left out");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.ramen=4", "each bad value gives its default, and a bad project cap is left out");
 
   // Two processes write config.json 200 times each, while this one reads it: every read sees a whole file.
   const writers = [1, 2].map(() => spawn("node", ["--input-type=module", "-e", `import { sage } from ${JSON.stringify(LIB)}; for (let i = 1; i <= 200; i++) sage(["config", "max_rounds=" + i]);`], { env: { ...process.env, SAGE_HOME: s.home } }));
@@ -556,7 +611,7 @@ test("S7: config and the merge check read only regular files and never throw, so
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   execFileSync("mkfifo", [join(s.home, "config.json")]);
   const [out, ms] = timed(() => [s.ok("config"), s.ok("merge-check", "--sha", SHA)]);
-  assert.deepEqual(out, ["max_agents=3 autopilot_cycles=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12", "T1 may merge: 1 clean cycle on this SHA"]);
+  assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12", "T1 may merge: 1 clean cycle on this SHA"]);
   assert.ok(ms < 3000, `${ms} ms`);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
@@ -569,18 +624,18 @@ test("S7: config and the merge check read only regular files and never throw, so
 
 test("F1: no config.json makes config() or the merge check throw: a value that is not a number or a string gives its default", async () => {
   const s = store();
-  s.ok("task", "add", "--title", "t", "--size", "small");
+  s.ok("task", "add", "--title", "t", "--size", "large");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   const deep = `${"[".repeat(20000)}${"]".repeat(20000)}`; // String() of this overflows the stack
-  writeFileSync(join(s.home, "config.json"), `{"autopilot_cycles": ${deep}, "max_agents": [5], "max_rounds": 4}`);
+  writeFileSync(join(s.home, "config.json"), `{"cycles.large": ${deep}, "max_agents": [5], "max_rounds": 4}`);
   const { config, mergeCheck } = await import(LIB);
   const env = { SAGE_HOME: s.home };
-  assert.deepEqual(config(env), { max_agents: 3, autopilot_cycles: 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 });
+  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, autopilot_cycles: 2 }, "autopilot_cycles is the hook's name for cycles.large until the hook reads cycles.large");
   const none = "9".repeat(40);
   assert.deepEqual(mergeCheck(none, env), { ok: false, reason: `no verdicts recorded for ${none}. Record the reviews and QA with sage verdict first.` }, "the hook's call: no cycles given");
   assert.equal(mergeCheck(SHA, env).ok, false);
-  assert.equal(s.ok("config"), "max_agents=3 autopilot_cycles=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
-  assert.match(s.no("merge-check", "--sha", SHA), /^sage: T1: 0 of 2 clean cycles on this SHA; never recorded: review-clean, qa-pass\./);
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.match(s.no("merge-check", "--sha", SHA), /^sage: T1: 0 of 2 clean cycles on this SHA; never recorded: review-clean, security-clean, ux-clean, qa-pass\./);
 });
 
 test("F2: with --pr, every task of that pull request must pass on the SHA, so a lighter task cannot decide it alone", () => {
@@ -650,10 +705,10 @@ test("F4: a finding opened again takes the new summary and source, and the decis
 test("F-R44-1: a link in the sage folder is read and written through, so its values and rows stay and it stays a link", () => {
   const s = store();
   const elsewhere = mkdtempSync(join(tmpdir(), "sage-dotfiles-"));
-  writeFileSync(join(elsewhere, "config.json"), JSON.stringify({ autopilot_cycles: 3, max_agents: 5 }));
+  writeFileSync(join(elsewhere, "config.json"), JSON.stringify({ "cycles.large": 3, max_agents: 5 }));
   symlinkSync(join(elsewhere, "config.json"), join(s.home, "config.json"));
-  assert.equal(s.ok("config"), "max_agents=5 autopilot_cycles=3 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
-  assert.equal(s.ok("config", "max_rounds=4"), "max_agents=5 autopilot_cycles=3 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config", "max_rounds=4"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
   assert.deepEqual([lstatSync(join(s.home, "config.json")).isSymbolicLink(), JSON.parse(readFileSync(join(elsewhere, "config.json"), "utf8")).max_rounds], [true, 4]);
 
   s.ok("task", "add", "--title", "a", "--size", "small");
@@ -713,7 +768,7 @@ test("QA-3: a bad count gives the reason for its value, and a SHA in capitals na
   assert.equal(s.no("config", "max_agents=-1"), 'sage: max_agents must be a whole number of 1 or more, not "-1"');
   assert.equal(s.no("config", "arena=abc"), 'sage: arena must be a whole number of 1 or more, not "abc"');
   assert.equal(s.no("config", "max_rounds=1.5"), 'sage: max_rounds must be a whole number of 1 or more, not "1.5"');
-  assert.equal(s.no("config", "autopilot_cycles=00"), "sage: autopilot_cycles must be a whole number of 1 or more: with 0, a merge would need no review");
+  assert.equal(s.no("config", "cycles.large=00"), "sage: cycles.large must be a whole number of 1 or more: with 0, a large task would merge with no review");
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   assert.equal(s.ok("verdict", "T1", "--sha", SHA.toUpperCase(), "--kind", "checks-pass"), "T1 checks-pass · a1b2c3d · cycle 1");
   assert.equal(rows(s.dir, "ledger")[0].sha, SHA, "the ledger holds it as git prints it");
@@ -811,7 +866,7 @@ test("unknown-columns: a logbook that a newer sage wrote refuses every write com
   assert.match(s.no("log", "-", "x", "--why", "y"), /runs\.tsv has columns that this version of sage does not know \(saved\)/);
 
   writeFileSync(join(s.home, "config.json"), JSON.stringify({ max_rounds: 4, max_programs: 2 })); // a newer version's setting stays too
-  assert.equal(s.ok("config", "arena=2"), "max_agents=3 autopilot_cycles=2 max_rounds=4 arena=2 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config", "arena=2"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=2 arena_models=opus,sonnet,sonnet cap_total=12");
   assert.deepEqual(JSON.parse(readFileSync(join(s.home, "config.json"), "utf8")), { max_rounds: 4, max_programs: 2, arena: 2 });
 });
 
