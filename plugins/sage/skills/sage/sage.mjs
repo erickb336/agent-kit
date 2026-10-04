@@ -48,9 +48,9 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
-export const DEFAULTS = { max_agents: 3, autopilot_cycles: 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet" };
+export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet" };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
-const COUNTS = { max_agents: "no sage agent could start", autopilot_cycles: "a merge would need no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates" };
+const COUNTS = { max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates" };
 const MODELS = ["opus", "sonnet", "haiku", "inherit"];
 const TABLES = {
   tasks: ["id", "title", "size", "risk", "route", "state", "branch", "pr", "round", "keys"],
@@ -69,6 +69,7 @@ const OPTIONS = {
   "run done": ["status", "tokens", "report"],
   "finding add": ["source", "severity", "summary", "key"],
   "finding triage": ["reason"],
+  "finding move": ["to", "size"],
   verdict: ["sha", "kind", "cycle", "pr", "run"],
   "gate add": ["question", "options", "recommend", "default"],
   log: ["why"],
@@ -158,14 +159,23 @@ function saved(env) {
   }
 }
 
-/** The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, or a config.json that is not a regular file, gives the defaults. */
+/**
+ * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, or a
+ * config.json that is not a regular file, gives the defaults. autopilot_cycles is the sage hook's name for cycles.large
+ * (its note on autopilot prints it): remove it when the hook reads cycles.large.
+ */
 export function config(env = process.env) {
+  let c = { ...DEFAULTS };
   try {
     const s = saved(env);
-    return Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]));
-  } catch {
-    return { ...DEFAULTS };
-  }
+    c = Object.fromEntries(Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]));
+  } catch {}
+  return { ...c, autopilot_cycles: c["cycles.large"] };
+}
+
+/** The clean cycles that a task needs before its merge: 1 for a tiny or small task, 2 for a large one, and 2 for any task with a risk flag (the larger count wins). */
+function cyclesFor(task, c) {
+  return Math.max(c[task.size === "large" ? "cycles.large" : "cycles.small"], task.risk ? c["cycles.risk"] : 0);
 }
 
 /** The file that a write to file replaces: file, or the target of its link. Something there that is not a regular file refuses. */
@@ -332,6 +342,15 @@ function taskOf(dir, id) {
   return { tasks, task };
 }
 
+/** Frames a task with its route and writes it: the least route of its size, the security review for a risk, and the added blocks. */
+function frame(dir, title, size, risk, add) {
+  const blocks = new Set([...SIZES[size], ...(risk.length && size !== "investigate" ? ["security-review"] : []), ...add]);
+  const task = { id: nextId(dir, "T"), title, size, risk: risk.join(","), route: BLOCKS.filter((b) => blocks.has(b)).join(","), state: "framed", round: 0 }; // the blocks in their order
+  write(dir, "tasks", [...read(dir, "tasks"), task]);
+  return task;
+}
+const framed = (task) => `${task.id} framed · ${task.size}${task.risk ? ` · risk ${task.risk}` : ""} · route ${task.route}`;
+
 function move(task, to) {
   if (to !== "abandoned" && !(NEXT[task.state] ?? []).includes(to)) refuse(`${task.id} cannot go from ${task.state} to ${to}. Next: ${(NEXT[task.state] ?? []).join(", ") || "none"}`);
   task.state = to;
@@ -377,16 +396,17 @@ function judge(dir, tasks, findings, id, rows, cycles, repaired) {
 /**
  * The judgment of the merge check: may this head SHA merge? Every task that has verdicts on the full SHA, in every
  * project's logbook, must pass on its own rows, also an abandoned one, so no other logbook or task can lend its verdicts.
- * With pr, the tasks of that pull request in those logbooks must pass too, and there must be one. An autopilot merge
- * wants autopilot_cycles clean cycles. The hook calls this, so it never throws: what it cannot read refuses the merge.
+ * With pr, the tasks of that pull request in those logbooks must pass too, and there must be one. Each task wants the
+ * clean cycles of its size and risk (cyclesFor), or cycles for every task when it is given. The hook calls this, so it
+ * never throws: what it cannot read refuses the merge.
  */
 export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
   const root = sageRoot(env);
   try {
     if (notFull(sha)) return { ok: false, reason: notFull(sha) };
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
-    cycles ??= config(env).autopilot_cycles;
     pr &&= String(pr); // the tasks table holds it as text
+    const cfg = config(env); // once: the merge check may judge thousands of tasks
     // A logbook may be a link to a folder: the writes go through it, so the merge check reads through it too. A link to nothing
     // holds no logbook, for the writes either; one that cannot be followed refuses.
     const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
@@ -402,7 +422,8 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       const ofPr = pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : [];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const own = rows.filter((r) => r.task === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, cycles, repaired) };
+        const task = tasks.find((t) => t.id === id);
+        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, cycles ?? (task && cyclesFor(task, cfg)), repaired) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -446,7 +467,7 @@ export function sage(argv, env = process.env) {
   if (!COMMANDS.includes(cmd)) refuse(`unknown command "${cmd ?? ""}". Commands: ${COMMANDS.join(", ")}`);
   const { pos, opt } = parse(cmd, rest);
   if (cmd === "merge-check") {
-    const cycles = opt.cycles === undefined ? undefined : (valid("autopilot_cycles", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more"));
+    const cycles = opt.cycles === undefined ? undefined : (valid("cycles.large", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more"));
     if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
     const r = mergeCheck(opt.sha ?? refuse("merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
@@ -456,13 +477,14 @@ export function sage(argv, env = process.env) {
     for (const kv of pos) {
       const [k, v = ""] = kv.split("=");
       if (Object.hasOwn(COUNTS, k) && valid(k, v) === undefined) refuse(`${k} must be a whole number of 1 or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k]}` : `, not ${JSON.stringify(v)}`}`);
-      set[k] = valid(k, v) ?? refuse(`config takes max_agents, autopilot_cycles, max_rounds and arena as key=number, and arena_models as a list of ${MODELS.join(", ")}`);
+      set[k] = valid(k, v) ?? refuse(`config takes ${Object.keys(COUNTS).join(", ")} as key=number, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
       mkdirSync(sageRoot(env), { recursive: true });
       put(join(sageRoot(env), "config.json"), JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n"); // a key of a newer version stays
     }
-    return Object.entries({ ...config(env), ...set }).map(([k, v]) => `${k}=${v}`).join(" ");
+    const c = { ...config(env), ...set };
+    return Object.keys(DEFAULTS).map((k) => `${k}=${c[k]}`).join(" ");
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
   const dir = storeDir(project, env);
@@ -542,13 +564,9 @@ function act(cmd, pos, opt, dir, env, skip) {
         if (odd.length) refuse(`unknown: ${odd.join(", ")}. Risks: ${RISKS.join(", ")}. Blocks: ${BLOCKS.join(", ")}`);
         if (size === "investigate" && list(opt.add).includes("build")) refuse("an investigation changes no code, so it takes no build block. Frame the build as its own task: sage task add --size tiny, small or large");
         const why = opt.add ? need(opt.why, "--why for the added blocks") : ""; // refuse before anything is written
-        const blocks = new Set([...SIZES[size], ...(risk.length && size !== "investigate" ? ["security-review"] : []), ...list(opt.add)]);
-        const route = BLOCKS.filter((b) => blocks.has(b)); // the blocks in their order
-        const tasks = read(dir, "tasks");
-        const task = { id: nextId(dir, "T"), title: need(opt.title, "--title"), size, risk: risk.join(","), route: route.join(","), state: "framed", round: 0 };
-        write(dir, "tasks", [...tasks, task]);
+        const task = frame(dir, need(opt.title, "--title"), size, risk, list(opt.add));
         if (opt.add) write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: task.id, decision: `added ${opt.add}`, why }]);
-        return `${task.id} framed · ${size}${risk.length ? ` · risk ${risk.join(",")}` : ""} · route ${task.route}`;
+        return framed(task);
       }
       const { tasks, task } = taskOf(dir, need(sub, "the task id")); // task <T> [set key=value ...]
       if (id === "set") {
@@ -600,7 +618,8 @@ function act(cmd, pos, opt, dir, env, skip) {
       }
       Object.assign(task, { state: "repairing", round, keys });
       write(dir, "tasks", tasks);
-      return `${task.id} repairing · round ${round} of ${config(env).max_rounds} · fix ${keys}`;
+      const roles = [...new Set(fix.map((f) => f.source))].sort().join(","); // the repair's diff goes back to the roles that found the problems
+      return `${task.id} repairing · round ${round} of ${config(env).max_rounds} · fix ${keys} · re-run ${roles} on the repair's diff`;
     }
     case "run": {
       const runs = read(dir, "runs");
@@ -652,7 +671,20 @@ function act(cmd, pos, opt, dir, env, skip) {
       } else if (sub === "close") {
         if (f.triage !== "fix" && f.triage !== "ask") refuse(`${f.key} is not triaged as fix or ask`);
         f.status = "closed";
-      } else refuse("finding add, triage or close");
+      } else if (sub === "move") {
+        // A new medium finding of a repair round goes to a follow-up task, not to another round. A high one blocks until it is fixed.
+        if (f.status !== "open") refuse(`${f.key} is ${f.status}: only an open finding moves.`);
+        if (f.severity === "high") refuse(`${f.key} is high, so it blocks ${id} until it is fixed: a high finding never moves to a follow-up task.`);
+        const title = need(cell(opt.to), '--to "<the follow-up task\'s title>"');
+        const size = opt.size ?? "small";
+        if (!SIZES[size] || size === "investigate") refuse("--size is tiny, small or large");
+        const to = frame(dir, title, size, [], []);
+        const was = f.key;
+        Object.assign(f, { task: to.id, key: nextId(dir, `F-${to.id}-`), round: 0, triage: "" });
+        write(dir, "findings", findings);
+        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: id, decision: `${was} moved to ${to.id} as ${f.key}: ${f.summary}`, why: `the follow-up task: ${title}` }]);
+        return `${was} moved to ${to.id} as ${f.key} · ${framed(to)}`;
+      } else refuse("finding add, triage, close or move");
       write(dir, "findings", findings);
       return `${f.key} ${f.status} · ${f.triage}`;
     }

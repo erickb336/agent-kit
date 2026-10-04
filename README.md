@@ -85,7 +85,7 @@ This is one session, step by step. It is an illustration with sample data.
      - The arena candidates do not converge.
 
    Engineering choices, such as file formats and names, are the chief's. It decides them and logs them.
-4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds.
+4. **The team works.** For each step, the chief starts a fresh agent with a full brief. Reviews and QA report findings. A medium or high finding goes back to an implementer for a repair, at most 3 rounds. After a repair, only the roles that found the problems re-check the repair's diff. A new medium finding from a round goes to a follow-up task.
 5. **You get results.** You get evidence (the commands that ran, screenshots), what was not checked, and a pull request. You merge it, or autopilot merges it.
 
 **Try it yourself.** Pick one small, real bug in a project that has tests and a GitHub remote. Start a session from your phone, start your message with "sage mode", and describe the bug. Then look at the result, not the code.
@@ -156,7 +156,7 @@ Each task gets the least route for its size. The chief can add steps, never remo
 </picture>
 </a>
 
-A **cycle** is one full set of fresh reviews and QA on one commit. A task is **verified** after 1 clean cycle. With autopilot on, it **merges** after 2 clean cycles in a row on the same commit.
+A **cycle** is one full set of fresh reviews and QA on one commit. A task is **verified** after 1 clean cycle. With autopilot on, it **merges** after its clean cycles on the same commit: 1 for a tiny or small task, 2 for a large task or any task with a risk flag.
 
 ### Rules held in code
 
@@ -170,6 +170,7 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | One writer per branch. Nobody force-pushes or pushes to main. A push is only `git push [-u] origin <branch>`, with the branch's own name. | Parallel writers conflict. Work reaches main only through a pull request. |
 | Every finding is triaged: fix, dismiss with a reason, or ask you. | No finding is dropped. |
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
+| A repair round re-checks only the repair's diff, with the roles that found the problems. A new medium finding goes to a follow-up task; a high one blocks. | A round that re-reviews the whole branch finds new scope, not the fix. |
 | A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
 
 **The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. It does three things:
@@ -243,7 +244,7 @@ sage uses each word in one meaning only. The [dictionary](writing/dictionary.md)
 | Your answer to a question, for example `no` | The chief applies your decision and goes on. |
 | `status` | Where each task is: running, waiting for you, verified. |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
-| A message that starts with `autopilot on`, or with `sage mode` followed by `autopilot`: `sage mode autopilot`, `sage mode on, autopilot on` | Verified pull requests merge by themselves after 2 clean cycles. |
+| A message that starts with `autopilot on`, or with `sage mode` followed by `autopilot`: `sage mode autopilot`, `sage mode on, autopilot on` | Verified pull requests merge by themselves after their clean cycles. |
 | Your message that mentions autopilot with an off word, for example `autopilot off`, `stop autopilot` or `pause autopilot` | Verified pull requests wait for you again. |
 | `sage mode off` at the start of a message | A normal session again. |
 
