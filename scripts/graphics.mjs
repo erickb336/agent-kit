@@ -163,7 +163,16 @@ function hero(t) {
 
 /** How it works: the inner loop and the outer loop. */
 function loop(t) {
-  const st = (x, title, sub) => rect(x, 178, 104, 76, { rx: 12, fill: t.panel, stroke: t.line, sw: 1.5 }) + text(x + 52, 210, title, { size: 16, weight: 700, fill: t.ink, anchor: "middle" }) + text(x + 52, 234, sub, { size: 12.5, fill: t.muted, anchor: "middle" });
+  // The team's stages, left to right. Review is wider, for its three reviewers.
+  let sx = 552;
+  const S = [["Design", "designer · PE", 104], ["Build", "implementer", 104], ["Review", "code · security · UX", 150], ["QA", "the real app", 104]].map(([title, sub, w]) => {
+    const s = { title, sub, w, x: sx, c: sx + w / 2 };
+    sx += w + 20;
+    return s;
+  });
+  const [, build, review, qa] = S;
+  const end = qa.x + qa.w;
+  const st = (s) => rect(s.x, 178, s.w, 76, { rx: 12, fill: t.panel, stroke: t.line, sw: 1.5 }) + text(s.c, 210, s.title, { size: 16, weight: 700, fill: t.ink, anchor: "middle" }) + text(s.c, 234, s.sub, { size: 12.5, fill: t.muted, anchor: "middle" });
   const body = [
     rect(36, 176, 140, 80, { rx: 14, fill: t.panel, stroke: t.line, sw: 1.5 }),
     text(106, 210, "You", { size: 18, weight: 700, fill: t.ink, anchor: "middle" }),
@@ -178,36 +187,30 @@ function loop(t) {
     arrowTo(460, 198, 528, 198, t),
     text(494, 188, "brief", { size: 13, fill: t.muted, anchor: "middle" }),
     arrowTo(528, 238, 460, 238, t),
-    text(494, 258, ["report", "+ evidence"], { size: 13, fill: t.muted, anchor: "middle", lh: 1.25 }),
-    rect(532, 96, 512, 240, { rx: 18, fill: t.soft }),
+    text(494, 258, ["report +", "evidence"], { size: 13, fill: t.muted, anchor: "middle", lh: 1.25 }),
+    rect(532, 96, end + 20 - 532, 240, { rx: 18, fill: t.soft }),
     text(552, 124, "The team · one writer at a time", { size: 14, weight: 650, fill: t.accent }),
-    st(552, "Design", "designer · PE"),
-    arrowTo(658, 216, 672, 216, t),
-    st(676, "Build", "implementer"),
-    arrowTo(782, 216, 796, 216, t),
-    st(800, "Review", "code · security · UX"),
-    arrowTo(906, 216, 920, 216, t),
-    st(924, "QA", "the real app"),
-    path("M852 176 C 852 140, 728 140, 728 174", { stroke: t.bad, arrow: "arrow-bad" }),
-    text(790, 146, "findings", { size: 13, fill: t.bad, anchor: "middle" }),
-    path("M976 256 C 976 304, 728 304, 728 258", { stroke: t.bad, arrow: "arrow-bad" }),
-    text(852, 318, "QA fail", { size: 13, fill: t.bad, anchor: "middle" }),
-    arrowTo(1030, 216, 1066, 216, t),
-    rect(1070, 168, 124, 96, { rx: 14, fill: t.panel, stroke: t.accent, sw: 2 }),
-    text(1132, 202, "Pull request", { size: 16, weight: 700, fill: t.ink, anchor: "middle" }),
-    text(1132, 226, ["you merge, or", "autopilot after", "2 clean cycles"], { size: 12, fill: t.muted, anchor: "middle", lh: 1.3 }),
+    ...S.map((s, i) => st(s) + (i < S.length - 1 ? arrowTo(s.x + s.w + 2, 216, s.x + s.w + 16, 216, t) : "")),
+    path(`M${review.c} 176 C ${review.c} 140, ${build.c} 140, ${build.c} 174`, { stroke: t.bad, arrow: "arrow-bad" }),
+    text((review.c + build.c) / 2, 146, "findings", { size: 13, fill: t.bad, anchor: "middle" }),
+    path(`M${qa.c} 256 C ${qa.c} 304, ${build.c} 304, ${build.c} 258`, { stroke: t.bad, arrow: "arrow-bad" }),
+    text((qa.c + build.c) / 2, 318, "QA fail", { size: 13, fill: t.bad, anchor: "middle" }),
+    arrowTo(end + 2, 216, end + 38, 216, t),
+    rect(end + 42, 168, 124, 96, { rx: 14, fill: t.panel, stroke: t.accent, sw: 2 }),
+    text(end + 104, 202, "Pull request", { size: 16, weight: 700, fill: t.ink, anchor: "middle" }),
+    text(end + 104, 226, ["you merge, or", "autopilot after", "2 clean cycles"], { size: 12, fill: t.muted, anchor: "middle", lh: 1.3 }),
     path("M360 278 L 360 330", { stroke: t.line, sw: 2 }),
     `<ellipse cx="360" cy="342" rx="84" ry="12" fill="${t.panel}" stroke="${t.line}" stroke-width="1.5"/>`,
     `<path d="M276 342 L276 392 A84 12 0 0 0 444 392 L444 342" fill="${t.panel}" stroke="${t.line}" stroke-width="1.5"/>`,
     text(360, 374, "Store", { size: 15, weight: 700, fill: t.ink, anchor: "middle" }),
     text(360, 394, "tasks · ledger · trail", { size: 12.5, fill: t.muted, anchor: "middle" }),
-    path("M458 268 C 520 420, 760 430, 788 338", { stroke: t.accent, dash: "6 7", arrow: "arrow-accent" }),
+    path("M446 280 C 500 430, 760 430, 790 338", { stroke: t.accent, dash: "6 7", arrow: "arrow-accent" }),
     text(640, 430, "a lesson that comes back twice → improve the kitchen", { size: 13.5, fill: t.accent, anchor: "middle" }),
   ].join("\n");
-  return svg(1230, 460, t, body, "How sage works: you send a request to the chief of staff, which briefs the team (design, build, review, QA). Findings and QA failures go back to the build. A clean result becomes a pull request. Lessons improve the kitchen.");
+  return svg(end + 206, 460, t, body, "How sage works: you send a request to the chief of staff, which briefs the team (design, build, review, QA). Findings and QA failures go back to the build. A clean result becomes a pull request. Lessons improve the kitchen.");
 }
 
-/** Learn sage in 5 minutes: one session, with numbered notes. Sample data. */
+/** Your first training (5 minutes): one session, with numbered notes. Sample data. */
 function walkthrough(t) {
   const px = 40, py = 40, pw = 470, ph = 640;
   const bubble = (side, y, lines, w, n) => {
@@ -217,7 +220,7 @@ function walkthrough(t) {
     return { svg: rect(x, y, w, h, { rx: 16, fill: you ? t.accent : t.chip }) + text(x + 16, y + 28, lines, { size: 16, fill: you ? "#FFFFFF" : t.ink, lh: 1.5 }), y: y + h / 2, n, x: x + w };
   };
   const b = [
-    bubble("you", py + 76, ["sage mode. TrackMe: add CSV export,", "and fix this week's crash."], 318, 1),
+    bubble("you", py + 76, ["sage mode. TrackMe: add CSV export,", "and fix this week's crash."], 340, 1),
     bubble("chief", py + 160, ["T1 export: large · data", "T2 crash: small · input", "T2 starts now."], 300, 2),
     bubble("chief", py + 268, ["One question for T1: include deleted", "trips in the export? Recommended: no.", "Default if you don't answer: no."], 340, 3),
     bubble("you", py + 380, ["no"], 58, 3),
@@ -255,7 +258,7 @@ function walkthrough(t) {
       ].join("");
     }),
   ].join("\n");
-  return svg(1200, 720, t, body, "Learn sage in five minutes: an illustrative session with numbered notes. 1, switch it on. 2, the chief frames each task. 3, one product question at most. 4, the team works. 5, you get results and a pull request.");
+  return svg(1200, 720, t, body, "Your first training, in five minutes: an illustrative session with numbered notes. 1, switch it on. 2, the chief frames each task. 3, one product question at most. 4, the team works. 5, you get results and a pull request.");
 }
 
 /** Routes: the least route for each size of task. */
@@ -370,9 +373,9 @@ function pstack(t) {
 
 export const GRAPHICS = {
   hero, loop, walkthrough, routes, lifecycle, arena, pstack,
-  "tip-start": tip(["Start a message with “sage mode”. That's the whole hand sign.", "Say “sage mode off” when you want a normal session again."], "The toad sage's tip: start a message with sage mode; say sage mode off for a normal session."),
+  "tip-start": tip(["Start a message with “sage mode”. That's the whole hand sign.", "Mid-sentence, it does nothing. “sage mode off” works anywhere."], "The toad sage's tip: start a message with sage mode. In the middle of a sentence it does nothing; sage mode off works anywhere."),
   "tip-try": tip(["Your first training: one small, real bug, from your phone.", "Then look at the result, not the code."], "The toad sage's tip: try one small, real bug from your phone, then look at the result."),
-  "tip-kitchen": tip(["A mistake that comes back twice becomes a rule in code.", "That's how the kitchen gets stronger, one lesson at a time."], "The toad sage's tip: a mistake that comes back twice becomes a rule in code."),
+  "tip-kitchen": tip(["A mistake that comes back twice gets a test, a check or a rule.", "That's how the kitchen gets stronger, one lesson at a time."], "The toad sage's tip: a mistake that comes back twice gets a test, a check or a rule, so the kitchen gets stronger one lesson at a time."),
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
