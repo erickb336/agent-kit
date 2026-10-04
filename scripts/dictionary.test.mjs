@@ -102,13 +102,6 @@ test("npm run check fails when the README's word table is edited by hand", () =>
   assert.match(r.stderr, /✗ README\.md: out of date; run npm run build/);
 });
 
-test("the skip of a file that an open pull request fixes fails once the file is clean", () => {
-  const c = copy();
-  const rel = "plugins/sage/skills/sage/SKILL.md";
-  c.write(rel, c.read(rel).replace(/\bstore\b(?!`)/g, "logbook"));
-  assert.match(c.run("check").stderr, /✗ plugins\/sage\/skills\/sage\/SKILL\.md: has no flagged word now; remove it from WAITING/);
-});
-
 // Round 1: the findings of the first review cycle on pull request #7, each as the reviewers showed it.
 
 test("every sage agent loads the dictionary skill, and the hook tells the chief to load it", async () => {

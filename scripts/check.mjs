@@ -119,8 +119,6 @@ for (const name of new Set([...drawn.keys()].map((f) => f.replace(/-(light|dark)
 
 // sage's words (writing/dictionary.md): no flagged word in the text that a person reads. The generated skills are left
 // out: their words come from the principles, pstack and the dictionary itself. Code is left out too: its names stay.
-// WAITING holds a file that an open pull request fixes. Its skip fails once the file is clean, so that the skip goes too.
-const WAITING = { "plugins/sage/skills/sage/SKILL.md": "PR #5" };
 const dictionary = checkWords(parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8"), "writing/dictionary.md").body);
 const readByPeople = [
   ...agents.map((f) => `plugins/sage/agents/${f}`),
@@ -131,10 +129,8 @@ const readByPeople = [
 ];
 for (const f of readByPeople) {
   const found = flaggedWords(readFileSync(join(ROOT, f), "utf8"), dictionary, { html: !f.endsWith(".md") });
-  if (WAITING[f] && !found.length) problems.push(`${f}: has no flagged word now; remove it from WAITING in scripts/check.mjs`);
-  else if (WAITING[f]) console.warn(`! ${f}: ${found.length} flagged words, skipped until ${WAITING[f]} merges`);
   // A graphic's text comes from scripts/graphics.mjs, and nobody edits an SVG by hand.
-  else for (const h of found) problems.push(`${f}:${h.line}: "${h.word}" is a flagged word${h.use.length ? `; say ${h.use.join(" or ")}` : ""} (writing/dictionary.md)${f.startsWith("docs/assets/") ? "; fix it in scripts/graphics.mjs, then run npm run graphics" : ""}`);
+  for (const h of found) problems.push(`${f}:${h.line}: "${h.word}" is a flagged word${h.use.length ? `; say ${h.use.join(" or ")}` : ""} (writing/dictionary.md)${f.startsWith("docs/assets/") ? "; fix it in scripts/graphics.mjs, then run npm run graphics" : ""}`);
 }
 
 try {
