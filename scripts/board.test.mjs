@@ -753,26 +753,27 @@ test("T137, G78: the default board lists the tasks with a PR in review first, th
   ]);
   const run = (id, t, started, ended = "") => [id, t, "implementer", "0", "", t.toLowerCase(), "done", "", "", started, ended];
   table("runs", ["id", "task", "role", "round", "candidate", "branch", "status", "tokens", "report", "started", "ended"], [
-    run("R1", "T4", "2026-10-05T08:00:00Z", "2026-10-05T09:00:00Z"), // ended counts
+    run("R1", "T4", "", "2026-10-05T12:30:00Z"), // only an end time: it puts T4 above T5
     run("R2", "T5", "2026-10-05T11:00:00Z"),
     run("R3", "T7", "2026-10-05T13:00:00Z"),
     run("R4", "T10", "2026-10-05T12:00:00Z"),
     run("R5", "T8", "not a time"), // ignored: T8 has no time
   ]);
-  table("ledger", ["task", "pr", "sha", "kind", "cycle", "run", "at"], [["T9", "21", "a".repeat(40), "code-clean", "1", "", "2026-10-05T10:00:00Z"]]);
+  // Only a ledger time: it puts T9 above T10.
+  table("ledger", ["task", "pr", "sha", "kind", "cycle", "run", "at"], [["T9", "21", "a".repeat(40), "code-clean", "1", "", "2026-10-05T12:30:00Z"]]);
   table("decisions", ["at", "task", "decision", "why"], [["2026-10-05T17:00:00Z", "T1", "x", "y"], ["2026-10-05T18:00:00Z", "T3", "x", "y"]]);
   table("gates", ["id", "task", "question", "options", "recommendation", "default", "answer", "at"], [["G1", "T6", "q", "a|b", "a", "a", "a", "2026-10-05T07:00:00Z"]]);
   const rows = (out) => out.split("**sage** · github.com/acme/sage\n")[1].split("\n- framed")[0];
   assert.equal(
     rows(w.show("this")),
     [
-      "- T10 Sample\\: task T10 · reviewing · [#22](https://github.com/acme/sage/pull/22)",
       "- T9 Sample\\: task T9 · reviewing · [#21](https://github.com/acme/sage/pull/21)",
+      "- T10 Sample\\: task T10 · reviewing · [#22](https://github.com/acme/sage/pull/22)",
       "- T3 Sample\\: task T3 · verifying · no PR",
       "- T1 Sample\\: task T1 · verifying · no PR",
       "- T7 Sample\\: task T7 · building · no PR",
-      "- T5 Sample\\: task T5 · building · no PR",
       "- T4 Sample\\: task T4 · building · no PR",
+      "- T5 Sample\\: task T5 · building · no PR",
       "- T6 Sample\\: task T6 · building · no PR",
       "- and 2 more (show board for sage)",
     ].join("\n"),
