@@ -48,7 +48,9 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
-export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00", "autopilot.tz": "America/Los_Angeles" };
+export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00" };
+/** The owner's time zone (gate G20). Like the floors of gate G18, only a code change moves it: no config key sets it. */
+export const OWNER_TZ = "America/Los_Angeles";
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
 /** The owner's floors (gate G18): a large or risk-flagged task needs at least 2 clean cycles. Only a code change lowers them; every other count is 1 or more. */
 const FLOOR = { "cycles.large": 2, "cycles.risk": 2 };
@@ -132,7 +134,7 @@ export function storeDir(project, env = process.env) {
  * reads as the limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
  */
 function valid(key, value) {
-  if (key === "autopilot.window" || key === "autopilot.tz") return autopilotProblem(key, value) ? undefined : value;
+  if (key === "autopilot.window") return autopilotProblem(value) ? undefined : value;
   if (key === "arena_models") {
     const models = typeof value === "string" ? list(value) : [];
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
@@ -219,20 +221,11 @@ function minutes(window) {
 const quote = (value) => JSON.stringify(String(value).slice(0, 40)) + (String(value).length > 40 ? " (cut at 40 characters)" : "");
 
 /**
- * Why an autopilot.window or autopilot.tz value is not valid, or undefined. The owner's night is 22:00-07:00 (gate G20):
- * a window may only narrow it, so a window that is not inside it is not valid, and only a code change widens it. A
- * window whose start is after its end wraps midnight. The time zone is an IANA name with a "/" (Europe/Paris), or UTC.
+ * Why an autopilot.window value is not valid, or undefined. The owner's night is 22:00-07:00 in OWNER_TZ (gate G20): a
+ * window may only narrow it, so a window that is not inside it is not valid, and only a code change widens it. A window
+ * whose start is after its end wraps midnight.
  */
-function autopilotProblem(key, value) {
-  if (key === "autopilot.tz") {
-    let zone = typeof value === "string" && (value === "UTC" || /^[A-Z][A-Za-z_-]*(\/[A-Za-z0-9_+-]+)+$/.test(value));
-    try {
-      if (zone) new Intl.DateTimeFormat("en-US", { timeZone: value });
-    } catch {
-      zone = false;
-    }
-    return zone ? undefined : `autopilot.tz ${quote(value)} is not a time zone name such as America/Los_Angeles or Europe/Paris`;
-  }
+function autopilotProblem(value) {
   const w = minutes(value);
   if (!w) return `autopilot.window ${quote(value)} is not a window such as 23:00-06:00`;
   const [night, length] = [22 * 60, 9 * 60]; // the owner's 22:00-07:00
@@ -240,10 +233,10 @@ function autopilotProblem(key, value) {
   if (from + (w[0] < w[1] ? w[1] - w[0] : w[1] + 1440 - w[0]) > length) return `autopilot.window ${quote(value)} is not inside the owner's night 22:00-07:00: a window may only narrow it, and only a code change widens it`;
 }
 
-/** Whether the time now is inside the night window of autopilot (gate G20). config() gives only a valid window and time zone. */
+/** Whether the time now, in the owner's time zone, is inside the night window of autopilot (gate G20). config() gives only a valid window. */
 export function nightWindow(c, now = Date.now()) {
   const [start, end] = minutes(c["autopilot.window"]);
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: c["autopilot.tz"], hour: "numeric", minute: "numeric", hourCycle: "h23" }).formatToParts(now);
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: OWNER_TZ, hour: "numeric", minute: "numeric", hourCycle: "h23" }).formatToParts(now);
   const at = (type) => Number(parts.find((p) => p.type === type).value);
   const minute = at("hour") * 60 + at("minute");
   return start < end ? start <= minute && minute < end : minute >= start || minute < end;
@@ -559,13 +552,14 @@ export function sage(argv, env = process.env) {
   if (cmd === "config") {
     const set = {};
     for (const kv of pos) {
-      const [k, v = ""] = kv.split("=");
+      const [k, v = "", ...more] = kv.split("=");
+      if (more.length) refuse(`${quote(kv)} has more than one "=": write key=value`);
       const count = Object.hasOwn(COUNTS, k) || CAP.test(k);
       if (count && /^[1-9]\d*$/.test(v) && Number(v) > limit(k)) refuse(`${k} must be ${limit(k)} or less: ${v} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
       if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
-      const night = (k === "autopilot.window" || k === "autopilot.tz") && autopilotProblem(k, v);
+      const night = k === "autopilot.window" && autopilotProblem(v);
       if (night) refuse(night);
-      set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, arena_models as a list of ${MODELS.join(", ")}, and autopilot.window and autopilot.tz`);
+      set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, arena_models as a list of ${MODELS.join(", ")}, and autopilot.window`);
     }
     if (pos.length) {
       const file = join(sageRoot(env), "config.json");

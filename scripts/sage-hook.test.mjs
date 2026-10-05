@@ -765,12 +765,12 @@ test("T56: autopilot merges only tiny or small tasks without a risk flag, inside
   assert.equal(mergeAt(s, LA(4, 23), "44", "4".repeat(40)), "sage: T5 has a risk flag (data): the owner merges this.", "one risky task of two");
   assert.equal(mergeAt(s, LA(4, 23), "41", SHA, { agent_id: "a1" }), "sage: an agent never merges. Report the pull request as ready.");
 
-  s.sage("config", "autopilot.window=01:00-05:00", "autopilot.tz=UTC");
-  assert.equal(mergeAt(s, Date.UTC(2026, 9, 4, 3)), "merges", "a window that does not wrap, in another time zone");
-  assert.equal(mergeAt(s, Date.UTC(2026, 9, 4, 23, 30)), "sage: outside the night window 01:00-05:00 (UTC): it waits.");
+  s.sage("config", "autopilot.window=01:00-05:00");
+  assert.equal(mergeAt(s, LA(4, 3)), "merges", "a window that does not wrap");
+  assert.equal(mergeAt(s, LA(4, 23, 30)), "sage: outside the night window 01:00-05:00 (America/Los_Angeles): it waits.");
 });
 
-test("T56: the night window only narrows the owner's 22:00-07:00, and the time zone is a full IANA name (F-T56-WIDEN)", () => {
+test("T56: the night window only narrows the owner's 22:00-07:00, in the owner's own time zone (F-T56-WIDEN, F-T56-TZSHIFT, F-T56-EQ)", () => {
   const s = session();
   s.sage("init");
   verified(s, "41", SHA, "--size", "small");
@@ -779,16 +779,21 @@ test("T56: the night window only narrows the owner's 22:00-07:00, and the time z
     const r = config(`autopilot.window=${wide}`);
     assert.equal(r.stderr.trim(), `sage: autopilot.window "${wide}" is not inside the owner's night 22:00-07:00: a window may only narrow it, and only a code change widens it`, wide);
   }
-  for (const zone of ["PST", "+05:00", "utc", "Mars/Base", "europe/paris"]) assert.equal(config(`autopilot.tz=${zone}`).stderr.trim(), `sage: autopilot.tz "${zone}" is not a time zone name such as America/Los_Angeles or Europe/Paris`, zone);
+  for (const zone of ["Asia/Tokyo", "UTC", "America/Los_Angeles"]) {
+    const r = config(`autopilot.tz=${zone}`);
+    assert.equal(r.status, 1, zone);
+    assert.match(r.stderr, /^sage: config takes max_agents/, `a time zone is not a config key: ${zone}`);
+  }
+  const eq = config("autopilot.window=22:00-07:00=x");
+  assert.equal(eq.stderr.trim(), `sage: "autopilot.window=22:00-07:00=x" has more than one "=": write key=value`);
   assert.match(config("autopilot.window=late").stderr, /^sage: autopilot.window "late" is not a window such as 23:00-06:00/);
   assert.equal(config("autopilot.window=23:00-06:00").status, 0);
-  assert.equal(config("autopilot.tz=Europe/Paris").status, 0);
-  assert.match(s.sage("config"), / autopilot.window=23:00-06:00 autopilot.tz=Europe\/Paris$/);
-  assert.equal(config("autopilot.tz=UTC").status, 0);
+  assert.match(s.sage("config"), / autopilot.window=23:00-06:00$/);
   assert.equal(config("autopilot.window=22:00-07:00").status, 0);
 
-  writeFileSync(join(s.vars.SAGE_HOME, "config.json"), JSON.stringify({ "autopilot.window": "00:00-24:00", "autopilot.tz": "PST" }));
-  assert.match(s.sage("config"), / autopilot.window=22:00-07:00 autopilot.tz=America\/Los_Angeles$/, "a file value that is not valid reads as the default");
+  writeFileSync(join(s.vars.SAGE_HOME, "config.json"), JSON.stringify({ "autopilot.window": "00:00-24:00", "autopilot.tz": "Asia/Tokyo" }));
+  assert.match(s.sage("config"), / autopilot.window=22:00-07:00$/, "a file window that is not valid reads as the default, and a file time zone is not read");
+  assert.equal(mergeAt(s, LA(4, 10)), "sage: outside the night window 22:00-07:00 (America/Los_Angeles): it waits.", "10:00 owner time is 02:00 in Tokyo, and still refused");
   assert.equal(mergeAt(s, LA(4, 12)), "sage: outside the night window 22:00-07:00 (America/Los_Angeles): it waits.", "a merge at noon is refused");
   assert.equal(mergeAt(s, LA(4, 23)), "merges");
 });
@@ -1362,4 +1367,15 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
   const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
+});
+
+test("T56: the design page says the owner's autopilot rule: tiny and small tasks without a risk flag, at night (F-T56-DESIGNDOC)", () => {
+  const page = readFileSync(fileURLToPath(new URL("../docs/design/sage-mode.html", import.meta.url)), "utf8");
+  const section = page.slice(page.indexOf('<h2 id="trust">'), page.indexOf('<h2 id="cost">'));
+  assert.ok(!/everything can merge by itself/.test(section), "autopilot never merges everything");
+  assert.ok(!/don't stop autopilot/.test(section), "a risk flag stops autopilot");
+  assert.match(section, /night window/);
+  assert.match(section, /22:00-07:00/);
+  assert.match(section, /America\/Los_Angeles/);
+  assert.match(section, /tiny and small tasks without a risk flag/);
 });

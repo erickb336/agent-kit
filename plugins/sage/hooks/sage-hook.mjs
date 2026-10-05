@@ -143,7 +143,7 @@ function switchModes({ owner, text, outside, all }, state) {
     state.autopilot = true;
     const c = stateTool.config();
     const small = stateTool.cyclesFor({}, c);
-    notes.push(`sage: autopilot is on. A pull request whose tasks are all tiny or small, without a risk flag, merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"}, inside the night window ${c["autopilot.window"]} (${c["autopilot.tz"]}). The owner merges a large task or a task with a risk flag. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
+    notes.push(`sage: autopilot is on. A pull request whose tasks are all tiny or small, without a risk flag, merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"}, inside the night window ${c["autopilot.window"]} (${stateTool.OWNER_TZ}). The owner merges a large task or a task with a risk flag. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
   }
   return notes;
 }
@@ -450,7 +450,7 @@ function scopeProblem(tasks, now) {
   const risky = tasks.find((t) => t.risk);
   if (risky) return `${risky.id} has a risk flag (${risky.risk}): the owner merges this.`;
   const c = stateTool.config();
-  if (!stateTool.nightWindow(c, now)) return `outside the night window ${c["autopilot.window"]} (${c["autopilot.tz"]}): it waits.`;
+  if (!stateTool.nightWindow(c, now)) return `outside the night window ${c["autopilot.window"]} (${stateTool.OWNER_TZ}): it waits.`;
 }
 
 /**
