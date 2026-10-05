@@ -185,14 +185,16 @@ export function handle(input, state, slots) {
   }
   if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
   if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
-  if (event === "PreToolUse" && !main && ours) {
-    const why = writeGuard(input.tool_name ?? "", input.tool_input ?? {}, input.cwd ?? process.cwd());
-    if (why) return deny(event, why);
-  }
-  if (event !== "PreToolUse" || !state.sage) return undefined;
+  if (event !== "PreToolUse") return undefined;
 
   const tool = input.tool_name ?? "";
   const ti = input.tool_input ?? {};
+  const cwd = input.cwd ?? process.cwd();
+  const guard = () => {
+    const why = !main && ours ? writeGuard(tool, ti, cwd) : undefined; // after the push and merge rules
+    return why ? deny(event, why) : undefined;
+  };
+  if (!state.sage) return guard();
   if (main && FILE_TOOLS.test(tool)) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with a message that starts with "sage mode off".');
   if (main && AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
@@ -209,8 +211,7 @@ export function handle(input, state, slots) {
       return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
     }
   }
-  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
-  return undefined;
+  return (tool === "Bash" && gitGate(event, [].concat(ti.command ?? []).join(" "), state, cwd, main)) || guard();
 }
 
 /**
@@ -218,9 +219,11 @@ export function handle(input, state, slots) {
  * its working folder is the project's main checkout, which is closed. The temp folders are open, and the folders outside the home are not judged. The
  * nearest folder decides, so a home inside a temp folder (as in the tests) is still the home. ~/.claude is closed: the
  * state tool writes there itself, and its command has no write target that the hook reads. Reads are never refused.
- * For Bash it reads the targets of >, >>, tee, cp, mv, mkdir, touch and rm: a miss is a known limit, and a command that
- * the hook cannot read is allowed. Returns the reason for a refusal, or undefined.
+ * For Bash it reads the targets of the commands in writeTargets: a miss is a known limit, and a command that the hook
+ * cannot read is allowed. It asks git once per folder, and past GIT_FOLDERS folders it stops and allows: the push and
+ * merge rules ran before it. Returns the reason for a refusal, or undefined.
  */
+const GIT_FOLDERS = 50;
 function writeGuard(tool, ti, cwd) {
   let targets;
   if (FILE_TOOLS.test(tool)) targets = [[ti.file_path ?? ti.notebook_path, cwd]];
@@ -233,15 +236,39 @@ function writeGuard(tool, ti, cwd) {
   } else return undefined;
   const home = real(homedir());
   const temps = [...new Set(["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", tmpdir(), process.env.TMPDIR].filter(Boolean).map(real))];
+  const tops = new Map(); // the nearest existing folder, and the top of the linked worktree that holds it
   for (const [path, dir] of targets) {
     const expanded = typeof path === "string" ? path.replace(/^~(?=\/|$)|^\$\{?HOME\}?(?=\/|$)/, homedir()) : "";
     if (!expanded || expanded.includes("$")) continue; // another variable or a substitution: not judged
     const target = real(resolve(dir, expanded));
     if (!inside(target, home) || temps.some((t) => t.length > home.length && inside(target, t))) continue;
-    if (linkedWorktree(target)) continue;
-    return `${target} is under the owner's home folder, outside a linked worktree and the temp folders. Write in your worktree or a temp folder, such as your scratch folder.`;
+    const folder = existingFolder(target);
+    if (!tops.has(folder)) {
+      if (tops.size === GIT_FOLDERS) {
+        process.stderr.write(`sage: the write guard stopped after ${GIT_FOLDERS} folders and allowed the rest of this command.\n`);
+        return undefined;
+      }
+      tops.set(folder, linkedWorktree(folder));
+    }
+    const top = tops.get(folder);
+    if (top && inside(target, top)) continue;
+    return `${target} is under the owner's home folder, outside a linked worktree and the temp folders. ${whereToWrite(cwd)}`;
   }
   return undefined;
+}
+
+/** The places that a refused agent may write: the linked worktrees of its project, and its temp folder. */
+function whereToWrite(cwd) {
+  const temp = real(process.env.TMPDIR || "/private/tmp");
+  let trees = [];
+  try {
+    const list = execFileSync("git", ["-C", existingFolder(real(cwd)), "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined } });
+    trees = [...list.matchAll(/^worktree (.+)$/gm)].slice(1).map((m) => real(m[1])); // the first one is the main checkout
+  } catch {
+    // not in a git project: only the temp folder
+  }
+  const worktree = trees.length ? `a linked worktree of this project: ${trees.join(", ")}, ` : "a linked worktree (git worktree add), ";
+  return `Write in ${worktree}or in the temp folder ${temp}.`;
 }
 
 const inside = (path, root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
@@ -254,45 +281,71 @@ function real(path) {
     return parent === path ? path : join(real(parent), basename(path));
   }
 }
-/** git's answers for the nearest existing folder of a path, or undefined. */
-function gitAt(path, ...args) {
+function existingFolder(path) {
   let dir = path;
   while (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) dir = dirname(dir);
+  return dir;
+}
+/** The top of the linked worktree that holds a folder: its git folder is not the project's own. */
+function linkedWorktree(dir) {
   try {
-    return execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", ...args], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined } }).trim().split("\n").map(real);
+    const out = execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined } });
+    const [top, gitDir, common] = out.trim().split("\n").map(real);
+    return gitDir !== common ? top : undefined;
   } catch {
     return undefined;
   }
 }
-/** The top of the linked worktree that holds the path: its git folder is not the project's own. */
-function linkedWorktree(path) {
-  const [top, gitDir, common] = gitAt(path, "--show-toplevel", "--git-dir", "--git-common-dir") ?? [];
-  return top && gitDir !== common && inside(path, top) ? top : undefined;
-}
 
-/** The files and folders that a command line writes, each with the folder it runs in: [[path, dir]]. */
-const WRITERS = /^(?:tee|cp|mv|mkdir|touch|rm)$/;
+/**
+ * The files and folders that a command line writes, each with the folder it runs in: [[path, dir]]. A command that
+ * changes the state of a checkout (a commit, a checkout, an install) writes the folder that it acts on.
+ */
+const WRITERS = /^(?:tee|cp|mv|install|mkdir|touch|rm)$/;
+const GIT_WRITES = /^(?:commit|checkout|switch|reset|stash|pull|merge|rebase|cherry-pick|am|apply)$/;
+const INSTALLS = /^(?:npm|pnpm|yarn)$/;
 function writeTargets(commands, cwd) {
   const targets = [];
   let dir = cwd;
   for (const { words, redirects } of commands) {
-    if (words[0] === "cd" && words.length === 2) dir = resolve(dir, words[1].replace(/^~(?=\/|$)/, homedir()));
     for (const [k, at] of redirects) {
-      const rest = words[k].slice(at).replace(/^&?>+&?/, "");
+      const rest = words[k].slice(at).replace(REDIRECT, "");
       const path = rest || words[k + 1];
       if (path && !/^\d+-?$|^-$/.test(path)) targets.push([path, dir]);
     }
-    const skip = new Set(redirects.flatMap(([k, at]) => (words[k].slice(at).replace(/^&?>+&?/, "") ? [k] : [k, k + 1])));
+    const skip = new Set(redirects.flatMap(([k, at]) => (words[k].slice(at).replace(REDIRECT, "") ? [k] : [k, k + 1])));
     const args = words.filter((w, k) => k > 0 && !skip.has(k));
-    const name = basename(words[0] ?? "");
-    if (!WRITERS.test(name)) continue;
-    const t = args.indexOf("-t");
     const files = args.filter((w) => !w.startsWith("-"));
-    const written = /^(?:cp|mv)$/.test(name) ? (t >= 0 ? [args[t + 1]] : files.slice(-1)) : files;
-    targets.push(...written.map((path) => [path, dir]));
+    const name = basename(words[0] ?? "");
+    if (/^(?:cd|pushd)$/.test(name) && files.length === 1) dir = resolve(dir, files[0].replace(/^~(?=\/|$)/, homedir()));
+    else if (name === "git") {
+      let at = dir;
+      let k = 0;
+      for (; k < args.length && args[k].startsWith("-"); k++) {
+        if (args[k] === "-C") at = resolve(at, args[++k] ?? "");
+        else if (args[k] === "-c") k++;
+      }
+      const sub = args[k] ?? "";
+      if (GIT_WRITES.test(sub) || (sub === "branch" && args.slice(k + 1).some((w) => /^(?:-[a-zA-Z]*[dD]|--delete)$/.test(w)))) targets.push([at, dir]);
+    } else if (INSTALLS.test(name) && /^(?:install|i|ci)$/.test(files[0] ?? "")) targets.push([dir, dir]);
+    else if (name === "curl") {
+      args.forEach((w, k) => {
+        const m = /^--output(?:=(.*))?$|^-[a-zA-Z]*o(.*)$/.exec(w);
+        if (m) targets.push([m[1] ?? (m[2] || args[k + 1]), dir]);
+      });
+    } else if (WRITERS.test(name)) {
+      if (!/^(?:cp|mv|install)$/.test(name)) {
+        targets.push(...files.map((path) => [path, dir]));
+        continue;
+      }
+      const into = args.flatMap((w, k) => /^(?:-t|--target-directory)$/.test(w) ? [args[k + 1]] : (/^-t(.+)$|^--target-directory=(.*)$/.exec(w) ?? []).slice(1).filter(Boolean));
+      targets.push(...(into.length ? into : files.slice(-1)).map((path) => [path, dir]));
+    }
   }
   return targets;
 }
+/** The operator at the start of a redirection word: >, >>, &>, >&, >|. */
+const REDIRECT = /^&?>+[&|]?/;
 
 /**
  * The push rule is an allow-list, as the merge rule is. A command that runs git push anywhere in a command line (also
@@ -678,10 +731,13 @@ function readCommands(src, i, close, out, host) {
     } else if (c === " " || c === "\t") {
       endWord();
       i++;
+    } else if ((c === ">" || c === "<") && cmd.words[0] === "[[" && !cmd.words.includes("]]")) {
+      add(c); // a comparison in [[ ]], not a redirection
+      i++;
     } else if (c === ">" || (c === "&" && src[i + 1] === ">")) {
       cmd.writes = true; // a redirection: ">", ">>", "&>", and ">&2" or "2>&1", whose "&" ends nothing
       if (src[i - 1] !== ">") cmd.redirects.push([cmd.words.length, (word ?? "").length]); // its word, and where it starts in the word
-      const n = src[i + 1] === "&" ? 2 : 1;
+      const n = src[i + 1] === "&" || (c === ">" && src[i + 1] === "|") ? 2 : 1; // ">&", "&>" and ">|"
       add(src.slice(i, i + n));
       i += n;
     } else if (c === "|" && src[i + 1] !== "|") {

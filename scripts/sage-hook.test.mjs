@@ -1295,7 +1295,6 @@ test("a sage agent may write only in a linked worktree and the temp folders, not
   const refused = (out) => denied(out) ?? "not refused";
 
   assert.match(refused(write(join(s.home, "notes.txt"))), new RegExp(`${join(s.home, "notes.txt")} is under the owner's home folder, outside a linked worktree`));
-  assert.match(refused(write(join(s.home, "notes.txt"))), /Write in your worktree or a temp folder/);
   assert.equal(write(join(s.worktree, "src/a.js")), undefined, "its worktree");
   assert.equal(write("/private/tmp/sage-t57-test/a.log"), undefined, "a temp folder");
   assert.equal(write(join(s.home, "workspace/proj-t1/b.js"), { ...agent, cwd: s.project }), undefined, "a linked worktree of a project, from another folder");
@@ -1329,4 +1328,69 @@ test("a sage agent may write only in a linked worktree and the temp folders, not
   s.send(prompt("sage mode"));
   assert.equal(run("echo x > ~/x", { cwd: s.worktree }), undefined, "the main session in sage mode");
   assert.match(refused(write(join(s.home, "notes.txt"))), /is under the owner's home folder/, "and an agent in sage mode");
+});
+
+test("a sage agent may not change a main checkout's git state or install there, and the refusal names where it may write (T57 repair 2)", () => {
+  const s = homeWithWorktree();
+  const agent = { agent_id: "a1", agent_type: "sage:implementer", cwd: s.worktree };
+  const run = (command, extra = agent) => s.send(tool("Bash", { command }, extra));
+  const refused = (out) => denied(out) ?? "not refused";
+  const inMain = { ...agent, cwd: s.project };
+  const temp = realpathSync(process.env.TMPDIR ?? "/private/tmp");
+
+  const why = refused(run(`touch ${join(s.home, "x")}`));
+  assert.ok(why.includes(`Write in a linked worktree of this project: ${realpathSync(s.worktree)}`), why);
+  assert.ok(why.includes(`or in the temp folder ${temp}`), why);
+
+  assert.match(refused(run(`git -C ${s.project} commit -am oops`)), /proj is under the owner's home folder, outside a linked worktree/);
+  assert.match(refused(run(`cd ${s.project} && git checkout -b x`)), /proj is under/);
+  assert.match(refused(run(`pushd ${s.project} && npm install`)), /proj is under/);
+  assert.match(refused(run(`cd -- ${s.project} && touch x`)), /proj\/x is under/);
+  assert.match(refused(run("git stash", inMain)), /proj is under/, "the working folder is the main checkout");
+  assert.match(refused(run("git branch -D claude/t1", inMain)), /proj is under/);
+  assert.match(refused(run(`install -m 644 a.txt ${s.project}/a.txt`)), /proj\/a\.txt is under/);
+  assert.match(refused(run(`curl -sSo ${s.project}/page.html https://example.com`)), /proj\/page\.html is under/);
+  assert.match(refused(run(`curl --output=${s.project}/p.html https://example.com`)), /proj\/p\.html is under/);
+  assert.equal(run("git worktree add ../proj-t9 -b claude/t9", inMain), undefined, "a new worktree from the main checkout");
+  assert.equal(run("git status && git log -1 && git diff", inMain), undefined, "read-only git in the main checkout");
+  assert.equal(run("git branch --list", inMain), undefined);
+  assert.equal(run(`git -C ${s.worktree} commit -am ok`, inMain), undefined, "a commit in a linked worktree");
+  assert.equal(run("npm install && git commit -am ok"), undefined, "an install and a commit in its worktree");
+
+  assert.match(refused(run(`cp -t${s.project} a.txt`)), /proj is under/);
+  assert.match(refused(run(`cp a.txt --target-directory=${s.project}`)), /proj is under/);
+  assert.match(refused(run(`mv --target-directory ${s.project} a.txt`)), /proj is under/);
+  assert.match(refused(run(`echo x >| ${s.project}/y`)), /proj\/y is under/);
+  assert.equal(run("[[ b > a ]] && echo yes", inMain), undefined, "a comparison in [[ ]] is not a write");
+});
+
+test("the push rule runs before the write guard, and the guard asks git once per folder and judges at most 50 folders (T57 repair 2)", () => {
+  const s = homeWithWorktree();
+  const bin = join(s.dir, "bin");
+  const log = join(s.dir, "git-calls");
+  const git = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), `#!/bin/sh\necho "$@" >> "${log}"\nexec "${git}" "$@"\n`, { mode: 0o755 });
+  const env = { ...s.vars, PATH: `${bin}:${process.env.PATH}` };
+  const run = (command) => {
+    writeFileSync(log, "");
+    const event = tool("Bash", { command }, { session_id: "s1", agent_id: "a1", agent_type: "sage:implementer", cwd: s.worktree });
+    const r = spawnSync("node", LAUNCHER, { input: JSON.stringify(event), encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stderr);
+    return { why: r.stdout ? denied(JSON.parse(r.stdout)) : undefined, calls: readFileSync(log, "utf8").split("\n").filter(Boolean).length, stderr: r.stderr };
+  };
+  s.send(prompt("sage mode"));
+  const many = Array.from({ length: 1000 }, (_, k) => join(s.worktree, `f${k}`)).join(" ");
+  const pushed = run(`touch ${many} && git push origin main`);
+  assert.match(pushed.why ?? "", /Push only with/, "the push rule refuses first");
+  assert.equal(pushed.calls, 0, "the push rule needs no git call here, and the guard did not run");
+  const same = run(`touch ${many}`);
+  assert.deepEqual([same.why, same.calls], [undefined, 1], "1,000 files in one folder: one git call");
+
+  for (let k = 0; k < 60; k++) mkdirSync(join(s.worktree, `d${k}`));
+  const folders = Array.from({ length: 60 }, (_, k) => join(s.worktree, `d${k}/x`)).join(" ");
+  const spread = run(`touch ${folders}`);
+  assert.equal(spread.why, undefined, "past 50 folders the guard stops judging and allows");
+  assert.equal(spread.calls, 50);
+  assert.match(spread.stderr, /sage: the write guard stopped after 50 folders/);
 });
