@@ -378,7 +378,7 @@ test("config, gates, standing orders and status", () => {
   assert.equal(lines[1], "tasks   1 · framed 1");
   assert.equal(lines[2], "gates   1 open · G1 Include deleted trips? (default: no)");
   assert.match(readFileSync(join(s.dir, "status.md"), "utf8"), /\| T1 \| framed \| large \| 0 \|  \| Export trips \|/);
-  s.ok("gate", "answer", "G1", "no");
+  s.ok("gate", "answer", "G1", "--option", "2");
   assert.match(s.ok("status"), /gates   0 open/);
   assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /Include deleted trips\? → no\tthe user's answer/);
 });
@@ -1037,7 +1037,7 @@ test("unknown-columns: a logbook that a newer sage wrote refuses every write com
     ["finding", "close", "T1", "F-T1-1"],
     ["verdict", "T1", "--sha", SHA, "--kind", "review-clean"],
     ["gate", "add", "T1", "--question", "q2?", "--options", "a|b", "--recommend", "a"],
-    ["gate", "answer", "G1", "no"],
+    ["gate", "answer", "G1", "--option", "2"],
     ["log", "T1", "x", "--why", "y"],
   ];
   assert.deepEqual(writes.map((w) => s.no(...w)), writes.map(() => why));
@@ -1233,7 +1233,7 @@ test("QA-R58-3: a refusal for a missing id names the latest ids that the logbook
   s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "x");
   s.ok("finding", "add", "T2", "--source", "qa", "--severity", "low", "--summary", "y");
   assert.equal(s.no("finding", "triage", "T1", "F-T1-9", "fix"), "sage: no finding F-T1-9 on T1. The latest: F-T1-1.");
-  assert.equal(s.no("gate", "answer", "G1", "yes"), "sage: no gate G1. There is none yet.");
+  assert.equal(s.no("gate", "answer", "G1", "--option", "1"), "sage: no gate G1. There is none yet.");
 });
 
 test("F-R57-2: a PR is only digits, so a typo never hides a task from merge-check --pr", () => {
@@ -1347,6 +1347,71 @@ test("F-R65-3: no control character reaches the terminal: a cell keeps none, a p
   assert.deepEqual([r.status, r.stderr], [1, `sage: no logbook for the project ${dirname(project)}/x\\x0drm -rf ~ #. Its path has control characters, so no command is printed to paste. Rename the folder, or run sage init from inside it.\n`]);
 });
 
+test("T72-S6-OPTIONSHELL: gate answer takes an option by its number and records it exactly as stored; no text goes on the command line", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("gate", "add", "T1", "--question", "Ship it?", "--options", "yes|keep $(touch X) it|No  access / later", "--recommend", "yes");
+  const before = snapshot(s.dir);
+  const how = "sage: gate answer G1 takes --option <n>, the number of one of its options (1 to 3), or --other-hex <hex>, the owner's own words as the hex of their UTF-8 bytes (0-9 and a-f). Nothing changed.";
+  for (const args of [["yes"], ["--option", "4"], ["--option", "0"], ["--option", "yes"], ["--option", "1", "--other-hex", "6f6b"], []]) assert.equal(s.no("gate", "answer", "G1", ...args), how, args.join(" "));
+  assert.equal(s.no("gate", "answer", "G1", "--other"), "sage: gate answer takes no --other. Its options: --option, --other-hex, --project.");
+  assert.deepEqual(snapshot(s.dir), before, "no file changed");
+  assert.equal(s.ok("gate", "answer", "G1", "--option", "3"), "G1 answered · No  access / later");
+  assert.equal(rows(s.dir, "gates")[0].answer, "No  access / later");
+});
+
+test("T72-S7-HEREDOC: gate answer --other-hex records the owner's own words exactly, marked as other, and runs none of them", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("gate", "add", "T1", "--question", "Defaults?", "--options", "accept|review each", "--recommend", "accept");
+  const cwd = mkdtempSync(join(tmpdir(), "sage-words-"));
+  const words = "Keep logs\nSAGE_WORDS\ntouch PWNED\n$(touch X) `touch Y` 'q' \"dq\" ü";
+  // The command as the chief gives it to a shell: only 0-9 and a-f stand for the owner's words.
+  const hex = Buffer.from(words, "utf8").toString("hex");
+  const r = spawnSync("/bin/sh", ["-c", `node '${TOOL}' gate answer G1 --other-hex ${hex} --project '${s.project}'`], { cwd, encoding: "utf8", env: testEnv({ SAGE_HOME: s.home }), timeout });
+  const stored = "other: Keep logs SAGE_WORDS touch PWNED $(touch X) `touch Y` 'q' \"dq\" ü"; // one cell: line breaks read as spaces
+  assert.equal(r.stdout, `G1 answered · ${stored}\n`, r.stderr);
+  assert.equal(rows(s.dir, "gates")[0].answer, stored);
+  assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /Defaults\? → other: Keep logs SAGE_WORDS .*\tthe user's own words\n/);
+  assert.deepEqual(readdirSync(cwd), [], "no file made: nothing of the words ran");
+  assert.match(s.ok("status"), /gates   0 open/);
+});
+
+test("T72-S7-HEREDOC: gate answer refuses --other-hex that is not the hex of UTF-8 text, or only spaces, and changes nothing", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("gate", "add", "T1", "--question", "Defaults?", "--options", "accept|review each", "--recommend", "accept");
+  const before = snapshot(s.dir);
+  const how = "sage: gate answer G1 takes --option <n>, the number of one of its options (1 to 2), or --other-hex <hex>, the owner's own words as the hex of their UTF-8 bytes (0-9 and a-f). Nothing changed.";
+  for (const bad of ["", "6f6", "6g6b", "6F6B", "6f 6b", "ff", "c328"]) assert.equal(s.no("gate", "answer", "G1", `--other-hex=${bad}`), how, bad); // c328: invalid UTF-8
+  assert.equal(s.no("gate", "answer", "G1", "--other-hex", "200a"), "sage: missing the owner's own words: --other-hex gives only spaces");
+  assert.deepEqual(snapshot(s.dir), before, "no file changed");
+});
+
+test("T72-Q6-RECOMMEND: gate add takes a recommendation and a default among the options, by text or number, and refuses options that look the same", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  const add = (...args) => ["gate", "add", "T1", "--question", "q?", ...args];
+  assert.equal(s.no(...add("--options", "yes|no", "--recommend", "maybe")), 'sage: --recommend is one of the options, by its text or its number (1 to 2): "yes", "no".');
+  assert.equal(s.no(...add("--options", "yes|no", "--recommend", "yes", "--default", "3")), 'sage: --default is one of the options, by its text or its number (1 to 2): "yes", "no".');
+  assert.equal(s.no(...add("--options", "Keep|keep", "--recommend", "1")), 'sage: two options look the same: "keep" and "Keep". Make them differ in more than case.');
+  assert.equal(s.no(...add("--options", "drop|dro\u200bp", "--recommend", "1")), 'sage: two options look the same: "drop" and "drop". Make them differ in more than case.');
+  for (const o of ["other: no", "oth\u00ader: x", "\uff4f\uff54\uff48\uff45\uff52\uff1a x", "Other : x"])
+    assert.equal(s.no(...add("--options", `yes|${o}`, "--recommend", "1")), 'sage: an option may not start with "other:": it marks an answer in the owner\'s own words.', o); // T72-S7-OTHERLOOK
+  assert.equal(rows(s.dir, "gates").length, 0, "no gate added");
+  s.ok(...add("--options", "Keep it|drop", "--recommend", "KEEP IT", "--default", "2"));
+  assert.deepEqual([rows(s.dir, "gates")[0].recommendation, rows(s.dir, "gates")[0].default], ["Keep it", "drop"]);
+  assert.match(s.ok(...add("--options", "yes|otherwise: no", "--recommend", "1")), /^G2 open/, "a word that only starts with other passes");
+});
+
+test("T72-Q6-CHECKOUT: init and task add name the project's main checkout in checkout.txt", () => {
+  const s = store();
+  assert.equal(readFileSync(join(s.dir, "checkout.txt"), "utf8"), `${s.project}\n`);
+  rmSync(join(s.dir, "checkout.txt"));
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  assert.equal(readFileSync(join(s.dir, "checkout.txt"), "utf8"), `${s.project}\n`);
+});
+
 test("F-R64-2: a table that is a link to nothing refuses a write before any change", () => {
   // probe P4: decisions.tsv is a link to nothing, and gate answer writes gates.tsv, then decisions.tsv.
   const s = store();
@@ -1356,10 +1421,10 @@ test("F-R64-2: a table that is a link to nothing refuses a write before any chan
   rmSync(decisions);
   symlinkSync(join(s.home, "nothing-here"), decisions);
   const before = snapshot(s.dir);
-  assert.equal(s.no("gate", "answer", "G1", "y"), `sage: ${lost(s.dir, "decisions")}`);
+  assert.equal(s.no("gate", "answer", "G1", "--option", "1"), `sage: ${lost(s.dir, "decisions")}`);
   assert.deepEqual([snapshot(s.dir), rows(s.dir, "gates")[0].answer], [before, ""], "no file changed: gates.tsv has no answer");
   assert.match(s.ok("logbook", "repair", "--accept-loss", "decisions"), /^decisions\.tsv started again without rows; its old file is \S+decisions\.tsv\.lost-\d+\. The decision is in decisions\.tsv\.$/); // the user accepts the loss
-  assert.equal(s.ok("gate", "answer", "G1", "y"), "G1 answered · y");
+  assert.equal(s.ok("gate", "answer", "G1", "--option", "1"), "G1 answered · y");
 });
 
 test("F-R73-1: a logbook whose tasks, findings or ledger table is gone, or is a link to nothing, refuses every merge; a new logbook does not", () => {
@@ -1430,7 +1495,7 @@ test("F-R78-1: no write makes a lost table again, so neither init nor a new find
 
 test("F-R78-1: init makes a new logbook, finishes one that it began, and refuses tables with rows but no tasks.tsv", () => {
   const s = store(); // init on an empty folder: every table with only its header line
-  assert.deepEqual(readdirSync(s.dir).sort(), ["briefs", "decisions.tsv", "findings.tsv", "gates.tsv", "ledger.tsv", "reports", "runs.tsv", "standing.md", "status.md", "tasks.tsv"]);
+  assert.deepEqual(readdirSync(s.dir).sort(), ["briefs", "checkout.txt", "decisions.tsv", "findings.tsv", "gates.tsv", "ledger.tsv", "reports", "runs.tsv", "standing.md", "status.md", "tasks.tsv"]);
   rmSync(join(s.dir, "tasks.tsv"));
   rmSync(join(s.dir, "findings.tsv")); // init stopped before its last tables
   assert.equal(s.ok("init"), `logbook ${s.dir}`);
