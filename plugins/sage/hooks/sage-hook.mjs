@@ -15,7 +15,7 @@
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
-//   - A sage agent writes under the owner's home folder only in a git worktree, its own or a linked one (writeGuard).
+//   - A sage agent writes under the owner's home folder only in a linked worktree, never in a project's main checkout (writeGuard).
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -214,8 +214,8 @@ export function handle(input, state, slots) {
 }
 
 /**
- * Where a sage agent may write under the owner's home folder: in the git worktree of its working folder, or in any
- * linked worktree (git worktree add). The temp folders are open, and the folders outside the home are not judged. The
+ * Where a sage agent may write under the owner's home folder: only in a linked worktree (git worktree add), also when
+ * its working folder is the project's main checkout, which is closed. The temp folders are open, and the folders outside the home are not judged. The
  * nearest folder decides, so a home inside a temp folder (as in the tests) is still the home. ~/.claude is closed: the
  * state tool writes there itself, and its command has no write target that the hook reads. Reads are never refused.
  * For Bash it reads the targets of >, >>, tee, cp, mv, mkdir, touch and rm: a miss is a known limit, and a command that
@@ -238,9 +238,8 @@ function writeGuard(tool, ti, cwd) {
     if (!expanded || expanded.includes("$")) continue; // another variable or a substitution: not judged
     const target = real(resolve(dir, expanded));
     if (!inside(target, home) || temps.some((t) => t.length > home.length && inside(target, t))) continue;
-    const own = worktreeOf(cwd);
-    if ((own && own.length > home.length && inside(target, own)) || linkedWorktree(target)) continue;
-    return `${target} is under the owner's home folder, outside your worktree${own ? ` (${own})` : ""} and the temp folders. Write in your worktree or a temp folder, such as your scratch folder.`;
+    if (linkedWorktree(target)) continue;
+    return `${target} is under the owner's home folder, outside a linked worktree and the temp folders. Write in your worktree or a temp folder, such as your scratch folder.`;
   }
   return undefined;
 }
@@ -265,7 +264,6 @@ function gitAt(path, ...args) {
     return undefined;
   }
 }
-const worktreeOf = (dir) => gitAt(dir, "--show-toplevel")?.[0];
 /** The top of the linked worktree that holds the path: its git folder is not the project's own. */
 function linkedWorktree(path) {
   const [top, gitDir, common] = gitAt(path, "--show-toplevel", "--git-dir", "--git-common-dir") ?? [];

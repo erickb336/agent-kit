@@ -1287,19 +1287,24 @@ function homeWithWorktree() {
   return { ...s, home, project, worktree };
 }
 
-test("a sage agent may write only in its worktree and the temp folders, not elsewhere under the home folder (T57)", () => {
+test("a sage agent may write only in a linked worktree and the temp folders, not in the main checkout or elsewhere under the home folder (T57)", () => {
   const s = homeWithWorktree();
   const agent = { agent_id: "a1", agent_type: "sage:implementer", cwd: s.worktree };
   const write = (file_path, extra = agent) => s.send(tool("Write", { file_path, content: "x" }, extra));
   const run = (command, extra = agent) => s.send(tool("Bash", { command }, extra));
   const refused = (out) => denied(out) ?? "not refused";
 
-  assert.match(refused(write(join(s.home, "notes.txt"))), new RegExp(`${join(s.home, "notes.txt")} is under the owner's home folder, outside your worktree`));
+  assert.match(refused(write(join(s.home, "notes.txt"))), new RegExp(`${join(s.home, "notes.txt")} is under the owner's home folder, outside a linked worktree`));
   assert.match(refused(write(join(s.home, "notes.txt"))), /Write in your worktree or a temp folder/);
   assert.equal(write(join(s.worktree, "src/a.js")), undefined, "its worktree");
   assert.equal(write("/private/tmp/sage-t57-test/a.log"), undefined, "a temp folder");
   assert.equal(write(join(s.home, "workspace/proj-t1/b.js"), { ...agent, cwd: s.project }), undefined, "a linked worktree of a project, from another folder");
-  assert.match(refused(write(join(s.project, "a.log"))), /outside your worktree/, "the project's main checkout is not the agent's worktree");
+  assert.match(refused(write(join(s.project, "a.log"))), /outside a linked worktree/, "the project's main checkout is not the agent's worktree");
+  const inMain = { ...agent, cwd: s.project };
+  assert.match(refused(write(join(s.project, "src/a.js"), inMain)), /proj\/src\/a\.js is under the owner's home folder, outside a linked worktree/, "the main checkout, also as the working folder");
+  assert.match(refused(run("npm test > out.log", inMain)), /proj\/out\.log is under/, "a shell write in the main checkout as the working folder");
+  assert.equal(write(join(s.worktree, "src/a.js"), inMain), undefined, "a linked worktree, from the main checkout");
+  assert.equal(write("/private/tmp/sage-t57-test/b.log", inMain), undefined, "a temp folder, from the main checkout");
   assert.match(refused(s.send(tool("Edit", { file_path: join(s.home, ".zshrc") }, agent))), /\.zshrc is under the owner's home folder/);
   assert.match(refused(s.send(tool("NotebookEdit", { notebook_path: join(s.home, "n.ipynb") }, agent))), /n\.ipynb is under/);
   assert.match(refused(write(join(s.worktree, "../x.log"))), new RegExp(`${join(s.home, "workspace/x.log")} is under`), "a path with ..");
