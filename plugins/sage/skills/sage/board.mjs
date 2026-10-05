@@ -8,7 +8,7 @@
 // board's own PR links, built from digits.
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import { BLOCKS, RISKS, STATES, optionsOf, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
 
@@ -23,6 +23,8 @@ const FORMAT = {
   tasks: { id: /^T\d+$/, state: (v) => STATES.includes(v), pr: /^\d+$/, round: /^\d+$/, risk: (v) => v.split(",").every((r) => RISKS.includes(r)) },
   runs: { task: /^T\d+$/, role: (v) => BLOCKS.includes(v) || AGENTS.includes(v) },
   gates: { id: /^G\d+$/, task: /^T\d+$/ },
+  ledger: { task: /^T\d+$/ },
+  decisions: { task: /^T\d+$/ },
 };
 const fits = (test, v) => (typeof test === "function" ? test(v) : test.test(v));
 const clean = (table, row) => {
@@ -87,8 +89,9 @@ const real = (p) => {
 
 /**
  * Every logbook under the root, sorted by key: its folder, its name (the folder without its hash), its key (the name, or
- * the folder when two logbooks have the same name), its tables (all, or none when one cannot be read), and its checkout
- * when checkout.txt names it.
+ * the folder when two logbooks have the same name), its tables (all, or none when one cannot be read), its checkout
+ * when checkout.txt names it, and changed: per task id, the time in ms of its latest change, the latest time that its
+ * runs (started, ended), gates, ledger verdicts and decisions give. A task with none of these has no entry.
  */
 function logbooks(root) {
   let folders = [];
@@ -98,9 +101,13 @@ function logbooks(root) {
   const books = folders.map(({ name: folder }) => {
     const dir = join(root, folder);
     const checkout = small(join(dir, "checkout.txt"), 4096)?.trim() || null;
-    const book = { folder, name: FOLDER.exec(folder)[1], dir, checkout, tasks: [], runs: [], gates: [], error: null };
+    const book = { folder, name: FOLDER.exec(folder)[1], dir, checkout, tasks: [], runs: [], gates: [], changed: {}, error: null };
     try {
-      const [tasks, runs, gates] = ["tasks", "runs", "gates"].map((t) => read(dir, t).map((row) => clean(t, row)));
+      const [tasks, runs, gates, ledger, decisions] = Object.keys(FORMAT).map((t) => read(dir, t).map((row) => clean(t, row)));
+      for (const [task, at] of [...runs.flatMap((r) => [[r.task, r.started], [r.task, r.ended]]), ...[...gates, ...ledger, ...decisions].map((r) => [r.task, r.at])]) {
+        const ms = Date.parse(at);
+        if (task && ms > (book.changed[task] ?? -Infinity)) book.changed[task] = ms;
+      }
       Object.assign(book, { tasks, runs, gates });
     } catch (e) {
       book.error = text(e.message.replaceAll(`${dir}/`, "").replaceAll(dir, folder), 120); // the reason, not the long path
@@ -141,23 +148,31 @@ function sessionBooks(books, project, env) {
 }
 
 /**
- * The folder where `gate answer --project <folder>` writes to this logbook: the session's project for its own logbook,
- * else the checkout that checkout.txt names, when storeDir gives this logbook from it. Else null: a folder with a control
- * character in its path is never named, as it cannot go into a command.
+ * A folder's home: its main checkout (root) and the logbook folder that storeDir gives it (dir). Null for no folder, or
+ * one with a control character in its path, as it cannot go into a command. A folder that is its own main checkout, as
+ * checkout.txt names it, costs one git call: storeDir would only ask git for the same root again.
  */
-function answerPath(b, project, env) {
-  for (const p of [project, b.checkout]) {
-    try {
-      if (p && !/\p{Cc}/u.test(p) && storeDir(p, env) === b.dir) return projectRoot(resolve(p));
-    } catch {}
-  }
-  return null;
+function home(p, env) {
+  if (!p || /\p{Cc}/u.test(p)) return null;
+  const root = projectRoot(resolve(p));
+  const dir = root === resolve(p) ? join(sageRoot(env), `${slug(basename(root))}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`) : storeDir(p, env);
+  return { root, dir };
+}
+/**
+ * The folder where `gate answer --project <folder>` writes to this logbook: the session's project for its own logbook,
+ * else the checkout that checkout.txt names, when storeDir gives this logbook from it. Else null. here: home(project),
+ * found once per board.
+ */
+function answerPath(b, here, env) {
+  const h = here?.dir === b.dir ? here : home(b.checkout, env);
+  return h?.dir === b.dir ? h.root : null;
 }
 /** Each logbook with an open gate, by its key, and the folder where its answers go (null when none is known). */
 export function answerPaths({ project, env = process.env } = {}) {
+  const here = home(project, env);
   return logbooks(sageRoot(env))
     .filter((b) => b.gates.some((g) => !g.answer))
-    .map((b) => ({ key: b.key, path: answerPath(b, project, env) }));
+    .map((b) => ({ key: b.key, path: answerPath(b, here, env) }));
 }
 
 /**
@@ -209,21 +224,21 @@ function remember(root, books, at) {
  * The board as Markdown. scope: "this" (the session's project, and one line per other project with something waiting),
  * "all", or a project's key or logbook folder, as a slug like projectName gives (so any case, and "_", "." or a space
  * for "-"). project: the session's folder; a session outside every project shows all. The "this" and "all" boards show
- * at most 8 active tasks per project; a board for one named project shows all of them.
+ * at most 8 active tasks per project, those with a PR in review first; a board for one named project shows all of them.
  */
 export function board({ scope = "this", project, env = process.env, now = new Date(), save = true } = {}) {
   const root = sageRoot(env);
   const books = logbooks(root);
   const built = now.toISOString().slice(0, 16).replace("T", " ");
   if (!books.length) return `**sage board** · built ${built} UTC\n\nNo logbooks yet under ${root}. In a project folder, start sage mode and give the chief a task.`;
-  // A logbook's real name: the folder name of its checkout (checkout.txt), or of the session folder when that folder is
-  // the logbook's own project (its storeDir). Unknown otherwise. PR links come from the same folder: a folder that only
-  // shares the logbook's name gives none.
-  const own = project && books.find((b) => b.dir === storeDir(project, env));
+  // A logbook's real name and PR links come from its home: the folder where its gate answers go (answerPath), so only
+  // a folder whose storeDir is this logbook. A folder that only shares the logbook's name, or a checkout.txt that names
+  // a folder of another logbook, gives neither: the board shows the key and no links.
+  const here = home(project, env);
   for (const b of books) {
-    const home = b.checkout ?? (b === own ? projectRoot(resolve(project)) : null);
-    b.real = home ? basename(resolve(home)).normalize("NFC") : null;
-    b.repo = home ? repoOf(home) : null;
+    b.home = answerPath(b, here, env);
+    b.real = b.home ? basename(b.home).normalize("NFC") : null;
+    b.repo = b.home ? repoOf(b.home) : null;
   }
   const label = (b) => (b.real && b.real !== b.key ? `${b.key} (${text(b.real, 40)})` : b.key);
   const known = books.map(label).join(", ");
@@ -265,7 +280,7 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     return [
       `${label(b)} **${g.id}**${g.task ? ` · ${g.task}` : ""} · ${text(g.question)}`,
       `  Recommended: ${text(g.recommendation) || "none"}. Default: ${text(g.default) || "none"}.`,
-      ...(answerPath(b, project, env) ? [] : [`  Answer it in a session of ${label(b)}: this board does not know its folder.`]),
+      ...(b.home ? [] : [`  Answer it in a session of ${label(b)}: this board does not know its folder.`]),
       ...(options.length ? options.map((o, i) => `  ${i + 1}. ${text(o)}`) : ["  Options: none."]),
     ].join("\n");
   };
@@ -293,14 +308,18 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   section(`Merged ${since} (${fresh.length})`, fresh, CAP.merged);
   if (firstFor.length) L.push(`- first board for ${firstFor.map(label).join(", ")}: earlier merges not listed`);
 
-  // One section per project: its active tasks, the framed backlog as a count, and the next 3 framed tasks by id.
+  // One section per project: its active tasks, the framed backlog as a count, and the next 3 framed tasks by id. The
+  // active tasks with a PR in review (reviewing or verifying) come first, then the others by their latest change, newest
+  // first; tasks without a time, and ties, by id.
+  const inReview = (t) => (["reviewing", "verifying"].includes(t.state) && t.pr ? 0 : 1);
   for (const b of shown) {
     L.push("", `**${label(b)}**${b.repo ? ` · ${b.repo.replace("https://", "")}` : ""}`);
     if (b.error) {
       L.push(`- logbook cannot be read: ${b.error}`);
       continue;
     }
-    const active = b.tasks.filter((t) => !CLOSED.includes(t.state) && t.state !== "framed").sort((x, y) => n(x.id) - n(y.id));
+    const at = (t) => b.changed[t.id] ?? -Infinity;
+    const active = b.tasks.filter((t) => !CLOSED.includes(t.state) && t.state !== "framed").sort((x, y) => inReview(x) - inReview(y) || at(y) - at(x) || n(x.id) - n(y.id));
     const framed = b.tasks.filter((t) => t.state === "framed").sort((x, y) => n(x.id) - n(y.id));
     for (const t of active.slice(0, cap)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
     if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${b.key})`);
