@@ -12,6 +12,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { homedir, hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { board } from "./board.mjs";
 
 /** The least route for each size. The chief may add blocks, never remove these. */
 export const SIZES = {
@@ -48,6 +49,7 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
+export const STATES = Object.keys(NEXT);
 export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...Object.fromEntries(["code-reviewer", "security-reviewer", "ux-reviewer", "qa"].flatMap((role) => ["tiny", "small"].map((size) => [`model.${role}.${size}`, "fable"]))) };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
 /** The owner's floors (gate G18): a large or risk-flagged task needs at least 2 clean cycles. Only a code change lowers them; every other count is 1 or more. */
@@ -74,7 +76,7 @@ const TABLES = {
 };
 /** The columns that a later version added: an older table without them reads with them empty, and its next write adds them. */
 const ADDED = { runs: ["model"] };
-const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config"];
+const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "board"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
   "logbook repair": ["accept-loss"],
@@ -86,8 +88,10 @@ const OPTIONS = {
   "finding move": ["to", "size"],
   verdict: ["sha", "kind", "cycle", "pr", "run"],
   "gate add": ["question", "options", "recommend", "default"],
+  "gate answer": ["option", "other-hex"],
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
+  board: ["remember", "name-hex"],
 };
 /** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
 const PR = /^\d+$/;
@@ -126,7 +130,7 @@ export function git(args, env = process.env) {
  * checkout and names this folder as its worktree (a relative name counts from the git folder, as git reads it). Else (a planted .git/commondir or .git file, for example) the folder
  * is a project of its own, so no folder can borrow another project's logbook.
  */
-function projectRoot(path) {
+export function projectRoot(path) {
   try {
     const [common, gitDir, top] = git(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir", "--show-toplevel"]).trim().split("\n");
     const [realCommon, realGit, realTop] = [common, gitDir, top].map((p) => realpathSync(p));
@@ -137,6 +141,25 @@ function projectRoot(path) {
     return resolve(path);
   }
 }
+
+/** A gate's options, numbered from 1 as the board shows them: its cell split at "|", each without spaces around it. */
+export const optionsOf = (g) => String(g.options ?? "").split("|").map((o) => o.trim()).filter(Boolean);
+/** An option as a person sees it: compatibility forms, case, runs of spaces and invisible characters do not count. */
+/**
+ * Text that the owner typed, given as the hex of its UTF-8 bytes (only 0-9 and a-f), so that a command line holds none
+ * of the owner's text. Undefined for anything else: an odd length, another character, no bytes or invalid UTF-8.
+ */
+const unhex = (hex) => {
+  try {
+    return /^(?:[0-9a-f]{2})+$/.test(hex) ? new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(hex, "hex")) : undefined;
+  } catch {} // invalid UTF-8
+};
+const looks = (s) => String(s).normalize("NFKC").replace(/[\p{Cc}\p{Cf}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
+/** Names the project's main checkout in its logbook (checkout.txt), so a session of another project can answer its gates. */
+const checkout = (dir, project) => put(join(dir, "checkout.txt"), `${projectRoot(resolve(project))}\n`);
+
+/** A name as a slug: lower case, each run of other characters than a-z and 0-9 as one "-", or "project" when nothing is left. */
+export const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 
 /** The folder of the task copies (default ~/sage-worktrees; $SAGE_WORKTREES overrides it). It is outside the sage root, so agents may write in it. */
 export const worktreeRoot = (env = process.env) => env.SAGE_WORKTREES ?? join(homedir(), "sage-worktrees");
@@ -160,7 +183,7 @@ const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(
 
 /** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
 export function projectName(path) {
-  return basename(projectRoot(resolve(path))).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  return slug(basename(projectRoot(resolve(path))));
 }
 
 export function storeDir(project, env = process.env) {
@@ -347,7 +370,7 @@ const rowsOf = ({ cols, lines }) =>
     const v = line.split("\t");
     return Object.fromEntries(cols.map((c, i) => [c, v[i] ?? ""]));
   });
-const read = (dir, table) => rowsOf(sheet(dir, table));
+export const read = (dir, table) => rowsOf(sheet(dir, table));
 
 /**
  * The integrity check of a logbook: every table (but skip, the ones that a repair starts again) is there, is a regular
@@ -620,6 +643,14 @@ export function sage(argv, env = process.env) {
     return [...Object.keys(c).filter((k) => !models.includes(k)), ...models].map((k) => `${k}=${c[k]}`).join(" "); // the numbers, then the models
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
+  // The board reads every logbook and takes no lock. --remember no leaves board.json as it is. --name-hex gives the scope
+  // as the hex of its UTF-8 bytes, so that the hook's command line holds no text that the owner typed.
+  if (cmd === "board") {
+    const hex = opt["name-hex"];
+    if (pos.length + (hex === undefined ? 0 : 1) > 1 || !["yes", "no", undefined].includes(opt.remember) || (hex !== undefined && unhex(hex) === undefined))
+      refuse("board takes one scope (this, all or a project's name, or --name-hex with the name's UTF-8 bytes in hex) and --remember yes or no");
+    return board({ scope: hex === undefined ? pos[0] : unhex(hex), project, env, save: opt.remember !== "no" });
+  }
   const dir = storeDir(project, env);
   const repair = cmd === "logbook" && pos[0] === "repair";
   const skip = repair ? [...new Set(list(opt["accept-loss"]))] : [];
@@ -651,6 +682,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       // logbook passed the integrity check (ready), so init makes no table there.
       for (const t of Object.keys(TABLES).reverse()) if (!existsSync(join(dir, `${t}.tsv`))) write(dir, t, []);
       if (!existsSync(join(dir, "standing.md"))) put(join(dir, "standing.md"), STANDING);
+      checkout(dir, project);
       return `logbook ${dir}`;
     case "logbook": {
       if (sub !== "repair") return dir;
@@ -698,6 +730,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
         if (size === "investigate" && list(opt.add).includes("build")) refuse("an investigation changes no code, so it takes no build block. Frame the build as its own task: sage task add --size tiny, small or large");
         const why = opt.add ? need(opt.why, "--why for the added blocks") : ""; // refuse before anything is written
         const task = frame(dir, need(opt.title, "--title"), size, risk, list(opt.add));
+        checkout(dir, project);
         if (opt.add) write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: task.id, decision: `added ${opt.add}`, why }]);
         return framed(task);
       }
@@ -851,15 +884,31 @@ function act(cmd, pos, opt, dir, env, skip, project) {
     case "gate": {
       const gates = read(dir, "gates");
       if (sub === "add") {
-        const g = { id: nextId(dir, "G"), task: id ?? "", question: need(opt.question, "--question"), options: need(opt.options, "--options"), recommendation: need(opt.recommend, "--recommend"), default: opt.default ?? "", at: now() };
+        // The owner tells options apart by eye, and the recommendation and the default are two of them: options that
+        // look the same (case, width or hidden characters) are refused, and so is an option that reads as an own answer.
+        const options = optionsOf({ options: cell(need(opt.options, "--options")) });
+        const twin = options.find((o, i) => options.findIndex((x) => looks(x) === looks(o)) !== i);
+        if (twin !== undefined) refuse(`two options look the same: ${JSON.stringify(twin)} and ${JSON.stringify(options.find((x) => looks(x) === looks(twin)))}. Make them differ in more than case.`);
+        if (options.some((o) => /^other ?:/.test(looks(o)))) refuse(`an option may not start with "other:": it marks an answer in the owner's own words.`);
+        const pick = (v, what) => options.find((o) => o === v.trim()) ?? options.find((o) => looks(o) === looks(v)) ?? (/^[1-9]\d*$/.test(v.trim()) ? options[Number(v) - 1] : undefined) ?? refuse(`${what} is one of the options, by its text or its number (1 to ${options.length}): ${options.map((o) => JSON.stringify(o)).join(", ")}.`);
+        const recommendation = pick(need(opt.recommend, "--recommend"), "--recommend");
+        const g = { id: nextId(dir, "G"), task: id ?? "", question: need(opt.question, "--question"), options: opt.options, recommendation, default: opt.default === undefined ? "" : pick(opt.default, "--default"), at: now() };
         write(dir, "gates", [...gates, g]);
         return `${g.id} open · ${g.question}`;
       }
       if (sub === "answer") {
         const g = gates.find((x) => x.id === id) ?? missing(`gate ${id}`, gates.map((x) => x.id));
-        g.answer = need(more.join(" "), "the answer");
+        // By number only, as the board numbers the options: no agent-written text goes into the command. The owner's own
+        // words come as the hex of their UTF-8 bytes, so no text of theirs is in the command either, and are kept with
+        // "other: " before them, so they never pass for one of the options.
+        const options = optionsOf(g);
+        const how = `gate answer ${g.id} takes --option <n>, the number of one of its options (1 to ${options.length}), or --other-hex <hex>, the owner's own words as the hex of their UTF-8 bytes (0-9 and a-f). Nothing changed.`;
+        const own = opt["other-hex"];
+        if (more.length || (opt.option === undefined) === (own === undefined) || (own !== undefined && unhex(own) === undefined)) refuse(how);
+        if (own !== undefined) g.answer = `other: ${need(cell(unhex(own)), "the owner's own words: --other-hex gives only spaces")}`;
+        else g.answer = (/^[1-9]\d*$/.test(opt.option) && options[Number(opt.option) - 1]) || refuse(how);
         write(dir, "gates", gates);
-        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: "the user's answer" }]);
+        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: own === undefined ? "the user's answer" : "the user's own words" }]);
         return `${g.id} answered · ${g.answer}`;
       }
       refuse("gate add or gate answer");

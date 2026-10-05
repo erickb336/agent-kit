@@ -1,6 +1,6 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -69,6 +69,12 @@ test("sage mode makes the session the chief of staff, and only subagents may cha
   assert.match(context(s.send(prompt("what is left?"))), /# Chief of staff/, "and again after a compaction");
   assert.match(context(s.send(prompt("sage mode off"))), /sage mode is off/);
   assert.equal(s.send(edit()), undefined);
+});
+
+test("F-T72-20: full-width punctuation ends only the board phrase; a mode phrase with ！ or 。 switches nothing", () => {
+  const s = session();
+  for (const p of ["sage mode！", "sage mode。"]) assert.equal(s.send(prompt(p)), undefined, p);
+  assert.equal(s.send(edit()), undefined, "still not in sage mode");
 });
 
 test("a session that starts as the chief-of-staff agent is in sage mode without the phrase", () => {
@@ -1913,6 +1919,36 @@ test("T94-Q-SPACEPATH: with the plugin in a folder with a space, the chief text 
   const r = spawnSync("/bin/sh", ["-c", hint], { encoding: "utf8", env });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(readFileSync(join(dir, "root", "config.json"), "utf8"))["cap.other"], 2, "the whole pasted hint runs in a shell and sets the cap");
+});
+
+test("T72-C5-STATECMD: with the plugin in a folder with a space, the board note gives the note, then a quoted board and gate answer command that run as pasted", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage space-")));
+  cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "my plugins", "sage"), { recursive: true });
+  const tool = join(dir, "my plugins", "sage", "skills", "sage", "sage.mjs");
+  const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
+  const project = join(dir, "app");
+  execFileSync("git", ["init", "-q", project]);
+  for (const args of [["init"], ["task", "add", "--title", "t", "--size", "tiny"], ["gate", "add", "T1", "--question", "q?", "--options", "yes|no", "--recommend", "yes"]])
+    execFileSync("node", [tool, ...args, "--project", project], { env });
+  const r = spawnSync("node", [join(dir, "my plugins", "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", cwd: project, ...prompt("show board") }), encoding: "utf8", env });
+  assert.equal(r.status, 0, r.stderr);
+  const lines = context(JSON.parse(r.stdout)).split("\n");
+  const board = `node "${tool}" board this --project '${project}'`;
+  assert.equal(lines[0], `sage: the owner asked for the board. The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. Run: ${board}`);
+  const answer = lines.find((l) => l.startsWith("- app: ")).slice("- app: ".length);
+  assert.equal(answer, `node "${tool}" gate answer <G> --option <n> --project '${project}'`);
+  const sh = (command) => spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", env });
+  assert.match(sh(board).stdout, /\n- app \*\*G1\*\* · T1 · q\?\n/);
+  assert.equal(sh(answer.replace("<G>", "G1").replace("<n>", "2")).stdout, "G1 answered · no\n");
+});
+
+test("T72-C6-OTHER: in sage mode, the chief's gate answer commands pass the hook: by number, and own words in hex", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const hex = Buffer.from("Accept all defaults, but merge it later").toString("hex");
+  for (const command of [`node ${TOOL} gate answer G1 --option 2 --project '/x'`, `node ${TOOL} gate answer G1 --other-hex ${hex} --project '/x'`])
+    assert.equal(denied(s.send(bash(command))), undefined, command);
+  assert.match(denied(s.send(bash(`node ${TOOL} gate answer G1 --other-hex ${hex} --project '/x'\ngh pr merge 5 --squash`))) ?? "", /^sage: /, "a merge on the next line is still read");
 });
 
 test("T94: the hook keeps the mode and autopilot state under the sage root, never in the temp folder", () => {
