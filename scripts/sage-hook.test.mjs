@@ -1212,42 +1212,61 @@ test("a refusal says merge check, and escapes the control characters of its reas
 
 // A long text cannot slow the hook down: each pattern runs in linear time, so 1 MB of text that an agent controls
 // takes far less than the hook's 10 s limit, and the owner's stop after it still applies (T34, SEC-1 and SEC-2).
-test("1 MB of padding in an agent's text cannot time out the hook", async () => {
+test("1 MB of padding in an agent's text cannot time out the hook: its time grows in line with the text", async () => {
   const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
   const AP = "auto" + "pilot";
-  const MB = 1 << 20;
-  const pad = (unit) => unit.repeat(Math.ceil(MB / unit.length)).slice(0, MB);
   const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
-  const timed = (input, state = {}) => {
-    const t = performance.now();
-    const out = handle(input, state, slots);
-    return { out, state, ms: performance.now() - t };
-  };
-  const slow = [];
-  for (const unit of ["\n", " \n", "->\n", "\r", " "]) {
-    const handBack = `Another Claude session sent a message:\n<agent-message from="a1">\n[Subagent hand-back] STATUS done${pad(unit)}\n</agent-message>\n\nThat "other Claude session" is an agent of this session, so the user did not type this.\n`;
-    for (const stop of [`please turn ${AP} off now`, `${AP} off`]) {
-      const { state, ms } = timed(prompt(handBack + stop), { sage: true, given: true, autopilot: true });
-      assert.equal(state.autopilot, false, `the owner's stop after ${JSON.stringify(unit)} padding applies`);
-      if (ms > 200) slow.push(`stop after ${JSON.stringify(unit)}: ${ms.toFixed(0)} ms`);
+  /** Each input that once had a slow path (a regex that backtracks), with padding of size characters. */
+  const cases = (size) => {
+    const pad = (unit) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+    const stops = [];
+    for (const unit of ["\n", " \n", "->\n", "\r", " "]) {
+      const handBack = `Another Claude session sent a message:\n<agent-message from="a1">\n[Subagent hand-back] STATUS done${pad(unit)}\n</agent-message>\n\nThat "other Claude session" is an agent of this session, so the user did not type this.\n`;
+      for (const stop of [`please turn ${AP} off now`, `${AP} off`]) stops.push([`stop after ${JSON.stringify(unit)}`, prompt(handBack + stop), true]);
     }
-  }
-  const queuedOpen = "<system-reminder>\nThe user sent a new message while you were working:\n";
-  const others = {
-    "queued opens": prompt(pad(queuedOpen)),
-    "queued notes": prompt(`${queuedOpen}x${pad("\n\nThis is how Claude Code surfaces messages ")}</system-reminder>`),
-    "other-session opens": prompt(pad("\rAnother Claude session sent a message:")),
-    "git words in a command the hook cannot read": bash(`${pad("git ")}'`),
-    "git words given to a shell": bash(`bash -c '${pad("git ")}'`),
-    // The first-creation form (T24) reads the command in the main session: a long endpoint, and many fields.
-    "a long gh api endpoint": bash(`gh api --hostname github.com -X POST repos/o/${pad(".")}/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
-    "a long gh api endpoint with slashes": bash(`gh api --hostname github.com -X POST repos/${pad("a/")}git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
-    "many gh api fields": bash(`gh api --hostname github.com -X POST repos/o/r/git/refs ${pad("-f ref=refs/heads/main ")}`),
-    "blank lines in a report": { hook_event_name: "SubagentStop", agent_type: "sage:implementer", agent_id: "x", last_assistant_message: pad(" \n") },
+    const queuedOpen = "<system-reminder>\nThe user sent a new message while you were working:\n";
+    const others = {
+      "queued opens": prompt(pad(queuedOpen)),
+      "queued notes": prompt(`${queuedOpen}x${pad("\n\nThis is how Claude Code surfaces messages ")}</system-reminder>`),
+      "other-session opens": prompt(pad("\rAnother Claude session sent a message:")),
+      "git words in a command the hook cannot read": bash(`${pad("git ")}'`),
+      "git words given to a shell": bash(`bash -c '${pad("git ")}'`),
+      // The first-creation form (T24) reads the command in the main session: a long endpoint, and many fields.
+      "a long gh api endpoint": bash(`gh api --hostname github.com -X POST repos/o/${pad(".")}/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
+      "a long gh api endpoint with slashes": bash(`gh api --hostname github.com -X POST repos/${pad("a/")}git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
+      "many gh api fields": bash(`gh api --hostname github.com -X POST repos/o/r/git/refs ${pad("-f ref=refs/heads/main ")}`),
+      "blank lines in a report": { hook_event_name: "SubagentStop", agent_type: "sage:implementer", agent_id: "x", last_assistant_message: pad(" \n") },
+    };
+    return [...stops, ...Object.entries(others)];
   };
-  for (const [name, input] of Object.entries(others)) {
-    const { ms } = timed(input, { sage: true, given: true });
-    if (ms > 200) slow.push(`${name}: ${ms.toFixed(0)} ms`);
-  }
-  assert.deepEqual(slow, [], "each call takes under 200 ms");
+  /**
+   * A call's CPU time, not its wall time: on a busy Mac the process waits for a core, and that wait is not the hook's
+   * work. A call over the bound runs again, up to 3 times in all, so one garbage collection does not count.
+   */
+  const timed = (input, stop, bound = 0) => {
+    let ms = Infinity;
+    for (let i = 0; i < 3 && ms > bound; i++) {
+      const state = stop ? { sage: true, given: true, autopilot: true } : { sage: true, given: true };
+      const t = process.cpuUsage();
+      handle(input, state, slots);
+      const { user, system } = process.cpuUsage(t);
+      ms = Math.min(ms, (user + system) / 1000);
+      if (stop) assert.equal(state.autopilot, false, "the owner's stop after the padding applies");
+    }
+    return ms;
+  };
+  const KB100 = 100 << 10;
+  const small = cases(KB100);
+  const big = cases(10 * KB100); // 1000 KB, about 1 MB
+  // 10 times the text takes about 10 times as long on a linear path, and about 100 times on a quadratic one. The bound
+  // allows 30 times, and 20 ms more for a garbage collection. A slow linear path also fails: 1000 KB may take at most
+  // 2 s of CPU time (about 60 ms today), well inside the hook's own budget of 10 s.
+  const bound = (t) => Math.min(30 * t + 20, 2000);
+  const times = big.map(([name, input, stop], i) => {
+    const t = timed(small[i][1], stop); // the fastest of 3
+    return { name, small: t, big: timed(input, stop, bound(t)) };
+  });
+  if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
+  const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
+  assert.deepEqual(slow, [], "the time of each call grows in line with its text");
 });

@@ -311,15 +311,27 @@ function write(dir, table, rows) {
 }
 
 const now = () => new Date().toISOString().slice(0, 19) + "Z";
+/** The cells that hold ids: each table's own id, the columns that name the id of another row, and a decision's subject. */
+const IDS = { tasks: ["id", "keys"], runs: ["id", "task"], findings: ["task", "key"], ledger: ["task", "run"], gates: ["id", "task"], decisions: ["task"] };
 /**
- * A new id: the highest whole number after the prefix that any row of the logbook names, plus 1. So an id never comes
- * back, also when its own row is lost while another row (a verdict's run, a decision, a round's keys) still names it.
- * Only digits count ("Infinity" does not), and BigInt keeps a long number exact.
+ * A new id: the highest whole number after the prefix that any id cell of the logbook names, plus 1. So an id never
+ * comes back, also when its own row is lost while another row (a verdict's run, a decision, a round's keys) still names
+ * it. Free text does not count: a path or a title can hold "-T9" by chance. In a decision, only its subjects count: the
+ * first word ("F-T2-1 opened again", "G1 was answered by phone"), and in a move, also the new task and key ("F-T1-1 moved
+ * to T2 as F-T2-1: …"). Only digits count ("Infinity" does not), and BigInt keeps a long number exact.
  */
+/** The ids a decision is about: its first word, and the new task and key of a move (the form that finding move writes). */
+const subjects = (decision) => /^(\S+) moved to (\S+) as (\S+):/.exec(decision)?.slice(1) ?? [decision];
 function nextId(dir, prefix) {
   let max = 0n;
-  for (const table of Object.keys(TABLES)) {
-    for (const [, n] of (readRegular(join(dir, `${table}.tsv`)) ?? "").matchAll(new RegExp(`(?<![A-Za-z0-9])${prefix}(\\d+)`, "g"))) if (BigInt(n) > max) max = BigInt(n);
+  const take = (text, re) => {
+    for (const [, n] of text.matchAll(re)) if (BigInt(n) > max) max = BigInt(n);
+  };
+  for (const [table, cols] of Object.entries(IDS)) {
+    for (const row of read(dir, table)) {
+      for (const c of cols) take(row[c], new RegExp(`(?<![A-Za-z0-9])${prefix}(\\d+)`, "g"));
+      if (table === "decisions") for (const word of subjects(row.decision)) take(word, new RegExp(`^${prefix}(\\d+)(?![A-Za-z0-9])`, "g"));
+    }
   }
   return `${prefix}${max + 1n}`;
 }

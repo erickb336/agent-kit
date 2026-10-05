@@ -851,6 +851,19 @@ test("QA-4: an id never comes back while a row of the logbook still names it", (
   assert.match(s.ok("task", "add", "--title", "c", "--size", "small"), /^T3 framed/);
 });
 
+test("F-T46-MOVE-KEY: a moved finding's new key and new task never come back while the decision trail names them", () => {
+  const s = store();
+  const lose = (table, col, id) => byHand(s.dir, table, col, id, () => null);
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "first");
+  assert.match(s.ok("finding", "move", "T1", "F-T1-1", "--to", "follow"), /^F-T1-1 moved to T2 as F-T2-1 /);
+  lose("findings", 1, "F-T2-1"); // only the decision "F-T1-1 moved to T2 as F-T2-1: first" names it now
+  assert.equal(s.ok("finding", "add", "T2", "--source", "qa", "--severity", "low", "--summary", "second"), "F-T2-2 open · low · T2");
+  lose("findings", 1, "F-T2-2");
+  lose("tasks", 0, "T2"); // only the same decision names T2 now
+  assert.match(s.ok("task", "add", "--title", "c", "--size", "small"), /^T3 framed/);
+});
+
 test("QA-5: a refusal says what to do: finish the other writer or use another branch, and give the full SHA", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
@@ -1403,6 +1416,17 @@ test("F-R86-3: after an accepted tasks repair, the merge check on an old SHA nam
   const next = SHA.replace(/^a1/, "b2");
   s.ok("verdict", "T2", "--sha", next, "--kind", "checks-pass");
   assert.equal(s.ok("merge-check", "--sha", next), "T2 may merge: 1 clean cycle on this SHA");
+});
+
+test("F-T46-1: a task id in a path or a title is not an id, so the next task after a tasks repair is T2, not T10", () => {
+  const home = mkdtempSync(join(tmpdir(), "h-T9-"));
+  const s = store(home, "p-T9-");
+  s.ok("task", "add", "--title", "fix T7", "--size", "tiny");
+  s.ok("run", "add", "T1", "--role", "qa"); // a row that still names T1 after the loss
+  writeFileSync(join(s.dir, "tasks.tsv"), "");
+  s.ok("logbook", "repair", "--accept-loss", "tasks");
+  assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /-T9-/, "a decision row holds the logbook path");
+  assert.equal(s.ok("task", "add", "--title", "u T8", "--size", "tiny"), "T2 framed · tiny · route build");
 });
 
 test("F-R86-2: a zero-width joiner or non-joiner between two letters stays, so Persian and Indic text keeps its shape; elsewhere it goes", () => {
