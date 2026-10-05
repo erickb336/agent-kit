@@ -82,25 +82,13 @@ function checkShape(r) {
  * The simple commands of a command line, read as zsh or bash: { words, bodies, host, piped, pipeTo, grouped, writes },
  * as shellCommands in sage-hook.mjs gives them (host is { cmd, index }; pipeTo and host.cmd are commands of the list).
  * A line with no command (empty, blanks, a comment, only a redirection) gives an empty list. Throws when the parser
- * cannot read the line, when it is longer than MAX_LENGTH, when it has a NUL byte, or when it nests deeper than the
- * parser's stack allows: the hook then fails closed.
+ * cannot read the line, when it is longer than MAX_LENGTH, when it has a NUL byte, when it nests deeper than the
+ * parser's stack allows, or when the parser's result has the wrong shape: the hook then fails closed. It is the only way
+ * to the parser, so that no caller can skip the length cap or the NUL check.
  */
 export function parseCommands(src, { zsh = false } = {}) {
   if (src.length > MAX_LENGTH) throw new Error(`a command line of more than ${MAX_LENGTH} characters`);
   if (src.includes("\0")) throw new Error("a NUL byte: a shell drops it, so the line that runs is not the line that was read");
-  const result = parseRaw(src, { zsh });
-  if (result.error) throw new Error(result.error);
-  const commands = result.commands;
-  for (const c of commands) {
-    if (c.host) c.host.cmd = commands[c.host.cmd];
-    c.pipeTo = c.pipeTo === null ? undefined : commands[c.pipeTo];
-    if (!c.host) c.host = undefined;
-  }
-  return commands;
-}
-
-/** The parser's own result for src, with indexes in place of objects: { commands } or { error }. Throws when the parser stops or its result has the wrong shape. */
-export function parseRaw(src, { zsh = false } = {}) {
   const { exports } = instance();
   const bytes = new TextEncoder().encode(src);
   const at = exports.alloc(bytes.length); // first: it can grow the memory, which detaches the old buffer
@@ -113,5 +101,12 @@ export function parseRaw(src, { zsh = false } = {}) {
   }
   const result = JSON.parse(new TextDecoder().decode(new Uint8Array(exports.memory.buffer, Number(r >> 32n), Number(r & 0xffffffffn))));
   checkShape(result);
-  return result;
+  if (result.error) throw new Error(result.error);
+  const commands = result.commands;
+  for (const c of commands) {
+    if (c.host) c.host.cmd = commands[c.host.cmd];
+    c.pipeTo = c.pipeTo === null ? undefined : commands[c.pipeTo];
+    if (!c.host) c.host = undefined;
+  }
+  return commands;
 }

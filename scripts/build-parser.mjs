@@ -42,7 +42,7 @@ export function onPath() {
 
 /**
  * Builds parser.wasm into out and gives its sha256. TinyGo puts no build path or build id in the file; -no-debug
- * leaves out DWARF. target.json is wasip1 with a 1 MiB stack (wasm-ld's default is 64 KiB), so that a line nests
+ * leaves out DWARF. GOWORK=off: a go.work file in a parent folder cannot replace the pinned mvdan/sh. target.json is wasip1 with a 1 MiB stack (wasm-ld's default is 64 KiB), so that a line nests
  * about 10 times deeper before the parser stops. The scheduler is none: the parser starts no goroutine, and the
  * default scheduler needs Binaryen's wasm-opt. TinyGo always runs wasm-opt on a WASM file, so the build gives it a
  * stand-in that copies the file unchanged: Binaryen is not a pinned tool here, and the file is fast enough without
@@ -54,7 +54,7 @@ export function buildParser(out) {
     const wasmOpt = join(dir, "wasm-opt");
     writeFileSync(wasmOpt, '#!/bin/sh\n# tinygo calls: wasm-opt --version, and wasm-opt -Oz -g <in> --output <out>\n[ "$1" = --version ] && { echo "wasm-opt version 102"; exit 0; }\nexec cp "$3" "$5"\n');
     chmodSync(wasmOpt, 0o755);
-    const env = { ...process.env, CGO_ENABLED: "0", GOFLAGS: "-mod=readonly", GOTOOLCHAIN: "local", WASMOPT: wasmOpt };
+    const env = { ...process.env, CGO_ENABLED: "0", GOFLAGS: "-mod=readonly", GOTOOLCHAIN: "local", GOWORK: "off", WASMOPT: wasmOpt };
     execFileSync("tinygo", ["build", "-target=./target.json", "-buildmode=c-shared", "-scheduler=none", "-no-debug", "-o", out, "."], { cwd: PARSER, env, stdio: "inherit" });
   } finally {
     rmSync(dir, { recursive: true, force: true });

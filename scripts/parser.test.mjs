@@ -9,7 +9,8 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseCommands, parseRaw, MAX_LENGTH } from "../plugins/sage/hooks/parser/parser.mjs";
+import * as loader from "../plugins/sage/hooks/parser/parser.mjs";
+import { parseCommands, MAX_LENGTH } from "../plugins/sage/hooks/parser/parser.mjs";
 
 const LOADER = fileURLToPath(new URL("../plugins/sage/hooks/parser/parser.mjs", import.meta.url));
 const read = (src, zsh) => {
@@ -160,9 +161,32 @@ test("T125-Q3-EMPTY: a line with no command gives an empty list, in both modes",
   assert.deepEqual(words("# note\nps"), [["ps"]], "a comment line before a command");
 });
 
-test("T125-Q2-NUL: a NUL byte is refused by the loader and by the parser itself", () => {
+test("T125-Q2-NUL: a NUL byte is refused", () => {
   for (const zsh of MODES) assert.match(read("ps\0;kill 1", zsh).message, /a NUL byte/);
-  assert.match(parseRaw("ps\0;kill 1").error, /a NUL byte/, "the parser, without the loader's check");
+});
+
+test("T125-F3-PARSERAW: parseCommands is the only way to the parser, so no caller can skip the length cap or the NUL check", () => {
+  assert.deepEqual(Object.keys(loader).sort(), ["MAX_LENGTH", "RECORD", "RESTORE", "WASM", "parseCommands", "recorded", "verifiedWasm"]);
+});
+
+test("T125-F1-EXTGLOB: bash mode refuses an extended glob group with a substitution in it, in each place where bash runs it", () => {
+  const CODE = ["shopt -s extglob; echo @(a|$(ps))", "echo ?(a|$(ps))", "echo *(a|$(ps))", "echo +(a|$(ps))", "echo !(a|$(ps))", "echo @(a|`ps`)", "echo @(a|<(ps))", "echo @(a|${x})", "[[ $a == @(x|$(ps)) ]]", "case a in @(x|$(ps))) true;; esac", "x=@(a|$(ps))"];
+  for (const line of CODE) assert.match(read(line, false).message, /an extended glob group with a substitution/, line);
+  assert.deepEqual(parseCommands("echo ${x/@(a|$(ps))/y}").map((c) => c.words), [["ps"], ["echo", "${x/@(a|$(ps))/y}"]], "mvdan/sh reads a pattern in ${ } itself, so its substitution is a command");
+  assert.deepEqual(parseCommands("echo !(*.txt) @(a|b) +(c) ?(d) *(e:'f':)").map((c) => c.words), [["echo", "!(*.txt)", "@(a|b)", "+(c)", "?(d)", "*(e:'f':)"]], "a group of plain text runs nothing");
+});
+
+test("T125-F2-QUALPARAM: zsh mode refuses a glob group that holds an expansion where zsh makes file names, and a substitution in a group anywhere", () => {
+  for (const line of ["x='e:ps:'; print *(N${x})", "print *($x)", "print *(N$x)", "echo ${z:-*(N$y)}"]) assert.match(read(line, true).message, /a zsh glob group with (an expansion|a substitution)/, line);
+  for (const line of ["echo (a|`ps`)", "x=a(b|`ps`)", "x=*(N`ps`)", "echo (a|'$x')"]) assert.match(read(line, true).message, /a zsh glob group with a substitution/, line);
+  for (const line of ["echo *(N$(echo e:ps:))", "x=*(N$(ps))", "echo (a|<(ps))"]) assert.match(read(line, true).message, /a command can only contain words/, `${line}: mvdan/sh refuses a ) after a substitution in a group`);
+});
+
+test("T125-Q8-QUALFALSE: a zsh qualifier is refused only where zsh makes file names; ( ) text in quotes, assignments, [[ ]] patterns and case patterns parses", () => {
+  const TEXT = ['echo "${x:-(none)}"', "x=${x:-(none)}", 'echo "${x:-(see)}"', "[[ $a == (yes|no) ]] && echo y", "local x=${x:-(see)}", "case $a in see|e+) true;; esac", 'echo "(see the docs)"', "echo $((1+(2)))", "[[ $v =~ ^([0-9]+\\.[0-9]+)$ ]]"];
+  for (const line of TEXT) assert.ok(Array.isArray(read(line, true)), `${line}: ${read(line, true).message}`);
+  const CODE = ["echo *(e:'ps':)", "x=( *(e:ps:) )", "echo hi > *(e:ps:)", "for f in *(e:ps:); do :; done", "echo ${x:-*(e:ps:)}", "[[ -n *(#qe:ps:) ]]", "echo (a|b)(e:ps:)", "echo *(+f)"];
+  for (const line of CODE) assert.match(read(line, true).message, /a zsh glob qualifier that can run code/, line);
 });
 
 test("T125-Q1-ZSHPARAM: zsh mode refuses each parameter expansion that makes a value into code", () => {
@@ -332,6 +356,17 @@ test("T125-U7-HANDCOMPARE: npm run parser says if the new sha256 is the one that
   out = r.run("build-parser", { FAKE_WASM: join(r.dir, "other.wasm") });
   assert.match(out.stdout, new RegExp(`^! parser\\.wasm: 1 bytes, sha256 2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881: not the sha256 that git's HEAD records \\(${head}\\)\\. After a change to the parser's sources, that is expected`));
   assert.equal(readFileSync(r.file("parser.wasm.sha256"), "utf8"), "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881  parser.wasm\n", "the record is the new build's");
+  rmSync(r.dir, { recursive: true, force: true });
+});
+
+test("T125-S7-GOWORK: npm run parser builds with GOWORK=off, so a go.work in a parent folder cannot replace mvdan/sh", () => {
+  const r = repo();
+  // A fake tinygo of the pinned version whose build writes its GOWORK to the -o path (argument 7).
+  writeFileSync(join(r.dir, ".bin", "tinygo"), '#!/bin/sh\n[ "$1" = version ] && { echo "tinygo version 0.42.0 linux/amd64 (using go version go1.26.8 and LLVM version 22.1.4)"; exit 0; }\nprintf "GOWORK=%s" "$GOWORK" > "$7"\n');
+  chmodSync(join(r.dir, ".bin", "tinygo"), 0o755);
+  const out = r.run("build-parser", { GOWORK: join(r.dir, "go.work") });
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(readFileSync(r.file("parser.wasm"), "utf8"), "GOWORK=off");
   rmSync(r.dir, { recursive: true, force: true });
 });
 

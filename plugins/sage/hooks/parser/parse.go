@@ -9,8 +9,9 @@
 // command they land in (host: its index in the list, and the word's index; -1 for a heredoc). Keywords (if, while,
 // case, time, coproc, function) are not words: their commands are listed with grouped set. A line with no command gives
 // an empty list. Parse refuses (an error) what it cannot read, so that the hook fails closed: a NUL byte, an ANSI-C
-// string ($'…') with an escape other than the 13 that bash and zsh read alike, bash's ${x@P}, and in zsh mode the
-// forms that turn text into code (see checks) and the reserved words that mvdan/sh reads as words (zshReserved).
+// string ($'…') with an escape other than the 13 that bash and zsh read alike, bash's ${x@P}, a glob group with code
+// in it, and in zsh mode the forms that turn text into code (see checks) and the reserved words that mvdan/sh reads
+// as words (zshReserved).
 package main
 
 import (
@@ -18,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -63,8 +63,23 @@ type reader struct {
 // word that the hook skips (nocorrect) or reads as the program (end, float, integer and the declarations).
 var zshReserved = []string{"coproc", "repeat", "foreach"}
 
-// A zsh glob qualifier that runs code: *(e:'ps':), *(+f), *(#qe:…:). mvdan/sh reads it as plain text.
-var codeQualifier = regexp.MustCompile(`\([^)]*[e+]`)
+// Glob groups: one rule, an allow-list. mvdan/sh v3.14.1 keeps the text of a bash extglob group, @( ) ?( ) *( ) +( )
+// !( ), and of a zsh glob group, ( ), as a plain literal: it does not read the substitutions in it, and the shell runs
+// them (bash also in [[ ]] and case patterns). Where zsh does filename generation, it reads a group as glob qualifiers,
+// of which e and + run code, also when they come from a parameter (*(N$x)). So, outside double quotes and heredocs:
+//   - a group's text may hold only plain bytes (see plain): no $, `, < or >, which start a substitution;
+//   - in zsh, where the shell does filename generation, a group may hold only literal parts, and no e or +.
+//
+// zsh does no filename generation in an assignment's value (x=, local x=), a case pattern, or the pattern of
+// [[ a == b ]], != and =~; it does in a command's words, an array, a redirection, a for list, ${x:-…} there, and
+// [[ -n … ]] with (#q). Each was checked with zsh 5.9 and a qualifier that touches a marker file.
+
+// Where a word is, for the glob group rule.
+const (
+	inText    = iota // double quotes and heredoc bodies: a ( ) is text
+	inPattern        // a pattern or value with no filename generation
+	inFiles          // filename generation
+)
 
 // Parse gives the command list of src, read as zsh when zsh is true, else as bash. TinyGo has no recover() on
 // WebAssembly: a panic stops the instance with a trap, and parser.mjs throws it.
@@ -113,16 +128,15 @@ func fail(err error) []byte {
 //   - an ANSI-C string with an escape that ansiC does not decode, in both modes;
 //   - ${x@P}, which expands the value as a prompt and runs its substitutions (bash 4.4 and later; zsh mode refuses
 //     it as a syntax error), and an @ operator that mvdan/sh reads as more than one letter;
-//   - in zsh mode, a glob qualifier that runs code: *(e:'ps':), *(+f), *(#qe:…:). mvdan/sh reads it as plain text;
+//   - a glob group that the glob group rule (above) refuses: a substitution that mvdan/sh keeps as text, and in zsh a
+//     glob qualifier that can run code: *(e:'ps':), *(+f), *(#qe:…:), *(N$x);
 //   - in zsh mode, a parameter expansion that makes a value into code (zshexpn(1), "Parameter Expansion Flags"):
 //     the e flag runs the value's substitutions (${(e)x}); %% with PROMPT_SUBST does too; a substitution in a flag's
 //     argument runs (${(l:$(ps):)x}); ${~x}, $~x and the ~ flag make a value a glob pattern, which can hold a qualifier
 //     that runs code.
-//
-// A heredoc body is text, not words, so a glob qualifier there is plain text; its expansions are checked.
 func checks(f *syntax.File, zsh bool) (err error) {
-	var walk func(n syntax.Node, hdoc bool)
-	walk = func(n syntax.Node, hdoc bool) {
+	var walk func(n syntax.Node, at int)
+	walk = func(n syntax.Node, at int) {
 		syntax.Walk(n, func(n syntax.Node) bool {
 			if err != nil {
 				return false
@@ -130,26 +144,60 @@ func checks(f *syntax.File, zsh bool) (err error) {
 			switch x := n.(type) {
 			case *syntax.Redirect:
 				if x.Word != nil {
-					walk(x.Word, false)
+					walk(x.Word, inFiles)
 				}
 				if x.Hdoc != nil {
-					walk(x.Hdoc, true)
+					walk(x.Hdoc, inText)
 				}
 				return false
-			case *syntax.CmdSubst:
-				if hdoc {
-					walk(x, false)
+			case *syntax.CmdSubst, *syntax.ProcSubst:
+				if at != inFiles {
+					walk(x, inFiles)
 					return false
+				}
+			case *syntax.DblQuoted:
+				if at != inText {
+					walk(x, inText)
+					return false
+				}
+			case *syntax.Assign:
+				if x.Value != nil && at == inFiles {
+					walk(x.Value, inPattern)
+					if x.Index != nil {
+						walk(x.Index, at)
+					}
+					if x.Array != nil {
+						walk(x.Array, at)
+					}
+					return false
+				}
+			case *syntax.BinaryTest:
+				if at == inFiles && (x.Op == syntax.TsMatchShort || x.Op == syntax.TsMatch || x.Op == syntax.TsNoMatch || x.Op == syntax.TsReMatch) {
+					walk(x.X, at)
+					walk(x.Y, inPattern)
+					return false
+				}
+			case *syntax.CaseItem:
+				if at == inFiles {
+					for _, p := range x.Patterns {
+						walk(p, inPattern)
+					}
+					for _, s := range x.Stmts {
+						walk(s, at)
+					}
+					return false
+				}
+			case *syntax.ExtGlob:
+				if strings.IndexFunc(x.Pattern.Value, func(r rune) bool { return r < 0x80 && !plain(byte(r)) }) >= 0 {
+					err = fmt.Errorf("an extended glob group with a substitution, which the reader does not read: %s(%s)", x.Op, x.Pattern.Value)
 				}
 			case *syntax.SglQuoted:
 				if _, ok := ansiC(x.Value); x.Dollar && !ok {
 					err = fmt.Errorf(`an ANSI-C string with an escape other than \a \b \e \E \f \n \r \t \v \\ \' \" \?: $'%s'`, x.Value)
 				}
 			case *syntax.Word:
-				for _, p := range x.Parts {
-					if l, ok := p.(*syntax.Lit); ok && zsh && !hdoc && err == nil && codeQualifier.MatchString(l.Value) {
-						err = fmt.Errorf("a zsh glob qualifier that can run code: %s", l.Value)
-					}
+				if zsh && at != inText {
+					err = globGroups(x, at == inFiles)
 				}
 			case *syntax.ParamExp:
 				if x.Exp != nil && x.Exp.Op == syntax.OtherParamOps && (x.Exp.Word == nil || x.Exp.Word.Lit() == "P" || x.Exp.Word.Lit() == "") {
@@ -162,8 +210,47 @@ func checks(f *syntax.File, zsh bool) (err error) {
 			return err == nil
 		})
 	}
-	walk(f, false)
+	walk(f, inFiles)
 	return err
+}
+
+// globGroups applies the glob group rule to a zsh word: each byte in a ( ) is plain, and where files is true, the
+// group holds only literal parts, with no e or +.
+func globGroups(w *syntax.Word, files bool) error {
+	depth, group := 0, ""
+	for _, p := range w.Parts {
+		l, ok := p.(*syntax.Lit)
+		if !ok {
+			if depth > 0 && files {
+				return fmt.Errorf("a zsh glob group with an expansion in it, which can make a glob qualifier that runs code: %s…", group)
+			}
+			continue
+		}
+		for j := 0; j < len(l.Value); j++ {
+			switch c := l.Value[j]; {
+			case c == '\\' && depth == 0:
+				j++
+			case c == '(':
+				if depth == 0 {
+					group = l.Value[j:]
+				}
+				depth++
+			case c == ')' && depth > 0:
+				depth--
+			case depth > 0 && !plain(c):
+				return fmt.Errorf("a zsh glob group with a substitution, which the reader does not read: %s", group)
+			case depth > 0 && files && (c == 'e' || c == '+'):
+				return fmt.Errorf("a zsh glob qualifier that can run code: %s", group)
+			}
+		}
+	}
+	return nil
+}
+
+// plain is true for a byte that is literal text in a glob group: a letter, a digit, a blank, a non-ASCII byte, or one
+// of _.,:;/|*?!^~#@%+=-[]{}()'"\. It is false for $, `, < and >, which start a substitution, and for any other byte.
+func plain(c byte) bool {
+	return c >= 0x80 || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte(" \t\n_.,:;/|*?!^~#@%+=-[]{}()'\"\\", c) >= 0
 }
 
 // ansiC decodes the text of $'…' when it has only the escapes that bash and zsh decode alike; ok is false otherwise.

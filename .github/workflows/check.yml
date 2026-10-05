@@ -11,6 +11,7 @@ jobs:
     env:
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
+      GOWORK: "off"
       GOTELEMETRY: "off"
       DO_NOT_TRACK: "1"
     steps:
