@@ -142,8 +142,10 @@ function switchModes({ owner, text, outside, all }, state) {
   } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
     state.autopilot = true;
     const c = stateTool.config();
+    const broken = Object.keys(c).find((k) => c[k] === "invalid");
     const small = stateTool.cyclesFor({}, c);
-    notes.push(`sage: autopilot is on. A pull request whose tasks are all tiny or small, without a risk flag, merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"}, inside the night window ${c["autopilot.window"]} (${stateTool.OWNER_TZ}). The owner merges a large task or a task with a risk flag. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
+    if (broken) notes.push(`sage: autopilot is on. ${broken} in config.json is not a number: no merge until it is fixed (sage config ${broken}=<n>).`);
+    else notes.push(`sage: autopilot is on. A pull request whose tasks are all tiny or small, without a risk flag, merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"}, inside the night window ${c["autopilot.window"]} (${stateTool.OWNER_TZ}). The owner merges a large task or a task with a risk flag. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
   }
   return notes;
 }
@@ -379,6 +381,9 @@ function json({ status, body }) {
   }
 }
 
+/** git's empty tree: the tree of a commit with no files. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /**
  * The checks of the first creation, all on GitHub, never on the local repo: the branch is absent (404), the commit is
  * there and has no parent, and its tree gives the file count and the top-level names. Returns { decision, reason }:
@@ -399,14 +404,15 @@ function firstCreation({ owner, repo, branch, sha }) {
     if (!String(c.url).toLowerCase().startsWith(`https://api.github.com/repos/${owner}/${repo}/`.toLowerCase())) return no(`GitHub answered for another repository than ${owner}/${repo}, as for a renamed or moved repository. Use its current name`);
     if (!Array.isArray(c.parents)) return no(`GitHub's answer for commit ${sha} has no list of parents`);
     if (c.parents.length) return no(`commit ${sha} has a parent, so it is not one root commit`);
-    const tree = githubGet(`${api}/trees/${c.tree.sha}?recursive=1`, deadline);
+    // GitHub stores no object for git's empty tree, so its tree API answers 404 for it: that tree has no files.
+    const tree = c.tree.sha === EMPTY_TREE ? { status: 200, body: '{"tree":[]}' } : githubGet(`${api}/trees/${c.tree.sha}?recursive=1`, deadline);
     const t = json(tree);
     if (!Array.isArray(t.tree)) return no(`GitHub did not give the files of commit ${sha} (answer ${tree.status})`);
     const files = t.tree.filter((e) => e.type === "blob").length;
     const top = t.tree.map((e) => String(e.path)).filter((p) => !p.includes("/"));
     const more = top.length > 10 ? ` and ${t.truncated ? "more" : `${top.length - 10} more`}` : t.truncated ? " and more" : "";
     const names = top.length ? `; top level: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
-    const count = `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}`;
+    const count = files || t.truncated ? `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}` : "no files";
     return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it. After this, sage tries to turn on branch protection for ${branch} (GitHub offers it for public repos, and for private repos on paid plans).` };
   } catch (e) {
     return no(`the check on GitHub failed (${e.message})`);

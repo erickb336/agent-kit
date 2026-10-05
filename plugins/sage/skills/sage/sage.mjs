@@ -48,7 +48,7 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
-export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00" };
+export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00", ...Object.fromEntries(["code-reviewer", "security-reviewer", "ux-reviewer", "qa"].flatMap((role) => ["tiny", "small"].map((size) => [`model.${role}.${size}`, "fable"]))) };
 /** The owner's time zone (gate G20). Like the floors of gate G18, only a code change moves it: no config key sets it. */
 export const OWNER_TZ = "America/Los_Angeles";
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
@@ -61,16 +61,21 @@ const limit = (key) => LIMIT[key] ?? 50;
 const COUNTS = { max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" };
 /** One project's own agent cap, cap.<project>, with the project's name as projectName gives it. Without one, max_agents is the project's cap. */
 const CAP = /^cap\.[a-z0-9][a-z0-9-]*$/;
-const KEYS = "max_agents, cycles.small, cycles.large, cycles.risk, max_rounds, arena and cap_total as key=number, cap.<project>=number for one project's cap";
-const MODELS = ["opus", "sonnet", "haiku", "inherit"];
+/** An agent role's model (gate G17): model.<role>.<size> for one size of task, or model.<role> for every size. */
+const MODEL = /^model\.(pe|designer|implementer|code-reviewer|security-reviewer|ux-reviewer|qa|arena-judge)(\.(tiny|small|large|investigate))?$/;
+const KEYS = "max_agents, cycles.small, cycles.large, cycles.risk, max_rounds, arena and cap_total as key=number, cap.<project>=number for one project's cap, model.<role>.<size>=<model> or model.<role>=<model> for an agent role's model";
+/** The models of the Agent tool's model parameter, and inherit: the agent's own model, or for model.<role>.<size> the model.<role> above it. */
+const MODELS = ["opus", "sonnet", "haiku", "fable", "inherit"];
 const TABLES = {
   tasks: ["id", "title", "size", "risk", "route", "state", "branch", "pr", "round", "keys"],
-  runs: ["id", "task", "role", "round", "candidate", "branch", "status", "tokens", "report", "started", "ended"],
+  runs: ["id", "task", "role", "round", "candidate", "branch", "status", "tokens", "report", "started", "ended", "model"],
   findings: ["task", "key", "round", "source", "severity", "summary", "triage", "reason", "status"],
   ledger: ["task", "pr", "sha", "kind", "cycle", "run", "at"],
   gates: ["id", "task", "question", "options", "recommendation", "default", "answer", "at"],
   decisions: ["at", "task", "decision", "why"],
 };
+/** The columns that a later version added: an older table without them reads with them empty, and its next write adds them. */
+const ADDED = { runs: ["model"] };
 const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
@@ -142,6 +147,7 @@ function valid(key, value) {
     const models = typeof value === "string" ? list(value) : [];
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
   }
+  if (MODEL.test(key)) return MODELS.includes(value) ? value : undefined;
   if (!(Object.hasOwn(COUNTS, key) || CAP.test(key))) return undefined;
   const cycles = key.startsWith("cycles.");
   let n = typeof value === "number" || (typeof value === "string" && NUMERIC.test(value)) ? Number(value) : NaN;
@@ -195,23 +201,34 @@ function saved(env) {
  * as "3x", for one), or a config.json that is not a regular file, gives the default. A count reads as valid() gives it:
  * never below its floor, and never more agents or rounds, or fewer cycles, than written. A cycles key that is there but
  * has no number (Infinity, [3], true, "abc") reads as "invalid", and the merge check refuses every merge. A file of
- * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
+ * an older sage holds autopilot_cycles for cycles.large: it counts, or reads as invalid, when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
   let c = { ...DEFAULTS };
   try {
     const s = saved(env);
-    const written = Object.keys(s); // a broken legacy autopilot_cycles gives the default, as before
-    if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles;
-    const caps = Object.keys(s).filter((k) => CAP.test(k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
-    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (k.startsWith("cycles.") && written.includes(k) ? "invalid" : d)]), ...caps]);
+    if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles; // a broken one is an invalid cycles.large
+    const extra = Object.keys(s).filter((k) => (CAP.test(k) || MODEL.test(k)) && !Object.hasOwn(DEFAULTS, k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
+    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (k.startsWith("cycles.") && Object.hasOwn(s, k) ? "invalid" : d)]), ...extra]); // the defaults, then the caps and models without one
   } catch {}
   return c;
 }
 
 /** The clean cycles that a task needs before its merge: cycles.small for every task, cycles.large for a large one, and cycles.risk for any task with a risk flag (the largest count wins). */
 export function cyclesFor(task, c) {
-  return Math.max(c["cycles.small"], task.size === "large" ? c["cycles.large"] : 0, task.risk ? c["cycles.risk"] : 0);
+  return Math.max(...cycleKeys(task).map((k) => c[k]));
+}
+
+/** The cycles keys that apply to a task: cycles.small, and cycles.large or cycles.risk when it is large or has a risk flag. */
+const cycleKeys = (task) => ["cycles.small", task.size === "large" && "cycles.large", task.risk && "cycles.risk"].filter(Boolean);
+
+/**
+ * The model to pass on a run's agent call, or "" for the agent's own model: an arena candidate's place in arena_models,
+ * else model.<role>.<size>, else model.<role>. inherit at a level gives the next one.
+ */
+export function modelFor(role, size, candidate, c) {
+  const arena = /^[1-9]\d*$/.test(candidate) ? list(c.arena_models)[(Number(candidate) - 1) % list(c.arena_models).length] : undefined;
+  return [arena ?? c[`model.${role}.${size}`], arena ?? c[`model.${role}`]].find((m) => m && m !== "inherit") ?? "";
 }
 
 /** A window as [start, end] in minutes: "HH:MM-HH:MM", 24:00 only as its end, start and end not equal. */
@@ -308,7 +325,7 @@ function sheet(dir, table, also = []) {
   const [head, ...lines] = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
   if (!head) throw lost(dir, table, text ? "has only blank lines" : "is empty (0 bytes)", also);
   const cols = head.split("\t");
-  if (!TABLES[table].every((c) => cols.includes(c))) refuse(`the header of ${file} is damaged: its first line must be the column names ${TABLES[table].join(", ")}, separated by tabs. Ask the user to fix or add that line.`);
+  if (!TABLES[table].every((c) => cols.includes(c) || ADDED[table]?.includes(c))) refuse(`the header of ${file} is damaged: its first line must be the column names ${TABLES[table].join(", ")}, separated by tabs. Ask the user to fix or add that line.`);
   return { cols, lines };
 }
 
@@ -451,7 +468,7 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
  * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
  * its PR number.
  */
-function judge(dir, task, findings, id, rows, cycles, repaired) {
+function judge(dir, task, findings, id, rows, cycles, repaired, cfg) {
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
   const clear = `clear its PR (sage task ${task.id} set pr=)`;
@@ -467,7 +484,8 @@ function judge(dir, task, findings, id, rows, cycles, repaired) {
   const clean = perCycle.length ? [...new Set(rows.map((r) => r.cycle))].filter((c) => perCycle.every((k) => rows.some((r) => r.cycle === c && r.kind === k))).length : 1;
   if (clean < want) {
     const missing = perCycle.filter((k) => !rows.some((r) => r.kind === k));
-    return { ok: false, reason: `${who}: ${clean} of ${want} clean cycles on this SHA${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}. Run the next cycle of its reviews on this SHA and record each verdict.` };
+    const high = want > LIMIT["cycles.small"] && cycleKeys(task).find((k) => cfg[k] === want); // only config.json holds a count above the limit
+    return { ok: false, reason: `${who}: ${clean} of ${want} clean cycles on this SHA${high ? ` (${high} is ${want} in config.json; the config command takes 1 to 10)` : ""}${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}. Run the next cycle of its reviews on this SHA and record each verdict.` };
   }
   return { ok: true, reason: `${task.id} may merge: ${clean} clean cycle${clean === 1 ? "" : "s"} on this SHA` };
 }
@@ -508,7 +526,7 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       const [byId, ownOf, findingsOf] = [new Map(tasks.map((t) => [t.id, t])), group(rows), group(findings)];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const [own, task] = [ownOf.get(id) ?? [], byId.get(id)];
-        return { dir, id, size: task?.size, risk: task?.risk, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired) };
+        return { dir, id, size: task?.size, risk: task?.risk, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -568,6 +586,7 @@ export function sage(argv, env = process.env) {
       if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
       const night = k === "autopilot.window" && autopilotProblem(v);
       if (night) refuse(night);
+      if (MODEL.test(k) && valid(k, v) === undefined) refuse(`${k} is opus, sonnet, haiku, fable, or inherit for the agent's own model; not ${JSON.stringify(v)}`);
       set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, arena_models as a list of ${MODELS.join(", ")}, and autopilot.window`);
     }
     if (pos.length) {
@@ -588,7 +607,8 @@ export function sage(argv, env = process.env) {
       }
     }
     const c = { ...config(env), ...set };
-    return Object.entries(c).map(([k, v]) => `${k}=${v}`).join(" ");
+    const models = Object.keys(c).filter((k) => MODEL.test(k));
+    return [...Object.keys(c).filter((k) => !models.includes(k)), ...models].map((k) => `${k}=${c[k]}`).join(" "); // the numbers, then the models
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
   const dir = storeDir(project, env);
@@ -736,9 +756,10 @@ function act(cmd, pos, opt, dir, env, skip) {
           const other = runs.find((r) => r.branch === branch && r.status === "running" && WRITERS.includes(r.role));
           if (other) refuse(`${other.id} (${other.role}) still writes ${branch}, and a branch has one writer. Finish that run first (sage run done ${other.id} --status done, blocked, question or failed), or give this run another branch.`);
         }
-        const run = { id: nextId(dir, "R"), task: task.id, role, round: task.round, candidate: opt.candidate ?? "", branch, status: "running", started: now() };
+        const candidate = opt.candidate ?? "";
+        const run = { id: nextId(dir, "R"), task: task.id, role, round: task.round, candidate, branch, status: "running", started: now(), model: modelFor(role, task.size, candidate, config(env)) };
         write(dir, "runs", [...runs, run]);
-        return `${run.id} running · ${role} on ${task.id}${branch ? ` · ${branch}` : ""}${run.candidate ? ` · candidate ${run.candidate}` : ""}`;
+        return `${run.id} running · ${role} on ${task.id}${branch ? ` · ${branch}` : ""}${candidate ? ` · candidate ${candidate}` : ""}${run.model ? ` · model ${run.model}` : ""}`;
       }
       if (sub === "done") {
         const run = runs.find((r) => r.id === id) ?? missing(`run ${id}`, runs.map((r) => r.id));
