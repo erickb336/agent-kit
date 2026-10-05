@@ -465,6 +465,7 @@ else {
 const ROOT_SHA = "1".repeat(40);
 const CHILD_SHA = "3".repeat(40);
 const TREE_SHA = "2".repeat(40);
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const COMMIT_URL = (sha) => `https://api.github.com/repos/o/r/git/commits/${sha}`;
 const blobs = (names) => names.map((path) => ({ path, type: "blob" }));
 /** GitHub for a blank repository o/r: no main, and ROOT_SHA is a root commit with the files f01 to f12. */
@@ -504,7 +505,20 @@ test("the first creation of main on GitHub, in the one gh api form, asks the use
     assert.equal(asked(s.send(bash(command))), ASKED, command);
   }
   s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: [] } } });
-  assert.equal(asked(s.send(bash(CREATE.replace("heads/main", "heads/master")))), `sage: this is the first creation of master on github.com/o/r: GitHub has no master, and commit ${ROOT_SHA} is one root commit with 0 files. The user must approve it. After this, sage tries to turn on branch protection for master (GitHub offers it for public repos, and for private repos on paid plans).`);
+  assert.equal(asked(s.send(bash(CREATE.replace("heads/main", "heads/master")))), `sage: this is the first creation of master on github.com/o/r: GitHub has no master, and commit ${ROOT_SHA} is one root commit with no files. The user must approve it. After this, sage tries to turn on branch protection for master (GitHub offers it for public repos, and for private repos on paid plans).`);
+});
+
+test("a root commit with git's empty tree asks the user and says it has no files; GitHub's tree API answers 404 for that tree (T43)", () => {
+  const s = firstSession();
+  // GitHub stores no empty tree object, so its tree API answers 404 for it: the fake answers 404 to every endpoint it does not know.
+  s.github({ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: ROOT_SHA, url: COMMIT_URL(ROOT_SHA), tree: { sha: EMPTY_TREE }, parents: [] } } });
+  assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with no files. The user must approve it. ${LOCK}`);
+  s.github({ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 404, body: { message: "Not Found" } } });
+  assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST(`GitHub has no commit ${ROOT_SHA} in o/r \\(answer 404\\)`), "an unknown commit is still refused");
+  s.github({ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: ROOT_SHA, url: `https://api.github.com/repos/o/r-new/git/commits/${ROOT_SHA}`, tree: { sha: EMPTY_TREE }, parents: [] } } });
+  assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("GitHub answered for another repository than o/r"), "a redirect is still refused");
+  s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 404, body: { message: "Not Found" } } });
+  assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST(`GitHub did not give the files of commit ${ROOT_SHA} \\(answer 404\\)`), "a 404 for another tree is still refused");
 });
 
 test("the exact form is refused when GitHub does not show a first creation at one root commit (T24 REPLACE-GRAFTS, TAG-OR-SHALLOW-AS-ROOT, UPLOAD-CONFIG-REDIRECT)", () => {
