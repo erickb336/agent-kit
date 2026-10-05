@@ -9,8 +9,8 @@
 // command they land in (host: its index in the list, and the word's index; -1 for a heredoc). Keywords (if, while,
 // case, time, coproc, function) are not words: their commands are listed with grouped set. A line with no command gives
 // an empty list. Parse refuses (an error) what it cannot read, so that the hook fails closed: a NUL byte, an ANSI-C
-// string ($'…') with an escape other than the 13 that bash and zsh read alike, and in zsh mode the forms that turn
-// text into code (see zshChecks) and zsh's coproc.
+// string ($'…') with an escape other than the 13 that bash and zsh read alike, bash's ${x@P}, and in zsh mode the
+// forms that turn text into code (see checks) and the reserved words that mvdan/sh reads as words (zshReserved).
 package main
 
 import (
@@ -56,6 +56,12 @@ type reader struct {
 	out []*command
 	err error // the first error in a substitution (substsAt)
 }
+
+// The zsh reserved words (zshmisc(1), "Reserved Words") that mvdan/sh v3.14.1 reads as a plain word, and that start
+// a command whose program is not the first word: coproc, repeat (repeat 1 kill 1) and foreach (foreach x (a) kill 1;
+// end). The others are keywords to mvdan/sh, are refused as a syntax error (always), or come before the program as a
+// word that the hook skips (nocorrect) or reads as the program (end, float, integer and the declarations).
+var zshReserved = []string{"coproc", "repeat", "foreach"}
 
 // A zsh glob qualifier that runs code: *(e:'ps':), *(+f), *(#qe:…:). mvdan/sh reads it as plain text.
 var codeQualifier = regexp.MustCompile(`\([^)]*[e+]`)
@@ -105,6 +111,8 @@ func fail(err error) []byte {
 
 // checks refuses the forms that the command list cannot show, because the shell makes them into other text or code:
 //   - an ANSI-C string with an escape that ansiC does not decode, in both modes;
+//   - ${x@P}, which expands the value as a prompt and runs its substitutions (bash 4.4 and later; zsh mode refuses
+//     it as a syntax error), and an @ operator that mvdan/sh reads as more than one letter;
 //   - in zsh mode, a glob qualifier that runs code: *(e:'ps':), *(+f), *(#qe:…:). mvdan/sh reads it as plain text;
 //   - in zsh mode, a parameter expansion that makes a value into code (zshexpn(1), "Parameter Expansion Flags"):
 //     the e flag runs the value's substitutions (${(e)x}); %% with PROMPT_SUBST does too; a substitution in a flag's
@@ -144,6 +152,9 @@ func checks(f *syntax.File, zsh bool) (err error) {
 					}
 				}
 			case *syntax.ParamExp:
+				if x.Exp != nil && x.Exp.Op == syntax.OtherParamOps && (x.Exp.Word == nil || x.Exp.Word.Lit() == "P" || x.Exp.Word.Lit() == "") {
+					err = errors.New("a parameter expansion with @P, which expands the value as a prompt and runs its substitutions, or with an @ operator that is not one letter")
+				}
 				if zsh && (x.GlobSubst == syntax.OptOn || x.Flags != nil && strings.ContainsAny(x.Flags.Value, "e%~$`")) {
 					err = errors.New("a zsh parameter expansion that can run code: the e, % or ~ flag, a substitution in a flag, or ${~x}")
 				}
@@ -211,8 +222,8 @@ func (r *reader) stmt(s *syntax.Stmt, h at, grouped bool) error {
 	case nil: // only redirections, such as ">out"
 		c = r.newCommand(h, grouped)
 	case *syntax.CallExpr:
-		if r.zsh && len(x.Args) > 0 && x.Args[0].Lit() == "coproc" {
-			return errors.New("zsh's coproc, which mvdan/sh reads as a word")
+		if w := x.Args; r.zsh && len(w) > 0 && slices.Contains(zshReserved, w[0].Lit()) {
+			return fmt.Errorf("zsh's %s, which mvdan/sh reads as a word", w[0].Lit())
 		}
 		c = r.newCommand(h, grouped)
 		for _, a := range x.Assigns {

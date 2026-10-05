@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ROOT } from "./build.mjs";
+import { RESTORE } from "../plugins/sage/hooks/parser/parser.mjs";
 
 export const PARSER = join(ROOT, "plugins/sage/hooks/parser");
 export const WASM = join(PARSER, "parser.wasm");
@@ -69,5 +70,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   const sum = buildParser(WASM);
   writeFileSync(RECORD, `${sum}  parser.wasm\n`);
-  console.log(`✓ parser.wasm: ${readFileSync(WASM).length} bytes, sha256 ${sum}`);
+  const built = `parser.wasm: ${readFileSync(WASM).length} bytes, sha256 ${sum}`;
+  let git = "";
+  try {
+    git = execFileSync("git", ["show", "HEAD:plugins/sage/hooks/parser/parser.wasm.sha256"], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split(" ")[0];
+  } catch {} // no git, or no commit with the file: "git records none"
+  if (git === sum) console.log(`✓ ${built}: the same sha256 that git's HEAD records`);
+  else console.log(`! ${built}: not the sha256 that git's HEAD records (${git || "none"}). After a change to the parser's sources, that is expected: commit parser.wasm and parser.wasm.sha256 with them. Without a change, this build differs from the committed file: check the tool versions, or restore both from git: ${RESTORE}`);
 }

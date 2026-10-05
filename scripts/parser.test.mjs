@@ -183,6 +183,23 @@ test("T125-Q4-COPROC: zsh mode refuses coproc, also inside a substitution (T125-
   assert.deepEqual(parseCommands("coproc ps").map((c) => [c.words, c.grouped]), [[["ps"], true]]);
 });
 
+// zshmisc(1), "Reserved Words": mvdan/sh v3.14.1 reads repeat and foreach as words in zsh mode, so their program would
+// look like an argument. The other reserved words are keywords to mvdan/sh (select, time, function, [[, !), a syntax
+// error (always), or a word that the hook skips or that is the program itself (nocorrect, end, float, integer).
+test("T125-R2-ZSHRESERVED: zsh mode refuses repeat and foreach, also inside a substitution; bash mode reads them as words", () => {
+  const LINES = ["repeat 1 kill 1", "foreach x (a) kill 1; end", "echo $(repeat 1 kill 1)", "cat <(foreach x (a) kill 1; end)", "time repeat 1 kill 1", "true && repeat 2 ps"];
+  for (const line of LINES) assert.match(read(line, true).message, /zsh's (?:repeat|foreach), which mvdan\/sh reads as a word/, line);
+  assert.deepEqual(words("repeat 1 kill 1", false), [["repeat", "1", "kill", "1"]], "bash has no repeat: it is a program");
+  assert.deepEqual(words("echo repeat foreach; 'repeat' 1 x", true), [["echo", "repeat", "foreach"], ["repeat", "1", "x"]], "a quoted or later word is a word");
+  assert.deepEqual(words("select x in a; do kill 1; done", true), [["kill", "1"]], "select is a keyword");
+});
+
+test("T125-R2-PROMPTP: bash mode refuses ${x@P}, which runs the substitutions in the value; zsh mode refuses it as a syntax error", () => {
+  for (const line of ["echo ${x@P}", "echo \"${x@P}\"", "echo ${a[@]@P}", "echo ${x@P$y}", "cat <<EOF\n${x@P}\nEOF"]) assert.match(read(line, false).message, /@P/, line);
+  assert.ok(read("echo ${x@P}", true) instanceof Error, "zsh");
+  assert.deepEqual(words("echo ${x@Q} ${x@E}", false), [["echo", "${x@Q}", "${x@E}"]], "the other operators pass");
+});
+
 test("T125-C1-ARITH: the commands in (( )) and $(( )) are commands, and a backtick is a substitution", () => {
   for (const zsh of MODES) {
     assert.deepEqual(parseCommands("(( x = $(kill 1) ))", { zsh }).map((c) => c.words), [["kill", "1"]], `${zsh}`);
@@ -296,6 +313,28 @@ test("T125-U6-BUILDERR: npm run parser without the tools names scripts/build-par
   rmSync(r.dir, { recursive: true, force: true });
 });
 
+test("T125-U7-HANDCOMPARE: npm run parser says if the new sha256 is the one that git's HEAD records", () => {
+  const r = repo();
+  const head = readFileSync(r.file("parser.wasm.sha256"), "utf8").split(" ")[0];
+  const git = (...a) => execFileSync("git", ["-C", r.dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+  git("init", "-q");
+  git("add", "plugins/sage/hooks/parser");
+  git("commit", "-qm", "start");
+  // A fake tinygo of the pinned version whose build copies FAKE_WASM to the -o path (argument 7).
+  writeFileSync(join(r.dir, ".bin", "tinygo"), '#!/bin/sh\n[ "$1" = version ] && { echo "tinygo version 0.42.0 linux/amd64 (using go version go1.26.8 and LLVM version 22.1.4)"; exit 0; }\ncp "$FAKE_WASM" "$7"\n');
+  chmodSync(join(r.dir, ".bin", "tinygo"), 0o755);
+  const same = join(r.dir, "same.wasm");
+  cpSync(r.file("parser.wasm"), same);
+  let out = r.run("build-parser", { FAKE_WASM: same });
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, new RegExp(`^✓ parser\\.wasm: \\d+ bytes, sha256 ${head}: the same sha256 that git's HEAD records\n$`));
+  writeFileSync(join(r.dir, "other.wasm"), "x");
+  out = r.run("build-parser", { FAKE_WASM: join(r.dir, "other.wasm") });
+  assert.match(out.stdout, new RegExp(`^! parser\\.wasm: 1 bytes, sha256 2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881: not the sha256 that git's HEAD records \\(${head}\\)\\. After a change to the parser's sources, that is expected`));
+  assert.equal(readFileSync(r.file("parser.wasm.sha256"), "utf8"), "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881  parser.wasm\n", "the record is the new build's");
+  rmSync(r.dir, { recursive: true, force: true });
+});
+
 test("T125-U1-HASHMSG, T125-U4-NOSHA and T125-C4-LICTEXT: each broken parser file gives a ✗ line with its fix, and the other checks still run", () => {
   const r = repo();
   const wasm = readFileSync(r.file("parser.wasm"));
@@ -318,7 +357,9 @@ test("T125-U1-HASHMSG, T125-U4-NOSHA and T125-C4-LICTEXT: each broken parser fil
   assert.equal(out.status, 1);
   assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/parser\.wasm\.sha256 is missing\. Restore it from git: git checkout HEAD --/);
   assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/THIRD-PARTY\.md: LICENSE-go is not the text that was reviewed/);
-  assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/THIRD-PARTY\.md: COPYRIGHT-musl does not ship/);
+  assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/THIRD-PARTY\.md: COPYRIGHT-musl does not ship\. Restore it from git: git checkout HEAD -- plugins\/sage\/hooks\/parser\/COPYRIGHT-musl\n/);
   assert.doesNotMatch(out.stderr, /\n\s+at /, "no stack trace");
+  rmSync(r.file("THIRD-PARTY.md"));
+  assert.match(check().stderr, /✗ plugins\/sage\/hooks\/parser\/THIRD-PARTY\.md: missing; it lists the licences of the code in parser\.wasm\. Restore it from git: git checkout HEAD -- plugins\/sage\/hooks\/parser\/THIRD-PARTY\.md\n/);
   rmSync(r.dir, { recursive: true, force: true });
 });

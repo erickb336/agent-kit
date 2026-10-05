@@ -204,14 +204,14 @@ if (tools !== pinned()) {
 // Every licence file that THIRD-PARTY.md names ships beside it, with the sha256 that its list of sha256 records, so
 // that a changed or emptied licence text fails too.
 const thirdParty = join(PARSER, "THIRD-PARTY.md");
-if (!existsSync(thirdParty)) problems.push("plugins/sage/hooks/parser/THIRD-PARTY.md: missing; it lists the licences of the code in parser.wasm");
+if (!existsSync(thirdParty)) problems.push("plugins/sage/hooks/parser/THIRD-PARTY.md: missing; it lists the licences of the code in parser.wasm. Restore it from git: git checkout HEAD -- plugins/sage/hooks/parser/THIRD-PARTY.md");
 else {
   const text = readFileSync(thirdParty, "utf8");
   const named = new Set([...text.matchAll(/\]\(((?:LICENSE|COPYRIGHT)[^)]*)\)/g)].map((m) => m[1]));
   const sums = new Map([...text.matchAll(/^([0-9a-f]{64}) {2}((?:LICENSE|COPYRIGHT)\S*)$/gm)].map((m) => [m[2], m[1]]));
   for (const f of new Set([...named, ...sums.keys()])) {
     const where = `plugins/sage/hooks/parser/THIRD-PARTY.md: ${f}`;
-    if (!existsSync(join(PARSER, f))) problems.push(`${where} does not ship`);
+    if (!existsSync(join(PARSER, f))) problems.push(`${where} does not ship. Restore it from git: git checkout HEAD -- plugins/sage/hooks/parser/${f}`);
     else if (!named.has(f)) problems.push(`${where} has a sha256 but no row in the table`);
     else if (!sums.has(f)) problems.push(`${where} has no sha256 in the list of sha256; add the line that shasum -a 256 ${f} prints`);
     else if (sha256(join(PARSER, f)) !== sums.get(f)) problems.push(`${where} is not the text that was reviewed: its sha256 is ${sha256(join(PARSER, f))}, not ${sums.get(f)}. Restore it with git checkout HEAD -- plugins/sage/hooks/parser/${f}, or copy the upstream file at the pinned version and record its sha256`);

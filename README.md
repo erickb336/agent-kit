@@ -410,8 +410,8 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 1. Install Go 1.26.8 from [go.dev/dl](https://go.dev/dl/). The version must match exactly (`go.mod`'s toolchain line), because TinyGo compiles Go's standard library from it.
 2. Install TinyGo 0.42.0 from [its release page](https://github.com/tinygo-org/tinygo/releases/tag/v0.42.0). Put both `go` and `tinygo` on PATH, and check with `tinygo version`: it must say `0.42.0` and `go1.26.8`.
-3. Run `GOTOOLCHAIN=local npm run parser`. It writes `parser.wasm` and its sha256 in `parser.wasm.sha256`. Two builds from the same source give the same file.
-4. To compare the sha256 by hand, run `shasum -a 256 plugins/sage/hooks/parser/parser.wasm` and compare it with `plugins/sage/hooks/parser/parser.wasm.sha256`. `npm run check` rebuilds the parser in a temporary folder when both tools are on PATH, and compares the sha256. Without them, it checks only the recorded sha256 locally, and it fails in CI.
+3. To check the committed binary file, run `npm run check` first. It builds the parser in a temporary folder, compares the sha256 with `parser.wasm.sha256`, and prints `✓ parser.wasm rebuilt with tinygo 0.42.0 with go1.26.8: same sha256`. It changes no file. Without the tools, it checks only the recorded sha256 locally, and it fails in CI.
+4. After a change to the parser's sources, run `GOTOOLCHAIN=local npm run parser`. It writes `parser.wasm` and its sha256 in `parser.wasm.sha256`, and says if the new sha256 is the one that git's HEAD records. Two builds from the same source give the same file. To compare by hand, compare the output of `shasum -a 256 plugins/sage/hooks/parser/parser.wasm` with the output of `git show HEAD:plugins/sage/hooks/parser/parser.wasm.sha256`.
 
 ## Credits
 
