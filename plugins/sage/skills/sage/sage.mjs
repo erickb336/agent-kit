@@ -9,8 +9,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, hostname, uptime } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { homedir, hostname, tmpdir, uptime } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The least route for each size. The chief may add blocks, never remove these. */
@@ -853,21 +853,53 @@ function holder(folder) {
   }
 }
 
-/** True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one. */
-function gone(h, checkStart) {
-  if (Math.abs(h.boot - BOOT) > 60_000) return h.host === hostname(); // another machine may still hold it
+/**
+ * How the lock asks about a process on this machine: is the pid alive, and when did it start (ms, NaN when unknown).
+ * It asks for one pid only (kill 0 and ps -p), never for the process list.
+ */
+const realProbe = {
+  alive(pid) {
+    try {
+      return process.kill(pid, 0);
+    } catch (e) {
+      return e.code !== "ESRCH";
+    }
+  },
+  started(pid) {
+    try {
+      return Date.parse(execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, stdio: ["ignore", "pipe", "ignore"] }).trim());
+    } catch {
+      return NaN;
+    }
+  },
+};
+
+/**
+ * The probe for the lock in dir. In a node test run (NODE_TEST_CONTEXT), on a logbook in the temp folder, SAGE_TEST_PIDS,
+ * a JSON map of pid to start time (null for a dead pid; a pid not in it is alive, start unknown), replaces the real one,
+ * so that no test reads or signals a real process. Anywhere else the variable is ignored, so it cannot weaken a real lock.
+ */
+function probeFor(dir) {
+  const pids = process.env.SAGE_TEST_PIDS;
+  if (!pids || !process.env.NODE_TEST_CONTEXT) return realProbe;
   try {
-    process.kill(h.pid, 0);
-  } catch (e) {
-    return e.code === "ESRCH";
-  }
-  if (!checkStart) return false;
-  try {
-    const ps = execFileSync("ps", ["-o", "lstart=", "-p", String(h.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, stdio: ["ignore", "pipe", "ignore"] });
-    return Date.parse(ps.trim()) > h.start + 2000; // the pid now names a process that started after the holder
+    if (!realpathSync(dir).startsWith(realpathSync(tmpdir()) + sep)) return realProbe;
   } catch {
-    return false;
+    return realProbe;
   }
+  let map;
+  try {
+    map = JSON.parse(pids);
+  } catch {}
+  if (!map || typeof map !== "object" || Array.isArray(map)) refuse(`SAGE_TEST_PIDS is not a JSON object of pid to start time or null: ${pids}`);
+  return { alive: (pid) => map[pid] !== null, started: (pid) => map[pid] ?? NaN };
+}
+
+/** True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one. */
+function gone(h, checkStart, probe) {
+  if (Math.abs(h.boot - BOOT) > 60_000) return h.host === hostname(); // another machine may still hold it
+  if (!probe.alive(h.pid)) return true;
+  return checkStart && probe.started(h.pid) > h.start + 2000; // the pid now names a process that started after the holder
 }
 
 /** Removes a lock folder by its owner file's name, then the folder, which must then be empty. False if either fails. */
@@ -883,6 +915,7 @@ function clear(folder, file) {
 
 /** Runs fn while this process holds the store's lock. Refuses, with nothing changed, when the store stays busy. */
 export function withLock(dir, fn) {
+  const probe = probeFor(dir);
   const lock = join(dir, ".lock");
   const token = randomUUID();
   const tmp = `${lock}.${token}`;
@@ -903,7 +936,7 @@ export function withLock(dir, fn) {
     const waited = Date.now() - t0;
     const checkStart = h && waited > 500 && checked !== h.file; // ps once per holder, and only for a slow one
     if (checkStart) checked = h.file;
-    if (h && gone(h, checkStart) && clear(lock, h.file)) continue; // if clear fails, another waiter was first
+    if (h && gone(h, checkStart, probe) && clear(lock, h.file)) continue; // if clear fails, another waiter was first
     if (waited >= LOCK_WAIT_MS) {
       rmSync(tmp, { recursive: true, force: true });
       const who = h ? `pid ${cell(h.pid)} on ${cell(h.host)} has held ${lock}${Number.isFinite(h.at) ? ` for ${((Date.now() - h.at) / 1000).toFixed(1)} s` : ""}` : `${lock} has no valid owner file`;
@@ -915,7 +948,7 @@ export function withLock(dir, fn) {
     // The temp folder of a waiter that was killed stays behind. Remove it by the lock's rules: owner surely gone, by name.
     for (const name of readdirSync(dir).filter((n) => new RegExp(`^\\.lock\\.${UUID}$`).test(n))) {
       const h = holder(join(dir, name));
-      if (h && gone(h, false)) clear(join(dir, name), h.file);
+      if (h && gone(h, false, probe)) clear(join(dir, name), h.file);
     }
     return fn();
   } finally {
