@@ -13,5 +13,8 @@
     "simplified technical english",
     "skills"
   ],
-  "hooks": "./hooks/claude.json"
+  "hooks": "./hooks/claude.json",
+  "metadata": {
+    "release": 1
+  }
 }
