@@ -192,24 +192,26 @@ function saved(env) {
  * as "3x", for one), or a config.json that is not a regular file, gives the default. A count reads as valid() gives it:
  * never below its floor, and never more agents or rounds, or fewer cycles, than written. A cycles key that is there but
  * has no number (Infinity, [3], true, "abc") reads as "invalid", and the merge check refuses every merge. A file of
- * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
+ * an older sage holds autopilot_cycles for cycles.large: it counts, or reads as invalid, when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
   let c = { ...DEFAULTS };
   try {
     const s = saved(env);
-    const written = Object.keys(s); // a broken legacy autopilot_cycles gives the default, as before
-    if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles;
+    if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles; // a broken one is an invalid cycles.large
     const caps = Object.keys(s).filter((k) => CAP.test(k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
-    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (k.startsWith("cycles.") && written.includes(k) ? "invalid" : d)]), ...caps]);
+    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (k.startsWith("cycles.") && Object.hasOwn(s, k) ? "invalid" : d)]), ...caps]);
   } catch {}
   return c;
 }
 
 /** The clean cycles that a task needs before its merge: cycles.small for every task, cycles.large for a large one, and cycles.risk for any task with a risk flag (the largest count wins). */
 export function cyclesFor(task, c) {
-  return Math.max(c["cycles.small"], task.size === "large" ? c["cycles.large"] : 0, task.risk ? c["cycles.risk"] : 0);
+  return Math.max(...cycleKeys(task).map((k) => c[k]));
 }
+
+/** The cycles keys that apply to a task: cycles.small, and cycles.large or cycles.risk when it is large or has a risk flag. */
+const cycleKeys = (task) => ["cycles.small", task.size === "large" && "cycles.large", task.risk && "cycles.risk"].filter(Boolean);
 
 /** The file that a write to file replaces: file, or the target of its link. Something there that is not a regular file refuses. */
 function target(file) {
@@ -416,7 +418,7 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
  * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
  * its PR number.
  */
-function judge(dir, tasks, findings, id, rows, cycles, repaired) {
+function judge(dir, tasks, findings, id, rows, cycles, repaired, cfg) {
   const task = tasks.find((t) => t.id === id);
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
@@ -433,7 +435,8 @@ function judge(dir, tasks, findings, id, rows, cycles, repaired) {
   const clean = perCycle.length ? [...new Set(rows.map((r) => r.cycle))].filter((c) => perCycle.every((k) => rows.some((r) => r.cycle === c && r.kind === k))).length : 1;
   if (clean < want) {
     const missing = perCycle.filter((k) => !rows.some((r) => r.kind === k));
-    return { ok: false, reason: `${who}: ${clean} of ${want} clean cycles on this SHA${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}. Run the next cycle of its reviews on this SHA and record each verdict.` };
+    const high = want > LIMIT["cycles.small"] && cycleKeys(task).find((k) => cfg[k] === want); // only config.json holds a count above the limit
+    return { ok: false, reason: `${who}: ${clean} of ${want} clean cycles on this SHA${high ? ` (${high} is ${want} in config.json; the config command takes 1 to 10)` : ""}${missing.length ? `; never recorded: ${missing.join(", ")}` : ""}. Run the next cycle of its reviews on this SHA and record each verdict.` };
   }
   return { ok: true, reason: `${task.id} may merge: ${clean} clean cycle${clean === 1 ? "" : "s"} on this SHA` };
 }
@@ -470,7 +473,7 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const own = rows.filter((r) => r.task === id);
         const task = tasks.find((t) => t.id === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired) };
+        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
