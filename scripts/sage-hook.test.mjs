@@ -1942,11 +1942,13 @@ test("T72-C5-STATECMD: with the plugin in a folder with a space, the board note 
   assert.equal(sh(answer.replace("<G>", "G1").replace("<n>", "2")).stdout, "G1 answered · no\n");
 });
 
-test("T72-C6-OTHER: in sage mode, the chief's gate answer commands pass the hook: by number, and own words in a quoted heredoc", () => {
+test("T72-C6-OTHER: in sage mode, the chief's gate answer commands pass the hook: by number, and own words in hex", () => {
   const s = session();
   s.send(prompt("sage mode"));
-  for (const command of [`node ${TOOL} gate answer G1 --option 2 --project '/x'`, `node ${TOOL} gate answer G1 --other --project '/x' <<'SAGE_WORDS'\nAccept all defaults, but keep logs; merge it later\nSAGE_WORDS`])
-    assert.equal(denied(s.send(bash(command))), undefined, command);  assert.match(denied(s.send(bash(`node ${TOOL} gate answer G1 --other --project '/x' <<'SAGE_WORDS'\nok\nSAGE_WORDS\ngh pr merge 5 --squash`))) ?? "", /^sage: /, "a merge after the heredoc is still read");
+  const hex = Buffer.from("Accept all defaults, but merge it later").toString("hex");
+  for (const command of [`node ${TOOL} gate answer G1 --option 2 --project '/x'`, `node ${TOOL} gate answer G1 --other-hex ${hex} --project '/x'`])
+    assert.equal(denied(s.send(bash(command))), undefined, command);
+  assert.match(denied(s.send(bash(`node ${TOOL} gate answer G1 --other-hex ${hex} --project '/x'\ngh pr merge 5 --squash`))) ?? "", /^sage: /, "a merge on the next line is still read");
 });
 
 test("T94: the hook keeps the mode and autopilot state under the sage root, never in the temp folder", () => {

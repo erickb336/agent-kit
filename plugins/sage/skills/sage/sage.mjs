@@ -88,13 +88,11 @@ const OPTIONS = {
   "finding move": ["to", "size"],
   verdict: ["sha", "kind", "cycle", "pr", "run"],
   "gate add": ["question", "options", "recommend", "default"],
-  "gate answer": ["option", "other"],
+  "gate answer": ["option", "other-hex"],
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
   board: ["remember", "name-hex"],
 };
-/** The options that take no value: --other takes the owner's words on stdin, never on the command line. */
-const FLAGS = ["other"];
 /** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
 const PR = /^\d+$/;
 const STANDING = `# Standing orders
@@ -147,6 +145,15 @@ export function projectRoot(path) {
 /** A gate's options, numbered from 1 as the board shows them: its cell split at "|", each without spaces around it. */
 export const optionsOf = (g) => String(g.options ?? "").split("|").map((o) => o.trim()).filter(Boolean);
 /** An option as a person sees it: compatibility forms, case, runs of spaces and invisible characters do not count. */
+/**
+ * Text that the owner typed, given as the hex of its UTF-8 bytes (only 0-9 and a-f), so that a command line holds none
+ * of the owner's text. Undefined for anything else: an odd length, another character, no bytes or invalid UTF-8.
+ */
+const unhex = (hex) => {
+  try {
+    return /^(?:[0-9a-f]{2})+$/.test(hex) ? new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(hex, "hex")) : undefined;
+  } catch {} // invalid UTF-8
+};
 const looks = (s) => String(s).normalize("NFKC").replace(/[\p{Cc}\p{Cf}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 /** Names the project's main checkout in its logbook (checkout.txt), so a session of another project can answer its gates. */
 const checkout = (dir, project) => put(join(dir, "checkout.txt"), `${projectRoot(resolve(project))}\n`);
@@ -439,9 +446,8 @@ function parse(cmd, args) {
     else {
       const eq = a.includes("=");
       const o = a.slice(2, eq ? a.indexOf("=") : undefined);
-      if (FLAGS.includes(o) && eq) refuse(`--${o} takes no value: give the owner's own words on stdin.`);
-      const v = FLAGS.includes(o) ? "" : eq ? a.slice(a.indexOf("=") + 1) : args[++i];
-      if (!eq && !FLAGS.includes(o)) spaced.push(o);
+      const v = eq ? a.slice(a.indexOf("=") + 1) : args[++i];
+      if (!eq) spaced.push(o);
       if (o in opt) refuse(`--${o} is given twice. Give it once${o === "accept-loss" ? `, with the tables joined by a comma: --accept-loss ${opt[o]},${v}` : ""}.`);
       opt[o] = v;
     }
@@ -641,17 +647,11 @@ export function sage(argv, env = process.env) {
   // as the hex of its UTF-8 bytes, so that the hook's command line holds no text that the owner typed.
   if (cmd === "board") {
     const hex = opt["name-hex"];
-    if (pos.length + (hex === undefined ? 0 : 1) > 1 || !["yes", "no", undefined].includes(opt.remember) || (hex !== undefined && !/^(?:[0-9a-f]{2})+$/.test(hex)))
+    if (pos.length + (hex === undefined ? 0 : 1) > 1 || !["yes", "no", undefined].includes(opt.remember) || (hex !== undefined && unhex(hex) === undefined))
       refuse("board takes one scope (this, all or a project's name, or --name-hex with the name's UTF-8 bytes in hex) and --remember yes or no");
-    return board({ scope: hex === undefined ? pos[0] : Buffer.from(hex, "hex").toString("utf8"), project, env, save: opt.remember !== "no" });
+    return board({ scope: hex === undefined ? pos[0] : unhex(hex), project, env, save: opt.remember !== "no" });
   }
   const dir = storeDir(project, env);
-  // The owner's own words for gate answer --other, read before the lock: a slow writer never holds the logbook.
-  if (cmd === "gate" && opt.other !== undefined) {
-    try {
-      opt.other = readFileSync(0, "utf8");
-    } catch {} // no stdin: the answer refuses the missing words
-  }
   const repair = cmd === "logbook" && pos[0] === "repair";
   const skip = repair ? [...new Set(list(opt["accept-loss"]))] : [];
   const odd = skip.filter((t) => !Object.hasOwn(TABLES, t));
@@ -889,7 +889,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
         const options = optionsOf({ options: cell(need(opt.options, "--options")) });
         const twin = options.find((o, i) => options.findIndex((x) => looks(x) === looks(o)) !== i);
         if (twin !== undefined) refuse(`two options look the same: ${JSON.stringify(twin)} and ${JSON.stringify(options.find((x) => looks(x) === looks(twin)))}. Make them differ in more than case.`);
-        if (options.some((o) => /^other:/i.test(o))) refuse(`an option may not start with "other:": it marks an answer in the owner's own words.`);
+        if (options.some((o) => /^other ?:/.test(looks(o)))) refuse(`an option may not start with "other:": it marks an answer in the owner's own words.`);
         const pick = (v, what) => options.find((o) => o === v.trim()) ?? options.find((o) => looks(o) === looks(v)) ?? (/^[1-9]\d*$/.test(v.trim()) ? options[Number(v) - 1] : undefined) ?? refuse(`${what} is one of the options, by its text or its number (1 to ${options.length}): ${options.map((o) => JSON.stringify(o)).join(", ")}.`);
         const recommendation = pick(need(opt.recommend, "--recommend"), "--recommend");
         const g = { id: nextId(dir, "G"), task: id ?? "", question: need(opt.question, "--question"), options: opt.options, recommendation, default: opt.default === undefined ? "" : pick(opt.default, "--default"), at: now() };
@@ -899,14 +899,16 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       if (sub === "answer") {
         const g = gates.find((x) => x.id === id) ?? missing(`gate ${id}`, gates.map((x) => x.id));
         // By number only, as the board numbers the options: no agent-written text goes into the command. The owner's own
-        // words come on stdin and are kept with "other: " before them, so they never pass for one of the options.
+        // words come as the hex of their UTF-8 bytes, so no text of theirs is in the command either, and are kept with
+        // "other: " before them, so they never pass for one of the options.
         const options = optionsOf(g);
-        const how = `gate answer ${g.id} takes --option <n>, the number of one of its options (1 to ${options.length}), or --other with the owner's own words on stdin. Nothing changed.`;
-        if (more.length || (opt.option === undefined) === (opt.other === undefined)) refuse(how);
-        if (opt.other !== undefined) g.answer = `other: ${need(cell(opt.other), "the owner's own words on stdin")}`;
+        const how = `gate answer ${g.id} takes --option <n>, the number of one of its options (1 to ${options.length}), or --other-hex <hex>, the owner's own words as the hex of their UTF-8 bytes (0-9 and a-f). Nothing changed.`;
+        const own = opt["other-hex"];
+        if (more.length || (opt.option === undefined) === (own === undefined) || (own !== undefined && unhex(own) === undefined)) refuse(how);
+        if (own !== undefined) g.answer = `other: ${need(cell(unhex(own)), "the owner's own words: --other-hex gives only spaces")}`;
         else g.answer = (/^[1-9]\d*$/.test(opt.option) && options[Number(opt.option) - 1]) || refuse(how);
         write(dir, "gates", gates);
-        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: opt.other === undefined ? "the user's answer" : "the user's own words" }]);
+        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: own === undefined ? "the user's answer" : "the user's own words" }]);
         return `${g.id} answered · ${g.answer}`;
       }
       refuse("gate add or gate answer");

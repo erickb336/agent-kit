@@ -1352,25 +1352,40 @@ test("T72-S6-OPTIONSHELL: gate answer takes an option by its number and records 
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("gate", "add", "T1", "--question", "Ship it?", "--options", "yes|keep $(touch X) it|No  access / later", "--recommend", "yes");
   const before = snapshot(s.dir);
-  const how = "sage: gate answer G1 takes --option <n>, the number of one of its options (1 to 3), or --other with the owner's own words on stdin. Nothing changed.";
-  for (const args of [["yes"], ["--option", "4"], ["--option", "0"], ["--option", "yes"], ["--option", "1", "--other"], []]) assert.equal(s.no("gate", "answer", "G1", ...args), how, args.join(" "));
-  assert.equal(s.no("gate", "answer", "G1", "--other=my words"), "sage: --other takes no value: give the owner's own words on stdin.");
+  const how = "sage: gate answer G1 takes --option <n>, the number of one of its options (1 to 3), or --other-hex <hex>, the owner's own words as the hex of their UTF-8 bytes (0-9 and a-f). Nothing changed.";
+  for (const args of [["yes"], ["--option", "4"], ["--option", "0"], ["--option", "yes"], ["--option", "1", "--other-hex", "6f6b"], []]) assert.equal(s.no("gate", "answer", "G1", ...args), how, args.join(" "));
+  assert.equal(s.no("gate", "answer", "G1", "--other"), "sage: gate answer takes no --other. Its options: --option, --other-hex, --project.");
   assert.deepEqual(snapshot(s.dir), before, "no file changed");
   assert.equal(s.ok("gate", "answer", "G1", "--option", "3"), "G1 answered · No  access / later");
   assert.equal(rows(s.dir, "gates")[0].answer, "No  access / later");
 });
 
-test("T72-C6-OTHER: gate answer --other reads the owner's own words from stdin and records them marked as other", () => {
+test("T72-S7-HEREDOC: gate answer --other-hex records the owner's own words exactly, marked as other, and runs none of them", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("gate", "add", "T1", "--question", "Defaults?", "--options", "accept|review each", "--recommend", "accept");
-  const other = (input) => spawnSync("node", [TOOL, "gate", "answer", "G1", "--other", "--project", s.project], { input, encoding: "utf8", env: testEnv({ SAGE_HOME: s.home }), timeout });
-  assert.deepEqual([other("  \n").status, other("").stderr], [1, "sage: missing the owner's own words on stdin\n"]);
-  const r = other("Accept all defaults, but keep logs\n");
-  assert.equal(r.stdout, "G1 answered · other: Accept all defaults, but keep logs\n", r.stderr);
-  assert.equal(rows(s.dir, "gates")[0].answer, "other: Accept all defaults, but keep logs");
-  assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /Defaults\? → other: Accept all defaults, but keep logs\tthe user's own words\n/);
+  const cwd = mkdtempSync(join(tmpdir(), "sage-words-"));
+  const words = "Keep logs\nSAGE_WORDS\ntouch PWNED\n$(touch X) `touch Y` 'q' \"dq\" ü";
+  // The command as the chief gives it to a shell: only 0-9 and a-f stand for the owner's words.
+  const hex = Buffer.from(words, "utf8").toString("hex");
+  const r = spawnSync("/bin/sh", ["-c", `node '${TOOL}' gate answer G1 --other-hex ${hex} --project '${s.project}'`], { cwd, encoding: "utf8", env: testEnv({ SAGE_HOME: s.home }), timeout });
+  const stored = "other: Keep logs SAGE_WORDS touch PWNED $(touch X) `touch Y` 'q' \"dq\" ü"; // one cell: line breaks read as spaces
+  assert.equal(r.stdout, `G1 answered · ${stored}\n`, r.stderr);
+  assert.equal(rows(s.dir, "gates")[0].answer, stored);
+  assert.match(readFileSync(join(s.dir, "decisions.tsv"), "utf8"), /Defaults\? → other: Keep logs SAGE_WORDS .*\tthe user's own words\n/);
+  assert.deepEqual(readdirSync(cwd), [], "no file made: nothing of the words ran");
   assert.match(s.ok("status"), /gates   0 open/);
+});
+
+test("T72-S7-HEREDOC: gate answer refuses --other-hex that is not the hex of UTF-8 text, or only spaces, and changes nothing", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("gate", "add", "T1", "--question", "Defaults?", "--options", "accept|review each", "--recommend", "accept");
+  const before = snapshot(s.dir);
+  const how = "sage: gate answer G1 takes --option <n>, the number of one of its options (1 to 2), or --other-hex <hex>, the owner's own words as the hex of their UTF-8 bytes (0-9 and a-f). Nothing changed.";
+  for (const bad of ["", "6f6", "6g6b", "6F6B", "6f 6b", "ff", "c328"]) assert.equal(s.no("gate", "answer", "G1", `--other-hex=${bad}`), how, bad); // c328: invalid UTF-8
+  assert.equal(s.no("gate", "answer", "G1", "--other-hex", "200a"), "sage: missing the owner's own words: --other-hex gives only spaces");
+  assert.deepEqual(snapshot(s.dir), before, "no file changed");
 });
 
 test("T72-Q6-RECOMMEND: gate add takes a recommendation and a default among the options, by text or number, and refuses options that look the same", () => {
@@ -1381,10 +1396,12 @@ test("T72-Q6-RECOMMEND: gate add takes a recommendation and a default among the 
   assert.equal(s.no(...add("--options", "yes|no", "--recommend", "yes", "--default", "3")), 'sage: --default is one of the options, by its text or its number (1 to 2): "yes", "no".');
   assert.equal(s.no(...add("--options", "Keep|keep", "--recommend", "1")), 'sage: two options look the same: "keep" and "Keep". Make them differ in more than case.');
   assert.equal(s.no(...add("--options", "drop|dro\u200bp", "--recommend", "1")), 'sage: two options look the same: "drop" and "drop". Make them differ in more than case.');
-  assert.equal(s.no(...add("--options", "yes|other: no", "--recommend", "1")), 'sage: an option may not start with "other:": it marks an answer in the owner\'s own words.');
+  for (const o of ["other: no", "oth\u00ader: x", "\uff4f\uff54\uff48\uff45\uff52\uff1a x", "Other : x"])
+    assert.equal(s.no(...add("--options", `yes|${o}`, "--recommend", "1")), 'sage: an option may not start with "other:": it marks an answer in the owner\'s own words.', o); // T72-S7-OTHERLOOK
   assert.equal(rows(s.dir, "gates").length, 0, "no gate added");
   s.ok(...add("--options", "Keep it|drop", "--recommend", "KEEP IT", "--default", "2"));
   assert.deepEqual([rows(s.dir, "gates")[0].recommendation, rows(s.dir, "gates")[0].default], ["Keep it", "drop"]);
+  assert.match(s.ok(...add("--options", "yes|otherwise: no", "--recommend", "1")), /^G2 open/, "a word that only starts with other passes");
 });
 
 test("T72-Q6-CHECKOUT: init and task add name the project's main checkout in checkout.txt", () => {
