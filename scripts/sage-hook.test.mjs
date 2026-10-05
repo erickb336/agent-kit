@@ -1,9 +1,9 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -1293,4 +1293,61 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
   const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
+});
+
+// T100: two lessons sealed for agents. The hook only reads these commands; nothing here runs ps or kill.
+const AGENT = { agent_id: "a1", agent_type: "sage:implementer" };
+/** The hook's own PATH: node, then /usr/bin and /bin, so a bare ps resolves to the real one even when the run has a fake ps first on PATH. */
+const SYSTEM_PATH = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` };
+const STASHES = ["git stash", "git stash push -m wip", "git stash save wip", "git stash pop", "git stash apply stash@{0}", "git stash drop", "git stash clear", "git stash list", "git stash show -p", "git -C /x/repo stash", "git --git-dir=/x/repo/.git stash pop", "git --git-dir /x/repo/.git stash", "cd /x && git stash", "sh -c 'git stash'"];
+/** A folder in the temp folder with fakes: ps prints a start time in the past; kill, pgrep and pkill print nothing. */
+const FAKES = (() => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-fakes-")));
+  writeFileSync(join(dir, "ps"), "#!/bin/sh\necho 'Sat Jan  1 00:00:00 2000'\n");
+  for (const name of ["kill", "pgrep", "pkill"]) writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n");
+  for (const name of ["ps", "kill", "pgrep", "pkill"]) chmodSync(join(dir, name), 0o755);
+  symlinkSync("/bin/ps", join(dir, "real-ps")); // links in the temp folder to the real ps
+  mkdirSync(join(dir, "links"));
+  symlinkSync("/bin/ps", join(dir, "links", "ps"));
+  return dir;
+})();
+
+test("an agent never runs git stash in any form; the chief may, and git status and git log pass", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  for (const command of STASHES) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /never runs git stash.*standing order 16.*git worktree add --detach <scratch> <sha>.*git show <sha>:<path>/, command);
+    assert.equal(s.send(bash(command)), undefined, `the chief: ${command}`);
+    assert.equal(s.send(bash(command, FEATURE, { agent_type: "sage:chief-of-staff" })), undefined, `the chief as an agent type: ${command}`);
+  }
+  for (const command of ["git status", "git log --oneline -5", "git show HEAD:README.md", "git worktree add --detach /tmp/x HEAD", 'git commit -m "no stash here"', "echo git stash"]) {
+    assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+  }
+  for (const name of ["Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+    assert.match(denied(s.send(tool(name, { command: "git stash" }, { cwd: FEATURE, ...AGENT }))) ?? "", /never runs git stash/, name);
+  }
+});
+
+test("an agent never lists or signals the real processes: ps, pgrep, kill and pkill pass only as fakes in the temp folder", () => {
+  const s = session(SYSTEM_PATH);
+  s.send(prompt("sage mode"));
+  const real = ["ps -U me", "pgrep -fl node", "pkill -f node", "kill 12345", "/bin/ps -ax", "/bin/kill -9 1", "/usr/bin/pgrep node", "/usr/bin/pkill node", "killall node", "lsof -i :8080", "top -l 1", "sudo kill 1", "xargs kill", `${FAKES}/real-ps`, `PATH=${FAKES}/links:$PATH ps`, `bash -c "ps -ax"`, "find . -name x -exec kill {} ;", `PATH=${FAKES}:$PATH kill 1`];
+  for (const command of real) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /never reads or signals the real process list \(standing order 14\).*fake ps.*Sat Jan  1 00:00:00 2000/, command);
+    assert.equal(s.send(bash(command)), undefined, `the chief: ${command}`);
+  }
+  const fakes = [`PATH=${FAKES}:$PATH ps -o lstart= -p 1`, `export PATH=${FAKES}:$PATH; ps -ax`, `PATH=${FAKES}:$PATH pgrep -fl node`, `PATH=${FAKES}:$PATH pkill -f node`, `${FAKES}/ps -ax`, `${FAKES}/kill 1`, `PATH=${FAKES}:$PATH env kill 1`, `cd ${FAKES} && ./pkill node`];
+  for (const command of fakes) assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+  assert.match(denied(s.send(tool("Monitor", { command: "ps -ax", description: "d" }, { cwd: FEATURE, ...AGENT }))) ?? "", /standing order 14/);
+  assert.match(denied(s.send(tool("PowerShell", { command: "Get-Process" }, { cwd: FEATURE, ...AGENT }))) ?? "", /standing order 14/);
+  assert.match(denied(s.send(tool("mcp__terminal__run_in_terminal", { command: "pgrep node" }, { cwd: FEATURE, ...AGENT }))) ?? "", /standing order 14/);
+  assert.equal(s.send(bash("npm test", FEATURE, AGENT)), undefined, "other commands pass");
+});
+
+test("the rule holds for any subagent in sage mode and for a sage agent, not for other agents outside sage mode", () => {
+  const s = session(SYSTEM_PATH);
+  assert.match(denied(s.send(bash("git stash", FEATURE, AGENT))) ?? "", /git stash/, "a sage agent, also outside sage mode");
+  assert.equal(s.send(bash("git stash", FEATURE, { agent_id: "e1", agent_type: "Explore" })), undefined, "another agent outside sage mode");
+  s.send(prompt("sage mode"));
+  assert.match(denied(s.send(bash("ps -ax", FEATURE, { agent_id: "e1", agent_type: "Explore" }))) ?? "", /standing order 14/, "any subagent in sage mode");
 });

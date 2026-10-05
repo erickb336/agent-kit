@@ -15,6 +15,8 @@
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
+//   - An agent (a sage agent, or any subagent in sage mode; never the chief) never runs git stash, and never runs a
+//     program that lists or signals processes unless that program is a fake in the temp folder (agentProblem).
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -186,6 +188,11 @@ export function handle(input, state, slots) {
   }
   if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
   if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
+  const agent = (ours || (!main && state.sage)) && !CHIEF.test(input.agent_type ?? "");
+  if (event === "PreToolUse" && agent && SHELL_TOOLS.test(input.tool_name ?? "")) {
+    const why = agentProblem([].concat(input.tool_input?.command ?? []).join(" "), input.cwd ?? process.cwd());
+    if (why) return deny(event, why);
+  }
   if (event !== "PreToolUse" || !state.sage) return undefined;
 
   const tool = input.tool_name ?? "";
@@ -441,6 +448,78 @@ function gitGate(event, command, state, cwd, main) {
   }
   return verdict?.ok === true ? undefined : deny(event, `the merge check refuses: ${verdict?.reason}`);
 }
+
+/**
+ * Two lessons that came back, held for agents in every tool that runs a command line. An agent never runs git stash
+ * in any form: every worktree of a repo shares one stash list, so another agent's pop can take it (standing order 16).
+ * An agent never lists or signals the real processes (standing order 14): a process program passes only when its
+ * word resolves, through PATH and links, to a file in the temp folder. A bare kill is the shell's builtin, so it never
+ * passes. Text that a shell, eval or a heredoc runs is read too. A process.kill inside a script is not visible here.
+ * Undefined when the command line passes; else the reason for the refusal.
+ */
+const SHELL_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.+)$/;
+const NO_STASH = "an agent never runs git stash: every worktree of a repo shares one stash list, so another agent can pop or drop your work (standing order 16). To test old code, use git worktree add --detach <scratch> <sha>, or git show <sha>:<path> into your scratch folder.";
+const PROCESS = /^(?:ps|pgrep|pkill|kill|killall|lsof|top|get-process|stop-process|gps|spps)$/i;
+const NO_PROCESS = (word) => `an agent never reads or signals the real process list (standing order 14), so ${quoted(word)} is refused. Put a fake ps first on PATH, in the temp folder or your scratch folder, that prints a start time in the past (for example "Sat Jan  1 00:00:00 2000"), and run a fake kill by its path: a bare kill is the shell's builtin. Use literal paths: the hook does not expand variables.`;
+/** Programs that run the next word as a program; the ones after "|" leave a bare kill the shell's builtin. */
+const WRAPPER = /^(?:sudo|doas|env|nice|nohup|timeout|gtimeout|xargs|exec|stdbuf|caffeinate|watch|command|builtin|time|noglob|nocorrect)$/;
+const SAME_SHELL = /^(?:command|builtin|time|noglob|nocorrect)$/;
+const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish|eval|pwsh|powershell)$/;
+const TEMP = [...new Set([tmpdir(), "/tmp", process.env.TMPDIR].filter(Boolean).map((d) => { try { return realpathSync(d); } catch { return resolve(d); } }))];
+const STASH_TEXT = /\bgit\b[\s\S]*\bstash\b/i;
+const PROCESS_TEXT = /(?:^|[\s;&|(`'"/])(?:ps|pgrep|pkill|kill|killall|lsof|top|get-process|stop-process|gps|spps)(?=$|[\s;&|)`'"])/im;
+
+export function agentProblem(command, cwd, path = process.env.PATH ?? "", depth = 0) {
+  let commands;
+  try {
+    commands = shellCommands(command);
+  } catch (e) {
+    const why = STASH_TEXT.test(command) ? NO_STASH : PROCESS_TEXT.test(command) ? NO_PROCESS(PROCESS_TEXT.exec(command)[0].replace(/^\W/, "")) : undefined;
+    return why && `${why} (The hook cannot read this command: ${e.message}.)`;
+  }
+  let dir = cwd;
+  for (const { cmd, words, bodies } of runnable(commands)) {
+    if (cmd.words[0] === "cd" && cmd.words.length === 2) dir = resolve(dir, cmd.words[1]);
+    if (words.some((w, k) => /(?:^|\/)git$/.test(w) && /^stash$/i.test(subcommand(words, k + 1)))) return NO_STASH;
+    const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
+    const own = words.find(set);
+    if (["export", undefined].includes(words.find((w) => !set(w))) && own) path = set(own); // export PATH=… or PATH=… alone
+    const here = own ? set(own) : path;
+    let viaExec = false;
+    for (const w of words) {
+      const name = w.split("/").pop();
+      if (/^\w+=/.test(w) || w.startsWith("-") || /^\d+[smhd]?$/.test(w)) continue;
+      if (WRAPPER.test(name)) {
+        viaExec ||= !SAME_SHELL.test(name);
+        continue;
+      }
+      const file = program(w, dir, here);
+      if ((PROCESS.test(name) || PROCESS.test(file?.split("/").pop() ?? "")) && ((w === "kill" && !viaExec) || !inTemp(file))) return NO_PROCESS(w);
+      const inner = SHELLS.test(name) ? [...words.filter((x) => /\s/.test(x)), ...bodies] : /\s/.test(w) ? [w] : [];
+      for (const text of depth < 3 ? inner : []) {
+        const why = agentProblem(text, dir, here, depth + 1);
+        if (why) return why;
+      }
+      break;
+    }
+    const exec = words.findIndex((w) => /^-(?:exec|execdir|ok|okdir)$/.test(w)); // find … -exec kill {} ;
+    if (exec >= 0 && PROCESS.test(words[exec + 1]?.split("/").pop() ?? "") && !inTemp(program(words[exec + 1], dir, here))) return NO_PROCESS(words[exec + 1]);
+  }
+  return undefined;
+}
+
+/** The real file that a program word runs, through PATH and links; undefined when it has a variable or is not found. */
+function program(word, dir, path) {
+  for (const file of word.includes("/") ? [word] : path.split(":").map((d) => `${d || "."}/${word}`)) {
+    if (/[$`~]/.test(file)) return undefined; // the shell would expand it, so the hook cannot tell which file runs
+    try {
+      const real = realpathSync(resolve(dir, file));
+      if (statSync(real).isFile() && statSync(real).mode & 0o111) return real;
+    } catch {}
+  }
+  return undefined;
+}
+const inTemp = (file) => !!file && TEMP.some((t) => file.startsWith(`${t}/`));
 
 /**
  * Text that names a merge: the word gh and the word merge in any order (so also "$G pr merge" or "gh pr $(echo merge)"),
