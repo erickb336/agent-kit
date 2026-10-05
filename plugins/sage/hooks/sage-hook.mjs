@@ -506,9 +506,10 @@ const TOOL = join(ROOT, "skills/sage/sage.mjs");
 /**
  * The chief's spelling of a state tool command: node and the tool's absolute path, unquoted, the one form that the
  * sandbox's excluded entry matches (a quoted path stays in the sandbox). A path with a space has no such form, so
- * then it gives the reason instead of a command.
+ * then it quotes the path, which works while the sandbox is off, and says what the sandbox needs.
  */
-export const stateCommand = (args) => (/\s/.test(TOOL) ? `(no command: the state tool's path "${TOOL}" has a space, and only an unquoted path runs outside the sandbox. Tell the user to install the sage plugin in a folder without spaces.)` : `node ${TOOL} ${args}`);
+export const stateCommand = (args) =>
+  /\s/.test(TOOL) ? `node "${TOOL}" ${args} (the plugin path has a space: when the sandbox is on, it needs a plugin path without spaces)` : `node ${TOOL} ${args}`;
 function harmless([a, b, c, ...rest]) {
   if (a === "echo" || a === "cat" || a === "grep" || (a === "printf" && ![b, c, ...rest].some((w) => w?.startsWith("-v")))) return 1;
   if ((a === "git" && b === "commit") || (a === "node" && b === TOOL)) return 2;
