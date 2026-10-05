@@ -1344,6 +1344,52 @@ test("an agent never lists or signals the real processes: ps, pgrep, kill and pk
   assert.equal(s.send(bash("npm test", FEATURE, AGENT)), undefined, "other commands pass");
 });
 
+test("a process program is refused after a shell keyword, inside a shell's -c text and after a wrapper option with a value (R446)", () => {
+  const s = session(SYSTEM_PATH);
+  s.send(prompt("sage mode"));
+  const hidden = [
+    "while pgrep -f vite >/dev/null; do sleep 1; done",
+    "if pgrep -f vite; then echo up; fi",
+    "for p in 1 2; do kill $p; done",
+    "until ! lsof -i :5173; do sleep 1; done",
+    "! ps",
+    "{ ps; }",
+    "if true; then :; elif ps; then :; else kill 1; fi",
+    "while true; do pgrep -fl vite; sleep 1; done",
+    "function f { ps; }",
+    "sh -c ps",
+    'bash -c "lsof"',
+    "eval ps",
+    "sudo -u root ps",
+    "xargs -I {} kill {}",
+    "env -u X ps",
+    "timeout -s TERM 60 pkill node",
+    "nice -n 5 top -l 1",
+    ...(existsSync("/bin/PS") ? ["PS -ax"] : []), // a file system that ignores case, as on macOS, runs /bin/ps for PS
+  ];
+  for (const command of hidden) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /standing order 14.*To stop your own server or background job, use TaskStop, or run it as a background task\./, command);
+  }
+  for (const command of ["kill %1", "kill $!"]) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /standing order 14/, command);
+  const pass = [
+    "timeout -s KILL 60 npm test",
+    "timeout --signal KILL 60 npm test",
+    'rg "kill -9" src',
+    "rg kill src",
+    'grep -rn "ps aux" .',
+    "git log --grep=stash",
+    "git log -S stash",
+    "npm test",
+    "timeout 600 npm test",
+    "git commit -m \"$(cat <<'EOF'\nfix the top bar\nno ps here\nEOF\n)\"",
+    `PATH=${FAKES}:$PATH npm test`,
+    "for f in ps kill; do echo $f; done",
+    `while true; do PATH=${FAKES}:$PATH ps -ax; sleep 1; done`,
+    "sh scripts/build.sh",
+  ];
+  for (const command of pass) assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+});
+
 test("the rule holds for any subagent in sage mode and for a sage agent, not for other agents outside sage mode", () => {
   const s = session(SYSTEM_PATH);
   assert.match(denied(s.send(bash("git stash", FEATURE, AGENT))) ?? "", /git stash/, "a sage agent, also outside sage mode");

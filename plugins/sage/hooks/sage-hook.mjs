@@ -454,18 +454,39 @@ function gitGate(event, command, state, cwd, main) {
  * in any form: every worktree of a repo shares one stash list, so another agent's pop can take it (standing order 16).
  * An agent never lists or signals the real processes (standing order 14): a process program passes only when its
  * word resolves, through PATH and links, to a file in the temp folder. A bare kill is the shell's builtin, so it never
- * passes. Text that a shell, eval or a heredoc runs is read too. A process.kill inside a script is not visible here.
+ * passes. The program is the first word after shell keywords, variables, and wrappers with their options. Text that a
+ * shell, eval or a heredoc runs is read too. A process.kill inside a script is not visible here.
  * Undefined when the command line passes; else the reason for the refusal.
  */
 const SHELL_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.+)$/;
 const NO_STASH = "an agent never runs git stash: every worktree of a repo shares one stash list, so another agent can pop or drop your work (standing order 16). To test old code, use git worktree add --detach <scratch> <sha>, or git show <sha>:<path> into your scratch folder.";
-const PROCESS = /^(?:ps|pgrep|pkill|kill|killall|lsof|top|get-process|stop-process|gps|spps)$/i;
-const NO_PROCESS = (word) => `an agent never reads or signals the real process list (standing order 14), so ${quoted(word)} is refused. Put a fake ps first on PATH, in the temp folder or your scratch folder, that prints a start time in the past (for example "Sat Jan  1 00:00:00 2000"), and run a fake kill by its path: a bare kill is the shell's builtin. Use literal paths: the hook does not expand variables.`;
-/** Programs that run the next word as a program; the ones after "|" leave a bare kill the shell's builtin. */
-const WRAPPER = /^(?:sudo|doas|env|nice|nohup|timeout|gtimeout|xargs|exec|stdbuf|caffeinate|watch|command|builtin|time|noglob|nocorrect)$/;
+/** A process program: unix names as the shell matches them (case-sensitive), PowerShell names in any case. */
+const isProcess = (name = "") => /^(?:ps|pgrep|pkill|kill|killall|lsof|top)$/.test(name) || /^(?:get-process|stop-process|gps|spps)$/i.test(name);
+const NO_PROCESS = (word) => `an agent never reads or signals the real process list (standing order 14), so ${quoted(word)} is refused. Put a fake ps first on PATH, in the temp folder or your scratch folder, that prints a start time in the past (for example "Sat Jan  1 00:00:00 2000"), and run a fake kill by its path: a bare kill is the shell's builtin. Use literal paths: the hook does not expand variables. To stop your own server or background job, use TaskStop, or run it as a background task.`;
+/**
+ * Programs that run a later word as a program, each with its options that take a value (that value is not the program).
+ * The ones after "|" leave a bare kill the shell's builtin.
+ */
+const WRAPPER = new Map([
+  ["sudo", /^-(?:[ugpCDrtUTRh]|-(?:user|group|prompt|close-from|chdir|role|type|other-user|command-timeout|host))$/],
+  ["doas", /^-[uC]$/],
+  ["env", /^-(?:[uCP]|-(?:unset|chdir))$/],
+  ["nice", /^-(?:n|-adjustment)$/],
+  ["timeout", /^-(?:[sk]|-(?:signal|kill-after))$/],
+  ["gtimeout", /^-(?:[sk]|-(?:signal|kill-after))$/],
+  ["xargs", /^-(?:[IJLnPsEdaRS]|-(?:replace|max-lines|max-args|max-procs|max-chars|eof|delimiter|arg-file))$/],
+  ["exec", /^-a$/],
+  ["stdbuf", /^-(?:[ioe]|-(?:input|output|error))$/],
+  ["caffeinate", /^-[tw]$/],
+  ["watch", /^-(?:n|-interval)$/],
+  ...["nohup", "command", "builtin", "time", "noglob", "nocorrect"].map((name) => [name, undefined]),
+]);
 const SAME_SHELL = /^(?:command|builtin|time|noglob|nocorrect)$/;
+/** Shell keywords before a command: the command after them runs in the same shell. After for, select or case come words, not a program. */
+const KEYWORD = /^(?:!|\{|\}|if|then|elif|else|fi|while|until|do|done|esac|coproc)$/;
+const LIST = /^(?:for|select|case)$/;
 const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish|eval|pwsh|powershell)$/;
-const TEMP = [...new Set([tmpdir(), "/tmp", process.env.TMPDIR].filter(Boolean).map((d) => { try { return realpathSync(d); } catch { return resolve(d); } }))];
+const TEMP = [...new Set([tmpdir(), "/tmp", process.env.TMPDIR].filter(Boolean).map((d) => { try { return realpathSync.native(d); } catch { return resolve(d); } }))];
 const STASH_TEXT = /\bgit\b[\s\S]*\bstash\b/i;
 const PROCESS_TEXT = /(?:^|[\s;&|(`'"/])(?:ps|pgrep|pkill|kill|killall|lsof|top|get-process|stop-process|gps|spps)(?=$|[\s;&|)`'"])/im;
 
@@ -486,16 +507,22 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "", depth 
     if (["export", undefined].includes(words.find((w) => !set(w))) && own) path = set(own); // export PATH=… or PATH=… alone
     const here = own ? set(own) : path;
     let viaExec = false;
-    for (const w of words) {
+    let takesValue; // the options of the last wrapper that take a value
+    for (let k = 0; k < words.length; k++) {
+      const w = words[k];
       const name = w.split("/").pop();
-      if (/^\w+=/.test(w) || w.startsWith("-") || /^\d+[smhd]?$/.test(w)) continue;
-      if (WRAPPER.test(name)) {
+      if (takesValue?.test(w)) k++;
+      if (/^\w+=/.test(w) || w.startsWith("-") || /^\d+[smhd]?$/.test(w) || KEYWORD.test(w)) continue;
+      if (LIST.test(w)) break;
+      if (w === "function" && ++k) continue; // function <name> { … }: the name is not a program
+      if (WRAPPER.has(name)) {
         viaExec ||= !SAME_SHELL.test(name);
+        takesValue = WRAPPER.get(name);
         continue;
       }
       const file = program(w, dir, here);
-      if ((PROCESS.test(name) || PROCESS.test(file?.split("/").pop() ?? "")) && ((w === "kill" && !viaExec) || !inTemp(file))) return NO_PROCESS(w);
-      const inner = SHELLS.test(name) ? [...words.filter((x) => /\s/.test(x)), ...bodies] : /\s/.test(w) ? [w] : [];
+      if ((isProcess(name) || isProcess(file?.split("/").pop())) && ((w === "kill" && !viaExec) || !inTemp(file))) return NO_PROCESS(w);
+      const inner = SHELLS.test(name) ? [...words.slice(k + 1), ...bodies] : /\s/.test(w) ? [w] : [];
       for (const text of depth < 3 ? inner : []) {
         const why = agentProblem(text, dir, here, depth + 1);
         if (why) return why;
@@ -503,7 +530,7 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "", depth 
       break;
     }
     const exec = words.findIndex((w) => /^-(?:exec|execdir|ok|okdir)$/.test(w)); // find … -exec kill {} ;
-    if (exec >= 0 && PROCESS.test(words[exec + 1]?.split("/").pop() ?? "") && !inTemp(program(words[exec + 1], dir, here))) return NO_PROCESS(words[exec + 1]);
+    if (exec >= 0 && isProcess(words[exec + 1]?.split("/").pop()) && !inTemp(program(words[exec + 1], dir, here))) return NO_PROCESS(words[exec + 1]);
   }
   return undefined;
 }
@@ -513,7 +540,7 @@ function program(word, dir, path) {
   for (const file of word.includes("/") ? [word] : path.split(":").map((d) => `${d || "."}/${word}`)) {
     if (/[$`~]/.test(file)) return undefined; // the shell would expand it, so the hook cannot tell which file runs
     try {
-      const real = realpathSync(resolve(dir, file));
+      const real = realpathSync.native(resolve(dir, file)); // native: the name on disk, so "PS" on macOS is ps
       if (statSync(real).isFile() && statSync(real).mode & 0o111) return real;
     } catch {}
   }
