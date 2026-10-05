@@ -1704,6 +1704,38 @@ test("T81 (gate G52): a config.json that is not valid JSON, or not one object, r
   assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "without the file again, the defaults count");
 });
 
+test("F-T81-1: a config.json that is a link to a missing file refuses every merge and the config command, and does not print the defaults", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  symlinkSync(join(s.home, "nowhere.json"), f);
+  const why = `${f} is a link to a missing file.`;
+  assert.equal(s.no("config"), `sage: ${why} The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults.`);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why} Fix it, or remove it for the defaults.`);
+  rmSync(f);
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "without the link, the defaults count");
+});
+
+test("F-T81-2: while config.json is broken, run add and round refuse and name the fix, and status still reads", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  toReviewing(s, "T1");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "crash");
+  s.ok("finding", "triage", "T1", "F-T1-1", "fix");
+  writeFileSync(f, '{"cap_total": 2,}');
+  const why = `sage: ${f} is not valid JSON. Fix it, or remove it for the defaults.`;
+  assert.equal(s.no("run", "add", "T1", "--role", "qa"), why, "no default model counts");
+  assert.equal(s.no("round", "T1"), why, "no default max_rounds counts");
+  assert.match(s.ok("task", "T1"), /^T1 reviewing/, "the task did not move");
+  assert.equal(existsSync(join(s.dir, "runs.tsv")) ? rows(s.dir, "runs").length : 0, 0, "the refused run add wrote no run");
+  assert.match(s.ok("status"), /^tasks   1 · reviewing 1$/m, "status still reads");
+  rmSync(f);
+  assert.match(s.ok("run", "add", "T1", "--role", "qa"), /^R1 running · qa on T1/);
+  assert.match(s.ok("round", "T1"), /^T1 repairing · round 1 of 3/);
+});
+
 test("F-QA1-NOEQ: a config argument without = says to write key=value", () => {
   const s = store();
   assert.equal(s.no("config", "cycles.large"), 'sage: config "cycles.large" has no "=": write key=value, for example cycles.large=3');

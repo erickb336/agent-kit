@@ -185,7 +185,7 @@ function readRegular(path) {
 
 /**
  * config.json as an object, or {} when it is missing. It never waits. A file that is not valid JSON (also an empty one), is
- * not one JSON object, or cannot be read (not a regular file, no permission) refuses with its path (gate G52): a default
+ * not one JSON object, or cannot be read (not a regular file, a link to a missing file, no permission) refuses with its path (gate G52): a default
  * would ask fewer cycles than the owner meant, and a write would replace the owner's keys.
  */
 function saved(env) {
@@ -197,7 +197,10 @@ function saved(env) {
     if (e.code === "ENOTDIR") return {}; // the sage root is not a folder: no config.json is there, and the merge check names the root
     refuse(`${file} ${e instanceof Refusal ? "is not a regular file" : `cannot be read (${e.code ?? e.message})`}.`); // readRegular refuses only a file that is not regular
   }
-  if (text === undefined) return {};
+  if (text === undefined) {
+    if (lstatSync(file, { throwIfNoEntry: false })) refuse(`${file} is a link to a missing file.`); // F-T81-1: not a missing config.json, so no defaults
+    return {};
+  }
   let value;
   try {
     value = JSON.parse(text);
@@ -233,6 +236,13 @@ export function config(env = process.env) {
   if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles; // a broken one is an invalid cycles.large
   const extra = Object.keys(s).filter((k) => (CAP.test(k) || MODEL.test(k)) && !Object.hasOwn(DEFAULTS, k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
   return Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (GUARDS(k) && Object.hasOwn(s, k) ? "invalid" : d)]), ...extra]); // the defaults, then the caps and models without one
+}
+
+/** The config for a command that starts work (run add, round): a broken config.json refuses, so that no default cap, round or model counts. */
+function strict(env) {
+  const c = config(env);
+  if (c.broken) refuse(`${c.broken} ${FIX}`);
+  return c;
 }
 
 /** Why a config refuses every merge, or undefined: config.json is broken, or a key that guards a merge is invalid. The merge check and the autopilot note say this. */
@@ -729,8 +739,9 @@ function act(cmd, pos, opt, dir, env, skip) {
       const keys = fix.map((f) => f.key).sort().join(",");
       if (!keys) refuse(`${task.id} has no open findings marked fix`);
       if (fix.every((f) => f.severity === "low")) refuse(`${task.id}: only low findings are marked fix (${keys}). A repair round needs a medium or high finding. Dismiss the low ones with a reason, or let them join the next round.`);
+      const { max_rounds } = strict(env);
       const round = Number(task.round) + 1;
-      if (round > config(env).max_rounds) {
+      if (round > max_rounds) {
         task.state = "held";
         write(dir, "tasks", tasks);
         return `${task.id} held: ${round - 1} repair rounds did not make it clean. Stop and ask the user.`;
@@ -743,12 +754,13 @@ function act(cmd, pos, opt, dir, env, skip) {
       Object.assign(task, { state: "repairing", round, keys });
       write(dir, "tasks", tasks);
       const roles = [...new Set(fix.map((f) => f.source))].sort().join(","); // the repair's diff goes back to the roles that found the problems
-      return `${task.id} repairing · round ${round} of ${config(env).max_rounds} · fix ${keys} · re-run ${roles} on the repair's diff`;
+      return `${task.id} repairing · round ${round} of ${max_rounds} · fix ${keys} · re-run ${roles} on the repair's diff`;
     }
     case "run": {
       const runs = read(dir, "runs");
       if (sub === "add") {
         const { task } = taskOf(dir, need(id, "the task id"));
+        const cfg = strict(env);
         const role = need(opt.role, "--role");
         const branch = opt.branch ?? "";
         if (WRITERS.includes(role)) {
@@ -757,7 +769,7 @@ function act(cmd, pos, opt, dir, env, skip) {
           if (other) refuse(`${other.id} (${other.role}) still writes ${branch}, and a branch has one writer. Finish that run first (sage run done ${other.id} --status done, blocked, question or failed), or give this run another branch.`);
         }
         const candidate = opt.candidate ?? "";
-        const run = { id: nextId(dir, "R"), task: task.id, role, round: task.round, candidate, branch, status: "running", started: now(), model: modelFor(role, task.size, candidate, config(env)) };
+        const run = { id: nextId(dir, "R"), task: task.id, role, round: task.round, candidate, branch, status: "running", started: now(), model: modelFor(role, task.size, candidate, cfg) };
         write(dir, "runs", [...runs, run]);
         return `${run.id} running · ${role} on ${task.id}${branch ? ` · ${branch}` : ""}${candidate ? ` · candidate ${candidate}` : ""}${run.model ? ` · model ${run.model}` : ""}`;
       }
