@@ -1557,6 +1557,12 @@ test("S-CASE: a file tool's path under the sage root in another case or Unicode 
     assert.match(denied(s.send(write)) ?? "", /the chief never writes under the sage root/, `chief: ${file}`);
   }
   assert.equal(denied(s.send({ ...tool("Write", { file_path: join(s.dir, "HOME-notes.md") }, { cwd: s.dir }), ...AGENT })), undefined, "a file next to the root");
+  // A root with an accent: APFS finds it by its composed (NFC) or decomposed (NFD) name.
+  const accent = session({ SAGE_HOME: join(mkdtempSync(join(tmpdir(), "sage-")), "caf\u00e9") });
+  mkdirSync(accent.vars.SAGE_HOME, { recursive: true });
+  const nfd = join(accent.vars.SAGE_HOME.normalize("NFD"), "p", "ledger.tsv");
+  assert.notEqual(nfd, join(accent.vars.SAGE_HOME, "p", "ledger.tsv"));
+  assert.match(denied(accent.send({ ...tool("Write", { file_path: nfd, content: "x" }, { cwd: accent.dir }), ...AGENT })) ?? "", /never writes under the sage root/, "agent: NFD");
 });
 
 test("F3: the reviewers' reads of the logbook pass, for an agent and the chief in sage mode (T83)", () => {
