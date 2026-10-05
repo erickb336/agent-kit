@@ -1,8 +1,8 @@
-// The hook launcher runs the hook of the sage install that the record names now, in a fake plugins folder under a fake
-// HOME. It never touches the real ~/.claude/plugins.
+// The hook launcher runs the hook of the sage install that its own plugins tree records now, in fake plugins trees
+// under the temporary folder. It never touches the real ~/.claude/plugins.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -204,4 +204,48 @@ test("the launcher without a hook name exits with its usage, not an import error
 
 test("this tree's plugin.json has a release, so older installs without one are refused", () => {
   assert.ok(Number.isInteger(JSON.parse(readFileSync(join(HOOKS, "../.claude-plugin/plugin.json"), "utf8")).metadata.release));
+});
+
+test("the launcher's own plugins tree decides, not HOME: a record and a release-999 folder planted under HOME never run", () => {
+  const h = home();
+  const planted = realpathSync(mkdtempSync(join(tmpdir(), "sage-planted-")));
+  const plantedCache = join(planted, ".claude", "plugins", "cache", "sage", "sage", "999");
+  mkdirSync(join(plantedCache, "hooks"), { recursive: true });
+  mkdirSync(join(plantedCache, ".claude-plugin"), { recursive: true });
+  writeFileSync(join(plantedCache, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "sage", metadata: { release: 999 } }));
+  writeFileSync(join(plantedCache, "hooks", HOOK), `process.stdout.write(JSON.stringify({ version: "planted" }));\n`);
+  writeFileSync(join(planted, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: { "sage@sage": [{ scope: "user", installPath: plantedCache }] } }));
+  const ran = () => JSON.parse(spawnSync("sh", ["-c", REGISTERED[HOOK]], { input: '{"hook_event_name":"Stop"}', encoding: "utf8", env: { ...process.env, HOME: planted, CLAUDE_PLUGIN_ROOT: h.old } }).stdout).version;
+  assert.equal(ran(), "old", "no record in the own tree: the own hook, not the planted one");
+  h.record(h.newer);
+  assert.equal(ran(), "new", "the own tree's record decides");
+});
+
+test("a launcher outside any plugins cache (a dev folder) runs its own hook, also when the record names a newer release", () => {
+  const h = home();
+  const dev = join(h.dir, "checkout", "plugins", "sage");
+  mkdirSync(join(dev, ".claude-plugin"), { recursive: true });
+  writeFileSync(join(dev, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "sage" }));
+  cpSync(join(h.old, "hooks"), join(dev, "hooks"), { recursive: true });
+  writeFileSync(join(dev, "hooks", HOOK), `process.stdout.write(JSON.stringify({ version: "dev" }));\n`);
+  h.record(h.version("next", true, 999));
+  const r = spawnSync("sh", ["-c", REGISTERED[HOOK]], { input: '{"hook_event_name":"Stop"}', encoding: "utf8", env: { ...process.env, HOME: h.dir, CLAUDE_PLUGIN_ROOT: dev } });
+  assert.equal(JSON.parse(r.stdout).version, "dev");
+});
+
+test("when both hooks fail to load, only a Bash merge or push is denied; other calls and the principles hook pass", () => {
+  const h = home();
+  for (const name of Object.keys(REGISTERED)) for (const v of [h.old, h.newer]) writeFileSync(join(v, "hooks", name), `throw new Error("broken");\n`);
+  h.record(h.newer);
+  const pre = (tool_name, tool_input, name = HOOK) => h.exec(name, { hook_event_name: "PreToolUse", tool_name, tool_input });
+  for (const command of ["gh pr merge 18", "git push origin hook/t44-launcher"]) {
+    const r = pre("Bash", { command });
+    assert.equal(r.status, 0);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny", command);
+  }
+  for (const [tool, input, name] of [["Edit", { file_path: "/x" }], ["Bash", { command: "ls" }], ["Bash", { command: "gh pr merge 18" }, "principles-hook.mjs"]]) {
+    const r = pre(tool, input, name);
+    assert.deepEqual([r.status, r.stdout], [0, ""], `${tool} ${JSON.stringify(input)} ${name ?? HOOK}`);
+    assert.match(r.stderr, /could not load/);
+  }
 });

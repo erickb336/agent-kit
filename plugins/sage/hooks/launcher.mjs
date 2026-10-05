@@ -1,22 +1,24 @@
 #!/usr/bin/env node
 // The hook launcher: node launcher.mjs <hook file name>. Claude Code resolves CLAUDE_PLUGIN_ROOT once, at the start of
-// a session, to that version's folder in ~/.claude/plugins/cache/sage/sage/, and an update of sage installs a new
-// folder beside it. So a session registers this launcher, and at each event the launcher runs the hook of the install
-// that the "user" entry of ~/.claude/plugins/installed_plugins.json records now.
-// Fail safe: it runs the hook next to itself when the record is missing, not a regular file or over 1 MB; when the
-// install is not an absolute path, resolves (also through a symbolic link or "..") outside the cache folder, has a
-// lower release than this launcher's own install, or has no regular hook file. It never runs code from any other place.
+// a session, to that version's folder in <plugins>/cache/sage/sage/, and an update of sage installs a new folder beside
+// it. So a session registers this launcher, and at each event the launcher runs the hook of the install that the "user"
+// entry of <plugins>/installed_plugins.json records now. <plugins> comes from the launcher's own real path, never from
+// HOME: Claude Code may keep plugins elsewhere (CLAUDE_CONFIG_DIR), and nobody manages a plugins folder it does not use.
+// Fail safe: it runs the hook next to itself when it is not in a <plugins>/cache/sage/sage/<version> folder (a dev
+// checkout run with --plugin-dir); when the record is missing, not a regular file or over 1 MB; when the install is not
+// an absolute path, resolves (also through a symbolic link or "..") outside the cache folder, has a lower release than
+// this launcher's own install, or has no regular hook file. It never runs code from any other place.
 // The release is plugin.json's metadata.release (an integer; none is 0). Claude Code does not read metadata, so the
 // release does not pin updates the way plugin.json's "version" does. Bump it when a release must not be undone.
-// Fail closed: when the chosen hook throws on import it runs its own hook, and when that throws too it refuses a
-// PreToolUse call, so that no broken install lets a merge skip the merge check.
+// Fail closed: when the chosen hook throws on import it runs its own hook. When that throws too, sage-hook.mjs refuses
+// a Bash call that names a merge or a push, so that no broken install lets a merge skip the merge check; every other
+// call passes, so that `claude plugin update` can still repair the install.
 // Known limits: agents can write in the cache folder, so a folder made there with a high release passes. A symbolic
 // link swapped in between the check and the import, or a hook that reads stdin and then throws, also gets through.
 // The hook runs in this process (one node start per event): the hook's main guard compares process.argv[1] to its own
 // path, so the launcher sets argv[1] to the hook it chose, and the hook also reads its state tool and skills from its
 // own folder, so an old session reports the newest state tool's path.
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -25,7 +27,7 @@ if (!name.endsWith(".mjs")) {
   process.stderr.write("usage: node launcher.mjs <hook file name>, for example sage-hook.mjs\n");
   process.exit(1);
 }
-const ownRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const ownRoot = realpathSync(dirname(dirname(fileURLToPath(import.meta.url))));
 
 /** The text of a regular file of at most 1 MB. O_NONBLOCK: a FIFO opens at once and fails the check, not hangs. */
 function read(file) {
@@ -42,8 +44,9 @@ function read(file) {
 const release = (root) => JSON.parse(read(join(root, ".claude-plugin", "plugin.json"))).metadata?.release ?? 0;
 
 function current() {
-  const plugins = join(homedir(), ".claude", "plugins");
-  const cache = realpathSync(join(plugins, "cache", "sage", "sage")) + sep;
+  const cache = dirname(ownRoot) + sep;
+  const plugins = dirname(dirname(dirname(cache)));
+  if (cache !== join(plugins, "cache", "sage", "sage") + sep || basename(plugins) !== "plugins") throw new Error(`${ownRoot} is not an installed version`);
   const entry = JSON.parse(read(join(plugins, "installed_plugins.json"))).plugins["sage@sage"].find((e) => e.scope === "user");
   if (!isAbsolute(entry.installPath)) throw new Error(`${entry.installPath} is not absolute`);
   const install = realpathSync(entry.installPath);
@@ -71,12 +74,14 @@ try {
   try {
     await run(realpathSync(join(ownRoot, "hooks", name)));
   } catch (e) {
-    let event;
+    let input;
     try {
-      event = JSON.parse(readFileSync(0, "utf8")).hook_event_name;
+      input = JSON.parse(readFileSync(0, "utf8"));
     } catch {}
-    const reason = `sage: the ${name} hook could not load (${first?.message ?? first}; ${e?.message ?? e}), so it refuses this call. Tell the user.`;
-    if (event === "PreToolUse") process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, permissionDecision: "deny", permissionDecisionReason: reason } }));
+    const reason = `sage: the ${name} hook could not load (${first?.message ?? first}; ${e?.message ?? e}). Tell the user.`;
+    const command = [].concat(input?.tool_input?.command ?? []).join(" ");
+    if (name === "sage-hook.mjs" && input?.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && /\b(merge|push)\b/.test(command))
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `${reason} It refuses a merge or a push until a hook loads.` } }));
     else process.stderr.write(`${reason}\n`);
   }
 }
