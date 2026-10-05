@@ -276,3 +276,31 @@ test("an apostrophe right after a code span, a link or a tag opens no quote", ()
   assert.deepEqual(scan("[agent](x.md)'s fields go in the store, not the 'logbook' draft."), ["1:store"]);
   assert.deepEqual(scan("The <b>chief</b>'s store, and the 'store' word."), ["1:store"]);
 });
+
+test("npm run check refuses each way to launch the installed Google Chrome in a script, and names the file and line (T68-F5)", () => {
+  const c = copy();
+  const refused = /✗ scripts\/sample\.mjs:2: launches the installed Google Chrome; use Playwright's bundled Chromium/;
+  // The samples that the check must refuse. Each line carries the escape, so this file itself passes.
+  for (const form of [
+    "chromium.launch({ channel: 'chrome' });", // chrome-ok: a sample that the check must refuse
+    'chromium.launch({ channel: "chrome-beta" });', // chrome-ok: a sample that the check must refuse
+    '{ "use": { "channel": "chrome" } }', // chrome-ok: a sample that the check must refuse
+    "browser = p.chromium.launch(channel='chrome')", // chrome-ok: a sample that the check must refuse
+    "npx playwright test --browser=chrome", // chrome-ok: a sample that the check must refuse
+    "npx playwright open --channel chrome https://example.com", // chrome-ok: a sample that the check must refuse
+    "npx playwright codegen --channel=chrome-canary", // chrome-ok: a sample that the check must refuse
+    'executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",', // chrome-ok: a sample that the check must refuse
+    "open -a '/Applications/Google Chrome Canary.app'", // chrome-ok: a sample that the check must refuse
+  ]) {
+    c.write("scripts/sample.mjs", `// a sample\n${form}\n`);
+    const r = c.run("check");
+    assert.equal(r.status, 1, form);
+    assert.match(r.stderr, refused, form);
+  }
+  const escaped = "npx playwright open --channel chrome x // chrome-ok: a sample"; // chrome-ok: the escape itself
+  for (const allowed of ["chromium.launch({ headless: true });", "npx playwright test --browser=chromium", "chromium.launch({ channel: 'chromium' });", escaped]) {
+    c.write("scripts/sample.mjs", `// a sample\n${allowed}\n`);
+    const r = c.run("check");
+    assert.equal(r.status, 0, `${allowed}\n${r.stderr}`);
+  }
+});

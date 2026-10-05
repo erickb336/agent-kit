@@ -176,7 +176,8 @@ for (const f of readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".te
 
 // Test browsers are Playwright's bundled Chromium: never the owner's Google Chrome app (T68). A line that must name it
 // (a fake process list, this check) ends with "// chrome-ok: <reason>".
-const INSTALLED_CHROME = /channel\s*:\s*["'`]chrome["'`]|\/Applications\/Google Chrome( for Testing)?\.app/; // chrome-ok: the pattern itself
+// The forms: a channel option in code or JSON, a --channel or --browser flag, and the app's path. Each Chrome channel counts.
+const INSTALLED_CHROME = /\bchannel["']?\s*[:=]\s*["'`]chrome(?:-\w+)?["'`]|--(?:channel|browser)(?:=|\s+)["']?chrome(?:-\w+)?\b|\/Applications\/Google Chrome[^/]*\.app/; // chrome-ok: the pattern itself
 const walk = (dir) => readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "node_modules" ? [] : walk(join(dir, e.name))) : [join(dir, e.name)]));
 for (const f of [...walk("scripts"), ...walk("plugins")].filter((f) => /\.(m?js|cjs|ts|json|sh|md|html)$/.test(f))) {
   readFileSync(join(ROOT, f), "utf8").split("\n").forEach((line, i) => {
