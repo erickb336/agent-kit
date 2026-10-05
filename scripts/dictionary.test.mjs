@@ -175,8 +175,9 @@ test("a title on the design page and a Mermaid label there fail the check", () =
   const page = c.read("docs/design/sage-mode.html");
   c.write("docs/design/sage-mode.html", page.replace('S[("Logbook', 'S[("Store').replace("<main>", '<main><p title="the store">x</p>'));
   const r = c.run("check");
-  assert.match(r.stderr, /✗ docs\/design\/sage-mode\.html:105: "Store" is a flagged word/);
-  assert.match(r.stderr, new RegExp(`✗ docs/design/sage-mode\\.html:${page.slice(0, page.indexOf("<main>")).split("\n").length}: "store" is a flagged word`));
+  const lineOf = (text) => page.slice(0, page.indexOf(text)).split("\n").length;
+  assert.match(r.stderr, new RegExp(`✗ docs/design/sage-mode\\.html:${lineOf('S[("Logbook')}: "Store" is a flagged word`));
+  assert.match(r.stderr, new RegExp(`✗ docs/design/sage-mode\\.html:${lineOf("<main>")}: "store" is a flagged word`));
 });
 
 test("a README without its end marker gives one line from build and from check, not a stack trace", () => {
