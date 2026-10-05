@@ -61,29 +61,27 @@ function byHand(dir, table, col, id, edit) {
   writeFileSync(f, lines.filter(Boolean).map((cells) => cells.join("\t")).join("\n"));
 }
 
-/** The output of fn and the milliseconds it took. */
-function timed(fn) {
-  const t0 = Date.now();
-  const out = fn();
-  return [out, Date.now() - t0];
-}
-
-/** A process that holds a store's lock as a command does: it crashes inside the lock, or keeps it for ms. */
-function hold(dir, ms) {
-  const inside = ms === "crash" ? `process.kill(process.pid, "SIGKILL")` : `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ms})`;
-  const args = ["--input-type=module", "-e", `import { withLock } from ${JSON.stringify(LIB)}; withLock(${JSON.stringify(dir)}, () => { console.log("holding"); ${inside}; });`];
-  if (ms === "crash") return spawnSync("node", args, { encoding: "utf8" });
+/**
+ * A process that holds a store's lock as a command does: it crashes inside the lock, or keeps it until release(). It
+ * does not let go by itself before 60 s, so a busy machine cannot end its hold before a test has seen what happens while
+ * it holds, and a test that fails before release() does not leave it running.
+ */
+function hold(dir, crash) {
+  const done = join(mkdtempSync(join(tmpdir(), "sage-hold-")), "release");
+  const inside = crash ? `process.kill(process.pid, "SIGKILL")` : `for (const end = Date.now() + 60_000; !existsSync(${JSON.stringify(done)}) && Date.now() < end; ) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)`;
+  const args = ["--input-type=module", "-e", `import { existsSync } from "node:fs"; import { withLock } from ${JSON.stringify(LIB)}; withLock(${JSON.stringify(dir)}, () => { console.log("holding"); ${inside}; });`];
+  if (crash) return spawnSync("node", args, { encoding: "utf8" });
   const child = spawn("node", args);
   const exited = once(child, "exit");
   return new Promise((held, failed) => {
-    child.stdout.once("data", () => held({ pid: child.pid, exited }));
+    child.stdout.once("data", () => held({ pid: child.pid, exited, release: () => writeFileSync(done, "") }));
     child.once("exit", (code) => failed(new Error(`the holder exited with ${code} before it held the lock`)));
   });
 }
 
 /** Leaves the lock of a crashed command in the store, with its owner record changed by edit. Returns the lock's path. */
 function crash(dir, edit = {}) {
-  assert.equal(hold(dir, "crash").signal, "SIGKILL");
+  assert.equal(hold(dir, true).signal, "SIGKILL");
   const lock = join(dir, ".lock");
   const owner = join(lock, readdirSync(lock)[0]);
   writeFileSync(owner, JSON.stringify({ ...JSON.parse(readFileSync(owner, "utf8")), ...edit }));
@@ -401,21 +399,21 @@ test("a lock left by a crashed command is cleared by the next command", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
   const lock = crash(s.dir);
-  let [r, ms] = timed(() => s.run("task", "T1", "set", "branch=after-crash"));
+  // A waiter that could not clear the lock would refuse after 3 s: status 0 shows that it cleared it.
+  let r = s.run("task", "T1", "set", "branch=after-crash");
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(ms < 2000, `cleared after ${ms} ms`);
   assert.equal(existsSync(lock), false);
   assert.equal(rows(s.dir, "tasks")[0].branch, "after-crash");
 
   crash(s.dir, { boot: 1 }); // the machine started again since the lock was taken
-  [r, ms] = timed(() => s.run("task", "T1", "set", "branch=after-boot"));
+  r = s.run("task", "T1", "set", "branch=after-boot");
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(ms < 2000, `cleared after ${ms} ms`);
 
   crash(s.dir, { pid: process.pid, start: 1000 }); // its pid now names another live process, which started later: this test
-  [r, ms] = timed(() => s.run("task", "T1", "set", "branch=after-reuse"));
+  const t0 = Date.now();
+  r = s.run("task", "T1", "set", "branch=after-reuse");
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(ms >= 500 && ms < 3000, `cleared after ${ms} ms: the start time is checked after 500 ms`);
+  assert.ok(Date.now() - t0 >= 500, "the start time is checked after 500 ms"); // a lower bound: a busy machine only adds time
   assert.equal(existsSync(lock), false);
   assert.equal(rows(s.dir, "tasks")[0].branch, "after-reuse");
 });
@@ -423,25 +421,35 @@ test("a lock left by a crashed command is cleared by the next command", () => {
 test("a holder that may be alive keeps the lock: a waiter waits for it, or refuses after about 3 s with one line", async () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
-  let h = await hold(s.dir, 4500);
-  let [r, ms] = timed(() => s.run("task", "T1", "set", "branch=while-held"));
+  // The times below are lower bounds only, which a busy machine cannot break. A waiter that hangs is stopped at the
+  // hook's 10 s (timeout), and then its status is not 1.
+  let h = await hold(s.dir);
+  let t0 = Date.now();
+  let r = s.run("task", "T1", "set", "branch=while-held");
+  const ms = Date.now() - t0;
   assert.equal(r.status, 1);
   assert.match(r.stderr, new RegExp(`^sage: the logbook is busy: pid ${h.pid} on (\\S+) has held (\\S+\\.lock) for \\d+\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on \\1, remove \\2 first\\.\\n$`));
-  assert.ok(ms >= 3000 && ms < 5000, `refused after ${ms} ms; the hook timeout is 10 s`);
+  assert.ok(ms >= 3000, `refused after ${ms} ms`);
+  h.release();
   assert.deepEqual(await h.exited, [0, null], "the holder finished with its lock");
   assert.equal(rows(s.dir, "tasks")[0].branch, "");
 
-  h = await hold(s.dir, 1500);
-  [r, ms] = timed(() => s.run("task", "T1", "set", "branch=after-wait"));
+  // The waiter shows that it waits by its temp folder next to the held lock; the holder lets go only after that.
+  h = await hold(s.dir);
+  const waiting = s.go("task", "T1", "set", "branch=after-wait");
+  while (!readdirSync(s.dir).some((n) => n.startsWith(".lock."))) await new Promise((tick) => setTimeout(tick, 10));
+  h.release();
+  r = await waiting;
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(ms >= 1000, `took the lock after ${ms} ms, while the holder still held it`);
+  assert.equal(rows(s.dir, "tasks")[0].branch, "after-wait", "it took the lock when the holder let go");
   await h.exited;
 
   const lock = crash(s.dir, { host: "other-host", boot: 1 }); // this machine cannot check a process on another one
-  [r, ms] = timed(() => s.run("task", "T1", "set", "branch=other-host"));
+  t0 = Date.now();
+  r = s.run("task", "T1", "set", "branch=other-host");
   assert.equal(r.status, 1);
   assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on other-host has held \S+\.lock for/);
-  assert.ok(ms >= 3000 && ms < 5000, `refused after ${ms} ms`);
+  assert.ok(Date.now() - t0 >= 3000, "it waited 3 s first");
   assert.equal(existsSync(lock), true);
   rmSync(lock, { recursive: true });
   assert.match(s.ok("task", "T1", "set", "branch=after-removal"), /^T1 framed/);
@@ -451,10 +459,11 @@ test("merge-check, status, logbook and standing take no lock: they work while an
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
-  const h = await hold(s.dir, 4000);
-  const [out, ms] = timed(() => [s.ok("merge-check", "--sha", SHA), s.ok("status").split("\n")[1], s.ok("logbook"), s.ok("standing").split("\n")[0]]);
-  assert.deepEqual(out, ["T1 may merge: 1 clean cycle on this SHA", "tasks   1 · framed 1", s.dir, "# Standing orders"]);
-  assert.ok(ms < 3000, `${ms} ms: a command that waited for the lock would refuse at 3 s`);
+  const h = await hold(s.dir); // it holds until release(), so each command below runs while the lock is held
+  const out = [s.ok("merge-check", "--sha", SHA), s.ok("status").split("\n")[1], s.ok("logbook"), s.ok("standing").split("\n")[0]];
+  assert.deepEqual(out, ["T1 may merge: 1 clean cycle on this SHA", "tasks   1 · framed 1", s.dir, "# Standing orders"], "a command that waited for the lock would refuse after 3 s, and ok() would fail");
+  assert.equal(readdirSync(join(s.dir, ".lock")).length, 1, "the holder still holds the lock");
+  h.release();
   await h.exited;
 });
 
@@ -580,11 +589,13 @@ test("S2: a planted lock never hangs a command, the refusal says which folder to
   mkdirSync(fifoLock);
   execFileSync("mkfifo", [join(fifoLock, `${randomUUID()}.json`)]);
   const liveLock = plant(live.dir, `${randomUUID()}.json`, { pid: 1, host: hostname(), boot: BOOT, start: Date.now(), at: Date.now() }); // alive, and not sage
-  const [[a, b], ms] = await (async (t0) => [await Promise.all([fifo.go("log", "-", "x", "--why", "w"), live.go("log", "-", "x", "--why", "w")]), Date.now() - t0])(Date.now());
+  const t0 = Date.now();
+  const [a, b] = await Promise.all([fifo.go("log", "-", "x", "--why", "w"), live.go("log", "-", "x", "--why", "w")]); // a hang is stopped at 10 s, and its status is not 1
+  const ms = Date.now() - t0;
   assert.equal(a.stderr, `sage: the logbook is busy: ${fifoLock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${fifoLock} first.\n`);
   assert.match(b.stderr, new RegExp(`^sage: the logbook is busy: pid 1 on ${hostname()} has held ${liveLock} for \\d\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on ${hostname()}, remove ${liveLock} first\\.\\n$`));
   assert.deepEqual([a.status, b.status], [1, 1]);
-  assert.ok(ms >= 3000 && ms < 6000, `both refused after ${ms} ms`);
+  assert.ok(ms >= 3000, `both refused after ${ms} ms`);
   rmSync(liveLock, { recursive: true }); // what the line says to do
   assert.equal(live.ok("log", "-", "x", "--why", "w"), "logged");
 
@@ -664,9 +675,8 @@ test("S7: config and the merge check read only regular files and never throw, so
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   execFileSync("mkfifo", [join(s.home, "config.json")]);
-  const [out, ms] = timed(() => [s.ok("config"), s.ok("merge-check", "--sha", SHA)]);
+  const out = [s.ok("config"), s.ok("merge-check", "--sha", SHA)]; // a read that waited on the FIFO would hang until the 10 s timeout, and fail
   assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12", "T1 may merge: 1 clean cycle on this SHA"]);
-  assert.ok(ms < 3000, `${ms} ms`);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
   assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${join(s.dir, "ledger.tsv")} is not a regular file. Ask the user to fix or remove it.`, "F-R50-1: a table that is not a regular file refuses, and does not hang");
@@ -993,7 +1003,7 @@ test("F-R50-1: a table that is not a regular file refuses with its path, never h
   const gate = (path) => `sage: the merge check refuses every merge, because ${path} is not a regular file. Ask the user to fix or remove it.`;
   renameSync(findings, `${findings}.keep`);
   mkdirSync(findings); // atk50b C8: the folder hid the open finding, so the merge passed
-  const [out, ms] = timed(() => [s.no("merge-check", "--sha", SHA), s.no("log", "-", "x", "--why", "y")]);
+  const out = [s.no("merge-check", "--sha", SHA), s.no("log", "-", "x", "--why", "y")]; // a hang stops at the 10 s timeout, and no() fails
   assert.deepEqual(out, [gate(findings), `sage: ${findings} is not a regular file. Ask the user to fix or remove it.`]);
   rmSync(findings, { recursive: true });
   renameSync(`${findings}.keep`, findings);
@@ -1006,7 +1016,6 @@ test("F-R50-1: a table that is not a regular file refuses with its path, never h
   rmSync(ledger);
   execFileSync("mkfifo", [ledger]);
   assert.equal(s.no("merge-check", "--sha", SHA), gate(ledger));
-  assert.ok(ms < 3000, `${ms} ms`);
   rmSync(ledger);
   renameSync(`${ledger}.keep`, ledger);
 
@@ -1044,17 +1053,32 @@ test("F-R50-2: the merge check reads a logbook that is a link to a folder, as th
   assert.equal(real.no("merge-check", "--sha", SHA), `sage: the merge check cannot read ${real.dir} (ELOOP), so it refuses every merge. Ask the user to fix or remove ${real.dir}.`);
 });
 
-test("F-R50-3: the merge check reads each table once, so 4,500 tasks on one SHA take well under the hook's 10 s", () => {
-  const s = store();
-  const many = join(s.home, "zz-many"); // atk50b C7'
-  mkdirSync(many);
-  const ids = Array.from({ length: 4500 }, (_, i) => `T${i + 1}`);
-  writeFileSync(join(many, "ledger.tsv"), ["task\tpr\tsha\tkind\tcycle\trun\tat", ...ids.map((t) => `${t}\t\t${SHA}\tchecks-pass\t1\t\t`)].join("\n") + "\n");
-  writeFileSync(join(many, "tasks.tsv"), ["id\ttitle\tsize\trisk\troute\tstate\tbranch\tpr\tround\tkeys", ...ids.map((t) => `${t}\tt\ttiny\t\tbuild\tbuilding\t\t\t0\t`)].join("\n") + "\n");
-  for (const t of ["findings", "runs", "gates", "decisions"]) writeFileSync(join(many, `${t}.tsv`), readFileSync(join(s.dir, `${t}.tsv`))); // a logbook has every table
-  const [out, ms] = timed(() => s.ok("merge-check", "--sha", SHA));
-  assert.match(out, /^4500 tasks have verdicts on a1b2c3d, and each must pass: /);
-  assert.ok(ms < 3000, `${ms} ms`);
+test("F-R50-3: the merge check reads each table once and groups it by task, so its time grows in line with the tasks", async () => {
+  const { mergeCheck } = await import(LIB);
+  /** A root with n tasks on one SHA, and the CPU time of the merge check over it: the fastest of 3, so one garbage collection does not count. */
+  const cpu = (n) => {
+    const s = store();
+    const many = join(s.home, "zz-many"); // atk50b C7'
+    mkdirSync(many);
+    const ids = Array.from({ length: n }, (_, i) => `T${i + 1}`);
+    writeFileSync(join(many, "ledger.tsv"), ["task\tpr\tsha\tkind\tcycle\trun\tat", ...ids.map((t) => `${t}\t\t${SHA}\tchecks-pass\t1\t\t`)].join("\n") + "\n");
+    writeFileSync(join(many, "tasks.tsv"), ["id\ttitle\tsize\trisk\troute\tstate\tbranch\tpr\tround\tkeys", ...ids.map((t) => `${t}\tt\ttiny\t\tbuild\tbuilding\t\t\t0\t`)].join("\n") + "\n");
+    for (const t of ["findings", "runs", "gates", "decisions"]) writeFileSync(join(many, `${t}.tsv`), readFileSync(join(s.dir, `${t}.tsv`))); // a logbook has every table
+    let ms = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t = process.cpuUsage();
+      const { ok, reason } = mergeCheck(SHA, { SAGE_HOME: s.home });
+      const { user, system } = process.cpuUsage(t);
+      assert.deepEqual([ok, reason.slice(0, 50)], [true, `${n} tasks have verdicts on a1b2c3d, and each must pass`.slice(0, 50)]);
+      ms = Math.min(ms, (user + system) / 1000);
+    }
+    return ms;
+  };
+  // CPU time, not wall time: a busy machine makes a process wait for a core, and that wait is not the merge check's work.
+  // 10 times the tasks take about 10 times as long on a linear path and 100 times on a quadratic one (about 80 times
+  // before the grouping). The bound allows 30 times and 20 ms more, and at most 2 s of CPU time, well inside the hook's 10 s.
+  const [small, big] = [cpu(450), cpu(4500)];
+  assert.ok(big <= Math.min(30 * small + 20, 2000), `450 tasks: ${small.toFixed(1)} ms, 4500 tasks: ${big.toFixed(1)} ms of CPU time`);
 });
 
 test("F-R50-4: a refusal names the file at fault, and never asks to remove the root, which holds every logbook", () => {
