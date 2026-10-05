@@ -1699,8 +1699,8 @@ function sandboxPrep(extra = {}) {
 
 test("T94: one branch pattern accepts today's task branches and refuses main, refs, .., @{, control characters and a leading -", async () => {
   const { BRANCH } = await import(LIB);
-  const good = ["tool/t83-agent-state-writes", "hook/t56-autopilot-scope", "claude/t94", "claude/fix-the-crash", "orc-029-pass4d"];
-  const bad = ["main", "master", "HEAD", "refs/heads/main", "refs/heads/claude/t1", "a..b", "a@{1}", "-x", "--force", "a\tb", "a\u001bb", "a b", "a~1", "a:b", "/a", "a/", "a//b", "a/.b", "a.lock", ""];
+  const good = ["tool/t83-agent-state-writes", "claude/main-fix", "origins/t1", "my-origin/t1", "hook/t56-autopilot-scope", "claude/t94", "claude/fix-the-crash", "orc-029-pass4d"];
+  const bad = ["main", "master", "HEAD", "refs/heads/main", "refs/heads/claude/t1", "a..b", "a@{1}", "-x", "--force", "a\tb", "a\u001bb", "a b", "a~1", "a:b", "/a", "a/", "a//b", "a/.b", "a.lock", "", "MAIN", "Main", "Master", "head", "heads/main", "heads/claude/t1", "remotes/origin/main", "origin/main", "origin/claude/t1", "Refs/heads/main", "REMOTES/x"];
   assert.deepEqual(good.filter((b) => !BRANCH.test(b)), [], "every task branch passes");
   assert.deepEqual(bad.filter((b) => BRANCH.test(b)), [], "every other name is refused");
   const { sage } = sandboxPrep();
@@ -1738,6 +1738,15 @@ test("T94: a planted .git/commondir does not lend a folder another project's log
   writeFileSync(join(clone, ".git", "commondir"), join(project, ".git"));
   assert.equal(execFileSync("git", ["-C", clone, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), join(project, ".git"), "git itself follows the planted commondir");
   assert.match(sage(["logbook"], clone).out, /^sage: no logbook for the project \S+\/clone\. Run: sage init/, "the state tool does not: the clone is a project of its own");
+});
+
+test("T94: a linked worktree with relative paths (git worktree add --relative-paths) keeps its project's logbook", () => {
+  const { base, sage } = sandboxPrep();
+  sage(["init"]);
+  const logbook = sage(["logbook"]).out;
+  execFileSync("git", ["-C", join(base, "project"), "worktree", "add", "-q", "--relative-paths", join(base, "linked"), "-b", "claude/t1"]);
+  assert.equal(readFileSync(join(base, "project", ".git", "worktrees", "linked", "gitdir"), "utf8").trim(), "../../../../linked/.git", "git wrote a relative gitdir");
+  assert.equal(sage(["logbook"], join(base, "linked")).out, logbook, "the relative path counts from its own folder, not from the tool's folder");
 });
 
 test("T94: pages <task> prints the task's pages folder outside the sage root, and pages record logs a page with its sha256", () => {

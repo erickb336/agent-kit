@@ -123,7 +123,7 @@ export function git(args, env = process.env) {
 /**
  * The main checkout of a project, also from inside one of its linked worktrees. git's answer counts only when it points
  * back to the folder: the main checkout holds its git folder, or the git folder is a linked worktree of that main
- * checkout and names this folder as its worktree. Else (a planted .git/commondir or .git file, for example) the folder
+ * checkout and names this folder as its worktree (a relative name counts from the git folder, as git reads it). Else (a planted .git/commondir or .git file, for example) the folder
  * is a project of its own, so no folder can borrow another project's logbook.
  */
 function projectRoot(path) {
@@ -131,7 +131,7 @@ function projectRoot(path) {
     const [common, gitDir, top] = git(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir", "--show-toplevel"]).trim().split("\n");
     const [realCommon, realGit, realTop] = [common, gitDir, top].map((p) => realpathSync(p));
     const main = realGit === realCommon && dirname(realCommon) === realTop;
-    const linked = dirname(realGit) === join(realCommon, "worktrees") && realpathSync(readFileSync(join(realGit, "gitdir"), "utf8").trim()) === join(realTop, ".git");
+    const linked = dirname(realGit) === join(realCommon, "worktrees") && realpathSync(resolve(realGit, readFileSync(join(realGit, "gitdir"), "utf8").trim())) === join(realTop, ".git");
     return main || linked ? dirname(common) : resolve(path);
   } catch {
     return resolve(path);
@@ -145,12 +145,13 @@ const pagesDir = (project, task, env) => join(worktreeRoot(env), projectName(pro
 
 /**
  * A branch that a task or a writer run may name: letters, digits and . _ / -, as today's branches (claude/t94,
- * tool/t83-agent-state-writes). Not main, master or HEAD, not under refs/, not starting with - or a /, and none of the
+ * tool/t83-agent-state-writes). Not main, master or HEAD in any case (a Mac's file names ignore case), not under refs/,
+ * heads/, remotes/ or origin/ (git reads those as other refs), not starting with - or a /, and none of the
  * forms that git refuses or reads otherwise: .., //, /., a final / or ., or .lock. @{, ~, ^, :, spaces and control
  * characters are outside the letters. The one pattern for every branch check: task set, run add and the PR script.
  */
-export const BRANCH = /^(?![-./])(?!refs\/)(?!(?:main|master|HEAD)$)(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|[/.]$))[A-Za-z0-9._/-]+$/;
-const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(name)} is not a task branch: use letters, digits and . _ / - (for example claude/t12 or tool/t12-short-name), not main, master, HEAD or refs/..., and not a name that starts with - or holds .., @{ or a space.`));
+export const BRANCH = /^(?![-./])(?!(?:refs|heads|remotes|origin)\/)(?!(?:main|master|HEAD)$)(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|[/.]$))[A-Za-z0-9._/-]+$/i;
+const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(name)} is not a task branch: use letters, digits and . _ / - (for example claude/t12 or tool/t12-short-name), not main, master or HEAD in any case, not under refs/, heads/, remotes/ or origin/, and not a name that starts with - or holds .., @{ or a space.`));
 
 /** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
 export function projectName(path) {
