@@ -1,7 +1,7 @@
 module github.com/erickb336/sage/plugins/sage/hooks/parser
 
-go 1.25.0
+go 1.26.0
 
-toolchain go1.25.14
+toolchain go1.26.8
 
-require mvdan.cc/sh/v3 v3.13.1
+require mvdan.cc/sh/v3 v3.14.1

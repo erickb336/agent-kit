@@ -57,8 +57,9 @@ const UNREADABLE = ["(case x in a) %", "( %", "case x in a) %", "x=$(case x in a
 /** A guarded program as a word of a command, or as a line of a heredoc or here-string that a shell reads. */
 const names = (commands) => commands.some((c) => c.words.some((w) => GUARDED.test(w)) || c.bodies.some((b) => b.split(/\s+/).some((w) => GUARDED.test(w))));
 
-// Where zsh has no such form, zsh mode refuses the line (fail closed): {fd}> redirections and the ;;& case terminator.
-const ZSH_ONLY_REFUSES = ["{fd}>/dev/null lsof -i :3000", "case x in a) :;& b) top;;& esac"];
+// Where zsh has no such form, zsh mode refuses the line (fail closed): the ;;& case terminator. Since mvdan/sh v3.14,
+// zsh mode reads a {fd}> redirection too (zsh -n refuses it at the start of a line); its program is still a command.
+const ZSH_ONLY_REFUSES = ["case x in a) :;& b) top;;& esac"];
 
 test("R446, R454 and R466: each line that the hook refuses parses, with its process program in a command, or zsh mode refuses it", () => {
   for (const zsh of MODES) {
@@ -84,11 +85,11 @@ test("R466-FAILCLOSED: each line that the hook's reader cannot read is refused i
 });
 
 // The lines of main's regression list that do not parse: an open quote, "(" or case, and a case pattern of more than
-// one word (the shell refuses it too). zsh mode also refuses {fd}> and ;;&.
+// one word (the shell refuses it too). zsh mode also refuses ;;&.
 const OPEN = ["git push origin main", "gh pr merge 1 --admin"].flatMap((x) => [`(case x in a) ${x}`, `( ${x}`, `case x in a) ${x}`, `x=$(case x in a) ${x})`, `(case x in a) ${x} )`, `echo '${x}`]);
 const PATTERN = ["git push origin main", "gh pr merge 1 --admin"].flatMap((x) => [`case $1 in\n ${x}) echo top;;\n ps|kill) echo other;;\nesac`, `case x in (${x}) :;; esac`, `x=$(case $1 in ${x}) echo t;; esac); echo "$x"`]);
 const BASH_REFUSES = ['echo "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', "git push origin 'feat", ...OPEN, ...PATTERN];
-const ZSH_REFUSES = [...BASH_REFUSES, ...["git push origin main", "gh pr merge 1 --admin"].flatMap((x) => [`{fd}>/dev/null ${x} -i :3000`, `case x in a) :;& b) ${x};;& esac`])];
+const ZSH_REFUSES = [...BASH_REFUSES, ...["git push origin main", "gh pr merge 1 --admin"].map((x) => `case x in a) :;& b) ${x};;& esac`)];
 
 test("main's regression list: each line parses with its push, merge, API call or process program in a command, or is refused", () => {
   assert.equal(MAIN_DENIES.length, 342);
@@ -113,6 +114,7 @@ test("zsh: =(ps) is a command of its own, and a glob qualifier that runs code is
   assert.deepEqual(parseCommands("cat =(ps)", { zsh: true }).map((c) => c.words.join(" ")), ["ps", "cat $(…)"]);
   assert.match(read("echo *(e:'ps':)", true).message, /zsh glob qualifier that can run code/);
   assert.match(read("echo *(+f)", true).message, /zsh glob qualifier/);
+  assert.match(read("echo (a|b)(e:ps:)", true).message, /zsh glob qualifier/, "a glob that starts with ( (mvdan/sh v3.14)");
   assert.deepEqual(parseCommands("echo *(N)", { zsh: true }).map((c) => c.words), [["echo", "*(N)"]], "a qualifier that runs no code passes");
   assert.ok(read("cat =(ps)", false) instanceof Error, "bash refuses =( )");
   assert.deepEqual(parseCommands("echo *(e:'ps':)").map((c) => c.words), [["echo", "*(e:'ps':)"]], "in bash, *( ) is an extended glob, which runs nothing");
@@ -137,7 +139,7 @@ test("speed: a new process loads the parser and parses a typical line in well un
   const typical = "cd /x && git -C /x push origin t125-parser 2>&1 | tail -5";
   const ms = Math.min(coldParse(typical), coldParse(typical), coldParse(typical));
   console.log(`load and parse: ${ms.toFixed(1)} ms of CPU (fastest of 3)`);
-  assert.ok(ms < 40, `${ms.toFixed(1)} ms of CPU`);
+  assert.ok(ms < 25, `${ms.toFixed(1)} ms of CPU`); // TinyGo: about 10 ms; standard Go's 4 MB file: 39 to 68 ms
   const big = `echo ${"git ".repeat((MAX_LENGTH - 5) / 4)}`;
   const t = process.cpuUsage();
   parseCommands(big);

@@ -8,17 +8,15 @@ export const MAX_LENGTH = 10_000;
 
 let wasm;
 
-/** The parser's instance. Go's WASI target needs a few system calls; it gets no arguments, no environment and no files. */
+/** The parser's instance. TinyGo's WASI target imports five system calls; it gets no arguments and no files. */
 function instance() {
   if (wasm) return wasm;
   const module = new WebAssembly.Module(readFileSync(new URL("parser.wasm", import.meta.url)));
   const view = () => new DataView(wasm.exports.memory.buffer);
   const zero = (...ptrs) => { for (const p of ptrs) view().setUint32(p, 0, true); return 0; };
-  const sys = {
+  const wasi = {
     args_sizes_get: zero,
-    environ_sizes_get: zero,
     args_get: () => 0,
-    environ_get: () => 0,
     clock_time_get: (id, precision, out) => (view().setBigUint64(out, process.hrtime.bigint(), true), 0),
     random_get: (ptr, len) => (crypto.getRandomValues(new Uint8Array(wasm.exports.memory.buffer, ptr, len)), 0),
     fd_write: (fd, iovs, count, written) => {
@@ -27,12 +25,8 @@ function instance() {
       view().setUint32(written, n, true);
       return 0;
     },
-    sched_yield: () => 0,
-    proc_exit: (code) => { throw new Error(`the parser exited with code ${code}`); },
   };
-  const EBADF = 8; // every other call is about a file, and there are none
-  const imports = Object.fromEntries(WebAssembly.Module.imports(module).map(({ name }) => [name, sys[name] ?? (() => EBADF)]));
-  wasm = new WebAssembly.Instance(module, { wasi_snapshot_preview1: imports });
+  wasm = new WebAssembly.Instance(module, { wasi_snapshot_preview1: wasi });
   wasm.exports._initialize();
   return wasm;
 }

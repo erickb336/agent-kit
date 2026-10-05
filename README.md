@@ -372,7 +372,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 | `plugins/sage/agents/` | Sage mode's team. |
 | `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, the state tool `sage`, and `report`. |
 | `plugins/sage/hooks/` | `hooks.json`: the principle hooks. `claude.json`: the sage mode hook. |
-| `plugins/sage/hooks/parser/` | The shell parser for the hook's rules: [mvdan/sh](https://github.com/mvdan/sh) (the parser of shfmt), built to `parser.wasm` from pinned Go source, with its sha256 in `parser.wasm.sha256`. It reads a command line as bash or zsh and refuses what it cannot read. The hook does not use it yet (T125). |
+| `plugins/sage/hooks/parser/` | The shell parser for the hook's rules: [mvdan/sh](https://github.com/mvdan/sh) (the parser of shfmt), built to `parser.wasm` by TinyGo from pinned Go source, with its sha256 in `parser.wasm.sha256`. It reads a command line as bash or zsh and refuses what it cannot read. The hook does not use it yet (T125). |
 | `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
@@ -383,7 +383,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 **Change it:**
 
 1. Edit a source: `principles/`, `writing/`, `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
-2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`. After a change to the parser's Go source, run `npm run parser` with the Go of its `go.mod` on PATH. `npm run check` rebuilds the parser when that Go is on PATH, and compares the sha256.
+2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`. After a change to the parser's Go source, run `npm run parser` with TinyGo 0.42.0 and the Go of its `go.mod` on PATH. `npm run check` rebuilds the parser when both are on PATH, and compares the sha256.
 
 ## Credits
 
