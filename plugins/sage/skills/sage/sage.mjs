@@ -183,32 +183,63 @@ function readRegular(path) {
   }
 }
 
-/** config.json as an object, or {} when it is missing, torn, not an object or not a regular file. It never throws or waits. */
+/**
+ * config.json as an object, or {} when it is missing. It never waits. A file that is not valid JSON (also an empty one), is
+ * not one JSON object, or cannot be read (not a regular file, no permission) refuses with its path (gate G52): a default
+ * would ask fewer cycles than the owner meant, and a write would replace the owner's keys.
+ */
 function saved(env) {
+  const file = join(sageRoot(env), "config.json");
+  let text;
   try {
-    const value = JSON.parse(readRegular(join(sageRoot(env), "config.json")));
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
+    text = readRegular(file);
+  } catch (e) {
+    if (e.code === "ENOTDIR") return {}; // the sage root is not a folder: no config.json is there, and the merge check names the root
+    refuse(`${file} ${e instanceof Refusal ? "is not a regular file" : `cannot be read (${e.code ?? e.message})`}.`); // readRegular refuses only a file that is not regular
   }
+  if (text === undefined) return {};
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    refuse(`${file} is not valid JSON.`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) refuse(`${file} is not valid JSON for sage: it must be one object of "key": value pairs.`);
+  return value;
 }
 
+/** The fix for a broken config.json. */
+const FIX = "Fix it, or remove it for the defaults.";
+/** The keys that guard a merge: a value there with no valid form reads as "invalid", and refuses every merge (fail closed). */
+const GUARDS = (key) => key.startsWith("cycles.") || key === "autopilot.window";
+/** The form of a key that guards a merge, for the refusal. */
+const form = (key) => (key === "autopilot.window" ? "a window such as 23:00-06:00 inside 22:00-07:00" : `a whole number from ${floor(key)} to 10`);
+
 /**
- * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value (a count
- * as "3x", for one), or a config.json that is not a regular file, gives the default. A count reads as valid() gives it:
- * never below its floor, and never more agents or rounds, or fewer cycles, than written. A cycles key that is there but
- * has no number (Infinity, [3], true, "abc") reads as "invalid", and the merge check refuses every merge. A file of
- * an older sage holds autopilot_cycles for cycles.large: it counts, or reads as invalid, when cycles.large is absent, never below the floor.
+ * The settings for all projects. The hooks call this, so it never throws or waits. A count reads as valid() gives it:
+ * never below its floor, and never more agents or rounds, or fewer cycles, than written. A bad value of another key (a
+ * count as "3x", for one) gives the default. A key that guards a merge (GUARDS) and is there with no valid value
+ * (Infinity, [3], true, "abc") reads as "invalid". A config.json that saved() refuses gives the defaults and broken: its
+ * reason. Either refuses every merge (configProblem). A file of an older sage holds autopilot_cycles for cycles.large: it
+ * counts, or reads as invalid, when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
-  let c = { ...DEFAULTS };
+  let s;
   try {
-    const s = saved(env);
-    if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles; // a broken one is an invalid cycles.large
-    const extra = Object.keys(s).filter((k) => (CAP.test(k) || MODEL.test(k)) && !Object.hasOwn(DEFAULTS, k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
-    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (k.startsWith("cycles.") && Object.hasOwn(s, k) ? "invalid" : d)]), ...extra]); // the defaults, then the caps and models without one
-  } catch {}
-  return c;
+    s = saved(env);
+  } catch (e) {
+    return { ...DEFAULTS, broken: e.message };
+  }
+  if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles; // a broken one is an invalid cycles.large
+  const extra = Object.keys(s).filter((k) => (CAP.test(k) || MODEL.test(k)) && !Object.hasOwn(DEFAULTS, k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
+  return Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (GUARDS(k) && Object.hasOwn(s, k) ? "invalid" : d)]), ...extra]); // the defaults, then the caps and models without one
+}
+
+/** Why a config refuses every merge, or undefined: config.json is broken, or a key that guards a merge is invalid. The merge check and the autopilot note say this. */
+export function configProblem(c, env = process.env) {
+  if (c.broken) return `${c.broken} ${FIX}`;
+  const key = Object.keys(c).find((k) => c[k] === "invalid");
+  if (key) return `${key} in ${join(sageRoot(env), "config.json")} is not ${form(key)}. Set it with sage config ${key}=<value>, or remove the key.`;
 }
 
 /** The clean cycles that a task needs before its merge: cycles.small for every task, cycles.large for a large one, and cycles.risk for any task with a risk flag (the largest count wins). */
@@ -472,8 +503,8 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
     pr &&= String(pr); // the tasks table holds it as text
     const cfg = config(env); // once: the merge check may judge thousands of tasks
-    const broken = Object.keys(cfg).find((k) => cfg[k] === "invalid"); // fail closed: a default would ask fewer cycles than the owner meant
-    if (broken) return { ok: false, reason: `the merge check refuses every merge, because ${broken} in ${join(root, "config.json")} is not a number. Set it with sage config ${broken}=<n> (a whole number from ${floor(broken)} to 10), or remove the key.` };
+    const problem = configProblem(cfg, env); // fail closed: a default would ask fewer cycles than the owner meant
+    if (problem) return { ok: false, reason: `the merge check refuses every merge, because ${problem}` };
     // A logbook may be a link to a folder: the writes go through it, so the merge check reads through it too. A link to nothing
     // holds no logbook, for the writes either; one that cannot be followed refuses.
     const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
@@ -543,7 +574,8 @@ export function sage(argv, env = process.env) {
   if (cmd === "config") {
     const set = {};
     for (const kv of pos) {
-      const [k, v = ""] = kv.split("=");
+      if (!kv.includes("=")) refuse(`config ${JSON.stringify(kv.slice(0, 40))} has no "=": write key=value, for example cycles.large=3`);
+      const [k, v] = kv.split("=");
       const count = Object.hasOwn(COUNTS, k) || CAP.test(k);
       if (count && /^[1-9]\d*$/.test(v) && Number(v) > limit(k)) refuse(`${k} must be ${limit(k)} or less: ${v} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
       if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
@@ -555,11 +587,17 @@ export function sage(argv, env = process.env) {
       mkdirSync(sageRoot(env), { recursive: true });
       const st = lstatSync(file, { throwIfNoEntry: false });
       if (st && !st.isFile()) refuse(`${file} is ${st.isSymbolicLink() ? "a link" : st.isDirectory() ? "a folder" : st.isFIFO() ? "a named pipe" : st.isSocket() ? "a socket" : "a device"}, not a regular file, so config writes nothing. Replace it with a regular file.`);
+      let kept;
+      try {
+        kept = saved(env); // a key of a newer version stays
+      } catch (e) {
+        refuse(`${e.message} config writes nothing, so that no key in it is lost. ${FIX}`);
+      }
       // A write never follows a link (sec15d), also one that replaces config.json after the check above (F-T42-2): the new
       // text goes to a new temp file in the sage folder (wx: never through a planted link), and a rename onto the path itself
       // replaces whatever is there, a link too. put() would rename onto the link's target.
       const temp = `${file}.${randomUUID()}`;
-      writeFileSync(temp, JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n", { flag: "wx" }); // a key of a newer version stays
+      writeFileSync(temp, JSON.stringify({ ...kept, ...set }, null, 2) + "\n", { flag: "wx" });
       try {
         renameSync(temp, file);
       } catch (e) {
@@ -568,6 +606,7 @@ export function sage(argv, env = process.env) {
       }
     }
     const c = { ...config(env), ...set };
+    if (c.broken) refuse(`${c.broken} The merge check refuses every merge until it is fixed. ${FIX}`);
     const models = Object.keys(c).filter((k) => MODEL.test(k));
     return [...Object.keys(c).filter((k) => !models.includes(k)), ...models].map((k) => `${k}=${c[k]}`).join(" "); // the numbers, then the models
   }

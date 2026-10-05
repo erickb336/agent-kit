@@ -1,7 +1,7 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -723,8 +723,25 @@ test("T54-1: the autopilot note says that a cycles key with no number blocks eve
   s.sage("init");
   writeFileSync(join(s.vars.SAGE_HOME, "config.json"), '{"cycles.risk": "abc"}');
   const note = context(s.send(prompt("autopilot on")));
-  assert.match(note, /autopilot is on\. cycles\.risk in config\.json is not a number: no merge until it is fixed \(sage config cycles\.risk=<n>\)\./);
+  assert.equal(note.split("\n").find((l) => l.startsWith("sage: autopilot")), `sage: autopilot is on, but no merge happens until the config is fixed: cycles.risk in ${join(s.vars.SAGE_HOME, "config.json")} is not a whole number from 2 to 10. Set it with sage config cycles.risk=<value>, or remove the key.`);
   assert.doesNotMatch(note, /NaN/);
+});
+
+test("T81 (gate G52): a config.json that is not valid JSON makes the autopilot note say so, and the hook refuses the merge", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  s.sage("init");
+  s.sage("task", "add", "--title", "t", "--size", "small");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T1", "--sha", SHA, "--kind", kind, "--pr", "41");
+  const f = join(s.vars.SAGE_HOME, "config.json");
+  const merge = () => denied(s.send(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`)));
+  writeFileSync(f, '{"cycles.large": 5,}'); // the trailing comma of T59 QA (R347)
+  const note = context(s.send(prompt("autopilot on")));
+  assert.equal(note.split("\n").find((l) => l.startsWith("sage: autopilot")), `sage: autopilot is on, but no merge happens until the config is fixed: ${f} is not valid JSON. Fix it, or remove it for the defaults.`);
+  assert.doesNotMatch(note, /clean cycle/, "the note gives no counts from defaults");
+  assert.equal(merge(), `sage: the merge check refuses: the merge check refuses every merge, because ${f} is not valid JSON. Fix it, or remove it for the defaults.`);
+  rmSync(f);
+  assert.equal(merge(), undefined, "without config.json the defaults count: 1 clean cycle for a small task");
 });
 
 test("F-T47-1: the autopilot note gives the clean cycles that the merge check asks, for a small, a large and a risky task", () => {

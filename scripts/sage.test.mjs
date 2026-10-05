@@ -291,7 +291,7 @@ test("T54: one rule reads every count in config.json: cycles round up, other cou
   for (const bad of ['"Infinity"', "1e400", "[3]", "true", '"abc"', '" "', "null", '"1e400"']) {
     writeFileSync(f, `{"cycles.small": ${bad}, "max_agents": 2}`);
     assert.equal(s.ok("config"), all({ max_agents: 2, "cycles.small": "invalid" }), bad);
-    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because cycles.small in ${f} is not a number. Set it with sage config cycles.small=<n> (a whole number from 1 to 10), or remove the key.`, bad);
+    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because cycles.small in ${f} is not a whole number from 1 to 10. Set it with sage config cycles.small=<value>, or remove the key.`, bad);
   }
   writeFileSync(f, '{"cycles.risk": true}');
   assert.match(s.no("merge-check", "--sha", SHA), /because cycles\.risk in .*(a whole number from 2 to 10)/, "the reason names the key and its floor");
@@ -526,7 +526,7 @@ test("ids after a gap are new: a lost row never gives its id again, and a new fi
   assert.deepEqual(rows(s.dir, "findings").map((f) => `${f.key} ${f.status} ${f.summary}`), ["F-T2-2 dismissed second", "F-T2-3 open third"]);
 });
 
-test("config: every count is 1 or more, config.json is written whole, and a torn or bad file gives the defaults", async () => {
+test("config: every count is 1 or more, config.json is written whole, and a bad value gives its default", async () => {
   const s = store();
   const f = join(s.home, "config.json");
   for (const [key, why] of Object.entries({ max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" })) {
@@ -538,10 +538,8 @@ test("config: every count is 1 or more, config.json is written whole, and a torn
 
   s.ok("task", "add", "--title", "t", "--size", "small", "--risk", "data");
   for (const kind of ["checks-pass", "review-clean", "security-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
-  for (const text of ['{"cycles.risk": 1', "", "null", '{"cycles.risk": 0}']) {
-    writeFileSync(f, text);
-    assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles/, `config.json ${JSON.stringify(text)} keeps the default of 2 cycles`);
-  }
+  writeFileSync(f, '{"cycles.risk": 0}');
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles/, "a cycles.risk below the floor reads as the floor");
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "0"), /--cycles is a whole number from 1 to 10/);
   writeFileSync(f, '{"max_agents": "x", "max_rounds": 5, "arena_models": "gpt-5", "cap.sage": 0, "cap.ramen": 4}');
   assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.sage=1 cap.ramen=4" + " " + MODEL_DEFAULTS, "each bad value gives its default, and a project cap below 1 reads as 1");
@@ -707,13 +705,15 @@ test("S6: an investigation takes no build block; a build that it needs is its ow
   assert.equal(s.ok("task", "add", "--title", "inv", "--size", "investigate", "--add", "pe", "--why", "x"), "T1 framed · investigate · route pe,investigate,evidence-review");
 });
 
-test("S7: config and the merge check read only regular files and never throw, so the hook never waits or lets a merge through", () => {
+test("S7: config and the merge check read only regular files and never throw or wait, so the hook never waits or lets a merge through", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
-  execFileSync("mkfifo", [join(s.home, "config.json")]);
-  const out = [s.ok("config"), s.ok("merge-check", "--sha", SHA)]; // a read that waited on the FIFO would hang until the 10 s timeout, and fail
-  assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 " + MODEL_DEFAULTS, "T1 may merge: 1 clean cycle on this SHA"]);
+  const f = join(s.home, "config.json");
+  execFileSync("mkfifo", [f]);
+  const out = [s.no("config"), s.no("merge-check", "--sha", SHA)]; // a read that waited on the FIFO would hang until the 10 s timeout, and fail
+  assert.deepEqual(out, [`sage: ${f} is not a regular file. The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults.`, `sage: the merge check refuses every merge, because ${f} is not a regular file. Fix it, or remove it for the defaults.`], "T81: a config.json that cannot be read refuses like one that is not valid JSON");
+  rmSync(f);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
   assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${join(s.dir, "ledger.tsv")} is not a regular file. Ask the user to fix or remove it.`, "F-R50-1: a table that is not a regular file refuses, and does not hang");
@@ -733,7 +733,7 @@ test("F1: no config.json makes config() or the merge check throw: a count with n
   const { config, mergeCheck } = await import(LIB);
   const env = { SAGE_HOME: s.home };
   assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": "invalid", "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...Object.fromEntries(MODEL_DEFAULTS.split(" ").map((kv) => kv.split("="))) }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
-  const refused = { ok: false, reason: `the merge check refuses every merge, because cycles.large in ${f} is not a number. Set it with sage config cycles.large=<n> (a whole number from 2 to 10), or remove the key.` };
+  const refused = { ok: false, reason: `the merge check refuses every merge, because cycles.large in ${f} is not a whole number from 2 to 10. Set it with sage config cycles.large=<value>, or remove the key.` };
   assert.deepEqual(mergeCheck("9".repeat(40), env), refused, "the hook's call: no cycles given");
   assert.deepEqual(mergeCheck(SHA, env), refused);
   assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=invalid cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12" + " " + MODEL_DEFAULTS);
@@ -1539,7 +1539,7 @@ test("T59: a broken legacy autopilot_cycles refuses merges like cycles.large, an
   s.ok("task", "add", "--title", "risk", "--size", "small", "--risk", "data");
   for (const t of ["T1", "T2"]) for (const kind of ["checks-pass", "review-clean", "security-clean", "ux-clean", "qa-pass"]) s.ok("verdict", t, "--sha", SHA, "--kind", kind, "--cycle", "1");
   writeFileSync(f, '{"autopilot_cycles": "x"}');
-  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because cycles.large in ${f} is not a number. Set it with sage config cycles.large=<n> (a whole number from 2 to 10), or remove the key.`, "T54-CR-1: the legacy key is cycles.large when cycles.large is absent");
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because cycles.large in ${f} is not a whole number from 2 to 10. Set it with sage config cycles.large=<value>, or remove the key.`, "T54-CR-1: the legacy key is cycles.large when cycles.large is absent");
   writeFileSync(f, '{"cycles.large": 1e308}');
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 1e\+308 clean cycles on this SHA \(cycles\.large is 1e\+308 in config\.json; the config command takes 1 to 10\)\. Run the next cycle/, "T54-CR-2: the reason names the config");
   assert.match(s.no("merge-check", "--sha", SHA), /T2: 1 of 2 clean cycles on this SHA\. Run/, "a task that does not use the key has no note");
@@ -1676,4 +1676,36 @@ test("T40: each agent role gets its model by task size; run add prints it and re
   assert.equal(o.ok("run", "done", "R1", "--status", "done"), "R1 done");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) o.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.match(o.ok("merge-check", "--sha", SHA), /may merge/);
+});
+
+test("T81 (gate G52): a config.json that is not valid JSON, or not one object, refuses every merge and every config command, and names the file", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "a missing config.json gives the defaults");
+  const notJson = `${f} is not valid JSON.`;
+  const notObject = `${f} is not valid JSON for sage: it must be one object of "key": value pairs.`;
+  for (const [text, why] of [['{"cycles.large":5,}', notJson], ["", notJson], [" \n\t ", notJson], ["[]", notObject], ['"cycles.large=5"', notObject], ["null", notObject], ["3", notObject]]) {
+    writeFileSync(f, text);
+    const was = `config.json ${JSON.stringify(text)}`;
+    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why} Fix it, or remove it for the defaults.`, was);
+    assert.equal(s.no("config"), `sage: ${why} The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults.`, was);
+    assert.equal(s.no("config", "max_rounds=4"), `sage: ${why} config writes nothing, so that no key in it is lost. Fix it, or remove it for the defaults.`, was);
+    assert.equal(readFileSync(f, "utf8"), text, `${was}: the refused write leaves the file as it was`);
+  }
+  writeFileSync(f, '{"max_rounds": 5}');
+  chmodSync(f, 0o000);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${f} cannot be read (EACCES). Fix it, or remove it for the defaults.`, "a file that a permission keeps shut");
+  assert.equal(s.no("config", "max_rounds=4"), `sage: ${f} cannot be read (EACCES). config writes nothing, so that no key in it is lost. Fix it, or remove it for the defaults.`);
+  chmodSync(f, 0o600);
+  assert.equal(readFileSync(f, "utf8"), '{"max_rounds": 5}', "the refused write kept the key max_rounds");
+  rmSync(f);
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "without the file again, the defaults count");
+});
+
+test("F-QA1-NOEQ: a config argument without = says to write key=value", () => {
+  const s = store();
+  assert.equal(s.no("config", "cycles.large"), 'sage: config "cycles.large" has no "=": write key=value, for example cycles.large=3');
+  assert.equal(existsSync(join(s.home, "config.json")), false, "a refused change writes nothing");
 });
