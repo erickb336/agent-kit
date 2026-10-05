@@ -8,7 +8,7 @@ import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
 import { files as graphics } from "./graphics.mjs";
-import { WASM, buildParser, onPath, pinned, recorded, sha256 } from "./build-parser.mjs";
+import { PARSER, WASM, buildParser, onPath, pinned, recorded, sha256 } from "./build-parser.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -189,6 +189,10 @@ else if (onPath() === pinned()) {
     rmSync(dir, { recursive: true, force: true });
   }
 } else console.log(`- parser.wasm: recorded sha256 checked; to rebuild and compare it, put ${pinned()} on PATH`);
+// Every licence file that THIRD-PARTY.md names for the code in parser.wasm ships beside it.
+const thirdParty = join(PARSER, "THIRD-PARTY.md");
+if (!existsSync(thirdParty)) problems.push("plugins/sage/hooks/parser/THIRD-PARTY.md: missing; it lists the licences of the code in parser.wasm");
+else for (const [, f] of readFileSync(thirdParty, "utf8").matchAll(/\]\(((?:LICENSE|COPYRIGHT)[^)]*)\)/g)) if (!existsSync(join(PARSER, f))) problems.push(`plugins/sage/hooks/parser/THIRD-PARTY.md: names ${f}, which does not ship`);
 
 // The build reads the dictionary too, so a problem in it comes twice: report it once.
 if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }

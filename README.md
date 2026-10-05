@@ -394,4 +394,4 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 ## Licence
 
-MIT. pstack's text keeps pstack's MIT licence: see [upstream/pstack/LICENSE](upstream/pstack/LICENSE) and [principles/LICENSE-pstack](principles/LICENSE-pstack). The parser in `plugins/sage/hooks/parser/parser.wasm` contains mvdan/sh, under its BSD-3-Clause licence: see [plugins/sage/hooks/parser/LICENSE-mvdan-sh](plugins/sage/hooks/parser/LICENSE-mvdan-sh).
+MIT. pstack's text keeps pstack's MIT licence: see [upstream/pstack/LICENSE](upstream/pstack/LICENSE) and [principles/LICENSE-pstack](principles/LICENSE-pstack). The parser in `plugins/sage/hooks/parser/parser.wasm` contains mvdan/sh, the TinyGo runtime and Go's standard library (BSD-3-Clause), wasi-libc and its musl part (MIT and Apache-2.0), and compiler-rt (Apache-2.0 with the LLVM exception): see [plugins/sage/hooks/parser/THIRD-PARTY.md](plugins/sage/hooks/parser/THIRD-PARTY.md) and the licence files beside it.
