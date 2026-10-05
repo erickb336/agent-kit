@@ -15,12 +15,13 @@
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
+//   - A sage agent writes under the owner's home folder only in a git worktree, its own or a linked one (writeGuard).
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The state tool. When it cannot load, the hook still runs, and its merge check refuses every merge.
@@ -184,6 +185,10 @@ export function handle(input, state, slots) {
   }
   if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
   if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
+  if (event === "PreToolUse" && !main && ours) {
+    const why = writeGuard(input.tool_name ?? "", input.tool_input ?? {}, input.cwd ?? process.cwd());
+    if (why) return deny(event, why);
+  }
   if (event !== "PreToolUse" || !state.sage) return undefined;
 
   const tool = input.tool_name ?? "";
@@ -206,6 +211,89 @@ export function handle(input, state, slots) {
   }
   if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
   return undefined;
+}
+
+/**
+ * Where a sage agent may write under the owner's home folder: in the git worktree of its working folder, or in any
+ * linked worktree (git worktree add). The temp folders are open, and the folders outside the home are not judged. The
+ * nearest folder decides, so a home inside a temp folder (as in the tests) is still the home. ~/.claude is closed: the
+ * state tool writes there itself, and its command has no write target that the hook reads. Reads are never refused.
+ * For Bash it reads the targets of >, >>, tee, cp, mv, mkdir, touch and rm: a miss is a known limit, and a command that
+ * the hook cannot read is allowed. Returns the reason for a refusal, or undefined.
+ */
+function writeGuard(tool, ti, cwd) {
+  let targets;
+  if (FILE_TOOLS.test(tool)) targets = [[ti.file_path ?? ti.notebook_path, cwd]];
+  else if (tool === "Bash") {
+    try {
+      targets = writeTargets(shellCommands([].concat(ti.command ?? []).join(" ")), cwd);
+    } catch {
+      return undefined;
+    }
+  } else return undefined;
+  const home = real(homedir());
+  const temps = [...new Set(["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", tmpdir(), process.env.TMPDIR].filter(Boolean).map(real))];
+  for (const [path, dir] of targets) {
+    const expanded = typeof path === "string" ? path.replace(/^~(?=\/|$)|^\$\{?HOME\}?(?=\/|$)/, homedir()) : "";
+    if (!expanded || expanded.includes("$")) continue; // another variable or a substitution: not judged
+    const target = real(resolve(dir, expanded));
+    if (!inside(target, home) || temps.some((t) => t.length > home.length && inside(target, t))) continue;
+    const own = worktreeOf(cwd);
+    if ((own && own.length > home.length && inside(target, own)) || linkedWorktree(target)) continue;
+    return `${target} is under the owner's home folder, outside your worktree${own ? ` (${own})` : ""} and the temp folders. Write in your worktree or a temp folder, such as your scratch folder.`;
+  }
+  return undefined;
+}
+
+const inside = (path, root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+/** The real path: the links of its nearest existing folder resolved, and the rest of the path added. */
+function real(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : join(real(parent), basename(path));
+  }
+}
+/** git's answers for the nearest existing folder of a path, or undefined. */
+function gitAt(path, ...args) {
+  let dir = path;
+  while (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) dir = dirname(dir);
+  try {
+    return execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", ...args], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined } }).trim().split("\n").map(real);
+  } catch {
+    return undefined;
+  }
+}
+const worktreeOf = (dir) => gitAt(dir, "--show-toplevel")?.[0];
+/** The top of the linked worktree that holds the path: its git folder is not the project's own. */
+function linkedWorktree(path) {
+  const [top, gitDir, common] = gitAt(path, "--show-toplevel", "--git-dir", "--git-common-dir") ?? [];
+  return top && gitDir !== common && inside(path, top) ? top : undefined;
+}
+
+/** The files and folders that a command line writes, each with the folder it runs in: [[path, dir]]. */
+const WRITERS = /^(?:tee|cp|mv|mkdir|touch|rm)$/;
+function writeTargets(commands, cwd) {
+  const targets = [];
+  let dir = cwd;
+  for (const { words, redirects } of commands) {
+    if (words[0] === "cd" && words.length === 2) dir = resolve(dir, words[1].replace(/^~(?=\/|$)/, homedir()));
+    for (const [k, at] of redirects) {
+      const rest = words[k].slice(at).replace(/^&?>+&?/, "");
+      const path = rest || words[k + 1];
+      if (path && !/^\d+-?$|^-$/.test(path)) targets.push([path, dir]);
+    }
+    const skip = new Set(redirects.flatMap(([k, at]) => (words[k].slice(at).replace(/^&?>+&?/, "") ? [k] : [k, k + 1])));
+    const args = words.filter((w, k) => k > 0 && !skip.has(k));
+    const name = basename(words[0] ?? "");
+    if (!WRITERS.test(name)) continue;
+    const t = args.indexOf("-t");
+    const files = args.filter((w) => !w.startsWith("-"));
+    const written = /^(?:cp|mv)$/.test(name) ? (t >= 0 ? [args[t + 1]] : files.slice(-1)) : files;
+    targets.push(...written.map((path) => [path, dir]));
+  }
+  return targets;
 }
 
 /**
@@ -538,7 +626,7 @@ export function shellCommands(src) {
 }
 
 function readCommands(src, i, close, out, host) {
-  const fresh = () => ({ words: [], bodies: [], host, piped: false, grouped: false, writes: false, heredoc: false });
+  const fresh = () => ({ words: [], bodies: [], redirects: [], host, piped: false, grouped: false, writes: false, heredoc: false });
   let cmd = fresh();
   let word;
   let depth = 0;
@@ -594,6 +682,7 @@ function readCommands(src, i, close, out, host) {
       i++;
     } else if (c === ">" || (c === "&" && src[i + 1] === ">")) {
       cmd.writes = true; // a redirection: ">", ">>", "&>", and ">&2" or "2>&1", whose "&" ends nothing
+      if (src[i - 1] !== ">") cmd.redirects.push([cmd.words.length, (word ?? "").length]); // its word, and where it starts in the word
       const n = src[i + 1] === "&" ? 2 : 1;
       add(src.slice(i, i + n));
       i += n;

@@ -1272,3 +1272,56 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
 });
+
+/** A fake home with a project, its linked worktree and a link inside the worktree that leads back into the home. */
+function homeWithWorktree() {
+  const s = session();
+  const home = s.vars.HOME;
+  const project = join(home, "workspace/proj");
+  const worktree = join(home, "workspace/proj-t1");
+  mkdirSync(join(home, "notes"), { recursive: true });
+  spawnSync("git", ["init", "-q", "-b", "main", project]);
+  spawnSync("git", ["-C", project, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+  spawnSync("git", ["-C", project, "worktree", "add", "-q", "-b", "claude/t1", worktree]);
+  symlinkSync(join(home, "notes"), join(worktree, "notes-link"));
+  return { ...s, home, project, worktree };
+}
+
+test("a sage agent may write only in its worktree and the temp folders, not elsewhere under the home folder (T57)", () => {
+  const s = homeWithWorktree();
+  const agent = { agent_id: "a1", agent_type: "sage:implementer", cwd: s.worktree };
+  const write = (file_path, extra = agent) => s.send(tool("Write", { file_path, content: "x" }, extra));
+  const run = (command, extra = agent) => s.send(tool("Bash", { command }, extra));
+  const refused = (out) => denied(out) ?? "not refused";
+
+  assert.match(refused(write(join(s.home, "notes.txt"))), new RegExp(`${join(s.home, "notes.txt")} is under the owner's home folder, outside your worktree`));
+  assert.match(refused(write(join(s.home, "notes.txt"))), /Write in your worktree or a temp folder/);
+  assert.equal(write(join(s.worktree, "src/a.js")), undefined, "its worktree");
+  assert.equal(write("/private/tmp/sage-t57-test/a.log"), undefined, "a temp folder");
+  assert.equal(write(join(s.home, "workspace/proj-t1/b.js"), { ...agent, cwd: s.project }), undefined, "a linked worktree of a project, from another folder");
+  assert.match(refused(write(join(s.project, "a.log"))), /outside your worktree/, "the project's main checkout is not the agent's worktree");
+  assert.match(refused(s.send(tool("Edit", { file_path: join(s.home, ".zshrc") }, agent))), /\.zshrc is under the owner's home folder/);
+  assert.match(refused(s.send(tool("NotebookEdit", { notebook_path: join(s.home, "n.ipynb") }, agent))), /n\.ipynb is under/);
+  assert.match(refused(write(join(s.worktree, "../x.log"))), new RegExp(`${join(s.home, "workspace/x.log")} is under`), "a path with ..");
+  assert.match(refused(write(join(s.worktree, "notes-link/x.txt"))), new RegExp(`${join(realpathSync(s.home), "notes/x.txt")} is under`), "a link that leads out of the worktree");
+
+  assert.match(refused(run("echo x > ~/workspace/x.log")), /workspace\/x\.log is under the owner's home folder/);
+  assert.match(refused(run('npm test >> "$HOME/test.log" 2>&1')), /test\.log is under/);
+  assert.match(refused(run("npm test 2>&1 | tee -a ~/t.log")), /t\.log is under/);
+  assert.match(refused(run("cp a.txt ~/workspace/")), /workspace is under/);
+  assert.match(refused(run("mkdir -p ~/npm/_logs && touch ok.txt")), /npm\/_logs is under/);
+  assert.match(refused(run("cd .. && echo x > y.log")), /workspace\/y\.log is under/, "a cd before the write");
+  assert.match(refused(run("echo x > ~/.claude/sage/x.json")), /\.claude\/sage\/x\.json is under/, "the state tool's folder is not open to other writes");
+  assert.equal(run("npm test > /private/tmp/x.log 2>&1"), undefined);
+  assert.equal(run("npm test > out.log && mv out.log logs/"), undefined, "in its worktree");
+  assert.equal(run(`node ${TOOL} run done R1 --project ${s.project} --note "a > ~/b"`), undefined, "the state tool, and > in quotes is text");
+  assert.equal(run("cat ~/notes.txt ~/.zshrc | grep x"), undefined, "reads are never refused");
+  assert.equal(run("echo 'x > ~/y' && rm -rf /tmp/scratch"), undefined);
+  assert.equal(run("echo x > ~/y.log '"), undefined, "a command the hook cannot read is allowed");
+
+  assert.equal(write(join(s.home, "x"), { cwd: s.worktree }), undefined, "the owner's main session: the rule is for agents only");
+  assert.equal(write(join(s.home, "x"), { agent_id: "e1", agent_type: "Explore", cwd: s.worktree }), undefined, "an agent that is not sage's");
+  s.send(prompt("sage mode"));
+  assert.equal(run("echo x > ~/x", { cwd: s.worktree }), undefined, "the main session in sage mode");
+  assert.match(refused(write(join(s.home, "notes.txt"))), /is under the owner's home folder/, "and an agent in sage mode");
+});

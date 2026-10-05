@@ -54,7 +54,7 @@ Every brief to a sage agent has these fields, each at the start of a line. The h
 
 ```
 GOAL        one sentence that a stranger can act on
-SCOPE       the paths it may change, its branch and its worktree
+SCOPE       the paths it may change, its branch, its worktree and its scratch folder (in a temp folder): under the home folder the hook lets an agent write only in a worktree
 CONTEXT     file pointers, and earlier reports in full when this step depends on them
 DECISIONS   what the user already decided
 ACCEPTANCE  checkable lines: what the user will see when it works
