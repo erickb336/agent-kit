@@ -1390,7 +1390,81 @@ test("the push rule runs before the write guard, and the guard asks git once per
   for (let k = 0; k < 60; k++) mkdirSync(join(s.worktree, `d${k}`));
   const folders = Array.from({ length: 60 }, (_, k) => join(s.worktree, `d${k}/x`)).join(" ");
   const spread = run(`touch ${folders}`);
-  assert.equal(spread.why, undefined, "past 50 folders the guard stops judging and allows");
+  assert.match(spread.why ?? "not refused", /writes in more than 50 folders, and the write guard judges at most 50 folders in one command/, "past 50 folders the guard refuses (fail closed, T57 repair 3)");
   assert.equal(spread.calls, 50);
-  assert.match(spread.stderr, /sage: the write guard stopped after 50 folders/);
+});
+
+test("a sage agent cannot reach a main checkout through ~, $HOME, git's folder options, a tool's folder flag, env -C, sed -i, make -C or a change of folder (T57 repair 3)", () => {
+  const s = homeWithWorktree();
+  const agent = { agent_id: "a1", agent_type: "sage:implementer", cwd: s.worktree };
+  const run = (command, extra = agent) => s.send(tool("Bash", { command }, extra));
+  const refused = (out) => denied(out) ?? "not refused";
+  const inMain = { ...agent, cwd: s.project };
+  const p = s.project;
+  const w = s.worktree;
+  const MAIN = /proj is under the owner's home folder, outside a linked worktree/;
+
+  // T57-QA-3: git -C reads ~, $HOME and ${HOME} as cd and the write targets do.
+  assert.match(refused(run("git -C ~/workspace/proj commit -am oops")), MAIN);
+  assert.match(refused(run('git -C "$HOME/workspace/proj" checkout -b x')), MAIN);
+  assert.match(refused(run("git -C ${HOME}/workspace/proj reset --hard")), MAIN);
+  assert.match(refused(run("cd $HOME/workspace/proj && git commit -am oops")), MAIN);
+  assert.match(refused(run("pushd ${HOME}/workspace/proj && npm install")), MAIN);
+  assert.equal(run("git -C ~/workspace/proj-t1 commit -am ok", inMain), undefined, "a linked worktree through ~");
+
+  // T57-SEC-GITDIR: an agent works in its own worktree, so it never steers git to another checkout.
+  const STEER = /points git at a checkout of its own choice .*an agent works in its own worktree/;
+  assert.match(refused(run(`git --git-dir=${p}/.git --work-tree=${p} commit -am oops`)), STEER);
+  assert.match(refused(run(`git --git-dir ${p}/.git status`)), STEER);
+  assert.match(refused(run(`GIT_DIR=${p}/.git GIT_WORK_TREE=${p} git reset --hard`)), STEER);
+  assert.match(refused(run(`GIT_WORK_TREE=${p} git reset --hard`)), STEER);
+  assert.match(refused(run(`export GIT_DIR=${p}/.git; git reset --hard`)), STEER);
+  assert.match(refused(run(`env GIT_WORK_TREE=${p} git checkout .`)), STEER);
+  assert.match(refused(run(`git -c core.worktree=${p} reset --hard`)), STEER);
+
+  // T57-QA-4: a tool's folder flag, env -C, sed -i and make -C write the folder or the files they name.
+  assert.match(refused(run(`npm --prefix ${p} install`)), MAIN);
+  assert.match(refused(run(`npm install --prefix ${p}`)), MAIN);
+  assert.match(refused(run(`npm i --prefix=${p} left-pad`)), MAIN);
+  assert.match(refused(run(`pnpm -C ${p} install`)), MAIN);
+  assert.match(refused(run(`pnpm --dir ${p} add x`)), MAIN);
+  assert.match(refused(run(`yarn --cwd ${p} add x`)), MAIN);
+  assert.match(refused(run(`yarn --cwd=${p}`)), MAIN, "a bare yarn installs");
+  assert.match(refused(run(`env -C ${p} git commit -am oops`)), MAIN);
+  assert.match(refused(run(`env --chdir=${p} npm ci`)), MAIN);
+  assert.match(refused(run("FOO=1 git commit -am oops", inMain)), MAIN, "a variable before the command");
+  assert.match(refused(run(`sed -i '' 's/a/b/' ${p}/a`)), /proj\/a is under/);
+  assert.match(refused(run(`sed -i 's/a/b/' ${p}/a`)), /proj\/a is under/);
+  assert.match(refused(run(`sed -i.bak -e s/a/b/ ${w}/ok ${p}/a`)), /proj\/a is under/);
+  assert.match(refused(run(`make -C ${p}`)), MAIN);
+  assert.match(refused(run(`make -C${p} build`)), MAIN);
+  assert.match(refused(run(`make --directory=${p} build`)), MAIN);
+  assert.equal(run(`npm --prefix ${w} install && pnpm -C ${w} install && yarn --cwd ${w} add x`, inMain), undefined, "a linked worktree as the folder");
+  assert.equal(run(`env -C ${w} git commit -am ok && make -C ${w}`, inMain), undefined);
+  assert.equal(run(`sed -n 's/a/b/p' ${p}/a && sed -i '' s/a/b/ src/a.js`), undefined, "sed without -i only reads");
+
+  // T57-SEC-CDFORMS: bare cd goes to the home folder, cd - to the folder before, popd pops, and ( ) and $( ) end their cd.
+  assert.match(refused(run("cd && touch x")), /fake-home\/x is under/);
+  assert.match(refused(run(`cd ${p} && cd ${w} && cd - && git commit -am oops`)), MAIN);
+  assert.match(refused(run(`pushd ${p} && pushd ${w} && popd && git commit -am oops`)), MAIN);
+  assert.match(refused(run(`(cd ${w} && git commit -am ok) && git commit -am oops`, inMain)), MAIN);
+  assert.match(refused(run(`echo $(cd ${w}; pwd) && git commit -am oops`, inMain)), MAIN);
+  assert.equal(run(`(cd ${p} && git status) && git commit -am ok`), undefined, "the subshell's cd ends with it");
+  assert.equal(run(`cd ${p} && cd ${w} && git commit -am ok`), undefined);
+});
+
+test("a normal implementer session in its worktree passes the write guard (T57 repair 3)", () => {
+  const s = homeWithWorktree();
+  const run = (command, cwd) => s.send(tool("Bash", { command }, { agent_id: "a1", agent_type: "sage:implementer", cwd }));
+  s.send(prompt("sage mode"));
+  const steps = [
+    [`git -C ${s.project} worktree add ${s.home}/workspace/proj-t2 -b claude/t2`, s.project],
+    ["npm install && npm test > /private/tmp/t.log 2>&1", s.worktree],
+    ["npm run build && npm run check", s.worktree],
+    ["git add -A && git commit -m 'T2: the change'", s.worktree],
+    ["git push -u origin claude/t1", s.worktree],
+    ["gh pr create --title 'T2' --body 'the change'", s.worktree],
+    [`node ${TOOL} run done R1 --project ${s.project}`, s.worktree],
+  ];
+  assert.deepEqual(steps.map(([command, cwd]) => [command, denied(run(command, cwd))]), steps.map(([command]) => [command, undefined]));
 });

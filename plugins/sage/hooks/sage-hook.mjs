@@ -220,34 +220,35 @@ export function handle(input, state, slots) {
  * nearest folder decides, so a home inside a temp folder (as in the tests) is still the home. ~/.claude is closed: the
  * state tool writes there itself, and its command has no write target that the hook reads. Reads are never refused.
  * For Bash it reads the targets of the commands in writeTargets: a miss is a known limit, and a command that the hook
- * cannot read is allowed. It asks git once per folder, and past GIT_FOLDERS folders it stops and allows: the push and
- * merge rules ran before it. Returns the reason for a refusal, or undefined.
+ * cannot read is allowed. It asks git once per folder, and past GIT_FOLDERS folders it refuses, because it cannot finish
+ * judging. Returns the reason for a refusal, or undefined.
  */
 const GIT_FOLDERS = 50;
 function writeGuard(tool, ti, cwd) {
   let targets;
   if (FILE_TOOLS.test(tool)) targets = [[ti.file_path ?? ti.notebook_path, cwd]];
   else if (tool === "Bash") {
+    let commands;
     try {
-      targets = writeTargets(shellCommands([].concat(ti.command ?? []).join(" ")), cwd);
+      commands = shellCommands([].concat(ti.command ?? []).join(" "));
     } catch {
       return undefined;
     }
+    const r = writeTargets(commands, cwd);
+    if (r.steers) return `this command points git at a checkout of its own choice (${r.steers}), and an agent works in its own worktree: run git there, or with git -C <its worktree>. ${whereToWrite(cwd)}`;
+    targets = r.targets;
   } else return undefined;
   const home = real(homedir());
   const temps = [...new Set(["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", tmpdir(), process.env.TMPDIR].filter(Boolean).map(real))];
   const tops = new Map(); // the nearest existing folder, and the top of the linked worktree that holds it
   for (const [path, dir] of targets) {
-    const expanded = typeof path === "string" ? path.replace(/^~(?=\/|$)|^\$\{?HOME\}?(?=\/|$)/, homedir()) : "";
+    const expanded = typeof path === "string" ? atHome(path) : "";
     if (!expanded || expanded.includes("$")) continue; // another variable or a substitution: not judged
     const target = real(resolve(dir, expanded));
     if (!inside(target, home) || temps.some((t) => t.length > home.length && inside(target, t))) continue;
     const folder = existingFolder(target);
     if (!tops.has(folder)) {
-      if (tops.size === GIT_FOLDERS) {
-        process.stderr.write(`sage: the write guard stopped after ${GIT_FOLDERS} folders and allowed the rest of this command.\n`);
-        return undefined;
-      }
+      if (tops.size === GIT_FOLDERS) return `this command writes in more than ${GIT_FOLDERS} folders, and the write guard judges at most ${GIT_FOLDERS} folders in one command. Split it into smaller commands.`;
       tops.set(folder, linkedWorktree(folder));
     }
     const top = tops.get(folder);
@@ -256,6 +257,9 @@ function writeGuard(tool, ti, cwd) {
   }
   return undefined;
 }
+
+/** A path with the home folder in place of a leading ~, $HOME or ${HOME}: the one place where the guard expands a path. */
+const atHome = (path) => path.replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, homedir());
 
 /** The places that a refused agent may write: the linked worktrees of its project, and its temp folder. */
 function whereToWrite(cwd) {
@@ -298,37 +302,109 @@ function linkedWorktree(dir) {
 }
 
 /**
- * The files and folders that a command line writes, each with the folder it runs in: [[path, dir]]. A command that
- * changes the state of a checkout (a commit, a checkout, an install) writes the folder that it acts on.
+ * The files and folders that a command line writes, each with the folder it runs in: { targets: [[path, dir]], steers }.
+ * A command that changes the state of a checkout (a commit, a checkout, an install, a make) writes the folder that it
+ * acts on. It follows the folder through cd (bare, -, a path), pushd, popd, env -C and the end of a subshell. steers
+ * names a git option or variable that points git at another checkout: the guard refuses it outright.
  */
 const WRITERS = /^(?:tee|cp|mv|install|mkdir|touch|rm)$/;
 const GIT_WRITES = /^(?:commit|checkout|switch|reset|stash|pull|merge|rebase|cherry-pick|am|apply)$/;
 const INSTALLS = /^(?:npm|pnpm|yarn)$/;
+const INSTALL_WORDS = /^(?:install|i|ci|add|update|up|upgrade|uninstall|remove|rm|un|link)$/;
+const STEERS = /^(?:--git-dir|--work-tree)(?:=|$)|^core\.worktree=/i;
+const GIT_VARS = /^(?:GIT_DIR|GIT_WORK_TREE)=/;
+/** The value of a folder option: "-C d", "-Cd", "--dir d" or "--dir=d" (names: the short and long names). */
+function folderOption(words, k, names) {
+  const w = words[k];
+  for (const name of names) {
+    if (w === name) return [words[k + 1] ?? "", 2];
+    if (name.startsWith("--") && w.startsWith(`${name}=`)) return [w.slice(name.length + 1), 1];
+    if (!name.startsWith("--") && w.startsWith(name) && w.length > name.length) return [w.slice(name.length), 1];
+  }
+  return undefined;
+}
 function writeTargets(commands, cwd) {
   const targets = [];
-  let dir = cwd;
-  for (const { words, redirects } of commands) {
+  let place = { dir: cwd, before: cwd, stack: [] }; // the folder, the folder before the last cd (cd -), the pushd stack
+  let scope = [];
+  const saved = []; // the place before each open subshell of scope
+  const go = (at) => resolve(place.dir, atHome(at));
+  for (const command of commands) {
+    const { words, redirects } = command;
+    let same = 0;
+    while (same < scope.length && scope[same] === command.scope[same]) same++;
+    if (same < scope.length) place = saved[same]; // the subshells after same ended: their folder changes end too
+    saved.length = same;
+    for (let k = same; k < command.scope.length; k++) saved.push(place);
+    scope = command.scope;
+    let dir = place.dir;
     for (const [k, at] of redirects) {
       const rest = words[k].slice(at).replace(REDIRECT, "");
       const path = rest || words[k + 1];
       if (path && !/^\d+-?$|^-$/.test(path)) targets.push([path, dir]);
     }
     const skip = new Set(redirects.flatMap(([k, at]) => (words[k].slice(at).replace(REDIRECT, "") ? [k] : [k, k + 1])));
-    const args = words.filter((w, k) => k > 0 && !skip.has(k));
+    let all = words.filter((w, k) => !skip.has(k));
+    // Variables before the command, export, and env with its options: env -C runs the command in another folder.
+    for (;;) {
+      let k = 0;
+      while (k < all.length && /^\w+=/.test(all[k])) k++;
+      const head = basename(all[k] ?? "");
+      const steer = [...all.slice(0, k), ...(/^(?:export|env)$/.test(head) ? all.slice(k + 1) : [])].find((w) => GIT_VARS.test(w));
+      if (steer) return { targets, steers: steer.split("=")[0] };
+      all = all.slice(k);
+      if (head !== "env") break;
+      for (k = 1; k < all.length && all[k].startsWith("-") && all[k] !== "--"; ) {
+        const chdir = folderOption(all, k, ["-C", "--chdir"]);
+        if (chdir) dir = resolve(dir, atHome(chdir[0]));
+        k += chdir?.[1] ?? (/^(?:-u|--unset)$/.test(all[k]) ? 2 : 1);
+      }
+      all = all.slice(all[k] === "--" ? k + 1 : k);
+    }
+    const name = basename(all[0] ?? "");
+    const args = all.slice(1);
     const files = args.filter((w) => !w.startsWith("-"));
-    const name = basename(words[0] ?? "");
-    if (/^(?:cd|pushd)$/.test(name) && files.length === 1) dir = resolve(dir, files[0].replace(/^~(?=\/|$)/, homedir()));
-    else if (name === "git") {
+    if (name === "cd") {
+      const to = args.filter((w) => w === "-" || !w.startsWith("-"));
+      const next = !to.length ? homedir() : to[0] === "-" ? place.before : go(to[0]);
+      place = { ...place, dir: next, before: place.dir };
+    } else if (name === "pushd") {
+      const next = files.length ? go(files[0]) : place.stack.at(-1);
+      if (next) place = { dir: next, before: place.dir, stack: [...(files.length ? place.stack : place.stack.slice(0, -1)), place.dir] };
+    } else if (name === "popd") {
+      if (place.stack.length) place = { dir: place.stack.at(-1), before: place.dir, stack: place.stack.slice(0, -1) };
+    } else if (name === "git") {
       let at = dir;
       let k = 0;
       for (; k < args.length && args[k].startsWith("-"); k++) {
-        if (args[k] === "-C") at = resolve(at, args[++k] ?? "");
-        else if (args[k] === "-c") k++;
+        if (STEERS.test(args[k])) return { targets, steers: args[k].split("=")[0] };
+        if (args[k] === "-C") at = resolve(at, atHome(args[++k] ?? ""));
+        else if (args[k] === "-c" && STEERS.test(args[++k] ?? "")) return { targets, steers: "core.worktree" };
       }
       const sub = args[k] ?? "";
       if (GIT_WRITES.test(sub) || (sub === "branch" && args.slice(k + 1).some((w) => /^(?:-[a-zA-Z]*[dD]|--delete)$/.test(w)))) targets.push([at, dir]);
-    } else if (INSTALLS.test(name) && /^(?:install|i|ci)$/.test(files[0] ?? "")) targets.push([dir, dir]);
-    else if (name === "curl") {
+    } else if (INSTALLS.test(name)) {
+      let at = dir;
+      const rest = [];
+      for (let k = 0; k < args.length; ) {
+        const o = folderOption(args, k, ["--prefix", "--dir", "--cwd", "-C"]);
+        if (o) at = resolve(dir, atHome(o[0]));
+        else rest.push(args[k]);
+        k += o?.[1] ?? 1;
+      }
+      const sub = rest.find((w) => !w.startsWith("-"));
+      if (sub ? INSTALL_WORDS.test(sub) : name === "yarn") targets.push([at, dir]);
+    } else if (name === "make") {
+      args.forEach((w, k) => {
+        const o = folderOption(args, k, ["-C", "--directory"]);
+        if (o) targets.push([o[0], dir]);
+      });
+    } else if (name === "sed" && args.some((w) => /^-[a-zA-Z]*i|^--in-place/.test(w))) {
+      // Every word that is not an option or the script: with -i alone, a following word may be BSD's suffix; judging it too is safe.
+      const script = args.some((w) => /^-[a-zA-Z]*[ef]$|^--(?:expression|file)/.test(w));
+      const words = args.filter((w, k) => !w.startsWith("-") && w !== "" && !/^-[a-zA-Z]*[ef]$/.test(args[k - 1] ?? ""));
+      targets.push(...words.slice(script ? 0 : 1).map((path) => [path, dir]));
+    } else if (name === "curl") {
       args.forEach((w, k) => {
         const m = /^--output(?:=(.*))?$|^-[a-zA-Z]*o(.*)$/.exec(w);
         if (m) targets.push([m[1] ?? (m[2] || args[k + 1]), dir]);
@@ -342,7 +418,7 @@ function writeTargets(commands, cwd) {
       targets.push(...(into.length ? into : files.slice(-1)).map((path) => [path, dir]));
     }
   }
-  return targets;
+  return { targets };
 }
 /** The operator at the start of a redirection word: >, >>, &>, >&, >|. */
 const REDIRECT = /^&?>+[&|]?/;
@@ -672,11 +748,12 @@ const codeText = (commands) =>
  */
 export function shellCommands(src) {
   const out = [];
-  readCommands(src, 0, "", out, undefined);
+  readCommands(src, 0, "", out, undefined, []);
   return out;
 }
 
-function readCommands(src, i, close, out, host) {
+/** scope: the subshells that hold the commands, outermost first; each "(" and each substitution opens a new one. */
+function readCommands(src, i, close, out, host, scope) {
   const fresh = () => ({ words: [], bodies: [], redirects: [], host, piped: false, grouped: false, writes: false, heredoc: false });
   let cmd = fresh();
   let word;
@@ -690,6 +767,7 @@ function readCommands(src, i, close, out, host) {
   const endCommand = () => {
     endWord();
     cmd.grouped ||= depth > 0;
+    cmd.scope = scope;
     if (cmd.words.length || cmd.heredoc) out.push(cmd);
     cmd = fresh();
   };
@@ -710,11 +788,11 @@ function readCommands(src, i, close, out, host) {
       add(src.slice(i + 1, j));
       i = j + 1;
     } else if (c === '"') {
-      const r = readExpanding(src, i + 1, '"', out, here());
+      const r = readExpanding(src, i + 1, '"', out, here(), scope);
       add(r.text);
       i = r.i;
     } else if (c === "`" || (c === "$" && src[i + 1] === "(")) {
-      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, here());
+      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, here(), [...scope, Symbol()]);
       add("$(…)");
     } else if (c === "#" && word === undefined) {
       while (i < src.length && src[i] !== "\n") i++;
@@ -727,7 +805,7 @@ function readCommands(src, i, close, out, host) {
       i = readDelimiter(src, i + 2, heredocs, cmd);
     } else if (c === "\n") {
       endCommand();
-      i = readBodies(src, i + 1, heredocs, out);
+      i = readBodies(src, i + 1, heredocs, out, scope);
     } else if (c === " " || c === "\t") {
       endWord();
       i++;
@@ -749,8 +827,8 @@ function readCommands(src, i, close, out, host) {
     } else if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
       if (c === ")" && !depth) throw new Error('a ")" with no "("');
       endCommand();
-      if (c === "(") depth++;
-      if (c === ")") depth--;
+      if (c === "(") [depth, scope] = [depth + 1, [...scope, Symbol()]];
+      if (c === ")") [depth, scope] = [depth - 1, scope.slice(0, -1)];
       i += (c === "|" || c === "&") && src[i + 1] === c ? 2 : 1;
     } else {
       add(c);
@@ -764,7 +842,7 @@ function readCommands(src, i, close, out, host) {
 }
 
 /** Double-quoted text, or a heredoc body that expands (stop ""): its text, and the commands of its substitutions. */
-function readExpanding(src, i, stop, out, host) {
+function readExpanding(src, i, stop, out, host, scope) {
   let text = "";
   while (i < src.length && src[i] !== stop) {
     const c = src[i];
@@ -772,7 +850,7 @@ function readExpanding(src, i, stop, out, host) {
       text += '$`"\\'.includes(src[i + 1]) ? src[i + 1] : src[i + 1] === "\n" ? "" : c + src[i + 1];
       i += 2;
     } else if (c === "`" || (c === "$" && src[i + 1] === "(")) {
-      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, host);
+      i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, host, [...scope, Symbol()]);
       text += "$(…)";
     } else {
       text += c;
@@ -813,7 +891,7 @@ function readDelimiter(src, i, heredocs, cmd) {
 }
 
 /** The bodies of the heredocs that the last line opened, read up to each delimiter line, given to their commands. */
-function readBodies(src, i, heredocs, out) {
+function readBodies(src, i, heredocs, out, scope) {
   for (const { delimiter, strip, expand, cmd } of heredocs.splice(0)) {
     const lines = [];
     for (;;) {
@@ -826,7 +904,7 @@ function readBodies(src, i, heredocs, out) {
     }
     const body = lines.join("\n");
     cmd.bodies.push(body);
-    if (expand) readExpanding(body, 0, "", out, { cmd, index: -1 });
+    if (expand) readExpanding(body, 0, "", out, { cmd, index: -1 }, scope);
   }
   return Math.min(i, src.length);
 }
