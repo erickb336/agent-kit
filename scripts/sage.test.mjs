@@ -63,11 +63,12 @@ function byHand(dir, table, col, id, edit) {
 
 /**
  * A process that holds a store's lock as a command does: it crashes inside the lock, or keeps it until release(). It
- * never lets go by itself, so a busy machine cannot end its hold before a test has seen what happens while it holds.
+ * does not let go by itself before 60 s, so a busy machine cannot end its hold before a test has seen what happens while
+ * it holds, and a test that fails before release() does not leave it running.
  */
 function hold(dir, crash) {
   const done = join(mkdtempSync(join(tmpdir(), "sage-hold-")), "release");
-  const inside = crash ? `process.kill(process.pid, "SIGKILL")` : `while (!existsSync(${JSON.stringify(done)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)`;
+  const inside = crash ? `process.kill(process.pid, "SIGKILL")` : `for (const end = Date.now() + 60_000; !existsSync(${JSON.stringify(done)}) && Date.now() < end; ) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)`;
   const args = ["--input-type=module", "-e", `import { existsSync } from "node:fs"; import { withLock } from ${JSON.stringify(LIB)}; withLock(${JSON.stringify(dir)}, () => { console.log("holding"); ${inside}; });`];
   if (crash) return spawnSync("node", args, { encoding: "utf8" });
   const child = spawn("node", args);
