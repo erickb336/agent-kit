@@ -266,7 +266,7 @@ Start a message with `show board` to see the board in the chat. It is short Mark
 
 | Say | You see |
 | --- | --- |
-| `show board` or `show board for this project` | The project of the session, with at most 8 active tasks, and one line for each other project with something waiting, for example "order-chaser: 1 gate waiting". |
+| `show board` or `show board for this project` | The project of the session, with at most 8 active tasks, and one line for each other project with something waiting, for example "order-chaser: 1 gate waiting". When two logbooks without a checkout have the name of the session folder, the board lists the candidates. A session folder with a control character in its path, such as a line break, gets the board for all projects. |
 | `show board for all` or `show board for all projects` | Every project: what needs you and what runs at the top, then one short section per project, with at most 8 active tasks each ("and 3 more (show board for sage)"). |
 | `show board for sage-bot` | One project, with every active task. Type its key or its real name (the name of its folder, in any script: `日本語`). The key can be in any case, with `_`, `.` or a space for `-` (`sage_bot`). When two logbooks have the same name, the board shows each with its hash, for example `project-220ca5`. Wherever a key shows, the real name follows it when the board knows it and it differs: `project-220ca5 (日本語)`. A name that can mean more than one project, or that the key keeps only in part (`中文` gives the key `project`), opens no board: the board lists the candidates. An unknown name lists the known projects. A trailing `?` also works: `show board?`. |
 
@@ -274,7 +274,7 @@ The board has these parts, in this order:
 
 1. **Needs you:** every open gate, with their options, the recommendation and the default, and every verified pull request that is not merged, with the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off).
 2. **Running now:** each agent with its task, role and age.
-3. **Merged since the last board** of each project, with links. The sage folder keeps, for each logbook, the time of its last board and its merged tasks then, in `board.json`.
+3. **Merged since the last board** of each project, with links. The sage folder keeps, for each logbook, the time of its last board, its highest task id and its tasks that were not closed then, in `board.json`. A closed task never changes, so this stays small however many tasks merged, and two boards at once lose no entry.
 4. **One section per project:** a line per active task (id, title, state, pull request link, round), at most 8 and then "and N more (show board for sage)" (a board for one named project shows all), the count of framed tasks, and the next 3 framed tasks by id. The pull request links come from the project's own folder: a folder that only has the same name gives no links.
 
 Agents write the gate and task text, so the board escapes it: a link, an image, HTML, a bare web address, a www name or an email in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the gate's options. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.

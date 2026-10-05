@@ -1,16 +1,16 @@
 // The board for the chat: one compact Markdown text, built from every project's logbook under the sage root, that
 // fits a phone screen. `sage board [this|all|<project>]` prints it. It takes no lock and never writes to a logbook:
 // every table is replaced whole, so a read sees it before or after a change. It writes one file at the sage root,
-// board.json: per logbook folder, when the last board showed it and its merged tasks then, so that the next board lists
-// only what merged since.
+// board.json: per logbook folder, when the last board showed it, its highest task id then and its tasks not closed then,
+// so that the next board lists only what merged since. It writes board.json under a lock at the sage root.
 // Every cell is agent-written data. An id-like cell is kept only in its format, else it shows as "?". Free text is
 // escaped, also ":", "." and "@" against autolinks and "&" against entities, so that the only links, images and HTML on the board are the
 // board's own PR links, built from digits.
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
-import { BLOCKS, RISKS, STATES, projectName, projectRoot, read, sageRoot, slug, storeDir } from "./sage.mjs";
+import { BLOCKS, RISKS, STATES, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
 
 const FOLDER = /^([a-z0-9-]+)-[0-9a-f]{6}$/;
 const CLOSED = ["merged", "concluded", "abandoned"];
@@ -59,6 +59,24 @@ function repoOf(path) {
     return null;
   }
 }
+/**
+ * The text of a small regular file, or null: for a missing file, a link, a FIFO, a device, a folder or a file over max
+ * bytes. It never blocks (the open does not wait for a FIFO's writer) and reads at most max + 1 bytes.
+ */
+function small(path, max) {
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+    if (!fstatSync(fd).isFile()) return null;
+    const buf = Buffer.alloc(max + 1);
+    const len = readSync(fd, buf, 0, max + 1, 0);
+    return len > max ? null : buf.toString("utf8", 0, len);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 const real = (p) => {
   try {
     return realpathSync(p);
@@ -79,10 +97,7 @@ function logbooks(root) {
   } catch {}
   const books = folders.map(({ name: folder }) => {
     const dir = join(root, folder);
-    let checkout = null;
-    try {
-      checkout = readFileSync(join(dir, "checkout.txt"), "utf8").trim() || null;
-    } catch {}
+    const checkout = small(join(dir, "checkout.txt"), 4096)?.trim() || null;
     const book = { folder, name: FOLDER.exec(folder)[1], dir, checkout, tasks: [], runs: [], gates: [], error: null };
     try {
       const [tasks, runs, gates] = ["tasks", "runs", "gates"].map((t) => read(dir, t).map((row) => clean(t, row)));
@@ -112,45 +127,62 @@ function named(books, typed, want) {
   return [bySlug, bySlug.length === 1 && !lossy];
 }
 
-/** The session's logbook: the one storeDir gives, else the one whose checkout.txt names the project, else the one with its name. */
-function sessionBook(books, project, env) {
-  if (!project) return null;
+/**
+ * The session's logbook as a list: the one storeDir gives, else the one whose checkout.txt names the project, else the
+ * logbooks without checkout.txt that have its name (one is sure; two or more are candidates).
+ */
+function sessionBooks(books, project, env) {
+  if (!project) return [];
   const exact = storeDir(project, env);
   const root = real(project);
   const name = projectName(project);
-  return books.find((b) => b.dir === exact) ?? books.find((b) => b.checkout && real(b.checkout) === root) ?? books.find((b) => !b.checkout && b.name === name) ?? null;
+  const sure = books.find((b) => b.dir === exact) ?? books.find((b) => b.checkout && real(b.checkout) === root);
+  return sure ? [sure] : books.filter((b) => !b.checkout && b.name === name);
 }
 
 /**
- * The last boards: board.json as { <logbook folder>: { at, merged } }, or {} when it is not a regular file under 64 KB in
- * that shape (the next board rewrites it).
+ * The last boards: board.json as { <logbook folder>: { at, top, open } }, or {} when it is not a regular file under 64 KB
+ * in that shape (the next board rewrites it). top is the highest task number then, and open the tasks not closed then.
+ * A closed task never changes state, so a task merged now is new when it is above top or was open: the entry stays small
+ * however many tasks merged.
  */
 function seen(root) {
-  const file = join(root, "board.json");
   try {
-    const st = lstatSync(file);
-    if (!st.isFile() || st.size >= 64 * 1024) return {};
-    const s = JSON.parse(readFileSync(file, "utf8"));
+    const s = JSON.parse(small(join(root, "board.json"), 64 * 1024));
     const ok =
       s && typeof s === "object" && !Array.isArray(s) &&
-      Object.entries(s).every(([k, v]) => FOLDER.test(k) && /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?Z$/.test(v?.at) && Array.isArray(v.merged) && v.merged.every((id) => typeof id === "string"));
+      Object.entries(s).every(([k, v]) => FOLDER.test(k) && /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?Z$/.test(v?.at) && Number.isSafeInteger(v.top) && v.top >= 0 && Array.isArray(v.open) && v.open.every((id) => /^T\d+$/.test(id)));
     return ok ? s : {};
   } catch {
     return {};
   }
 }
-/** Saves, per logbook folder that this board showed, the time and its merged tasks; a logbook not shown keeps its entry. Never through a link. */
-function remember(root, last, books, at) {
-  const next = { ...last };
-  for (const b of books) if (!b.error) next[b.folder] = { at, merged: b.tasks.filter((t) => t.state === "merged").map((t) => t.id) };
+/** A task merged since the last board of its logbook (last: that logbook's entry). */
+const mergedSince = (last, t) => t.state === "merged" && /^T\d+$/.test(t.id) && (n(t.id) > last.top || last.open.includes(t.id));
+/**
+ * Saves, per logbook folder that this board showed, the time, its highest task number and its tasks not closed; a logbook
+ * not shown keeps its entry. It reads board.json again under the lock, so two boards at once lose no entry. Never through
+ * a link. When the lock stays busy, it saves nothing: the board is still right, and the next one lists the merges.
+ */
+function remember(root, books, at) {
   const file = join(root, "board.json");
-  const temp = `${file}.${randomUUID()}`;
   try {
-    writeFileSync(temp, JSON.stringify(next, null, 2) + "\n", { flag: "wx" });
-    renameSync(temp, file);
-  } catch {
-    rmSync(temp, { force: true });
-  }
+    withLock(root, () => {
+      const next = seen(root);
+      for (const b of books) {
+        if (b.error) continue;
+        const ids = b.tasks.map((t) => t.id).filter((id) => /^T\d+$/.test(id));
+        next[b.folder] = { at, top: Math.max(0, ...ids.map(n)), open: b.tasks.filter((t) => !CLOSED.includes(t.state) && ids.includes(t.id)).map((t) => t.id) };
+      }
+      const temp = `${file}.${randomUUID()}`;
+      try {
+        writeFileSync(temp, JSON.stringify(next, null, 2) + "\n", { flag: "wx" });
+        renameSync(temp, file);
+      } catch {
+        rmSync(temp, { force: true });
+      }
+    });
+  } catch {}
 }
 
 /**
@@ -181,8 +213,9 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const want = slug(scope);
   if (want === "all") [shown, title] = [books, "all projects"];
   else if (want === "this") {
-    const mine = sessionBook(books, project, env);
-    if (mine) [shown, others, title] = [[mine], books.filter((b) => b !== mine), label(mine)];
+    const mine = sessionBooks(books, project, env);
+    if (mine.length > 1) return `Not sure which project this folder is. Candidates: ${mine.map(label).join(", ")}. Type the key or the real name.`;
+    if (mine.length) [shown, others, title] = [mine, books.filter((b) => b !== mine[0]), label(mine[0])];
     else [shown, title] = [books, "all projects (this folder has no logbook)"];
   } else {
     let sure;
@@ -220,9 +253,9 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const running = shown.flatMap((b) => b.runs.filter((r) => r.status === "running").map((r) => ({ b, r }))).sort((x, y) => Date.parse(x.r.started) - Date.parse(y.r.started));
   section(`Running now (${running.length})`, running.map(({ b, r }) => `${tag(b)}${r.task} ${r.role} · ${Number.isFinite(Date.parse(r.started)) ? age(now - Date.parse(r.started)) : "age unknown"}`), CAP.running);
 
-  // Merged since the last board: per logbook, the merged tasks that the last board of that logbook did not show.
+  // Merged since the last board: per logbook, the merged tasks that the last board of that logbook did not show as merged.
   const last = seen(root);
-  const fresh = shown.flatMap((b) => b.tasks.filter((t) => t.state === "merged" && last[b.folder] && !last[b.folder].merged.includes(t.id)).map((t) => `${tag(b)}${t.id} ${pr(b, t)} ${text(t.title, 50)}`));
+  const fresh = shown.flatMap((b) => b.tasks.filter((t) => last[b.folder] && mergedSince(last[b.folder], t)).map((t) => `${tag(b)}${t.id} ${pr(b, t)} ${text(t.title, 50)}`));
   const firstFor = shown.filter((b) => !b.error && !last[b.folder]);
   const times = [...new Set(shown.filter((b) => last[b.folder]).map((b) => last[b.folder].at.slice(0, 16).replace("T", " ")))];
   const since = times.length === 1 ? `since ${times[0]} UTC` : times.length ? "since each project's last board" : "since the last board";
@@ -250,6 +283,6 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     })
     .filter(Boolean);
   if (elsewhere.length) section("Other projects", elsewhere, elsewhere.length);
-  if (save) remember(root, last, shown, now.toISOString().slice(0, 19) + "Z");
+  if (save) remember(root, shown, now.toISOString().slice(0, 19) + "Z");
   return L.join("\n");
 }
