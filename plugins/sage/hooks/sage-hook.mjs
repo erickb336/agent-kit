@@ -9,8 +9,7 @@
 //   - In sage mode it holds the rules that prompts alone did not hold in Orchestrator (docs/design/sage-mode.html,
 //     "Rules"): the chief never edits files, every brief has all its fields, at most cap.<project> (default
 //     max_agents) sage agents run at once for a project and cap_total across all projects, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
-//     cycles that the ledger records for it (the merge check), and only tiny or small tasks without a risk flag, inside
-//     the night window (scopeProblem). An agent never merges. The merge rule and the push rule are allow-lists: a
+//     cycles that the ledger records for it (the merge check), and an agent never merges. The merge rule and the push rule are allow-lists: a
 //     command that names a merge or runs a push is refused unless it is exactly the merge form or the push form, or the
 //     merge text stands only in a harmless command's text. One case asks the user instead of a refusal: the chief's
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
@@ -143,9 +142,9 @@ function switchModes({ owner, text, outside, all }, state) {
     state.autopilot = true;
     const c = stateTool.config();
     const broken = Object.keys(c).find((k) => c[k] === "invalid");
-    const small = stateTool.cyclesFor({}, c);
+    const [small, large, risky] = [{}, { size: "large" }, { risk: "auth" }].map((task) => stateTool.cyclesFor(task, c));
     if (broken) notes.push(`sage: autopilot is on. ${broken} in config.json is not a number: no merge until it is fixed (sage config ${broken}=<n>).`);
-    else notes.push(`sage: autopilot is on. A pull request whose tasks are all tiny or small, without a risk flag, merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"}, inside the night window ${c["autopilot.window"]} (${stateTool.OWNER_TZ}). The owner merges a large task or a task with a risk flag. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
+    else notes.push(`sage: autopilot is on. A pull request merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"} for a tiny or small task, ${large} for a large task and ${risky} for a task with a risk flag; a large task with a risk flag needs the larger count. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
   }
   return notes;
 }
@@ -153,7 +152,7 @@ function switchModes({ owner, text, outside, all }, state) {
 /** "1 sage agent is running", "3 sage agents are running". */
 const running = (n) => `${n} sage ${n === 1 ? "agent is" : "agents are"} running`;
 
-export function handle(input, state, slots, now = Date.now()) {
+export function handle(input, state, slots) {
   const event = input.hook_event_name;
   const main = !input.agent_id; // Claude Code sets agent_id only for a subagent's events
   if (main && CHIEF.test(input.agent_type ?? "")) state.sage = true;
@@ -207,7 +206,7 @@ export function handle(input, state, slots, now = Date.now()) {
       return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
     }
   }
-  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main, now);
+  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
   return undefined;
 }
 
@@ -421,7 +420,7 @@ function firstCreation({ owner, repo, branch, sha }) {
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
-function gitGate(event, command, state, cwd, main, now) {
+function gitGate(event, command, state, cwd, main) {
   const first = main ? firstUpload(command) : undefined; // an agent never gets the exception
   if (first) {
     const { decision, reason } = firstCreation(first);
@@ -441,22 +440,7 @@ function gitGate(event, command, state, cwd, main, now) {
   } catch (e) {
     verdict = { reason: `it could not run (${e?.message ?? e}), so it refuses every merge. Tell the user.` };
   }
-  if (verdict?.ok !== true) return deny(event, `the merge check refuses: ${verdict?.reason}`);
-  const problem = scopeProblem(verdict.tasks, now);
-  return problem ? deny(event, problem) : undefined;
-}
-
-/**
- * The owner's autopilot scope (gate G20): autopilot merges only a pull request whose tasks are all tiny or small, with
- * no risk flag, inside the night window. The reason for the first rule that fails, or undefined.
- */
-function scopeProblem(tasks, now) {
-  const big = tasks.find((t) => t.size !== "tiny" && t.size !== "small");
-  if (big) return `${big.id} is ${big.size ?? "of no known size"}: the owner merges this.`;
-  const risky = tasks.find((t) => t.risk);
-  if (risky) return `${risky.id} has a risk flag (${risky.risk}): the owner merges this.`;
-  const c = stateTool.config();
-  if (!stateTool.nightWindow(c, now)) return `outside the night window ${c["autopilot.window"]} (${stateTool.OWNER_TZ}): it waits.`;
+  return verdict?.ok === true ? undefined : deny(event, `the merge check refuses: ${verdict?.reason}`);
 }
 
 /**

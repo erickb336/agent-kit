@@ -48,9 +48,7 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
-export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00", ...Object.fromEntries(["code-reviewer", "security-reviewer", "ux-reviewer", "qa"].flatMap((role) => ["tiny", "small"].map((size) => [`model.${role}.${size}`, "fable"]))) };
-/** The owner's time zone (gate G20). Like the floors of gate G18, only a code change moves it: no config key sets it. */
-export const OWNER_TZ = "America/Los_Angeles";
+export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...Object.fromEntries(["code-reviewer", "security-reviewer", "ux-reviewer", "qa"].flatMap((role) => ["tiny", "small"].map((size) => [`model.${role}.${size}`, "fable"]))) };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
 /** The owner's floors (gate G18): a large or risk-flagged task needs at least 2 clean cycles. Only a code change lowers them; every other count is 1 or more. */
 const FLOOR = { "cycles.large": 2, "cycles.risk": 2 };
@@ -142,7 +140,6 @@ const NUMERIC = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?\s*$/i;
  * limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
  */
 function valid(key, value) {
-  if (key === "autopilot.window") return autopilotProblem(value) ? undefined : value;
   if (key === "arena_models") {
     const models = typeof value === "string" ? list(value) : [];
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
@@ -229,38 +226,6 @@ const cycleKeys = (task) => ["cycles.small", task.size === "large" && "cycles.la
 export function modelFor(role, size, candidate, c) {
   const arena = /^[1-9]\d*$/.test(candidate) ? list(c.arena_models)[(Number(candidate) - 1) % list(c.arena_models).length] : undefined;
   return [arena ?? c[`model.${role}.${size}`], arena ?? c[`model.${role}`]].find((m) => m && m !== "inherit") ?? "";
-}
-
-/** A window as [start, end] in minutes: "HH:MM-HH:MM", 24:00 only as its end, start and end not equal. */
-function minutes(window) {
-  const m = typeof window === "string" && /^(\d\d):([0-5]\d)-(\d\d):([0-5]\d)$/.exec(window);
-  const [start, end] = m ? [m[1] * 60 + +m[2], m[3] * 60 + +m[4]] : [];
-  return m && start < 1440 && end <= 1440 && start !== end ? [start, end] : undefined;
-}
-
-/** At most 40 characters of a bad value, so that a refusal never repeats a long or crafted text in full. */
-const quote = (value) => JSON.stringify(String(value).slice(0, 40)) + (String(value).length > 40 ? " (cut at 40 characters)" : "");
-
-/**
- * Why an autopilot.window value is not valid, or undefined. The owner's night is 22:00-07:00 in OWNER_TZ (gate G20): a
- * window may only narrow it, so a window that is not inside it is not valid, and only a code change widens it. A window
- * whose start is after its end wraps midnight.
- */
-function autopilotProblem(value) {
-  const w = minutes(value);
-  if (!w) return `autopilot.window ${quote(value)} is not a window such as 23:00-06:00`;
-  const [night, length] = [22 * 60, 9 * 60]; // the owner's 22:00-07:00
-  const from = (w[0] - night + 1440) % 1440; // minutes after 22:00
-  if (from + (w[0] < w[1] ? w[1] - w[0] : w[1] + 1440 - w[0]) > length) return `autopilot.window ${quote(value)} is not inside the owner's night 22:00-07:00: a window may only narrow it, and only a code change widens it`;
-}
-
-/** Whether the time now, in the owner's time zone, is inside the night window of autopilot (gate G20). config() gives only a valid window. */
-export function nightWindow(c, now = Date.now()) {
-  const [start, end] = minutes(c["autopilot.window"]);
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: OWNER_TZ, hour: "numeric", minute: "numeric", hourCycle: "h23" }).formatToParts(now);
-  const at = (type) => Number(parts.find((p) => p.type === type).value);
-  const minute = at("hour") * 60 + at("minute");
-  return start < end ? start <= minute && minute < end : minute >= start || minute < end;
 }
 
 /** The file that a write to file replaces: file, or the target of its link. Something there that is not a regular file refuses. */
@@ -526,16 +491,15 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       const [byId, ownOf, findingsOf] = [new Map(tasks.map((t) => [t.id, t])), group(rows), group(findings)];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const [own, task] = [ownOf.get(id) ?? [], byId.get(id)];
-        return { dir, id, size: task?.size, risk: task?.risk, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
+        return { dir, id, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
     if (pr && !each.some((r) => r.ofPr)) return { ok: false, reason: `no task of PR ${pr} has verdicts on ${sha.slice(0, 7)}: only ${each.map((r) => `${r.dir} ${r.id}`).join(", ")} ${each.length === 1 ? "has" : "have"}. Record PR ${pr}'s verdicts under its own task (sage verdict <T> --sha <sha> --pr ${pr}), or set its PR: sage task <T> set pr=${pr}.` };
-    const tasks = each.map(({ id, size, risk }) => ({ id, size, risk })); // for the hook's autopilot scope
-    if (each.length === 1) return { ok: each[0].ok, reason: each[0].reason, tasks };
+    if (each.length === 1) return { ok: each[0].ok, reason: each[0].reason };
     const all = `${each.length} tasks have verdicts on ${sha.slice(0, 7)}${pr ? ` or belong to PR ${pr}` : ""}, and each must pass`;
     const bad = each.filter((r) => !r.ok);
-    if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${r.dir} ${r.reason}`).join("; ")}`, tasks };
+    if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${r.dir} ${r.reason}`).join("; ")}` };
     const out = bad.some((r) => r.own) ? ", or push a new commit and record its verdicts under the live tasks only" : ""; // a new commit leaves behind only verdicts
     return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass${out}.` };
   } catch (e) {
@@ -580,14 +544,12 @@ export function sage(argv, env = process.env) {
     const set = {};
     for (const kv of pos) {
       const [k, v = "", ...more] = kv.split("=");
-      if (more.length) refuse(`${quote(kv)} has more than one "=": write key=value`);
+      if (more.length) refuse(`${JSON.stringify(k)} has more than one "=": write key=value`);
       const count = Object.hasOwn(COUNTS, k) || CAP.test(k);
       if (count && /^[1-9]\d*$/.test(v) && Number(v) > limit(k)) refuse(`${k} must be ${limit(k)} or less: ${v} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
       if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
-      const night = k === "autopilot.window" && autopilotProblem(v);
-      if (night) refuse(night);
       if (MODEL.test(k) && valid(k, v) === undefined) refuse(`${k} is opus, sonnet, haiku, fable, or inherit for the agent's own model; not ${JSON.stringify(v)}`);
-      set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, arena_models as a list of ${MODELS.join(", ")}, and autopilot.window`);
+      set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
       const file = join(sageRoot(env), "config.json");
