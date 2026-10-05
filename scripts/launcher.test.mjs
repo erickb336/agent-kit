@@ -94,22 +94,22 @@ test("the real hook, run through the launcher from an old session, names the new
   assert.match(out.hookSpecificOutput.additionalContext, new RegExp(`The state tool: node "${join(h.newer, "skills/sage/sage.mjs")}"`));
 });
 
-test("the launcher adds under 50 ms to an event", () => {
+test("the launcher adds under 50 ms of CPU time to an event", () => {
   const h = home();
   h.record(h.newer);
   const direct = join(h.newer, "hooks", HOOK);
-  const ms = (args) => {
-    const t = process.hrtime.bigint();
-    assert.equal(spawnSync("node", args, { input: "{}", env: { ...process.env, HOME: h.dir } }).status, 0);
-    return Number(process.hrtime.bigint() - t) / 1e6;
+  // CPU time, not wall-clock time: a busy machine makes a process wait for a core, but it does not add to its CPU time.
+  // The child reports its own user + system time at exit, node start included.
+  const report = "data:text/javascript,process.on('exit',()=>{const u=process.cpuUsage();process.stderr.write(String((u.user+u.system)/1000))})";
+  const cpu = (args) => {
+    const r = spawnSync("node", ["--import", report, ...args], { input: "{}", encoding: "utf8", env: { ...process.env, HOME: h.dir } });
+    assert.equal(r.status, 0, r.stderr);
+    return Number(r.stderr);
   };
-  const median = (args) => {
-    const times = Array.from({ length: 11 }, () => ms(args)).sort((a, b) => a - b);
-    return times[5];
-  };
-  const overhead = median([join(h.old, "hooks", "launcher.mjs"), HOOK]) - median([direct]);
-  console.log(`launcher overhead: ${overhead.toFixed(1)} ms`);
-  assert.ok(overhead < 50, `${overhead} ms`);
+  const median = (args) => Array.from({ length: 11 }, () => cpu(args)).sort((a, b) => a - b)[5];
+  const [launched, alone] = [median([join(h.old, "hooks", "launcher.mjs"), HOOK]), median([direct])];
+  console.log(`launcher CPU overhead: ${(launched - alone).toFixed(1)} ms (${launched.toFixed(1)} ms against ${alone.toFixed(1)} ms)`);
+  assert.ok(launched - alone < 50, `${launched - alone} ms of CPU`);
 });
 
 test("every event of both hook files runs through the launcher", () => {
@@ -153,16 +153,13 @@ test("the record's user entry counts, not its first entry", () => {
 test("a FIFO as the record or as the chosen hook runs the launcher's own hook at once", () => {
   const h = home();
   assert.equal(spawnSync("mkfifo", [h.recordFile]).status, 0);
-  let t = Date.now();
+  // h.ran fails when the launcher blocks: exec kills it after 5 s, and a killed process has no exit status 0.
   assert.equal(h.ran(), "old");
-  assert.ok(Date.now() - t < 2000, `${Date.now() - t} ms`);
   rmSync(h.recordFile);
   h.record(h.newer);
   rmSync(join(h.newer, "hooks", HOOK));
   assert.equal(spawnSync("mkfifo", [join(h.newer, "hooks", HOOK)]).status, 0);
-  t = Date.now();
   assert.equal(h.ran(), "old", "a FIFO hook");
-  assert.ok(Date.now() - t < 2000, `${Date.now() - t} ms`);
 });
 
 test("a hook that throws on import falls back to the own hook, and when both throw a PreToolUse call is denied", () => {
