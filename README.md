@@ -277,7 +277,7 @@ The board has these parts, in this order:
 3. **Merged since the last board**, with links. The sage folder keeps the last board's list in `board.json`.
 4. **One section per project:** a line per active task (id, title, state, pull request link, round), the count of framed tasks, and the next 3 framed tasks by id.
 
-Agents write the gate and task text, so the board escapes it: a link, an image or HTML in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the gate's options. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
+Agents write the gate and task text, so the board escapes it: a link, an image, HTML, a bare web address, a www name or an email in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the gate's options. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
 
 ## Principles
 

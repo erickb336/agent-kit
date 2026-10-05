@@ -3,7 +3,8 @@
 // every table is replaced whole, so a read sees it before or after a change. It writes one file at the sage root,
 // board.json, the merged tasks it has shown, so that the next board lists only what merged since.
 // Every cell is agent-written data. An id-like cell is kept only in its format, else it shows as "?". Free text is
-// escaped, so that the only links, images and HTML on the board are the board's own PR links, built from digits.
+// escaped, also ":", "." and "@" against autolinks, so that the only links, images and HTML on the board are the
+// board's own PR links, built from digits.
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -28,11 +29,14 @@ const clean = (table, row) => {
   return row;
 };
 
-/** One line of free text: no line breaks or hidden characters, at most max characters, Markdown and HTML escaped. */
+/**
+ * One line of free text: no line breaks or hidden characters, at most max characters, Markdown and HTML escaped.
+ * ":", "." and "@" are escaped too, so that GFM makes no autolink of a bare URL, a www host or an email.
+ */
 function text(s, max) {
   const chars = [...String(s ?? "").replace(/\s+/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim()];
   const line = chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
-  return line.replace(/[\\`*_[\]()<>!#|~]/g, "\\$&");
+  return line.replace(/[\\`*_[\]()<>!#|~:.@]/g, "\\$&");
 }
 const n = (id) => Number(String(id).replace(/\D/g, "")) || 0;
 const plural = (k, word) => `${k} ${word}${k === 1 ? "" : "s"}`;
