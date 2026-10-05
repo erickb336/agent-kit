@@ -8,7 +8,7 @@
 // run two versions of this tool, so a command refuses to change a logbook that a newer version wrote (ready).
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,8 +140,13 @@ function projectRoot(path) {
 
 /** The folder of the task copies (default ~/sage-worktrees; $SAGE_WORKTREES overrides it). It is outside the sage root, so agents may write in it. */
 export const worktreeRoot = (env = process.env) => env.SAGE_WORKTREES ?? join(homedir(), "sage-worktrees");
-/** The folder where agents save a task's pages (research, designs, findings): <worktree root>/<project>/pages/<task>. */
-const pagesDir = (project, task, env) => join(worktreeRoot(env), projectName(project), "pages", task);
+/**
+ * The folder where agents save a task's pages (research, designs, findings): <worktree root>/<logbook key>/pages/<task>.
+ * The logbook key (name and hash) keeps two projects with the same folder name apart.
+ */
+const pagesDir = (project, task, env) => join(worktreeRoot(env), basename(storeDir(project, env)), "pages", task);
+/** The largest page that pages record reads: 16 MiB, the size limit of a published page. */
+const PAGE_MAX = 16 * 1024 * 1024;
 
 /**
  * A branch that a task or a writer run may name: letters, digits and . _ / -, as today's branches (claude/t94,
@@ -195,19 +200,29 @@ const notRegular = (path) => new Refusal(`${path} is not a regular file. Ask the
 /**
  * The text of a regular file, also through a link, or undefined when nothing is there. Something else (a FIFO, a device
  * or a folder) refuses, and so does a file it cannot read, with its path. It never blocks: the open does not wait for a
- * FIFO's writer, and the check is on the open file.
+ * FIFO's writer, and the check is on the open file. With link: false a link refuses too; with max, a file over max
+ * bytes refuses, and it reads at most max + 1 bytes, also from a file that grows. encoding: null gives the bytes.
  */
-function readRegular(path) {
+function readRegular(path, { link = true, max = Infinity, encoding = "utf8" } = {}) {
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (link ? 0 : constants.O_NOFOLLOW));
   } catch (e) {
     if (e.code === "ENOENT") return undefined;
+    if (e.code === "ELOOP") throw notRegular(path);
     throw e;
   }
   try {
-    if (!fstatSync(fd).isFile()) throw notRegular(path);
-    return readFileSync(fd, "utf8");
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw notRegular(path);
+    if (max === Infinity) return readFileSync(fd, encoding);
+    const tooBig = () => new Refusal(`${path} is over ${max} bytes.`);
+    if (st.size > max) throw tooBig();
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (let r; n < buf.length && (r = readSync(fd, buf, n, buf.length - n, null)) > 0; ) n += r;
+    if (n > max) throw tooBig();
+    return encoding ? buf.toString(encoding, 0, n) : buf.subarray(0, n);
   } catch (e) {
     e.path ??= path; // a file too long for a string, for one
     throw e;
@@ -860,10 +875,19 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       const folder = pagesDir(project, taskOf(dir, need(sub, "the task id")).task.id, env);
       if (id === undefined) return folder;
       if (id !== "record" || more.length !== 1) refuse(`pages takes <task>, or <task> record <file>`);
+      // The page is the regular file itself: one open that follows no link and never waits, and at most PAGE_MAX bytes.
       const real = (p) => (existsSync(p) ? realpathSync(p) : refuse(`${p} does not exist. Save the page in ${folder} first.`));
-      const file = real(resolve(more[0]));
-      if (!file.startsWith(`${real(folder)}/`) || !statSync(file).isFile()) refuse(`${file} is not a file in ${folder}. Save the page there first.`);
-      const sha = createHash("sha256").update(readFileSync(file)).digest("hex");
+      const file = join(real(dirname(resolve(more[0]))), basename(more[0]));
+      if (!file.startsWith(`${real(folder)}/`)) refuse(`${file} is not a file in ${folder}. Save the page there first.`);
+      let bytes;
+      try {
+        bytes = readRegular(file, { link: false, max: PAGE_MAX, encoding: null });
+      } catch (e) {
+        if (!(e instanceof Refusal)) throw e;
+        refuse(`${file} is not a page that pages record takes: it takes only a regular file of at most 16 MiB, not a link, a named pipe, a folder or a device. Save the page itself in ${folder}.`);
+      }
+      if (bytes === undefined) refuse(`${file} does not exist. Save the page in ${folder} first.`);
+      const sha = createHash("sha256").update(bytes).digest("hex");
       write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: sub, decision: `page ${file} sha256 ${sha}`, why: "the chief recorded a page" }]);
       return `page ${file} · sha256 ${sha}`;
     }

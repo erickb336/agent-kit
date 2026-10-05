@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -1753,9 +1753,11 @@ test("T94: pages <task> prints the task's pages folder outside the sage root, an
   const { base, project, sage } = sandboxPrep();
   sage(["init"]);
   sage(["task", "add", "--title", "t", "--size", "small"]);
-  const folder = join(base, "home", "sage-worktrees", "project", "pages", "T1");
+  const key = basename(sage(["logbook"]).out);
+  assert.match(key, /^project-[0-9a-f]{6}$/, "the logbook key: the project's name and a hash");
+  const folder = join(base, "home", "sage-worktrees", key, "pages", "T1");
   assert.equal(sage(["pages", "T1"]).out, folder, "by default under ~/sage-worktrees");
-  assert.equal(sage(["pages", "T1"], project, { SAGE_WORKTREES: join(base, "wt") }).out, join(base, "wt", "project", "pages", "T1"));
+  assert.equal(sage(["pages", "T1"], project, { SAGE_WORKTREES: join(base, "wt") }).out, join(base, "wt", key, "pages", "T1"));
   assert.match(sage(["pages", "T2"]).out, /no task T2/);
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "plan.html"), "<p>plan</p>\n");
@@ -1763,4 +1765,47 @@ test("T94: pages <task> prints the task's pages folder outside the sage root, an
   assert.deepEqual(rows(sage(["logbook"]).out, "decisions").map((d) => [d.task, d.decision]).at(-1), ["T1", `page ${join(folder, "plan.html")} sha256 ef0e5b886a1d7667f27fc2c5cc9488de5c8c6b90b12931f0c60854ac04ef17ed`], "the decision trail keeps the path and the sha256");
   writeFileSync(join(base, "elsewhere.html"), "x");
   assert.match(sage(["pages", "T1", "record", join(base, "elsewhere.html")]).out, /is not a file in .*pages\/T1/);
+});
+
+test("T94C2-L1: two projects with the same folder name get different pages folders, each under its logbook key", () => {
+  const { base, repo, sage } = sandboxPrep();
+  const [one, two] = [repo("a/app"), repo("b/app")];
+  const folders = [one, two].map((at) => {
+    sage(["init"], at);
+    sage(["task", "add", "--title", "t", "--size", "small"], at);
+    const out = sage(["pages", "T1"], at).out;
+    assert.equal(out, join(base, "home", "sage-worktrees", basename(sage(["logbook"], at).out), "pages", "T1"));
+    return out;
+  });
+  assert.notEqual(folders[0], folders[1]);
+});
+
+test("T94C2-L2: pages record refuses a FIFO, a link and a file over 16 MiB at once, and leaves the logbook lock free", () => {
+  // A fake ps first on PATH prints a start time in the past, so a waiter would take a blocked holder as alive and wait.
+  const { base, env, sage } = sandboxPrep();
+  const bin = join(base, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ps"), "#!/bin/sh\necho 'Thu Jan  1 00:00:00 2015'\n");
+  chmodSync(join(bin, "ps"), 0o755);
+  const fake = { PATH: `${bin}:${env.PATH}` };
+  const at = join(base, "project");
+  sage(["init"], at, fake);
+  sage(["task", "add", "--title", "t", "--size", "small"], at, fake);
+  const folder = sage(["pages", "T1"], at, fake).out;
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "page.html"), "<p>page</p>\n");
+  execFileSync("mkfifo", [join(folder, "pipe.html")]);
+  symlinkSync(join(folder, "page.html"), join(folder, "link.html"));
+  writeFileSync(join(folder, "big.html"), "");
+  truncateSync(join(folder, "big.html"), 16 * 1024 * 1024 + 1);
+  writeFileSync(join(folder, "full.html"), "");
+  truncateSync(join(folder, "full.html"), 16 * 1024 * 1024);
+  for (const name of ["pipe.html", "link.html", "big.html"]) {
+    const r = sage(["pages", "T1", "record", join(folder, name)], at, fake);
+    assert.equal(r.status, 1, `${name} is refused, and the command ends before the 10 s timeout`);
+    assert.match(r.out, new RegExp(`${name} is not a page that pages record takes: it takes only a regular file of at most 16 MiB, not a link, a named pipe`));
+    assert.equal(sage(["log", "-", `after ${name}`, "--why", "the lock is free"], at, fake).out, "logged", `the lock is free after ${name}`);
+  }
+  assert.match(sage(["pages", "T1", "record", join(folder, "full.html")], at, fake).out, /^page \S+full\.html · sha256 [0-9a-f]{64}$/, "a file of exactly 16 MiB passes");
+  assert.equal(rows(sage(["logbook"], at, fake).out, "decisions").filter((d) => /^page /.test(d.decision)).length, 1, "only the regular file is recorded");
 });
