@@ -182,8 +182,8 @@ test("T125-F2-QUALPARAM: zsh mode refuses a glob group that holds an expansion w
   for (const line of ["echo *(N$(echo e:ps:))", "x=*(N$(ps))", "echo (a|<(ps))"]) assert.match(read(line, true).message, /a command can only contain words/, `${line}: mvdan/sh refuses a ) after a substitution in a group`);
 });
 
-test("T125-Q8-QUALFALSE: a zsh qualifier is refused only where zsh makes file names; ( ) text in quotes, assignments, [[ ]] patterns and case patterns parses", () => {
-  const TEXT = ['echo "${x:-(none)}"', "x=${x:-(none)}", 'echo "${x:-(see)}"', "[[ $a == (yes|no) ]] && echo y", "local x=${x:-(see)}", "case $a in see|e+) true;; esac", 'echo "(see the docs)"', "echo $((1+(2)))", "[[ $v =~ ^([0-9]+\\.[0-9]+)$ ]]"];
+test("T125-Q8-QUALFALSE: a zsh ( ) group in quotes or a heredoc body parses; an unquoted one parses only when it is a plain alternation", () => {
+  const TEXT = ['echo "${x:-(none)}"', 'echo "${x:-(see)}"', "[[ $a == (yes|no) ]] && echo y", "case $a in see|e+) true;; esac", 'echo "(see the docs)"', "echo $((1+(2)))", "[[ $v =~ '^([0-9]+)$' ]]", "cat <<EOF\nsee (the docs)\nEOF"];
   for (const line of TEXT) assert.ok(Array.isArray(read(line, true)), `${line}: ${read(line, true).message}`);
   const CODE = ["echo *(e:'ps':)", "x=( *(e:ps:) )", "echo hi > *(e:ps:)", "for f in *(e:ps:); do :; done", "echo ${x:-*(e:ps:)}", "[[ -n *(#qe:ps:) ]]", "echo (a|b)(e:ps:)", "echo *(+f)"];
   for (const line of CODE) assert.match(read(line, true).message, /a zsh glob group that zsh can read as glob qualifiers/, line);
@@ -196,9 +196,36 @@ test("T125-Q8-QUALFALSE: a zsh qualifier is refused only where zsh makes file na
 test("T125-S8-QUALWORDS: in zsh mode, every glob qualifier group where zsh makes file names is refused, whatever it holds", () => {
   const CODE = ["a(P:ps:)", "a(^P:ps:)", "zsh /dev/null(P:-c:P:ps:)", "git .(P:stash:)", "/bin/pwd(:s/wd/s/)", "x=(a(P:ps:)); $x", "print ${y:-a(P:ps:)}", "echo *(N)", "echo *(.)", "echo *(/)", "echo *(#q.)", "echo *.(js|ts)(P:ps:)", "echo m(P:x\\|y:)", "echo m(P:x:{|,})", "echo m{a,(}P:x:)", "echo m(#qa|b)"];
   for (const line of CODE) assert.match(read(line, true).message, /a zsh glob group that zsh can read as glob qualifiers/, line);
-  const TEXT = ['echo "${x:-(none)}"', "x=${x:-(none)}", "[[ $a == (yes|no) ]]", "case $x in (a|b) true;; esac", "case $x in x(P:ps:)|y) true;; esac", 'echo "*(N)"'];
+  const TEXT = ['echo "${x:-(none)}"', "[[ $a == (yes|no) ]]", "case $x in (a|b) true;; esac", 'echo "*(N)"'];
   for (const line of TEXT) assert.ok(Array.isArray(read(line, true)), `${line}: ${read(line, true).message}`);
   assert.deepEqual(words("ls *.(js|ts) (a|b)c", true), [["ls", "*.(js|ts)", "(a|b)c"]], "a plain alternation is no qualifier group");
+});
+
+// Round 5: one rule, no places exempt. zsh globs words that mvdan/sh reads as patterns or values: a declaration's
+// bare word (local *(e:…:) ran code), and an assignment's value with GLOB_ASSIGN (R547, with touch in zsh 5.9). So
+// zsh mode applies the glob group rule to every unquoted ( ) group, wherever it is.
+const QUALIFIERS = /a zsh glob group that zsh can read as glob qualifiers/;
+
+test("T125-S9-DECLWORD: zsh mode refuses a qualifier group in a declaration's bare word", () => {
+  for (const line of ["local *(e:ps:)", "export /dev/null(e:ps:)", "typeset *(+f)", "readonly a(P:ps:)", "local -a x(N)", "declare *(e:ps:)"]) assert.match(read(line, true).message, QUALIFIERS, line);
+});
+
+test("T125-S10-GLOBASSIGN: zsh mode refuses a qualifier group in an assignment's value, which GLOB_ASSIGN globs", () => {
+  for (const line of ["setopt globassign; x=/dev/null(e:ps:)", "set -o globassign; x=/dev/null(e:ps:)", "x=a(P:ps:) true", "local x=a(P:ps:)"]) assert.match(read(line, true).message, QUALIFIERS, line);
+});
+
+test("T125-R5-ONERULE: zsh mode applies the glob group rule in every unquoted place; an array's ( ) is no group", () => {
+  for (const line of ["case $x in x(P:ps:)) true;; esac", "[[ a == a(e:ps:) ]]", "[[ a != *(e:ps:) ]]", "echo ${x/a(e:ps:)/b}", "cat <<< *(e:ps:)", "x=${x:-(none)}"]) assert.match(read(line, true).message, QUALIFIERS, line);
+  assert.deepEqual(words("x=(a b); arr=(one two)", true), [["x=(a b)"], ["arr=(one two)"]]);
+  assert.deepEqual(words("[[ $a == (yes|no) ]] && ls *.(js|ts)", true), [["ls", "*.(js|ts)"]]);
+  assert.deepEqual(words('echo "${x:-(none)}"; (cd src && npm test)', true), [["echo", "${x:-(none)}"], ["cd", "src"], ["npm", "test"]]);
+  assert.deepEqual(words(`git commit -m "fix (T125): x"; node -e 'console.log((1|2))'`, true), [["git", "commit", "-m", "fix (T125): x"], ["node", "-e", "console.log((1|2))"]]);
+});
+
+test("T125-C9-GROUPMSG: the refusal prints the whole group, not the group up to the bad byte", () => {
+  assert.match(read("echo (a|$x)", true).message, /: \(a\|\$x\)$/);
+  assert.match(read("echo (a|`ps`)b", true).message, /: \(a\|`ps`\)$/);
+  assert.match(read("echo *(N)", true).message, /: \(N\)$/);
 });
 
 test("T125-C6-ESCTEST: an escaped ( outside a group is text, not a group", () => {

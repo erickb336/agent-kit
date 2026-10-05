@@ -10,7 +10,7 @@
 // case, time, coproc, function) are not words: their commands are listed with grouped set. A line with no command gives
 // an empty list. Parse refuses (an error) what it cannot read, so that the hook fails closed: a NUL byte, an ANSI-C
 // string ($'…') with an escape other than the 13 that bash and zsh read alike, bash's ${x@P}, a glob group with code
-// in it, and in zsh mode the forms that turn text into code (see checks) and the reserved words that mvdan/sh reads
+// in it, a zsh ( ) group that is not a plain alternation, and in zsh mode the forms that turn text into code (see checks) and the reserved words that mvdan/sh reads
 // as words (zshReserved).
 package main
 
@@ -65,25 +65,15 @@ var zshReserved = []string{"coproc", "repeat", "foreach"}
 
 // Glob groups: one rule. mvdan/sh v3.14.1 keeps the text of a bash extglob group, @( ) ?( ) *( ) +( ) !( ), and of a
 // zsh glob group, ( ), as a plain literal: it does not read the substitutions in it, and the shell runs them (bash also
-// in [[ ]] and case patterns). Where zsh does filename generation, it reads a trailing group with no | or ( in it, and
-// a (#q…) group, as glob qualifiers, and any qualifier can change the command: e and + run code, P and ^P add words
-// (a(P:ps:) runs ps a), and a : modifier rewrites them (/bin/pwd(:s/wd/s/) runs /bin/ps). So, outside double quotes
-// and heredocs:
-//   - a group's text may hold only plain bytes (see plain): no $, `, < or >, which start a substitution;
-//   - in zsh, where the shell does filename generation, each ( ) must be a plain alternation, such as *.(js|ts): one or
-//     more | between letters, digits and _ . * ? -, in one literal. Anything else is refused: a backslash, a quote,
-//     an expansion, a brace or a nested group can turn a group with a | into qualifiers (m(P:x\|y:), m(P:x:{|,})).
-//
-// zsh does no filename generation in an assignment's value (x=, local x=), a case pattern, or the pattern of
-// [[ a == b ]], != and =~; it does in a command's words, an array, a redirection, a for list, ${x:-…} there, and
-// [[ -n … ]] with (#q). Each was checked with zsh 5.9 and a qualifier that touches a marker file.
-
-// Where a word is, for the glob group rule.
-const (
-	inText    = iota // double quotes and heredoc bodies: a ( ) is text
-	inPattern        // a pattern or value with no filename generation
-	inFiles          // filename generation
-)
+// in [[ ]] and case patterns). zsh reads a trailing group with no | in it, and a (#q…) group, as glob qualifiers, and
+// any qualifier can change the command: e and + run code, P and ^P add words (a(P:ps:) runs ps a), and a : modifier
+// rewrites them (/bin/pwd(:s/wd/s/) runs /bin/ps). zsh also globs words that mvdan/sh reads as patterns or values (a
+// declaration's bare word, local *(e:…:); a value with GLOB_ASSIGN), so the rule has no exempt places. Outside double
+// quotes, single quotes and heredoc bodies:
+//   - bash: an extglob group's text holds only plain bytes (see plain): no $, `, < or >, which start a substitution;
+//   - zsh: each ( ) is a plain alternation, such as *.(js|ts): one or more | between letters, digits and _ . * ? -, in
+//     one literal. Anything else is refused: a backslash, a quote, an expansion, a brace or a nested group can turn a
+//     group with a | into qualifiers (m(P:x\|y:), m(P:x:{|,})). An array's ( ), x=(a b), is syntax, not a group.
 
 // Parse gives the command list of src, read as zsh when zsh is true, else as bash. TinyGo has no recover() on
 // WebAssembly: a panic stops the instance with a trap, and parser.mjs throws it.
@@ -99,7 +89,7 @@ func Parse(src string, zsh bool) []byte {
 	if err != nil {
 		return fail(err)
 	}
-	if err := checks(f, zsh); err != nil {
+	if err := checks(f, src, zsh); err != nil {
 		return fail(err)
 	}
 	r := &reader{src: src, zsh: zsh, out: []*command{}}
@@ -132,15 +122,15 @@ func fail(err error) []byte {
 //   - an ANSI-C string with an escape that ansiC does not decode, in both modes;
 //   - ${x@P}, which expands the value as a prompt and runs its substitutions (bash 4.4 and later; zsh mode refuses
 //     it as a syntax error), and an @ operator that mvdan/sh reads as more than one letter;
-//   - a glob group that the glob group rule (above) refuses: a substitution that mvdan/sh keeps as text, and in zsh any
-//     group that zsh can read as glob qualifiers: *(N), a(P:ps:), *(e:'ps':), *(#q.), *(N$x);
+//   - a glob group that the glob group rule (above) refuses: in bash, a substitution that mvdan/sh keeps as text; in
+//     zsh, any group that is not a plain alternation: *(N), a(P:ps:), *(e:'ps':), *(#q.), *(N$x), ${x:-(none)};
 //   - in zsh mode, a parameter expansion that makes a value into code (zshexpn(1), "Parameter Expansion Flags"):
 //     the e flag runs the value's substitutions (${(e)x}); %% with PROMPT_SUBST does too; a substitution in a flag's
 //     argument runs (${(l:$(ps):)x}); ${~x}, $~x and the ~ flag make a value a glob pattern, which can hold a qualifier
 //     that runs code.
-func checks(f *syntax.File, zsh bool) (err error) {
-	var walk func(n syntax.Node, at int)
-	walk = func(n syntax.Node, at int) {
+func checks(f *syntax.File, src string, zsh bool) (err error) {
+	var walk func(n syntax.Node, text bool)
+	walk = func(n syntax.Node, text bool) {
 		syntax.Walk(n, func(n syntax.Node) bool {
 			if err != nil {
 				return false
@@ -148,47 +138,20 @@ func checks(f *syntax.File, zsh bool) (err error) {
 			switch x := n.(type) {
 			case *syntax.Redirect:
 				if x.Word != nil {
-					walk(x.Word, inFiles)
+					walk(x.Word, false)
 				}
 				if x.Hdoc != nil {
-					walk(x.Hdoc, inText)
+					walk(x.Hdoc, true)
 				}
 				return false
 			case *syntax.CmdSubst, *syntax.ProcSubst:
-				if at != inFiles {
-					walk(x, inFiles)
+				if text {
+					walk(x, false)
 					return false
 				}
 			case *syntax.DblQuoted:
-				if at != inText {
-					walk(x, inText)
-					return false
-				}
-			case *syntax.Assign:
-				if x.Value != nil && at == inFiles {
-					walk(x.Value, inPattern)
-					if x.Index != nil {
-						walk(x.Index, at)
-					}
-					if x.Array != nil {
-						walk(x.Array, at)
-					}
-					return false
-				}
-			case *syntax.BinaryTest:
-				if at == inFiles && (x.Op == syntax.TsMatchShort || x.Op == syntax.TsMatch || x.Op == syntax.TsNoMatch || x.Op == syntax.TsReMatch) {
-					walk(x.X, at)
-					walk(x.Y, inPattern)
-					return false
-				}
-			case *syntax.CaseItem:
-				if at == inFiles {
-					for _, p := range x.Patterns {
-						walk(p, inPattern)
-					}
-					for _, s := range x.Stmts {
-						walk(s, at)
-					}
+				if !text {
+					walk(x, true)
 					return false
 				}
 			case *syntax.ExtGlob:
@@ -200,8 +163,8 @@ func checks(f *syntax.File, zsh bool) (err error) {
 					err = fmt.Errorf(`an ANSI-C string with an escape other than \a \b \e \E \f \n \r \t \v \\ \' \" \?: $'%s'`, x.Value)
 				}
 			case *syntax.Word:
-				if zsh && at != inText {
-					err = globGroups(x, at == inFiles)
+				if zsh && !text {
+					err = globGroups(x, src)
 				}
 			case *syntax.ParamExp:
 				if x.Exp != nil && x.Exp.Op == syntax.OtherParamOps && (x.Exp.Word == nil || x.Exp.Word.Lit() == "P" || x.Exp.Word.Lit() == "") {
@@ -214,23 +177,29 @@ func checks(f *syntax.File, zsh bool) (err error) {
 			return err == nil
 		})
 	}
-	walk(f, inFiles)
+	walk(f, false)
 	return err
 }
 
-// globGroups applies the glob group rule to a zsh word: each byte in a ( ) is plain, and where files is true, each
-// ( ) is a plain alternation and the parentheses balance.
-func globGroups(w *syntax.Word, files bool) error {
+// globGroups applies the zsh glob group rule to a word: each ( ) is a plain alternation, and the parentheses balance.
+// The message gives the whole group as written; a part that is not a literal is its source text.
+func globGroups(w *syntax.Word, src string) error {
 	depth, group := 0, ""
-	qualifiers := func() error {
-		return fmt.Errorf("a zsh glob group that zsh can read as glob qualifiers, which can add, change or run words: %s", group)
+	check := func() error {
+		switch {
+		case strings.ContainsAny(group, "$`<>"):
+			return fmt.Errorf("a zsh glob group with a substitution, which the reader does not read: %s", group)
+		case depth != 0 || !strings.Contains(group, "|") || strings.Trim(group[1:len(group)-1], alternation) != "":
+			return fmt.Errorf("a zsh glob group that zsh can read as glob qualifiers, which can add, change or run words: %s", group)
+		}
+		group = ""
+		return nil
 	}
 	for _, p := range w.Parts {
 		l, ok := p.(*syntax.Lit)
 		if !ok {
-			if depth > 0 && files {
-				group += "…"
-				return qualifiers()
+			if depth > 0 {
+				group += src[p.Pos().Offset():p.End().Offset()]
 			}
 			continue
 		}
@@ -240,29 +209,26 @@ func globGroups(w *syntax.Word, files bool) error {
 				j++
 				continue
 			}
-			if depth == 0 && c != '(' && (c != ')' || !files) {
+			if depth == 0 && c != '(' && c != ')' {
 				continue
 			}
 			group += string(c)
-			switch {
-			case c == '(':
+			switch c {
+			case '(':
 				depth++
-			case c == ')':
+			case ')':
 				depth--
-			case !plain(c):
-				return fmt.Errorf("a zsh glob group with a substitution, which the reader does not read: %s", group)
 			}
 			if depth > 0 {
 				continue
 			}
-			if files && (depth < 0 || !strings.Contains(group, "|") || strings.Trim(group[1:len(group)-1], alternation) != "") {
-				return qualifiers()
+			if err := check(); err != nil {
+				return err
 			}
-			group = ""
 		}
 	}
-	if depth > 0 && files {
-		return qualifiers()
+	if depth > 0 {
+		return check()
 	}
 	return nil
 }
