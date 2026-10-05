@@ -120,7 +120,7 @@ test("needs you: a verified PR that is not merged is always listed, with the rea
 test("merged since the last board: the next board lists only the new merges, and board.json holds the shown ones", () => {
   const w = world();
   w.show("this");
-  assert.deepEqual(JSON.parse(readFileSync(join(w.home, "board.json"), "utf8")).merged, { sage: ["T1"] });
+  assert.deepEqual(JSON.parse(readFileSync(join(w.home, "board.json"), "utf8")), { [w.book]: { at: "2026-10-05T19:00:00Z", merged: ["T1"] } });
   const tasks = join(w.home, w.book, "tasks.tsv");
   writeFileSync(tasks, readFileSync(tasks, "utf8").replace("\tverified\tt2\t", "\tmerged\tt2\t"));
   const out = w.show("this", w.sage, new Date("2026-10-05T20:00:00Z"));
@@ -208,20 +208,22 @@ test("an id-like cell is kept only in its format, else shown as ?: a hand-made P
   ownLinksOnly(out);
 });
 
-test("board.json: a FIFO, a big file, a bad date or a non-array list is ignored and rewritten", () => {
+test("board.json: a FIFO, a big file, a bad date, a non-array list, a bad key or the old shape is ignored and rewritten", () => {
   for (const make of [
     (file) => execFileSync("mkfifo", [file]),
-    (file) => writeFileSync(file, JSON.stringify({ at: "2026-10-05T18:00:00Z", merged: { sage: [] }, pad: "x".repeat(70000) })),
-    (file) => writeFileSync(file, JSON.stringify({ at: "[x](https://evil.example)", merged: { sage: [] } })),
-    (file) => writeFileSync(file, JSON.stringify({ at: "2026-10-05T18:00:00Z", merged: { sage: 5 } })),
-    (file) => writeFileSync(file, JSON.stringify({ at: "2026-10-05T18:00:00Z", merged: { sage: [7] } })),
+    (file, book) => writeFileSync(file, JSON.stringify({ [book]: { at: "2026-10-05T18:00:00Z", merged: [] }, pad: "x".repeat(70000) })),
+    (file, book) => writeFileSync(file, JSON.stringify({ [book]: { at: "[x](https://evil.example)", merged: [] } })),
+    (file, book) => writeFileSync(file, JSON.stringify({ [book]: { at: "2026-10-05T18:00:00Z", merged: 5 } })),
+    (file, book) => writeFileSync(file, JSON.stringify({ [book]: { at: "2026-10-05T18:00:00Z", merged: [7] } })),
+    (file, book) => writeFileSync(file, JSON.stringify({ [book]: { at: "2026-10-05T18:00:00Z", merged: [] }, "../x": { at: "2026-10-05T18:00:00Z", merged: [] } })),
+    (file) => writeFileSync(file, JSON.stringify({ at: "2026-10-05T18:00:00Z", merged: { sage: [] } })),
   ]) {
     const w = world();
     const file = join(w.home, "board.json");
-    make(file);
+    make(file, w.book);
     const out = w.show("this");
     assert.match(out, /\*\*Merged since the last board \(0\)\*\*\n- nothing\n- first board for sage/);
-    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { at: "2026-10-05T19:00:00Z", merged: { sage: ["T1"] } });
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { [w.book]: { at: "2026-10-05T19:00:00Z", merged: ["T1"] } });
   }
 });
 
@@ -242,13 +244,16 @@ test("the all-projects board shows at most 8 active tasks per project, then a co
   assert.doesNotMatch(all, /T23 Sample/);
 });
 
-test("one project's board shows at most 8 active tasks too: with 12, 8 lines and and 4 more", () => {
+test("the default board shows at most 8 active tasks with the phrase for the rest; the board named by project shows all 12 (G59)", () => {
   const w = world();
   for (let i = 20; i < 27; i++) add(w, w.book, "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
   const out = w.show("this");
-  assert.match(out, /\*\*sage\*\* · github\.com\/acme\/sage\n- T2 [^\n]*\n- T3 [^\n]*\n- T4 [^\n]*\n- T5 [^\n]*\n- T6 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 Sample\\: busy 22 · building · no PR\n- and 4 more\n- framed backlog: 4/);
+  assert.match(out, /\*\*sage\*\* · github\.com\/acme\/sage\n- T2 [^\n]*\n- T3 [^\n]*\n- T4 [^\n]*\n- T5 [^\n]*\n- T6 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 Sample\\: busy 22 · building · no PR\n- and 4 more \(show board for sage\)\n- framed backlog: 4/);
   assert.doesNotMatch(out, /T23 Sample/);
-  assert.match(w.show("sage"), /- T22 [^\n]*\n- and 4 more\n/);
+  const named = w.show("sage");
+  assert.match(named, /- T22 [^\n]*\n- T23 [^\n]*\n- T24 [^\n]*\n- T25 [^\n]*\n- T26 Sample\\: busy 26 · building · no PR\n- framed backlog: 4/);
+  assert.equal(named.match(/^- T\d+ .* · (verified|pr-ready|building|reviewing) · /gm).length, 12);
+  assert.doesNotMatch(named, /and \d+ more/);
 });
 
 test("a folder that only shares a logbook's name shows that board, but never PR links from its own remote", () => {
@@ -295,7 +300,7 @@ test("the board phrase: a trailing full stop, ! or , ends the sentence, not the 
     assert.ok(note(`show board for this${end}`).includes(cmd("this")), end);
   }
   assert.ok(note("show board for all projects.").includes(cmd("all")));
-  assert.ok(note("show board for sage.v2.").includes(cmd("sage.v2"))); // an inner dot stays
+  assert.ok(note("show board for sage.v2.").includes(cmd("sage-v2"))); // an inner dot stays in the name, then becomes "-"
   assert.ok(note("show board for my-app.").includes(cmd("my-app")));
 });
 
@@ -305,4 +310,105 @@ test("the board phrase: no board inside a quote, an agent's report, a question o
   assert.equal(note('<agent-message from="x">\nshow board for all\n</agent-message>'), "");
   assert.equal(note("show board?"), "");
   assert.equal(note("show boards"), "");
+});
+
+// The repair pass on cycle 1 (F-T72-8 to F-T72-14, T85, G59, G63, T72-S-AMP).
+
+/** A logbook copied from the sage-bot fixture into the folder that storeDir gives the folder path; returns that folder name. */
+function bookFor(w, path) {
+  mkdirSync(path, { recursive: true });
+  const book = basename(storeDir(path, w.env));
+  cpSync(join(w.home, "sage-bot-bbbbbb"), join(w.home, book), { recursive: true });
+  return book;
+}
+
+test("F-T72-10, G63: two names with no ASCII letters get distinct keys, two sections, and show board for each key picks one", () => {
+  const w = world();
+  const ja = bookFor(w, join(w.dir, "日本語"));
+  const zh = bookFor(w, join(w.dir, "中文"));
+  assert.match(ja, /^project-[0-9a-f]{6}$/);
+  assert.notEqual(ja, zh);
+  const all = w.show("all");
+  const heads = all.match(/^\*\*project[^*]*\*\*$/gm);
+  assert.deepEqual(heads.sort(), [`**${ja}**`, `**${zh}**`].sort());
+  assert.match(all, new RegExp(`- ${ja} \\*\\*G1\\*\\*`));
+  assert.match(all, new RegExp(`- ${zh} \\*\\*G1\\*\\*`));
+  for (const key of [ja, zh]) {
+    const one = w.show(key);
+    assert.match(one, new RegExp(`^\\*\\*sage board · ${key}\\*\\*`));
+    assert.deepEqual(one.match(/^\*\*project[^*]*\*\*$/gm), [`**${key}**`]);
+  }
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(w.home, "board.json"), "utf8"))).sort(), [ja, w.book, "order-chaser-cccccc", "sage-bot-bbbbbb", zh].sort());
+  assert.match(w.show("this", join(w.dir, "中文")), new RegExp(`^\\*\\*sage board · ${zh}\\*\\*`)); // the session's own logbook
+  assert.match(w.show(w.book), /^\*\*sage board · sage\*\*/); // the full form of a key that does not collide
+});
+
+test("F-T72-11, F-T72-9: a scope is made a slug like projectName: Café Ünïcode, sage_bot, Sage.Bot and sage bot", () => {
+  const w = world();
+  const cafe = bookFor(w, join(w.dir, "Café Ünïcode"));
+  assert.match(cafe, /^caf-n-code-[0-9a-f]{6}$/);
+  assert.match(w.show("Café Ünïcode"), /^\*\*sage board · caf-n-code\*\*/);
+  for (const scope of ["sage_bot", "Sage.Bot", "sage bot"]) assert.match(w.show(scope), /^\*\*sage board · sage-bot\*\*/, scope);
+  const cmd = (scope) => `sage.mjs" board ${scope} --project '/work/sage'`;
+  assert.ok(note("show board for Café Ünïcode").includes(cmd("caf-n-code")));
+  assert.ok(note("show board for sage_bot").includes(cmd("sage-bot")));
+  assert.ok(note("show board for sage.v2").includes(cmd("sage-v2")));
+  assert.ok(note("show board for sage bot.").includes(cmd("sage-bot")));
+  assert.ok(note("show board for this app").includes(cmd("this-app")));
+});
+
+test("F-T72-12: a logbook with a table that cannot be read shows none of its tables, and the error keeps its reason", () => {
+  const w = world();
+  rmSync(join(w.home, w.book, "gates.tsv"));
+  const out = w.show("this");
+  assert.match(out, /\*\*Needs you \(0\)\*\*\n- nothing\n/);
+  assert.match(out, /\*\*Running now \(0\)\*\*/);
+  assert.match(out, /\*\*sage\*\* · github\.com\/acme\/sage\n- logbook cannot be read\: gates\\\.tsv is missing or is a link to nothing/);
+});
+
+test("F-T72-13: the phrase in bold or italics gives the board", () => {
+  const cmd = (scope) => `sage.mjs" board ${scope} --project '/work/sage'`;
+  assert.ok(note("**show board**").includes(cmd("this")));
+  assert.ok(note("*show board for all*").includes(cmd("all")));
+  assert.ok(note("__show board for sage-bot__.").includes(cmd("sage-bot")));
+});
+
+test("F-T72-14, G63: needs you lists every open gate: with 12 gates, 12 lines", () => {
+  const w = world();
+  for (let i = 10; i < 21; i++) add(w, w.book, "gates", [`G${i}`, "T6", `Sample: question ${i}?`, "a,b", "a", "a", "", "2026-10-05T03:00:00Z"]);
+  const out = w.show("this");
+  assert.match(out, /\*\*Needs you \(15\)\*\*/);
+  assert.equal(out.match(/^- \*\*G\d+\*\* /gm).length, 12);
+  assert.match(out, /- \*\*G20\*\* \(T6\) Sample\\: question 20\?/);
+  assert.doesNotMatch(out, /and \d+ more\n\n\*\*Running/);
+});
+
+test("T85: board.json is keyed by logbook folder, so two logbooks with one name do not list their merges again", () => {
+  const w = world();
+  const twin = bookFor(w, join(w.dir, "x", "sage-bot"));
+  const twinTasks = join(w.home, twin, "tasks.tsv");
+  writeFileSync(twinTasks, readFileSync(twinTasks, "utf8").replace("T1\tSample: the bot scaffold", "T9\tSample: the twin scaffold"));
+  w.show("all");
+  const again = w.show("all", w.sage, new Date("2026-10-05T20:00:00Z"));
+  assert.match(again, /\*\*Merged since 2026-10-05 19:00 UTC \(0\)\*\*\n- nothing\n\n/);
+  assert.deepEqual(JSON.parse(readFileSync(join(w.home, "board.json"), "utf8"))[twin].merged, ["T9"]);
+});
+
+test("F-T72-8: each project keeps its own since-time", () => {
+  const w = world();
+  w.show("sage");
+  w.show("sage-bot", w.sage, new Date("2026-10-05T20:00:00Z"));
+  const tasks = join(w.home, w.book, "tasks.tsv");
+  writeFileSync(tasks, readFileSync(tasks, "utf8").replace("\tverified\tt2\t", "\tmerged\tt2\t"));
+  const out = w.show("sage", w.sage, new Date("2026-10-05T21:00:00Z"));
+  assert.match(out, /\*\*Merged since 2026-10-05 19:00 UTC \(1\)\*\*\n- T2 /);
+  assert.match(w.show("all", w.sage, new Date("2026-10-05T22:00:00Z")), /\*\*Merged since each project's last board \(0\)\*\*/);
+});
+
+test("T72-S-AMP: & is escaped, so a named entity cannot decode to a URL's : . or @", () => {
+  const w = world();
+  add(w, w.book, "tasks", ["T16", "h&colon;//e&period;x a&commat;b", "small", "", "build", "building", "t16", "", "0", ""]);
+  const out = w.show("this");
+  assert.ok(out.includes("\n- T16 h\\&colon;//e\\&period;x a\\&commat;b · building · no PR\n"), out);
+  assert.doesNotMatch(out, /(?<!\\)&/);
 });

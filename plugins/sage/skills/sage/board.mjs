@@ -1,20 +1,21 @@
 // The board for the chat: one compact Markdown text, built from every project's logbook under the sage root, that
 // fits a phone screen. `sage board [this|all|<project>]` prints it. It takes no lock and never writes to a logbook:
 // every table is replaced whole, so a read sees it before or after a change. It writes one file at the sage root,
-// board.json, the merged tasks it has shown, so that the next board lists only what merged since.
+// board.json: per logbook folder, when the last board showed it and its merged tasks then, so that the next board lists
+// only what merged since.
 // Every cell is agent-written data. An id-like cell is kept only in its format, else it shows as "?". Free text is
-// escaped, also ":", "." and "@" against autolinks, so that the only links, images and HTML on the board are the
+// escaped, also ":", "." and "@" against autolinks and "&" against entities, so that the only links, images and HTML on the board are the
 // board's own PR links, built from digits.
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { BLOCKS, RISKS, STATES, projectName, read, sageRoot, storeDir } from "./sage.mjs";
+import { BLOCKS, RISKS, STATES, projectName, read, sageRoot, slug, storeDir } from "./sage.mjs";
 
 const FOLDER = /^([a-z0-9-]+)-[0-9a-f]{6}$/;
 const CLOSED = ["merged", "concluded", "abandoned"];
 const WAITS = ["verified", "pr-ready"];
-const CAP = { needs: 8, running: 8, merged: 8, next: 3, active: 8 };
+const CAP = { running: 8, merged: 8, next: 3, active: 8 };
 // The agent roles beside the step names. The lists from sage.mjs are read at call time: the two modules import each other.
 const AGENTS = ["implementer", "designer", "code-reviewer", "security-reviewer", "ux-reviewer", "arena-judge", "researcher"];
 /** The format of each id-like cell. A cell that does not match shows as "?"; an empty cell stays empty. */
@@ -31,12 +32,13 @@ const clean = (table, row) => {
 
 /**
  * One line of free text: no line breaks or hidden characters, at most max characters, Markdown and HTML escaped.
- * ":", "." and "@" are escaped too, so that GFM makes no autolink of a bare URL, a www host or an email.
+ * ":", "." and "@" are escaped too, so that GFM makes no autolink of a bare URL, a www host or an email, and "&", so that
+ * no entity (&colon;) decodes to one.
  */
 function text(s, max) {
   const chars = [...String(s ?? "").replace(/\s+/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim()];
   const line = chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
-  return line.replace(/[\\`*_[\]()<>!#|~:.@]/g, "\\$&");
+  return line.replace(/[\\`*_[\]()<>!#|~:.@&]/g, "\\$&");
 }
 const n = (id) => Number(String(id).replace(/\D/g, "")) || 0;
 const plural = (k, word) => `${k} ${word}${k === 1 ? "" : "s"}`;
@@ -65,26 +67,33 @@ const real = (p) => {
   }
 };
 
-/** Every logbook under the root: its key (the folder name without its hash), tables, and checkout when checkout.txt names it. */
+/**
+ * Every logbook under the root, sorted by key: its folder, its name (the folder without its hash), its key (the name, or
+ * the folder when two logbooks have the same name), its tables (all, or none when one cannot be read), and its checkout
+ * when checkout.txt names it.
+ */
 function logbooks(root) {
   let folders = [];
   try {
     folders = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory() && FOLDER.test(d.name) && existsSync(join(root, d.name, "tasks.tsv")));
   } catch {}
-  return folders.map(({ name }) => {
-    const dir = join(root, name);
+  const books = folders.map(({ name: folder }) => {
+    const dir = join(root, folder);
     let checkout = null;
     try {
       checkout = readFileSync(join(dir, "checkout.txt"), "utf8").trim() || null;
     } catch {}
-    const book = { key: FOLDER.exec(name)[1], dir, checkout, tasks: [], runs: [], gates: [], error: null };
+    const book = { folder, name: FOLDER.exec(folder)[1], dir, checkout, tasks: [], runs: [], gates: [], error: null };
     try {
-      for (const t of ["tasks", "runs", "gates"]) book[t] = read(dir, t).map((row) => clean(t, row));
+      const [tasks, runs, gates] = ["tasks", "runs", "gates"].map((t) => read(dir, t).map((row) => clean(t, row)));
+      Object.assign(book, { tasks, runs, gates });
     } catch (e) {
-      book.error = text(e.message, 120);
+      book.error = text(e.message.replaceAll(`${dir}/`, "").replaceAll(dir, folder), 120); // the reason, not the long path
     }
     return book;
   });
+  for (const b of books) b.key = books.some((o) => o !== b && o.name === b.name) ? b.folder : b.name;
+  return books.sort((a, b) => a.key.localeCompare(b.key));
 }
 
 /** The session's logbook: the one storeDir gives, else the one whose checkout.txt names the project, else the one with its name. */
@@ -93,31 +102,35 @@ function sessionBook(books, project, env) {
   const exact = storeDir(project, env);
   const root = real(project);
   const name = projectName(project);
-  return books.find((b) => b.dir === exact) ?? books.find((b) => b.checkout && real(b.checkout) === root) ?? books.find((b) => !b.checkout && b.key === name) ?? null;
+  return books.find((b) => b.dir === exact) ?? books.find((b) => b.checkout && real(b.checkout) === root) ?? books.find((b) => !b.checkout && b.name === name) ?? null;
 }
 
-/** The last board's board.json, or null when it is not a regular file under 64 KB in the right shape (the next board rewrites it). */
+/**
+ * The last boards: board.json as { <logbook folder>: { at, merged } }, or {} when it is not a regular file under 64 KB in
+ * that shape (the next board rewrites it).
+ */
 function seen(root) {
   const file = join(root, "board.json");
   try {
     const st = lstatSync(file);
-    if (!st.isFile() || st.size >= 64 * 1024) return null;
+    if (!st.isFile() || st.size >= 64 * 1024) return {};
     const s = JSON.parse(readFileSync(file, "utf8"));
-    const lists = s?.merged && typeof s.merged === "object" && !Array.isArray(s.merged) ? Object.values(s.merged) : null;
-    const ok = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?Z$/.test(s?.at) && lists?.every((l) => Array.isArray(l) && l.every((id) => typeof id === "string"));
-    return ok ? s : null;
+    const ok =
+      s && typeof s === "object" && !Array.isArray(s) &&
+      Object.entries(s).every(([k, v]) => FOLDER.test(k) && /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?Z$/.test(v?.at) && Array.isArray(v.merged) && v.merged.every((id) => typeof id === "string"));
+    return ok ? s : {};
   } catch {
-    return null;
+    return {};
   }
 }
-/** Saves the merged tasks that this board showed, per project; a project not shown keeps its old list. Never through a link. */
+/** Saves, per logbook folder that this board showed, the time and its merged tasks; a logbook not shown keeps its entry. Never through a link. */
 function remember(root, last, books, at) {
-  const merged = { ...(last?.merged ?? {}) };
-  for (const b of books) if (!b.error) merged[b.key] = b.tasks.filter((t) => t.state === "merged").map((t) => t.id);
+  const next = { ...last };
+  for (const b of books) if (!b.error) next[b.folder] = { at, merged: b.tasks.filter((t) => t.state === "merged").map((t) => t.id) };
   const file = join(root, "board.json");
   const temp = `${file}.${randomUUID()}`;
   try {
-    writeFileSync(temp, JSON.stringify({ at, merged }, null, 2) + "\n", { flag: "wx" });
+    writeFileSync(temp, JSON.stringify(next, null, 2) + "\n", { flag: "wx" });
     renameSync(temp, file);
   } catch {
     rmSync(temp, { force: true });
@@ -126,28 +139,31 @@ function remember(root, last, books, at) {
 
 /**
  * The board as Markdown. scope: "this" (the session's project, and one line per other project with something waiting),
- * "all", or a project's key (any case). project: the session's folder; a session outside every project shows all.
+ * "all", or a project's key or logbook folder, as a slug like projectName gives (so any case, and "_", "." or a space
+ * for "-"). project: the session's folder; a session outside every project shows all. The "this" and "all" boards show
+ * at most 8 active tasks per project; a board for one named project shows all of them.
  */
 export function board({ scope = "this", project, env = process.env, now = new Date(), save = true } = {}) {
   const root = sageRoot(env);
-  const books = logbooks(root).sort((a, b) => a.key.localeCompare(b.key));
+  const books = logbooks(root);
   const built = now.toISOString().slice(0, 16).replace("T", " ");
   if (!books.length) return `**sage board** · built ${built} UTC\n\nNo logbooks yet under ${root}. In a project folder, start sage mode and give the chief a task.`;
   const known = books.map((b) => b.key).join(", ");
   let shown;
   let others = [];
   let title;
-  const want = String(scope).toLowerCase();
+  const want = slug(scope);
   if (want === "all") [shown, title] = [books, "all projects"];
   else if (want === "this") {
     const mine = sessionBook(books, project, env);
     if (mine) [shown, others, title] = [[mine], books.filter((b) => b !== mine), mine.key];
     else [shown, title] = [books, "all projects (this folder has no logbook)"];
   } else {
-    shown = books.filter((b) => b.key === want);
+    shown = books.filter((b) => b.key === want || b.folder === want);
     if (!shown.length) return `No project named "${text(scope, 40)}". Known projects: ${known}.`;
-    title = want;
+    title = shown.map((b) => b.key).join(", ");
   }
+  const cap = want === "all" || want === "this" ? CAP.active : Infinity;
 
   // PR links come from a logbook's checkout.txt, or from the session folder when that folder is the logbook's own project
   // (its storeDir). A logbook that only shares the folder's name gets no links from the folder's remote.
@@ -176,15 +192,16 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     for (const row of rows.slice(0, cap)) L.push(`- ${row}`);
     if (rows.length > cap) L.push(`- and ${rows.length - cap} more`);
   };
-  section(`Needs you (${needs.length})`, needs, CAP.needs);
+  section(`Needs you (${needs.length})`, needs, needs.length);
   const running = shown.flatMap((b) => b.runs.filter((r) => r.status === "running").map((r) => ({ b, r }))).sort((x, y) => Date.parse(x.r.started) - Date.parse(y.r.started));
   section(`Running now (${running.length})`, running.map(({ b, r }) => `${tag(b)}${r.task} ${r.role} · ${Number.isFinite(Date.parse(r.started)) ? age(now - Date.parse(r.started)) : "age unknown"}`), CAP.running);
 
-  // Merged since the last board: the merged tasks that the last board did not show.
+  // Merged since the last board: per logbook, the merged tasks that the last board of that logbook did not show.
   const last = seen(root);
-  const fresh = shown.flatMap((b) => b.tasks.filter((t) => t.state === "merged" && last?.merged?.[b.key] && !last.merged[b.key].includes(t.id)).map((t) => `${tag(b)}${t.id} ${pr(b, t)} ${text(t.title, 50)}`));
-  const firstFor = shown.filter((b) => !b.error && !last?.merged?.[b.key]);
-  const since = last ? `since ${last.at.slice(0, 16).replace("T", " ")} UTC` : "since the last board";
+  const fresh = shown.flatMap((b) => b.tasks.filter((t) => t.state === "merged" && last[b.folder] && !last[b.folder].merged.includes(t.id)).map((t) => `${tag(b)}${t.id} ${pr(b, t)} ${text(t.title, 50)}`));
+  const firstFor = shown.filter((b) => !b.error && !last[b.folder]);
+  const times = [...new Set(shown.filter((b) => last[b.folder]).map((b) => last[b.folder].at.slice(0, 16).replace("T", " ")))];
+  const since = times.length === 1 ? `since ${times[0]} UTC` : times.length ? "since each project's last board" : "since the last board";
   section(`Merged ${since} (${fresh.length})`, fresh, CAP.merged);
   if (firstFor.length) L.push(`- first board for ${firstFor.map((b) => b.key).join(", ")}: earlier merges not listed`);
 
@@ -197,8 +214,8 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     }
     const active = b.tasks.filter((t) => !CLOSED.includes(t.state) && t.state !== "framed").sort((x, y) => n(x.id) - n(y.id));
     const framed = b.tasks.filter((t) => t.state === "framed").sort((x, y) => n(x.id) - n(y.id));
-    for (const t of active.slice(0, CAP.active)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
-    if (active.length > CAP.active) L.push(`- and ${active.length - CAP.active} more${many ? ` (show board for ${b.key})` : ""}`);
+    for (const t of active.slice(0, cap)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
+    if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${b.key})`);
     if (!active.length) L.push("- no active tasks");
     L.push(`- framed backlog: ${framed.length}${framed.length ? ` · next up (framed, in id order): ${framed.slice(0, CAP.next).map((t) => `${t.id} ${text(t.title, 30)}`).join("; ")}` : ""}`);
   }

@@ -123,9 +123,12 @@ function projectRoot(path) {
   }
 }
 
+/** A name as a slug: lower case, each run of other characters than a-z and 0-9 as one "-", or "project" when nothing is left. */
+export const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+
 /** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
 export function projectName(path) {
-  return basename(projectRoot(resolve(path))).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  return slug(basename(projectRoot(resolve(path))));
 }
 
 export function storeDir(project, env = process.env) {
