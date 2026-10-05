@@ -235,6 +235,35 @@ test("T42-HUGE-COUNT and F-T47-QA-1: a count has a limit, and a file count never
   assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
 });
 
+test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor, and a cycles count as a fraction or a padded string reads rounded up", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  const read = (text) => {
+    writeFileSync(f, text);
+    return s.ok("config");
+  };
+  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...o }).map(([k, v]) => `${k}=${v}`).join(" ");
+  // Never more agents or rounds than the owner wrote: a count below 1 reads as 1, not as the higher default.
+  assert.equal(read('{"max_agents": 0}'), all({ max_agents: 1 }));
+  assert.equal(read('{"cap_total": 0}'), all({ cap_total: 1 }));
+  assert.equal(read('{"cap.sage": 0}'), all({ "cap.sage": 1 }));
+  assert.equal(read('{"max_rounds": -1}'), all({ max_rounds: 1 }));
+  assert.equal(read('{"arena": 0}'), all({ arena: 1 }));
+  // Never fewer review cycles than the owner wrote.
+  assert.equal(read('{"cycles.small": 2.5}'), all({ "cycles.small": 3 }));
+  assert.equal(read('{"cycles.small": "03"}'), all({ "cycles.small": 3 }));
+  assert.equal(read('{"cycles.small": " 3"}'), all({ "cycles.small": 3 }));
+  assert.equal(read('{"cycles.large": "03"}'), all({ "cycles.large": 3 }));
+  assert.equal(read('{"cycles.risk": "2.1"}'), all({ "cycles.risk": 3 }));
+  // No number: the default. Below the floor: the floor.
+  assert.equal(read('{"cycles.small": "abc", "cycles.risk": " "}'), all());
+  assert.equal(read('{"cycles.large": 1, "cycles.small": 0.2}'), all());
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  writeFileSync(f, '{"cycles.small": 2.5}');
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles/, "the merge check asks the rounded-up count");
+});
+
 test("round names the roles to re-run on the repair's diff: the sources of the findings it fixes", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
@@ -469,7 +498,7 @@ test("config: every count is 1 or more, config.json is written whole, and a torn
   }
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "0"), /--cycles is a whole number from 1 to 10/);
   writeFileSync(f, '{"max_agents": "x", "max_rounds": 5, "arena_models": "gpt-5", "cap.sage": 0, "cap.ramen": 4}');
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.ramen=4", "each bad value gives its default, and a bad project cap is left out");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.sage=1 cap.ramen=4", "each bad value gives its default, and a project cap below 1 reads as 1");
 
   // Two processes write config.json 200 times each, while this one reads it: every read sees a whole file.
   const writers = [1, 2].map(() => spawn("node", ["--input-type=module", "-e", `import { sage } from ${JSON.stringify(LIB)}; for (let i = 1; i <= 200; i++) sage(["config", "max_rounds=" + Math.ceil(i / 20)]);`], { env: { ...process.env, SAGE_HOME: s.home } }));
