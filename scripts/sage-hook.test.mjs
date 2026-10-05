@@ -1936,10 +1936,10 @@ test("T72-C5-STATECMD: with the plugin in a folder with a space, the board note 
   const board = `node "${tool}" board this --project '${project}'`;
   assert.equal(lines[0], `sage: the owner asked for the board. The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. Run: ${board}`);
   const answer = lines.find((l) => l.startsWith("- app: ")).slice("- app: ".length);
-  assert.equal(answer, `node "${tool}" gate answer <G> "<option>" --project '${project}'`);
+  assert.equal(answer, `node "${tool}" gate answer <G> --option <n> --project '${project}'`);
   const sh = (command) => spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", env });
   assert.match(sh(board).stdout, /\n- app \*\*G1\*\* · T1 · q\?\n/);
-  assert.equal(sh(answer.replace("<G>", "G1").replace("<option>", "no")).stdout, "G1 answered · no\n");
+  assert.equal(sh(answer.replace("<G>", "G1").replace("<n>", "2")).stdout, "G1 answered · no\n");
 });
 
 test("T94: the hook keeps the mode and autopilot state under the sage root, never in the temp folder", () => {

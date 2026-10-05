@@ -88,10 +88,13 @@ const OPTIONS = {
   "finding move": ["to", "size"],
   verdict: ["sha", "kind", "cycle", "pr", "run"],
   "gate add": ["question", "options", "recommend", "default"],
+  "gate answer": ["option", "other"],
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
   board: ["remember", "name-hex"],
 };
+/** The options that take no value: --other takes the owner's words on stdin, never on the command line. */
+const FLAGS = ["other"];
 /** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
 const PR = /^\d+$/;
 const STANDING = `# Standing orders
@@ -140,6 +143,13 @@ export function projectRoot(path) {
     return resolve(path);
   }
 }
+
+/** A gate's options, numbered from 1 as the board shows them: its cell split at "|", each without spaces around it. */
+export const optionsOf = (g) => String(g.options ?? "").split("|").map((o) => o.trim()).filter(Boolean);
+/** An option as a person sees it: compatibility forms, case, runs of spaces and invisible characters do not count. */
+const looks = (s) => String(s).normalize("NFKC").replace(/[\p{Cc}\p{Cf}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
+/** Names the project's main checkout in its logbook (checkout.txt), so a session of another project can answer its gates. */
+const checkout = (dir, project) => put(join(dir, "checkout.txt"), `${projectRoot(resolve(project))}\n`);
 
 /** A name as a slug: lower case, each run of other characters than a-z and 0-9 as one "-", or "project" when nothing is left. */
 export const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
@@ -429,8 +439,9 @@ function parse(cmd, args) {
     else {
       const eq = a.includes("=");
       const o = a.slice(2, eq ? a.indexOf("=") : undefined);
-      const v = eq ? a.slice(a.indexOf("=") + 1) : args[++i];
-      if (!eq) spaced.push(o);
+      if (FLAGS.includes(o) && eq) refuse(`--${o} takes no value: give the owner's own words on stdin.`);
+      const v = FLAGS.includes(o) ? "" : eq ? a.slice(a.indexOf("=") + 1) : args[++i];
+      if (!eq && !FLAGS.includes(o)) spaced.push(o);
       if (o in opt) refuse(`--${o} is given twice. Give it once${o === "accept-loss" ? `, with the tables joined by a comma: --accept-loss ${opt[o]},${v}` : ""}.`);
       opt[o] = v;
     }
@@ -635,6 +646,12 @@ export function sage(argv, env = process.env) {
     return board({ scope: hex === undefined ? pos[0] : Buffer.from(hex, "hex").toString("utf8"), project, env, save: opt.remember !== "no" });
   }
   const dir = storeDir(project, env);
+  // The owner's own words for gate answer --other, read before the lock: a slow writer never holds the logbook.
+  if (cmd === "gate" && opt.other !== undefined) {
+    try {
+      opt.other = readFileSync(0, "utf8");
+    } catch {} // no stdin: the answer refuses the missing words
+  }
   const repair = cmd === "logbook" && pos[0] === "repair";
   const skip = repair ? [...new Set(list(opt["accept-loss"]))] : [];
   const odd = skip.filter((t) => !Object.hasOwn(TABLES, t));
@@ -665,6 +682,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       // logbook passed the integrity check (ready), so init makes no table there.
       for (const t of Object.keys(TABLES).reverse()) if (!existsSync(join(dir, `${t}.tsv`))) write(dir, t, []);
       if (!existsSync(join(dir, "standing.md"))) put(join(dir, "standing.md"), STANDING);
+      checkout(dir, project);
       return `logbook ${dir}`;
     case "logbook": {
       if (sub !== "repair") return dir;
@@ -712,6 +730,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
         if (size === "investigate" && list(opt.add).includes("build")) refuse("an investigation changes no code, so it takes no build block. Frame the build as its own task: sage task add --size tiny, small or large");
         const why = opt.add ? need(opt.why, "--why for the added blocks") : ""; // refuse before anything is written
         const task = frame(dir, need(opt.title, "--title"), size, risk, list(opt.add));
+        checkout(dir, project);
         if (opt.add) write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: task.id, decision: `added ${opt.add}`, why }]);
         return framed(task);
       }
@@ -865,19 +884,29 @@ function act(cmd, pos, opt, dir, env, skip, project) {
     case "gate": {
       const gates = read(dir, "gates");
       if (sub === "add") {
-        const g = { id: nextId(dir, "G"), task: id ?? "", question: need(opt.question, "--question"), options: need(opt.options, "--options"), recommendation: need(opt.recommend, "--recommend"), default: opt.default ?? "", at: now() };
+        // The owner tells options apart by eye, and the recommendation and the default are two of them: options that
+        // look the same (case, width or hidden characters) are refused, and so is an option that reads as an own answer.
+        const options = optionsOf({ options: cell(need(opt.options, "--options")) });
+        const twin = options.find((o, i) => options.findIndex((x) => looks(x) === looks(o)) !== i);
+        if (twin !== undefined) refuse(`two options look the same: ${JSON.stringify(twin)} and ${JSON.stringify(options.find((x) => looks(x) === looks(twin)))}. Make them differ in more than case.`);
+        if (options.some((o) => /^other:/i.test(o))) refuse(`an option may not start with "other:": it marks an answer in the owner's own words.`);
+        const pick = (v, what) => options.find((o) => o === v.trim()) ?? options.find((o) => looks(o) === looks(v)) ?? (/^[1-9]\d*$/.test(v.trim()) ? options[Number(v) - 1] : undefined) ?? refuse(`${what} is one of the options, by its text or its number (1 to ${options.length}): ${options.map((o) => JSON.stringify(o)).join(", ")}.`);
+        const recommendation = pick(need(opt.recommend, "--recommend"), "--recommend");
+        const g = { id: nextId(dir, "G"), task: id ?? "", question: need(opt.question, "--question"), options: opt.options, recommendation, default: opt.default === undefined ? "" : pick(opt.default, "--default"), at: now() };
         write(dir, "gates", [...gates, g]);
         return `${g.id} open · ${g.question}`;
       }
       if (sub === "answer") {
         const g = gates.find((x) => x.id === id) ?? missing(`gate ${id}`, gates.map((x) => x.id));
-        // Only one of the gate's own options, in any case and with spaces around it: an answer meant for another gate,
-        // or one that the owner never saw, is refused. The answer kept is the option as the gate spells it.
-        const typed = need(more.join(" "), "the answer").trim().toLowerCase();
-        const options = g.options.split("|").map((o) => o.trim()).filter(Boolean);
-        g.answer = options.find((o) => o.toLowerCase() === typed) ?? refuse(`${g.id}'s answer is one of its options: ${options.map((o) => JSON.stringify(o)).join(", ")}. Nothing changed.`);
+        // By number only, as the board numbers the options: no agent-written text goes into the command. The owner's own
+        // words come on stdin and are kept with "other: " before them, so they never pass for one of the options.
+        const options = optionsOf(g);
+        const how = `gate answer ${g.id} takes --option <n>, the number of one of its options (1 to ${options.length}), or --other with the owner's own words on stdin. Nothing changed.`;
+        if (more.length || (opt.option === undefined) === (opt.other === undefined)) refuse(how);
+        if (opt.other !== undefined) g.answer = `other: ${need(cell(opt.other), "the owner's own words on stdin")}`;
+        else g.answer = (/^[1-9]\d*$/.test(opt.option) && options[Number(opt.option) - 1]) || refuse(how);
         write(dir, "gates", gates);
-        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: "the user's answer" }]);
+        write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: opt.other === undefined ? "the user's answer" : "the user's own words" }]);
         return `${g.id} answered · ${g.answer}`;
       }
       refuse("gate add or gate answer");

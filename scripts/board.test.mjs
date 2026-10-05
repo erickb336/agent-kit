@@ -647,23 +647,64 @@ function twoProjects() {
 
 test("T72-S5-WRONGLOGBOOK: an answer to beta's G1 from an alpha session goes to beta's logbook; alpha's G1 stays open", () => {
   const w = twoProjects();
-  // beta has no known folder: the board and the note say to answer it in a session of beta, and give no command for it.
+  // A logbook made before checkout.txt existed: the board and the note say to answer it in a session of beta, and give no command for it.
+  rmSync(join(storeDir(w.beta, w.env), "checkout.txt"));
   const blind = w.hook("show board for beta", w.alpha);
   assert.match(blind, /^- beta: no folder known\. Do not ask its gates: tell the owner to answer them in a session of beta\.$/m);
   assert.doesNotMatch(blind, /^- beta: node /m);
   const out = execFileSync("node", [TOOL, "board", "beta", "--project", w.alpha, "--remember", "no"], { encoding: "utf8", env: w.env });
   assert.ok(out.includes("\n- beta **G1** · T1 · beta\\: give the bot access?\n  Recommended: yes. Default: none.\n  Answer it in a session of beta: this board does not know its folder.\n  1. yes\n  2. no access\n"), out);
-  // With beta's checkout known, the note maps each key to its own folder.
-  writeFileSync(join(storeDir(w.beta, w.env), "checkout.txt"), `${w.beta}\n`);
+  // A session of beta (task add) names its folder again.
+  w.sage(w.beta, "task", "add", "--title", "beta task 2", "--size", "tiny");
+  assert.match(w.hook("show board for beta", w.alpha), /^- beta: node .* --project '.*beta'$/m);
+});
+
+test("T72-Q6-CHECKOUT: after a fresh init in two projects, the note from alpha gives beta's --option command, and it records in beta only", () => {
+  const w = twoProjects();
   const note = w.hook("show board for beta", w.alpha);
   const line = (key) => note.split("\n").find((l) => l.startsWith(`- ${key}: `)).slice(`- ${key}: `.length);
-  assert.equal(line("alpha"), `node ${TOOL} gate answer <G> "<option>" --project '${w.alpha}'`);
-  assert.equal(line("beta"), `node ${TOOL} gate answer <G> "<option>" --project '${w.beta}'`);
-  const run = spawnSync("/bin/sh", ["-c", line("beta").replace("<G>", "G1").replace("<option>", "no access")], { encoding: "utf8", env: w.env });
-  assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout, "G1 answered · no access\n");
+  assert.equal(line("alpha"), `node ${TOOL} gate answer <G> --option <n> --project '${w.alpha}'`);
+  assert.equal(line("beta"), `node ${TOOL} gate answer <G> --option <n> --project '${w.beta}'`);
+  const run = spawnSync("/bin/sh", ["-c", line("beta").replace("<G>", "G1").replace("<n>", "2")], { encoding: "utf8", env: w.env });
+  assert.equal(run.stdout, "G1 answered · no access\n", run.stderr);
   assert.equal(w.answer(w.beta), "gates   0 open");
   assert.equal(w.answer(w.alpha), "gates   1 open · G1 alpha: give the bot access? (default: none)");
+});
+
+test("T72-S6-OPTIONSHELL: an option with $(…) or a quote never goes into the note's command; answered by number it is recorded, and nothing runs", () => {
+  const w = twoProjects();
+  const marker = join(w.dir, "X");
+  const evil = `keep $(touch ${marker}) it`;
+  w.sage(w.beta, "gate", "add", "T1", "--question", "beta: which?", "--options", `say "hi|${evil}|\`touch ${marker}\``, "--recommend", "1");
+  const note = w.hook("show board for beta", w.alpha);
+  for (const bad of ["$(", "touch", '"hi', "`"]) assert.ok(!note.includes(bad), `the note holds ${bad}`);
+  const line = note.split("\n").find((l) => l.startsWith("- beta: ")).slice("- beta: ".length);
+  const run = spawnSync("/bin/sh", ["-c", line.replace("<G>", "G2").replace("<n>", "2")], { encoding: "utf8", env: w.env, cwd: w.dir });
+  assert.equal(run.stdout, `G2 answered · ${evil}\n`, run.stderr);
+  assert.equal(existsSync(marker), false, "nothing ran");
+  const gates = readFileSync(join(storeDir(w.beta, w.env), "gates.tsv"), "utf8");
+  assert.ok(gates.split("\n").some((l) => l.startsWith("G2\t") && l.split("\t")[6] === evil), gates);
+});
+
+test("T72-C6-LOWS: the board shows an option as stored, spaces kept; an answered gate in free text still reads", () => {
+  const w = world();
+  add(w, w.book, "gates", ["G7", "T6", "Sample: spaces?", "No  access|no access later", "No  access", "", "", "2026-10-05T03:00:00Z"]);
+  add(w, w.book, "gates", ["G9", "T6", "Sample: answered in free text?", "a|b", "a", "a", "keep it, but log it", "2026-10-04T03:00:00Z"]);
+  const out = w.show("this");
+  assert.ok(out.includes("\n  Recommended: No  access. Default: none.\n  1. No  access\n  2. no access later\n"), out);
+  assert.doesNotMatch(out, /G9/);
+  const status = execFileSync("node", [TOOL, "status", "--project", w.sage], { encoding: "utf8", env: { ...process.env, ...w.env } });
+  assert.match(status, /^gates   2 open · G1 /m);
+});
+
+test("T72-C6-LOWS: when the state tool cannot load, the board phrase says so and the hook still answers", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-board-broken-")));
+  cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "sage"), { recursive: true });
+  writeFileSync(join(dir, "sage", "skills", "sage", "sage.mjs"), "this is not javascript (\n");
+  const env = { ...process.env, SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home") };
+  const r = spawnSync("node", [join(dir, "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", hook_event_name: "UserPromptSubmit", prompt: "show board for beta", cwd: dir }), encoding: "utf8", env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.additionalContext, "sage: the owner asked for the board, but the state tool cannot load, so there is no board. Tell the owner so, and record no answer.");
 });
 
 test("T72-S5-OPTIONS: every open gate shows in full: an option with ' / ' is one option; a 300-character question and a 200-character option are not cut", () => {

@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
-import { BLOCKS, RISKS, STATES, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
+import { BLOCKS, RISKS, STATES, optionsOf, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
 
 const FOLDER = /^([a-z0-9-]+)-[0-9a-f]{6}$/;
 const CLOSED = ["merged", "concluded", "abandoned"];
@@ -31,12 +31,12 @@ const clean = (table, row) => {
 };
 
 /**
- * One line of free text: no line breaks or hidden characters, at most max characters (all when no max), Markdown and HTML escaped.
+ * One line of free text: each line break or other space as one space (runs are kept, so an option shows as stored), no hidden characters, at most max characters (all when no max), Markdown and HTML escaped.
  * ":", "." and "@" are escaped too, so that GFM makes no autolink of a bare URL, a www host or an email, and "&", so that
  * no entity (&colon;) decodes to one.
  */
 function text(s, max = Infinity) {
-  const chars = [...String(s ?? "").replace(/\s+/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim()];
+  const chars = [...String(s ?? "").replace(/\s/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim()];
   const line = chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
   return line.replace(/[\\`*_[\]()<>!#|~:.@&]/g, "\\$&");
 }
@@ -261,7 +261,7 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   // line: the owner answers only a question that the board showed whole, and the chief records it in that gate's logbook.
   // The options come last: a line after a list item would join that item's text.
   const gateLine = (b, g) => {
-    const options = String(g.options ?? "").split("|").map((o) => o.trim()).filter(Boolean);
+    const options = optionsOf(g);
     return [
       `${label(b)} **${g.id}**${g.task ? ` · ${g.task}` : ""} · ${text(g.question)}`,
       `  Recommended: ${text(g.recommendation) || "none"}. Default: ${text(g.default) || "none"}.`,
