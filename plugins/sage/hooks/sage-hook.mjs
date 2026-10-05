@@ -19,7 +19,6 @@
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -200,7 +199,7 @@ export function handle(input, state, slots) {
     const r = slots.take(project, cap, caps.cap_total, input.tool_use_id ?? String(Date.now()));
     if (r.refused) {
       slots.log(`${project} ${r.project}/${cap} total ${r.total}/${caps.cap_total}`);
-      const raise = (key, n) => `Wait for one to finish, or raise the cap: node "${join(ROOT, "skills/sage/sage.mjs")}" config ${key}=${n + 1}`;
+      const raise = (key, n) => `Wait for one to finish, or raise the cap: ${stateCommand(`config ${key}=${n + 1}`)}`;
       if (r.refused === "mark") return deny(event, `the agent cap could not mark its slot (${r.error}), so it refuses this spawn. Tell the user.`);
       if (r.refused === "total") return deny(event, `${running(r.total)} across all projects, and the total cap is ${caps.cap_total} (${project} has ${r.project}). ${raise("cap_total", caps.cap_total)}`);
       return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
@@ -497,6 +496,12 @@ function mergeForm(command) {
  * printf -v sets a variable, so it is not harmless.
  */
 const TOOL = join(ROOT, "skills/sage/sage.mjs");
+/**
+ * The chief's spelling of a state tool command: node and the tool's absolute path, unquoted, the one form that the
+ * sandbox's excluded entry matches (a quoted path stays in the sandbox). A path with a space has no such form, so
+ * then it gives the reason instead of a command.
+ */
+export const stateCommand = (args) => (/\s/.test(TOOL) ? `(no command: the state tool's path "${TOOL}" has a space, and only an unquoted path runs outside the sandbox. Tell the user to install the sage plugin in a folder without spaces.)` : `node ${TOOL} ${args}`);
 function harmless([a, b, c, ...rest]) {
   if (a === "echo" || a === "cat" || a === "grep" || (a === "printf" && ![b, c, ...rest].some((w) => w?.startsWith("-v")))) return 1;
   if ((a === "git" && b === "commit") || (a === "node" && b === TOOL)) return 2;
@@ -700,7 +705,7 @@ export function chiefText() {
   const skills = [...m[1].matchAll(/^\s+-\s+(\S+)\s*$/gm)].map((x) => x[1]);
   return [
     `sage: sage mode is on. You are the user's chief of staff until a message from the user starts with "sage mode off".`,
-    `The state tool: node "${join(ROOT, "skills/sage/sage.mjs")}" <command> --project <path>. Each shell call starts fresh, so write this full command every time; do not keep it in a variable. Load these skills now: ${skills.join(", ")}.`,
+    `The state tool: ${stateCommand("<command> --project <path>")}. Each shell call starts fresh, so write this full command every time; do not keep it in a variable. Load these skills now: ${skills.join(", ")}.`,
     m[2].trim(),
   ].join("\n\n");
 }
@@ -841,7 +846,8 @@ export function slotsFor(dir, session, now = Date.now()) {
   };
 }
 
-const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(tmpdir(), "sage-hooks");
+// The mode, autopilot and slot state lives under the sage root, never in the temp folder, which sandboxed commands may write.
+const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(stateTool.sageRoot(), ".hooks");
 
 // Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.env.SAGE_HOOKS !== "off") {
