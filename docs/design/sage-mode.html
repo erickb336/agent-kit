@@ -63,8 +63,8 @@
 <div class="lead">
   <p><strong>What this is.</strong> The design of sage mode: you say "sage mode", and the session becomes your chief of staff. The chief of staff runs a factory of specialist agents, like Orchestrator, but inside any Claude Code session, from your phone or your desktop. There is no app and no dashboard: the chat is the interface, and the state is plain files.</p>
   <p><strong>Main point.</strong> Use one chief that never writes code, with specialists that write one at a time. Code enforces the important rules: hooks, plus one small state tool. Each task gets a route made from building blocks, sized to the task, instead of a fixed flow.</p>
-  <p><strong>New in v2.</strong> Your decisions (<a href="#decide">section 15</a>), autopilot as "everything merges through a pull request after a set number of cycles", the <a href="#arena">arena</a> block, and a <a href="#prototype">sample session</a> that shows the experience.</p>
-  <p><strong>What I need from you.</strong> Two details and your go to build, in <a href="#decide">the last section</a>.</p>
+  <p><strong>New in v2.</strong> Your decisions (<a href="#decide">section 15</a>), autopilot (only tiny and small tasks without a risk flag merge by themselves, at night, through a pull request; you merge the rest), the <a href="#arena">arena</a> block, and a <a href="#prototype">sample session</a> that shows the experience.</p>
+  <p><strong>What I need from you.</strong> One detail and your go to build, in <a href="#decide">the last section</a>.</p>
 </div>
 
 <nav>
@@ -416,14 +416,14 @@ T2   41  4787c81 qa-pass         1</pre></div>
 <tr><td>Architecture</td><td>C: a chief of staff, building blocks, a state tool and hook checks</td></tr>
 <tr><td>Where the logbook lives</td><td><code>~/.claude/sage/&lt;project&gt;/</code>, outside the repository</td></tr>
 <tr><td>Independent review</td><td>Claude reviewers in a fresh context for v1</td></tr>
-<tr><td>Autopilot</td><td>Everything can merge, through a pull request, after a set number of cycles</td></tr>
+<tr><td>Autopilot</td><td>Off by default. When on, only tiny and small tasks without a risk flag merge by themselves, at night, through a pull request. You merge the rest</td></tr>
+<tr><td>Clean cycles before a merge</td><td>1 for tiny and small tasks; 2 for large tasks and tasks with a risk flag, in a row on the same head SHA</td></tr>
 <tr><td>Arena</td><td>Yes: N agents make a design or an implementation, and the PE takes the best of each</td></tr>
 <tr><td>Agents at the same time</td><td>3 by default, a line in the standing orders (my default, you can change it)</td></tr>
 </table></div>
 <h3>Still open</h3>
 <div class="ask">
 <ol>
-  <li><strong>How many clean cycles before autopilot merges?</strong> <span class="rec">2 in a row on the same head SHA (recommended)</span>, 1, or 3.</li>
   <li><strong>When does the arena run by itself?</strong> <span class="rec">Only for designs with no clear answer, and when you say "arena" (recommended)</span>, or also for implementations that are hard to undo, or only when you say "arena".</li>
   <li><strong>Your go to build</strong>, starting with step 1 of the plan: the kitchen (the state tool, the logbook and the hook's checks, with tests).</li>
 </ol>

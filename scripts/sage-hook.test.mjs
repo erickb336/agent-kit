@@ -1379,3 +1379,16 @@ test("T56: the design page says the owner's autopilot rule: tiny and small tasks
   assert.match(section, /America\/Los_Angeles/);
   assert.match(section, /tiny and small tasks without a risk flag/);
 });
+
+test("T56: every part of the design page says the autopilot rule, and the cycle count is decided (F-T56-DESIGNDOC-15, F-T56-DESIGNDOC-OPEN)", () => {
+  const page = readFileSync(fileURLToPath(new URL("../docs/design/sage-mode.html", import.meta.url)), "utf8");
+  assert.doesNotMatch(page, /everything (can )?merges?/i, "no part of the page says that autopilot merges everything");
+  const rule = /tiny and small tasks without a risk flag merge by themselves, at night/i;
+  const lead = page.match(/<p><strong>New in v2\.<\/strong>.*<\/p>/)?.[0] ?? "";
+  assert.match(lead, rule, "the lead box states the rule");
+  const decide = page.slice(page.indexOf('<h2 id="decide">'), page.indexOf("<footer>"));
+  const [made, open] = decide.split("<h3>Still open</h3>");
+  assert.match(made.match(/<tr><td>Autopilot<\/td><td>.*?<\/td><\/tr>/)?.[0] ?? "", rule, "the Decisions row states the rule");
+  assert.match(made, /<tr><td>Clean cycles before a merge<\/td><td>1 for tiny and small tasks; 2 for large tasks and tasks with a risk flag/);
+  assert.doesNotMatch(open, /clean cycles/i, "the cycle count is no longer open");
+});
