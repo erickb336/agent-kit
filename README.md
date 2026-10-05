@@ -174,7 +174,7 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
 | A repair round re-checks only the repair's diff, with the roles that found the problems. A new medium or low finding goes to a follow-up task; a high one blocks. | A round that re-reviews the whole branch finds new scope, not the fix. |
 | A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
-| Test browsers are Playwright's bundled Chromium, never your Google Chrome app. No test lists or signals processes itself: it signals only a child it started. `npm run check` refuses both in sage's scripts. A test browser's lifetime belongs to the fixed browser command (T98), which records its own pid. | A test that uses your Chrome can crash it or read your profile. A test that lists or signals processes can stop your own programs. |
+| Test browsers are Playwright's bundled Chromium, never your Google Chrome app. No test lists or signals processes itself: it signals only a child it started. `npm run check` refuses both in sage's scripts. Coming with T98: a fixed browser command that records the pid of the browser it starts and closes it. Until then, a test browser that an agent forgets to close stays open until you close it, as today. | A test that uses your Chrome can crash it or read your profile. A test that lists or signals processes can stop your own programs. |
 
 **The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. It does three things:
 
