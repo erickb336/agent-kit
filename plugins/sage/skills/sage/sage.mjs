@@ -126,15 +126,18 @@ export function storeDir(project, env = process.env) {
 }
 
 /**
- * A config value in its stored form, or undefined when it is not valid. A count is valid only as a whole number at or
- * above its floor (a string is not valid), and one above its limit reads as the limit: fewer would ease a merge.
+ * A config value in its stored form, or undefined when it is not valid. A count is valid as a whole number, or a string
+ * of one ("3"), at or above its floor. Above its limit, a cycles count keeps its value (fewer would ease a merge) and
+ * any other count reads as the limit (more would start more agents or rounds than written).
  */
 function valid(key, value) {
   if (key === "arena_models") {
     const models = typeof value === "string" ? list(value) : [];
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
   }
-  return (Object.hasOwn(COUNTS, key) || CAP.test(key)) && Number.isInteger(value) && value >= floor(key) ? Math.min(value, limit(key)) : undefined;
+  const n = typeof value === "string" && /^[1-9][0-9]*$/.test(value) ? Number(value) : value;
+  if (!(Object.hasOwn(COUNTS, key) || CAP.test(key)) || !Number.isInteger(n) || n < floor(key)) return undefined;
+  return key.startsWith("cycles.") ? n : Math.min(n, limit(key));
 }
 
 /** A count typed on the command line, or undefined when it is not a whole number from its floor to its limit. */
@@ -179,8 +182,8 @@ function saved(env) {
 
 /**
  * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value (a count
- * as a string, for one), a count below its floor, or a config.json that is not a regular file, gives the default (each
- * floor is its default). A count above its limit reads as the limit. A file of
+ * as "3x", for one), a count below its floor, or a config.json that is not a regular file, gives the default (each
+ * floor is its default). Above its limit, a cycles count keeps its value and any other count reads as the limit. A file of
  * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {

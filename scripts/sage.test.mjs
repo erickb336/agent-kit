@@ -210,7 +210,7 @@ test("the merge check needs no open findings, checks-pass, and the route's verdi
   assert.match(c.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles/, "the config sets each count; a risk flag takes the larger one");
 });
 
-test("T42-HUGE-COUNT and T42-STRING-COUNT: a count has a limit, and config.json takes a count only as a number", () => {
+test("T42-HUGE-COUNT and F-T47-QA-1: a count has a limit, and a file count never eases a merge or starts more agents than written", () => {
   const s = store();
   const f = join(s.home, "config.json");
   for (const [key, limit] of Object.entries({ "cycles.small": 10, "cycles.large": 10, "cycles.risk": 10, max_rounds: 10, max_agents: 50, arena: 50, cap_total: 50, "cap.sage": 50 })) {
@@ -221,15 +221,17 @@ test("T42-HUGE-COUNT and T42-STRING-COUNT: a count has a limit, and config.json 
   assert.match(s.ok("config", "cycles.small=10", "max_agents=50"), /max_agents=50 cycles\.small=10 /, "the limit itself is a valid count");
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "11"), /--cycles is a whole number from 1 to 10/);
 
-  // A file value above the limit reads as the limit: never fewer cycles than the owner wrote, and never a default below it.
-  writeFileSync(f, '{"cycles.small": 99999999999999999999, "cycles.risk": 11, "max_agents": 1000, "cap.ramen": 51}');
-  assert.equal(s.ok("config"), "max_agents=50 cycles.small=10 cycles.large=2 cycles.risk=10 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.ramen=50");
+  // A file value above the limit: cycles keep the owner's number (never an easier merge); agent counts and rounds read as the limit.
+  writeFileSync(f, '{"cycles.small": 20, "cycles.risk": 11, "max_agents": 200, "max_rounds": 11, "arena": 51, "cap_total": 51, "cap.ramen": 51}');
+  assert.equal(s.ok("config"), "max_agents=50 cycles.small=20 cycles.large=2 cycles.risk=11 max_rounds=10 arena=50 arena_models=opus,sonnet,sonnet cap_total=50 cap.ramen=50");
   s.ok("task", "add", "--title", "t", "--size", "small");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
-  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 10 clean cycles/, "a huge file value asks the limit, so it never locks out every merge");
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 20 clean cycles/, "the merge check asks the owner's 20");
 
-  // A string is a bad value: it gives the default, as the config row of SKILL.md says, and each floor is its default.
-  writeFileSync(f, '{"cycles.small": "3", "cycles.large": "5", "cycles.risk": "1", "max_agents": "7", "cap.ramen": "4"}');
+  // A whole-number string reads as its number, with the same floor and limit rules; any other string gives the default.
+  writeFileSync(f, '{"cycles.small": "3", "cycles.large": "5", "cycles.risk": "1", "max_agents": "1", "cap_total": "2", "cap.sage": "1", "cap.ramen": "07"}');
+  assert.equal(s.ok("config"), "max_agents=1 cycles.small=3 cycles.large=5 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=2 cap.sage=1");
+  writeFileSync(f, '{"cycles.small": "3x", "cycles.large": "1", "max_agents": " 2", "cap_total": "1.5"}');
   assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
 });
 
