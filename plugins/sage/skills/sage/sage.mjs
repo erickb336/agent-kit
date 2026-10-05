@@ -130,11 +130,14 @@ export function storeDir(project, env = process.env) {
   return join(sageRoot(env), `${projectName(root)}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`);
 }
 
+/** A decimal number, also with spaces around it, a sign, leading zeros, a fraction or an exponent: "03", " 2", "-1", "2.5". */
+const NUMERIC = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?\s*$/i;
+
 /**
- * A config value in its stored form, or undefined when it has no number. A count is a whole number, or a string of one
- * ("3"); a cycles count is also any finite number or numeric string ("03", " 3", 2.5), rounded up. Below its floor a count
- * reads as the floor. Above its limit, a cycles count keeps its value (fewer would ease a merge) and any other count
- * reads as the limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
+ * A config value in its stored form, or undefined when it has no number. One rule reads every count: a finite number,
+ * or a numeric string. A cycles count rounds up, and any other count rounds down. Below its floor a count reads as the
+ * floor. Above its limit, a cycles count keeps its value (fewer would ease a merge) and any other count reads as the
+ * limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
  */
 function valid(key, value) {
   if (key === "arena_models") {
@@ -144,10 +147,9 @@ function valid(key, value) {
   if (MODEL.test(key)) return MODELS.includes(value) ? value : undefined;
   if (!(Object.hasOwn(COUNTS, key) || CAP.test(key))) return undefined;
   const cycles = key.startsWith("cycles.");
-  let n = typeof value === "string" && (cycles ? value.trim() : /^(0|[1-9][0-9]*)$/.test(value)) ? Number(value) : value;
-  if (cycles && Number.isFinite(n)) n = Math.ceil(n);
-  if (!Number.isInteger(n)) return undefined;
-  n = Math.max(n, floor(key));
+  let n = typeof value === "number" || (typeof value === "string" && NUMERIC.test(value)) ? Number(value) : NaN;
+  if (!Number.isFinite(n)) return undefined;
+  n = Math.max(cycles ? Math.ceil(n) : Math.floor(n), floor(key));
   return cycles ? n : Math.min(n, limit(key));
 }
 
@@ -194,16 +196,18 @@ function saved(env) {
 /**
  * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value (a count
  * as "3x", for one), or a config.json that is not a regular file, gives the default. A count reads as valid() gives it:
- * never below its floor, and never more agents or rounds, or fewer cycles, than written. A file of
+ * never below its floor, and never more agents or rounds, or fewer cycles, than written. A cycles key that is there but
+ * has no number (Infinity, [3], true, "abc") reads as "invalid", and the merge check refuses every merge. A file of
  * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
   let c = { ...DEFAULTS };
   try {
     const s = saved(env);
+    const written = Object.keys(s); // a broken legacy autopilot_cycles gives the default, as before
     if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles;
     const extra = Object.keys(s).filter((k) => (CAP.test(k) || MODEL.test(k)) && !Object.hasOwn(DEFAULTS, k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
-    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]), ...extra]); // the defaults, then the caps and models without one
+    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (k.startsWith("cycles.") && written.includes(k) ? "invalid" : d)]), ...extra]); // the defaults, then the caps and models without one
   } catch {}
   return c;
 }
@@ -326,15 +330,27 @@ function write(dir, table, rows) {
 }
 
 const now = () => new Date().toISOString().slice(0, 19) + "Z";
+/** The cells that hold ids: each table's own id, the columns that name the id of another row, and a decision's subject. */
+const IDS = { tasks: ["id", "keys"], runs: ["id", "task"], findings: ["task", "key"], ledger: ["task", "run"], gates: ["id", "task"], decisions: ["task"] };
 /**
- * A new id: the highest whole number after the prefix that any row of the logbook names, plus 1. So an id never comes
- * back, also when its own row is lost while another row (a verdict's run, a decision, a round's keys) still names it.
- * Only digits count ("Infinity" does not), and BigInt keeps a long number exact.
+ * A new id: the highest whole number after the prefix that any id cell of the logbook names, plus 1. So an id never
+ * comes back, also when its own row is lost while another row (a verdict's run, a decision, a round's keys) still names
+ * it. Free text does not count: a path or a title can hold "-T9" by chance. In a decision, only its subjects count: the
+ * first word ("F-T2-1 opened again", "G1 was answered by phone"), and in a move, also the new task and key ("F-T1-1 moved
+ * to T2 as F-T2-1: …"). Only digits count ("Infinity" does not), and BigInt keeps a long number exact.
  */
+/** The ids a decision is about: its first word, and the new task and key of a move (the form that finding move writes). */
+const subjects = (decision) => /^(\S+) moved to (\S+) as (\S+):/.exec(decision)?.slice(1) ?? [decision];
 function nextId(dir, prefix) {
   let max = 0n;
-  for (const table of Object.keys(TABLES)) {
-    for (const [, n] of (readRegular(join(dir, `${table}.tsv`)) ?? "").matchAll(new RegExp(`(?<![A-Za-z0-9])${prefix}(\\d+)`, "g"))) if (BigInt(n) > max) max = BigInt(n);
+  const take = (text, re) => {
+    for (const [, n] of text.matchAll(re)) if (BigInt(n) > max) max = BigInt(n);
+  };
+  for (const [table, cols] of Object.entries(IDS)) {
+    for (const row of read(dir, table)) {
+      for (const c of cols) take(row[c], new RegExp(`(?<![A-Za-z0-9])${prefix}(\\d+)`, "g"));
+      if (table === "decisions") for (const word of subjects(row.decision)) take(word, new RegExp(`^${prefix}(\\d+)(?![A-Za-z0-9])`, "g"));
+    }
   }
   return `${prefix}${max + 1n}`;
 }
@@ -415,8 +431,7 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
  * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
  * its PR number.
  */
-function judge(dir, tasks, findings, id, rows, cycles, repaired) {
-  const task = tasks.find((t) => t.id === id);
+function judge(dir, task, findings, id, rows, cycles, repaired) {
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
   const clear = `clear its PR (sage task ${task.id} set pr=)`;
@@ -437,6 +452,9 @@ function judge(dir, tasks, findings, id, rows, cycles, repaired) {
   return { ok: true, reason: `${task.id} may merge: ${clean} clean cycle${clean === 1 ? "" : "s"} on this SHA` };
 }
 
+/** The rows of a table by their task. */
+const group = (rows) => rows.reduce((m, r) => (m.has(r.task) ? m.get(r.task).push(r) : m.set(r.task, [r]), m), new Map());
+
 /**
  * The judgment of the merge check: may this head SHA merge? Every task that has verdicts on the full SHA, in every
  * project's logbook, must pass on its own rows, also an abandoned one, so no other logbook or task can lend its verdicts.
@@ -451,6 +469,8 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
     pr &&= String(pr); // the tasks table holds it as text
     const cfg = config(env); // once: the merge check may judge thousands of tasks
+    const broken = Object.keys(cfg).find((k) => cfg[k] === "invalid"); // fail closed: a default would ask fewer cycles than the owner meant
+    if (broken) return { ok: false, reason: `the merge check refuses every merge, because ${broken} in ${join(root, "config.json")} is not a number. Set it with sage config ${broken}=<n> (a whole number from ${floor(broken)} to 10), or remove the key.` };
     // A logbook may be a link to a folder: the writes go through it, so the merge check reads through it too. A link to nothing
     // holds no logbook, for the writes either; one that cannot be followed refuses.
     const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
@@ -463,11 +483,12 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       if (!rows.length) return [];
       const [tasks, findings] = book ? [rowsOf(book.tasks), rowsOf(book.findings)] : [[], []];
       const repaired = book && rowsOf(book.decisions).some((d) => d.decision.startsWith("tasks.tsv started again without rows"));
-      const ofPr = pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : [];
+      const ofPr = new Set(pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : []);
+      // Each table is grouped by task once, so thousands of tasks on one SHA take linear time, not the square of it.
+      const [byId, ownOf, findingsOf] = [new Map(tasks.map((t) => [t.id, t])), group(rows), group(findings)];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
-        const own = rows.filter((r) => r.task === id);
-        const task = tasks.find((t) => t.id === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired) };
+        const [own, task] = [ownOf.get(id) ?? [], byId.get(id)];
+        return { dir, id, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -648,7 +669,7 @@ function act(cmd, pos, opt, dir, env, skip) {
             if (v === "verified") {
               const rows = read(dir, "ledger").filter((r) => r.task === task.id);
               const head = rows.at(-1)?.sha ?? refuse(`${task.id} has no verdicts yet`);
-              const r = judge(dir, tasks, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
+              const r = judge(dir, task, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
           } else if (k === "pr") setPr(task, v);
