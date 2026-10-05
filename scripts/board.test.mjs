@@ -339,7 +339,7 @@ test("F-T72-10, G63: two names with no ASCII letters get distinct keys, two sect
     assert.deepEqual(one.match(/^\*\*project[^*]*\*\*$/gm), [`**${key}**`]);
   }
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(w.home, "board.json"), "utf8"))).sort(), [ja, w.book, "order-chaser-cccccc", "sage-bot-bbbbbb", zh].sort());
-  assert.match(w.show("this", join(w.dir, "中文")), new RegExp(`^\\*\\*sage board · ${zh}\\*\\*`)); // the session's own logbook
+  assert.match(w.show("this", join(w.dir, "中文")), new RegExp(`^\\*\\*sage board · ${zh} \\(中文\\)\\*\\*`)); // the session's own logbook, with its real name (F-T72-18)
   assert.match(w.show(w.book), /^\*\*sage board · sage\*\*/); // the full form of a key that does not collide
 });
 
@@ -488,4 +488,34 @@ test("F-T72-17, G68: a trailing ?, ?! or ?. gives the board; text after the ? on
   assert.ok(note("show board for sage?.\nthanks").includes(cmd("sage")));
   assert.equal(note("show board? what does it show"), "");
   assert.equal(note("show board for sage?? x"), "");
+});
+
+test("F-T72-18: the this-board title shows the real name, as the project's heading does", () => {
+  const w = world();
+  const ja = namedBook(w, "日本語");
+  namedBook(w, "中文"); // two non-Latin names: each key is its full folder name, as in the review's case
+  const out = w.show("this", join(w.dir, "日本語"));
+  assert.match(out, new RegExp(`^\\*\\*sage board · ${ja} \\(日本語\\)\\*\\* · built`));
+  assert.match(out, new RegExp(`^\\*\\*${ja} \\(日本語\\)\\*\\*$`, "m"));
+});
+
+test("F-T72-19: the hint for more tasks names the key, and that phrase typed back gives the full board", () => {
+  const w = world();
+  const ja = namedBook(w, "日本語");
+  namedBook(w, "中文"); // two non-Latin names: each key is its full folder name, as in the review's case
+  for (let i = 20; i < 30; i++) add(w, ja, "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
+  const hint = w.show("this", join(w.dir, "日本語")).match(/^- and \d+ more \((.*)\)$/m)?.[1];
+  assert.equal(hint, `show board for ${ja}`);
+  assert.ok(note(hint).includes(cmd(ja)), hint);
+  assert.doesNotMatch(w.show(ja), /and \d+ more/);
+});
+
+test("F-T72-20, G68: full-width ？ ！ 。 after the board phrase give the board, as ? ! . do", () => {
+  for (const end of ["？", "！", "。", "？。", "？！"]) {
+    assert.ok(note(`show board${end}`).includes(cmd("this")), end);
+    assert.ok(note(`show board for 日本語${end}`).includes(cmd("日本語")), end);
+  }
+  assert.ok(note("**show board？**").includes(cmd("this")));
+  assert.equal(note("show board？ what does it show"), "");
+  assert.equal(note("show board？？"), "");
 });

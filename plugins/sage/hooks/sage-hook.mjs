@@ -53,8 +53,9 @@ const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOP
 // or italics. A project name is up to 8 words of letters (any script), digits, "_", "." and "-"; a word may hold inner
 // dots, but not end in one: "show board for all." ends a sentence. boardText makes the name a slug, as projectName does.
 const NAME_WORD = String.raw`[\p{L}\p{N}](?:[\p{L}\p{N}_.-]{0,62}[\p{L}\p{N}_-])?`;
-// Only the board phrase may end in "?", "?!" or "?." ("show board?"), and only at the end of its line.
-const BOARD_END = String.raw`(?:\?[!.]?[*_]{0,3}${SP}*(?=[\r\n\u2028\u2029]|$)|[*_]{0,3}${END})`;
+// Only the board phrase may end in "?", "?!" or "?." ("show board?"), and only at the end of its line. It may also end
+// in the full-width "？", "！" or "。", and "？" may take "！" or "。" after it as "?" does (G68).
+const BOARD_END = String.raw`(?:[?？][!.！。]?[*_]{0,3}${SP}*(?=[\r\n\u2028\u2029]|$)|[*_]{0,3}(?:${END}|(?=${SP}*[！。])))`;
 const BOARD = new RegExp(`${START}show${SP}+board(?:${SP}+for${SP}+(${NAME_WORD}(?:${SP}+${NAME_WORD}){0,7}))?${BOARD_END}`, "iu");
 const AUTOPILOT = /\bauto[-\s]?pilots?\b/i;
 const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit(?:s|ting)?|exit(?:s|ed|ing)?)\b|\b(?:stop|disabl|paus|cancel|kill|halt|deactivat|abort|suspend)|\bauto[-\s]?pilots?\s*=\s*false\b/i;

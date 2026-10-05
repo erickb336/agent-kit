@@ -71,6 +71,12 @@ test("sage mode makes the session the chief of staff, and only subagents may cha
   assert.equal(s.send(edit()), undefined);
 });
 
+test("F-T72-20: full-width punctuation ends only the board phrase; a mode phrase with ！ or 。 switches nothing", () => {
+  const s = session();
+  for (const p of ["sage mode！", "sage mode。"]) assert.equal(s.send(prompt(p)), undefined, p);
+  assert.equal(s.send(edit()), undefined, "still not in sage mode");
+});
+
 test("a session that starts as the chief-of-staff agent is in sage mode without the phrase", () => {
   const s = session();
   assert.match(denied(s.send(edit({ agent_type: "sage:chief-of-staff" }))), /you do not change files yourself/);

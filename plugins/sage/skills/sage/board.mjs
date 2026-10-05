@@ -182,7 +182,7 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   if (want === "all") [shown, title] = [books, "all projects"];
   else if (want === "this") {
     const mine = sessionBook(books, project, env);
-    if (mine) [shown, others, title] = [[mine], books.filter((b) => b !== mine), mine.key];
+    if (mine) [shown, others, title] = [[mine], books.filter((b) => b !== mine), label(mine)];
     else [shown, title] = [books, "all projects (this folder has no logbook)"];
   } else {
     let sure;
@@ -239,7 +239,7 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     const active = b.tasks.filter((t) => !CLOSED.includes(t.state) && t.state !== "framed").sort((x, y) => n(x.id) - n(y.id));
     const framed = b.tasks.filter((t) => t.state === "framed").sort((x, y) => n(x.id) - n(y.id));
     for (const t of active.slice(0, cap)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
-    if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${label(b)})`);
+    if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${b.key})`);
     if (!active.length) L.push("- no active tasks");
     L.push(`- framed backlog: ${framed.length}${framed.length ? ` · next up (framed, in id order): ${framed.slice(0, CAP.next).map((t) => `${t.id} ${text(t.title, 30)}`).join("; ")}` : ""}`);
   }
