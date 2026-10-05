@@ -15,12 +15,14 @@
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
-// SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
-// or a push.
+//   - Only the chief writes the logbook, in any mode (agentProblem): an agent runs the state tool only as one plain read
+//     command, never the PR script, never a command outside the sandbox, and never writes under the sage root.
+// SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge,
+// a push, and an agent's file change or command that names the state tool or the PR script.
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The state tool. When it cannot load, the hook still runs, and its merge check refuses every merge.
@@ -53,6 +55,10 @@ const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit
 const broadOff = (text) => OFF_LINE.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
+/** The tools that run a command. The PreToolUse matcher in claude.json names each of them. */
+const COMMAND_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.*)$/;
+/** All the text of a tool call's input, with its quotes and backslashes removed, so that sa''ge.mjs or sage.m\js still names the tool. */
+const flatText = (ti) => JSON.stringify(ti ?? {}).replace(/['"\\]/g, "");
 const CHIEF = /(^|:)chief-of-staff$/;
 const OURS = /^sage:/;
 export const BRIEF_FIELDS = ["GOAL", "SCOPE", "CONTEXT", "DECISIONS", "ACCEPTANCE", "VERIFY", "BUDGET", "FORBIDDEN", "REPORT", "STANDING"];
@@ -186,6 +192,8 @@ export function handle(input, state, slots) {
   }
   if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
   if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
+  const agentWhy = event === "PreToolUse" && !main ? agentProblem(input) : undefined;
+  if (agentWhy) return deny(event, `${agentWhy} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
   if (event !== "PreToolUse" || !state.sage) return undefined;
 
   const tool = input.tool_name ?? "";
@@ -416,6 +424,60 @@ function firstCreation({ owner, repo, branch, sha }) {
   } catch (e) {
     return no(`the check on GitHub failed (${e.message})`);
   }
+}
+
+/**
+ * Only the chief writes the logbook (T83). An agent's event (it has agent_id) may run the state tool only as one plain
+ * read command, by an allow-list of subcommands, so a subcommand added later is refused until it is listed here. The
+ * rule holds for every tool that runs a command (COMMAND_TOOLS), not only Bash. Undefined, or the reason for the refusal.
+ */
+const READS = { status: () => true, "merge-check": () => true, logbook: (pos) => pos[0] !== "repair", standing: (pos) => pos[0] !== "add", config: (pos) => !pos.length };
+const READ_FORM = "node <path to skills/sage/sage.mjs> <status, merge-check, logbook, standing or config> [--project <path>], as one plain command: no quote, variable, ;, &&, ||, |, `, $(, >, < or newline, and config with no key=value";
+const PLAIN = /^[\w./=:@,+-]+(?:[ \t]+[\w./=:@,+-]+)*$/;
+/** A write form in a shell command: a redirection, or a command that writes, moves or removes a file. */
+const WRITES = /[>]|\b(?:tee|cp|mv|rm|ln|touch|truncate|dd|rsync|install)\b|\bsed\b.*\s-[a-zA-Z]*i/;
+function agentProblem(input) {
+  const ti = input.tool_input ?? {};
+  const file = FILE_TOOLS.test(input.tool_name ?? "");
+  if (!file && !COMMAND_TOOLS.test(input.tool_name ?? "")) return undefined;
+  const root = real(stateTool.sageRoot(process.env));
+  if (file) {
+    const path = real(resolve(input.cwd ?? process.cwd(), String(ti.file_path ?? ti.notebook_path ?? "")));
+    return path === root || path.startsWith(root + sep) ? `an agent never writes under the sage root ${root} (${path}).` : undefined;
+  }
+  if (ti.dangerouslyDisableSandbox) return "an agent never runs a command outside the sandbox (dangerouslyDisableSandbox).";
+  const command = typeof ti.command === "string" ? ti.command : "";
+  const flat = flatText(ti);
+  if (/sage-pr\.mjs/i.test(flat)) return "only the chief runs the PR script (sage-pr.mjs).";
+  if (/sage\.mjs/i.test(flat)) {
+    const [node, path, cmd, ...args] = command.trim().split(/[ \t]+/);
+    if (!PLAIN.test(command.trim()) || node !== "node" || !/(?:^|\/)skills\/sage\/sage\.mjs$/.test(path) || path.split("/").includes("..")) return "an agent runs the state tool only as one plain command, with nothing before or after it.";
+    // The words that are not options or option values, read as the state tool reads them (sage.mjs parse).
+    const pos = [];
+    for (let k = 0; k < args.length; k++) {
+      if (!args[k].startsWith("--")) pos.push(args[k]);
+      else if (!args[k].includes("=")) k++;
+    }
+    return Object.hasOwn(READS, cmd ?? "") && READS[cmd](pos) ? undefined : `"${[cmd, ...pos.slice(0, 1)].join(" ")}" writes the logbook, or is not a read command of the state tool.`;
+  }
+  const logbook = flat.includes(root) || flat.includes(stateTool.sageRoot(process.env)) || /\.claude\/sage(?![\w-])|\bSAGE_HOME\b/.test(flat);
+  return logbook && WRITES.test(flat) ? "an agent never writes, moves or removes a logbook file from the shell." : undefined;
+}
+
+/** The real path, also of a file that does not exist yet: a link is followed, even when its target is missing. */
+function real(path) {
+  let rest = [];
+  for (let hops = 0; hops < 64; hops++) {
+    try {
+      return join(realpathSync(path), ...rest);
+    } catch {
+      const link = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink();
+      if (link) path = resolve(dirname(path), readlinkSync(path));
+      else if (dirname(path) === path) return join(path, ...rest);
+      else [path, rest] = [dirname(path), [basename(path), ...rest]];
+    }
+  }
+  throw new Error(`too many links in ${path}`);
 }
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
@@ -867,7 +929,8 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   } catch (e) {
     // Never break the session, but never let a merge or a push through because the hook failed.
     const command = [].concat(input?.tool_input?.command ?? []).join(" ");
-    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command))) {
+    const agentWrite = input?.agent_id && (FILE_TOOLS.test(input.tool_name ?? "") || /sage(?:-pr)?\.mjs/i.test(flatText(input.tool_input)));
+    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command) || agentWrite)) {
       process.stdout.write(JSON.stringify(deny("PreToolUse", `the hook could not check this command (${e?.message ?? e}), so it refuses it. Tell the user.`)));
     }
   }

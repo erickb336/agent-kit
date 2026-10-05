@@ -10,6 +10,8 @@ The chief of staff keeps the work in the project's logbook, not in the conversat
 
 Run it as `node "${CLAUDE_SKILL_DIR}/sage.mjs" <command> --project <path to the project>`.
 
+Only the chief writes the logbook. The sage hook lets an agent run only `status`, `merge-check`, `logbook`, `standing` and `config` without `key=value`, as one plain command with no quotes: `node <path>/sage.mjs <command> [--project <path>]`.
+
 Each option takes a value: `--name value`, or `--name=value` for a value that starts with `--`. A command refuses an option that it does not take, and names the options that it takes. It refuses an option given twice.
 
 ## Commands

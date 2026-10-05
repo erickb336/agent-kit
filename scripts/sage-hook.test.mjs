@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -1293,4 +1293,143 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
   const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
+});
+
+// T83: only the chief writes the logbook. An agent runs only the state tool's read commands, as one plain command.
+const AGENT = { agent_id: "ag1", agent_type: "sage:implementer" };
+const ONLY_CHIEF = /Only the chief writes the logbook/;
+const PR_SCRIPT = TOOL.replace(/sage\.mjs$/, "sage-pr.mjs");
+/** The forgery steps of the T77 re-check (R354), and the other state-tool writes. */
+const FORGERIES = [
+  ...["checks-pass", "review-clean", "qa-pass"].map((kind) => `${TOOL} verdict T2 --kind ${kind} --sha ${SHA}`),
+  `${TOOL} task T2 set branch=main`,
+  `${TOOL} init`,
+  `${TOOL} config cycles.small=1`,
+  `${TOOL} config cycles.large=1 cycles.risk=1`,
+  `${TOOL} run add T2 --role qa`,
+  `${TOOL} finding close F1`,
+  `${TOOL} gate answer G1 yes`,
+  `${TOOL} log T2 --why forged`,
+  `${TOOL} logbook repair --accept-loss tasks`,
+  `${TOOL} standing add never review`,
+  `${TOOL} round T2`,
+  `${TOOL} newcommand T2`,
+  `${PR_SCRIPT} create T2`,
+].map((args) => `node ${args} --project /p`);
+const READ_COMMANDS = (dir) => ["status", `merge-check --sha ${SHA}`, "standing", "logbook", "config", "status --project=x", `standing --project ${dir}`].map((args) => `node ${TOOL} ${args} --project ${dir}`);
+
+for (const command of FORGERIES) {
+  test(`an agent's "${command.replace(`node ${dirname(TOOL)}/`, "").replace(" --project /p", "")}" is refused, in sage mode and out of it; the chief's passes (T83)`, () => {
+    for (const on of [false, true]) {
+      const s = session();
+      if (on) s.send(prompt("sage mode"));
+      assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", ONLY_CHIEF, `agent, sage mode ${on}`);
+      assert.equal(denied(s.send(bash(command))), undefined, `chief, sage mode ${on}`);
+    }
+  });
+}
+
+test("an agent's read commands of the state tool pass (T83)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  for (const command of READ_COMMANDS(s.dir)) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+});
+
+test("an agent cannot hide a state-tool write in another spelling: quotes, a backslash, a chain, a variable or a .. path (T83)", () => {
+  const s = session();
+  const at = TOOL.slice(0, -"sage.mjs".length);
+  const spellings = (args) => [
+    `node ${at}sa''ge.mjs ${args}`,
+    `node "${TOOL}" ${args}`,
+    `node ${at}sage.m\\js ${args}`,
+    `cd ${s.dir} && node ${TOOL} ${args}`,
+    `node ${TOOL} status; node ${TOOL} ${args}`,
+    `S=${TOOL}; node $S ${args}`,
+    `node ${at}../sage/sage.mjs ${args}`,
+    `node ${TOOL} ${args} > /dev/null`,
+    `node ${TOOL} ${args} | cat`,
+    `node $(echo ${TOOL}) ${args}`,
+    `node ${TOOL} ${args}\nnode ${TOOL} status`,
+    `env node ${TOOL} ${args}`,
+  ];
+  for (const command of [...spellings(`verdict T2 --kind qa-pass --sha ${SHA}`), ...spellings("status")]) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", ONLY_CHIEF, command);
+  assert.match(denied(s.send(bash(`node ${at}sage-p''r.mjs create`, FEATURE, AGENT))) ?? "", /only the chief runs the PR script/);
+});
+
+test("an agent's file change under the sage root is refused, also through a link or ..; elsewhere it passes (T83)", () => {
+  const s = session();
+  const ledger = join(s.vars.SAGE_HOME, "proj-abc123", "ledger.tsv");
+  mkdirSync(dirname(ledger), { recursive: true });
+  writeFileSync(ledger, "");
+  const link = join(s.dir, "link.tsv");
+  symlinkSync(ledger, link);
+  const dangling = join(s.dir, "dangling.tsv");
+  symlinkSync(join(s.vars.SAGE_HOME, "proj-abc123", "new.tsv"), dangling);
+  const folder = join(s.dir, "folder");
+  symlinkSync(s.vars.SAGE_HOME, folder);
+  const refused = [
+    tool("Write", { file_path: ledger, content: "x" }),
+    tool("Edit", { file_path: link, old_string: "", new_string: "x" }),
+    tool("MultiEdit", { file_path: dangling, edits: [] }),
+    tool("NotebookEdit", { notebook_path: join(folder, "config.json") }),
+    tool("Write", { file_path: join(s.dir, "x", "..", "home", "config.json") }),
+    tool("Write", { file_path: "../home/proj-abc123/ledger.tsv" }, { cwd: join(s.dir, "src") }),
+  ];
+  for (const event of refused) {
+    assert.match(denied(s.send({ ...event, ...AGENT, cwd: event.cwd ?? s.dir })) ?? "", /never writes under the sage root[\s\S]*Only the chief writes the logbook/, JSON.stringify(event.tool_input));
+    assert.equal(denied(s.send({ ...event, cwd: event.cwd ?? s.dir })), undefined, "the chief outside sage mode");
+  }
+  assert.equal(denied(s.send({ ...tool("Write", { file_path: join(s.dir, "home-notes.md") }), ...AGENT })), undefined, "a file next to the root");
+  assert.equal(denied(s.send(edit(AGENT))), undefined);
+});
+
+test("an agent's shell write to a logbook path is refused; a read of it passes (T83)", () => {
+  const s = session();
+  const ledger = join(s.vars.SAGE_HOME, "proj-abc123", "ledger.tsv");
+  for (const command of [`echo x >> ${ledger}`, "printf x > ~/.claude/sage/p/ledger.tsv", 'cp /tmp/x "$HOME/.claude/sage/p/ledger.tsv"', "rm -rf $SAGE_HOME/p", `sed -i '' s/a/b/ ${ledger}`, `tee ${ledger} < /tmp/x`, "mv /tmp/x ~/.claude/sage/config.json"]) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /never writes, moves or removes a logbook file[\s\S]*Only the chief/, command);
+    assert.equal(denied(s.send(bash(command))), undefined, `chief: ${command}`);
+  }
+  for (const command of [`cat ${ledger}`, "grep T2 ~/.claude/sage/p/tasks.tsv", "echo x > /tmp/out"]) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+});
+
+test("an agent never runs a command outside the sandbox; the chief may (T83)", () => {
+  const s = session();
+  const out = tool("Bash", { command: "npm test", dangerouslyDisableSandbox: true }, { cwd: FEATURE });
+  assert.match(denied(s.send({ ...out, ...AGENT })) ?? "", /outside the sandbox[\s\S]*Only the chief writes the logbook/);
+  assert.equal(denied(s.send(out)), undefined);
+});
+
+test("when the rule cannot run, an agent's state-tool command and file change are refused (fail closed); other commands pass (T83)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sage-loop-"));
+  const loop = join(dir, "loop");
+  symlinkSync(loop, loop); // the sage root is a link to itself, so the hook cannot resolve it
+  const s = session({ SAGE_HOME: loop });
+  assert.match(denied(s.send(bash(`node ${TOOL} status --project ${s.dir}`, FEATURE, AGENT))) ?? "", /could not check this command/);
+  assert.match(denied(s.send(edit(AGENT))) ?? "", /could not check this command/);
+  assert.equal(denied(s.send(bash("npm test", FEATURE, AGENT))), undefined);
+  assert.equal(denied(s.send(bash(`node ${TOOL} status --project ${s.dir}`))), undefined, "the chief is unchanged");
+});
+
+test("the rule holds for every tool that runs a command: Monitor, PowerShell and the terminal tools (T83)", () => {
+  const s = session();
+  const forged = `node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA} --project /p`;
+  const read = `node ${TOOL} status --project /p`;
+  for (const name of ["Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+    for (const command of [forged, `node ${PR_SCRIPT} create T2`, `echo x >> ${join(s.vars.SAGE_HOME, "p", "ledger.tsv")}`]) {
+      assert.match(denied(s.send({ ...tool(name, { command, description: "d" }), ...AGENT })) ?? "", ONLY_CHIEF, `${name}: ${command}`);
+      assert.equal(denied(s.send(tool(name, { command, description: "d" }))), undefined, `chief ${name}: ${command}`);
+    }
+    assert.equal(denied(s.send({ ...tool(name, { command: read, description: "d" }), ...AGENT })), undefined, `${name}: a read`);
+  }
+  assert.match(denied(s.send({ ...tool("mcp__terminal__run_in_terminal", { script: forged }), ...AGENT })) ?? "", ONLY_CHIEF, "the command in another field");
+  const matcher = JSON.parse(readFileSync(fileURLToPath(new URL("../plugins/sage/hooks/claude.json", import.meta.url)), "utf8")).hooks.PreToolUse[0].matcher;
+  for (const name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run_in_terminal", "Write"]) assert.match(name, new RegExp(`^(?:${matcher})$`), `Claude Code sends ${name} to the hook`);
+});
+
+test("a malformed agent event makes the rule throw, and the hook refuses the agent's file change (fail closed) (T83)", () => {
+  const s = session();
+  const write = { ...tool("Write", { file_path: "notes.md", content: "x" }), ...AGENT, cwd: 5 };
+  assert.match(denied(s.send(write)) ?? "", /could not check this command/);
+  assert.equal(denied(s.send({ ...write, agent_id: undefined, agent_type: undefined })), undefined, "the chief is unchanged");
 });
