@@ -8,7 +8,8 @@ import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
 import { files as graphics } from "./graphics.mjs";
-import { PARSER, WASM, buildParser, onPath, pinned, recorded, sha256 } from "./build-parser.mjs";
+import { PARSER, TOOLS_HELP, buildParser, onPath, pinned, sha256 } from "./build-parser.mjs";
+import { RESTORE, recorded, verifiedWasm } from "../plugins/sage/hooks/parser/parser.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -177,22 +178,45 @@ for (const f of readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".te
 }
 
 // The shell parser is the binary file that its sources build: its sha256 is the recorded one, and, when the pinned
-// TinyGo and Go are on PATH, a fresh build gives the same sha256. Without them, only the recorded sha256 is checked.
-if (sha256(WASM) !== recorded()) problems.push("plugins/sage/hooks/parser/parser.wasm: its sha256 is not the one in parser.wasm.sha256; run npm run parser");
-else if (onPath() === pinned()) {
+// TinyGo and Go are on PATH, a fresh build gives the same sha256. Without them, only the recorded sha256 is checked,
+// except in CI (CI=true), which must rebuild.
+let parserRecorded = true;
+try {
+  verifiedWasm();
+} catch (e) {
+  problems.push(e.message);
+  parserRecorded = false;
+}
+const tools = onPath();
+if (tools !== pinned()) {
+  if (process.env.CI === "true") problems.push(`plugins/sage/hooks/parser/parser.wasm: CI must rebuild it from its sources and compare, but PATH has ${tools}, not ${pinned()}. Install ${TOOLS_HELP}.`);
+  else console.log(`- parser.wasm: recorded sha256 checked, not rebuilt: PATH has ${tools}, not ${pinned()}. To rebuild and compare, install ${TOOLS_HELP}.`);
+} else if (parserRecorded) {
   const dir = mkdtempSync(join(tmpdir(), "sage-parser-"));
   try {
     const built = buildParser(join(dir, "parser.wasm"));
-    if (built !== recorded()) problems.push(`plugins/sage/hooks/parser/parser.wasm: a build from its sources with ${pinned()} gives sha256 ${built}, not the recorded one; run npm run parser`);
+    if (built !== recorded()) problems.push(`plugins/sage/hooks/parser/parser.wasm: a build from its sources with ${pinned()} gives sha256 ${built}, not the recorded ${recorded()}. After a change to parse.go, run npm run parser. Otherwise parser.wasm does not come from its sources: restore both from git: ${RESTORE}`);
     else console.log(`✓ parser.wasm rebuilt with ${pinned()}: same sha256`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-} else console.log(`- parser.wasm: recorded sha256 checked; to rebuild and compare it, put ${pinned()} on PATH`);
-// Every licence file that THIRD-PARTY.md names for the code in parser.wasm ships beside it.
+}
+// Every licence file that THIRD-PARTY.md names ships beside it, with the sha256 that its list of sha256 records, so
+// that a changed or emptied licence text fails too.
 const thirdParty = join(PARSER, "THIRD-PARTY.md");
 if (!existsSync(thirdParty)) problems.push("plugins/sage/hooks/parser/THIRD-PARTY.md: missing; it lists the licences of the code in parser.wasm");
-else for (const [, f] of readFileSync(thirdParty, "utf8").matchAll(/\]\(((?:LICENSE|COPYRIGHT)[^)]*)\)/g)) if (!existsSync(join(PARSER, f))) problems.push(`plugins/sage/hooks/parser/THIRD-PARTY.md: names ${f}, which does not ship`);
+else {
+  const text = readFileSync(thirdParty, "utf8");
+  const named = new Set([...text.matchAll(/\]\(((?:LICENSE|COPYRIGHT)[^)]*)\)/g)].map((m) => m[1]));
+  const sums = new Map([...text.matchAll(/^([0-9a-f]{64}) {2}((?:LICENSE|COPYRIGHT)\S*)$/gm)].map((m) => [m[2], m[1]]));
+  for (const f of new Set([...named, ...sums.keys()])) {
+    const where = `plugins/sage/hooks/parser/THIRD-PARTY.md: ${f}`;
+    if (!existsSync(join(PARSER, f))) problems.push(`${where} does not ship`);
+    else if (!named.has(f)) problems.push(`${where} has a sha256 but no row in the table`);
+    else if (!sums.has(f)) problems.push(`${where} has no sha256 in the list of sha256; add the line that shasum -a 256 ${f} prints`);
+    else if (sha256(join(PARSER, f)) !== sums.get(f)) problems.push(`${where} is not the text that was reviewed: its sha256 is ${sha256(join(PARSER, f))}, not ${sums.get(f)}. Restore it with git checkout HEAD -- plugins/sage/hooks/parser/${f}, or copy the upstream file at the pinned version and record its sha256`);
+  }
+}
 
 // The build reads the dictionary too, so a problem in it comes twice: report it once.
 if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }

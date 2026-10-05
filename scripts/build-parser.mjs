@@ -1,8 +1,8 @@
 // Builds the sage hook's shell parser, plugins/sage/hooks/parser/parser.wasm, from parse.go and the pinned mvdan/sh
 // (go.mod, go.sum) with TinyGo, and records its sha256 in parser.wasm.sha256. It needs the pinned TinyGo on PATH, and
 // the Go of go.mod's toolchain line as the go on PATH (TinyGo uses it for the standard library). `npm run check`
-// rebuilds the parser when both are there and compares, so a person can verify the binary file from its sources.
-// Run `npm run parser` after a change to the parser's sources.
+// rebuilds the parser when both are there and compares, so a person can verify the binary file from its sources; in
+// CI (CI=true) the check fails without them. Run `npm run parser` after a change to the parser's sources.
 //
 // Why TinyGo: a standard Go WASM file is about 4 MB, and a new Node process spends 39 to 68 ms of CPU to compile it
 // and start Go's runtime; the TinyGo file is about 0.46 MB and takes about 10 ms. The hook starts a new process for
@@ -21,27 +21,31 @@ export const RECORD = join(PARSER, "parser.wasm.sha256");
 export const TINYGO = "0.42.0";
 
 export const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
-/** The sha256 that parser.wasm.sha256 records ("<sha256>  parser.wasm", as shasum -a 256 prints it). */
-export const recorded = () => readFileSync(RECORD, "utf8").split(/\s+/)[0];
+const GO = /^toolchain go(\S+)$/m.exec(readFileSync(join(PARSER, "go.mod"), "utf8"))[1];
 /** The toolchains that the build needs, as `tinygo version` names them: the pinned TinyGo and go.mod's toolchain line. */
-export const pinned = () => `tinygo ${TINYGO} with ${/^toolchain (go\S+)$/m.exec(readFileSync(join(PARSER, "go.mod"), "utf8"))[1]}`;
+export const pinned = () => `tinygo ${TINYGO} with go${GO}`;
+/** Where to get the pinned tools, for the messages of npm run parser and npm run check. */
+export const TOOLS_HELP = `TinyGo ${TINYGO} (https://github.com/tinygo-org/tinygo/releases/tag/v${TINYGO}) and Go ${GO} exactly (https://go.dev/dl/), both on PATH; README.md, "Rebuild the parser", gives the steps`;
 
-/** The toolchains on PATH in the same form, or undefined when TinyGo or its Go is missing. */
+/** The toolchains on PATH in the same form; "no tinygo" when TinyGo is missing, or its version line when it is not in that form. */
 export function onPath() {
+  let v;
   try {
-    const v = execFileSync("tinygo", ["version"], { encoding: "utf8", env: { ...process.env, GOTOOLCHAIN: "local" }, stdio: ["ignore", "pipe", "ignore"] });
-    const m = /^tinygo version (\S+) .*using go version (go\S+) /m.exec(v);
-    return m ? `tinygo ${m[1]} with ${m[2]}` : undefined;
+    v = execFileSync("tinygo", ["version"], { encoding: "utf8", env: { ...process.env, GOTOOLCHAIN: "local" }, stdio: ["ignore", "pipe", "ignore"] });
   } catch {
-    return undefined;
+    return "no tinygo";
   }
+  const m = /^tinygo version (\S+) .*using go version (go\S+) /m.exec(v);
+  return m ? `tinygo ${m[1]} with ${m[2]}` : v.trim();
 }
 
 /**
  * Builds parser.wasm into out and gives its sha256. TinyGo puts no build path or build id in the file; -no-debug
- * leaves out DWARF. The scheduler is none: the parser starts no goroutine, and the default scheduler needs Binaryen's
- * wasm-opt. TinyGo always runs wasm-opt on a WASM file, so the build gives it a stand-in that copies the file
- * unchanged: Binaryen is not a pinned tool here, and the file is fast enough without its optimizations.
+ * leaves out DWARF. target.json is wasip1 with a 1 MiB stack (wasm-ld's default is 64 KiB), so that a line nests
+ * about 10 times deeper before the parser stops. The scheduler is none: the parser starts no goroutine, and the
+ * default scheduler needs Binaryen's wasm-opt. TinyGo always runs wasm-opt on a WASM file, so the build gives it a
+ * stand-in that copies the file unchanged: Binaryen is not a pinned tool here, and the file is fast enough without
+ * its optimizations.
  */
 export function buildParser(out) {
   const dir = mkdtempSync(join(tmpdir(), "sage-wasm-opt-"));
@@ -50,7 +54,7 @@ export function buildParser(out) {
     writeFileSync(wasmOpt, '#!/bin/sh\n# tinygo calls: wasm-opt --version, and wasm-opt -Oz -g <in> --output <out>\n[ "$1" = --version ] && { echo "wasm-opt version 102"; exit 0; }\nexec cp "$3" "$5"\n');
     chmodSync(wasmOpt, 0o755);
     const env = { ...process.env, CGO_ENABLED: "0", GOFLAGS: "-mod=readonly", GOTOOLCHAIN: "local", WASMOPT: wasmOpt };
-    execFileSync("tinygo", ["build", "-target=wasip1", "-buildmode=c-shared", "-scheduler=none", "-no-debug", "-o", out, "."], { cwd: PARSER, env, stdio: "inherit" });
+    execFileSync("tinygo", ["build", "-target=./target.json", "-buildmode=c-shared", "-scheduler=none", "-no-debug", "-o", out, "."], { cwd: PARSER, env, stdio: "inherit" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -60,7 +64,7 @@ export function buildParser(out) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const tools = onPath();
   if (tools !== pinned()) {
-    console.error(`✗ the parser builds with ${pinned()} (TINYGO in this file, and go.mod's toolchain line); PATH has ${tools ?? "no tinygo"}`);
+    console.error(`✗ scripts/build-parser.mjs (npm run parser) builds with ${pinned()}, and PATH has ${tools}. Install ${TOOLS_HELP}.`);
     process.exit(1);
   }
   const sum = buildParser(WASM);

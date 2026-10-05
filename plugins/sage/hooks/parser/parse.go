@@ -7,12 +7,16 @@
 // A command's words lose their quotes and redirections. A command substitution, $( ) or a backtick, and a process
 // substitution, <( ), >( ) or zsh's =( ), are "$(…)" in the word and give commands of their own, listed before the
 // command they land in (host: its index in the list, and the word's index; -1 for a heredoc). Keywords (if, while,
-// case, time, coproc, function) are not words: their commands are listed with grouped set. Parse refuses (an error)
-// what it cannot read, so that the hook fails closed.
+// case, time, coproc, function) are not words: their commands are listed with grouped set. A line with no command gives
+// an empty list. Parse refuses (an error) what it cannot read, so that the hook fails closed: a NUL byte, an ANSI-C
+// string ($'…') with an escape other than the 13 that bash and zsh read alike, and in zsh mode the forms that turn
+// text into code (see zshChecks) and zsh's coproc.
 package main
 
 import (
+	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -48,7 +52,9 @@ type at struct {
 
 type reader struct {
 	src string
+	zsh bool
 	out []*command
+	err error // the first error in a substitution (substsAt)
 }
 
 // A zsh glob qualifier that runs code: *(e:'ps':), *(+f), *(#qe:…:). mvdan/sh reads it as plain text.
@@ -57,6 +63,9 @@ var codeQualifier = regexp.MustCompile(`\([^)]*[e+]`)
 // Parse gives the command list of src, read as zsh when zsh is true, else as bash. TinyGo has no recover() on
 // WebAssembly: a panic stops the instance with a trap, and parser.mjs throws it.
 func Parse(src string, zsh bool) []byte {
+	if strings.IndexByte(src, 0) >= 0 {
+		return fail(errors.New("a NUL byte: a shell drops it, so the line that runs is not the line that was read"))
+	}
 	lang := syntax.LangBash
 	if zsh {
 		lang = syntax.LangZsh
@@ -65,13 +74,11 @@ func Parse(src string, zsh bool) []byte {
 	if err != nil {
 		return fail(err)
 	}
-	if zsh {
-		if err := qualifiers(f); err != nil {
-			return fail(err)
-		}
+	if err := checks(f, zsh); err != nil {
+		return fail(err)
 	}
-	r := &reader{src: src}
-	if err := r.stmts(f.Stmts, at{}, false); err != nil {
+	r := &reader{src: src, zsh: zsh, out: []*command{}}
+	if err := cmp.Or(r.stmts(f.Stmts, at{}, false), r.err); err != nil {
 		return fail(err)
 	}
 	index := map[*command]int{}
@@ -96,37 +103,78 @@ func fail(err error) []byte {
 	return b
 }
 
-// qualifiers refuses a word with a glob qualifier that runs code. A heredoc body is text, not words: only the commands
-// of its substitutions are checked.
-func qualifiers(f *syntax.File) (err error) {
-	var check func(n syntax.Node) bool
-	check = func(n syntax.Node) bool {
-		switch x := n.(type) {
-		case *syntax.Redirect:
-			if x.Word != nil {
-				syntax.Walk(x.Word, check)
+// checks refuses the forms that the command list cannot show, because the shell makes them into other text or code:
+//   - an ANSI-C string with an escape that ansiC does not decode, in both modes;
+//   - in zsh mode, a glob qualifier that runs code: *(e:'ps':), *(+f), *(#qe:…:). mvdan/sh reads it as plain text;
+//   - in zsh mode, a parameter expansion that makes a value into code (zshexpn(1), "Parameter Expansion Flags"):
+//     the e flag runs the value's substitutions (${(e)x}); %% with PROMPT_SUBST does too; a substitution in a flag's
+//     argument runs (${(l:$(ps):)x}); ${~x}, $~x and the ~ flag make a value a glob pattern, which can hold a qualifier
+//     that runs code.
+//
+// A heredoc body is text, not words, so a glob qualifier there is plain text; its expansions are checked.
+func checks(f *syntax.File, zsh bool) (err error) {
+	var walk func(n syntax.Node, hdoc bool)
+	walk = func(n syntax.Node, hdoc bool) {
+		syntax.Walk(n, func(n syntax.Node) bool {
+			if err != nil {
+				return false
 			}
-			if x.Hdoc != nil {
-				syntax.Walk(x.Hdoc, func(n syntax.Node) bool {
-					if s, ok := n.(*syntax.CmdSubst); ok {
-						syntax.Walk(s, check)
-						return false
+			switch x := n.(type) {
+			case *syntax.Redirect:
+				if x.Word != nil {
+					walk(x.Word, false)
+				}
+				if x.Hdoc != nil {
+					walk(x.Hdoc, true)
+				}
+				return false
+			case *syntax.CmdSubst:
+				if hdoc {
+					walk(x, false)
+					return false
+				}
+			case *syntax.SglQuoted:
+				if _, ok := ansiC(x.Value); x.Dollar && !ok {
+					err = fmt.Errorf(`an ANSI-C string with an escape other than \a \b \e \E \f \n \r \t \v \\ \' \" \?: $'%s'`, x.Value)
+				}
+			case *syntax.Word:
+				for _, p := range x.Parts {
+					if l, ok := p.(*syntax.Lit); ok && zsh && !hdoc && err == nil && codeQualifier.MatchString(l.Value) {
+						err = fmt.Errorf("a zsh glob qualifier that can run code: %s", l.Value)
 					}
-					return true
-				})
-			}
-			return false
-		case *syntax.Word:
-			for _, p := range x.Parts {
-				if l, ok := p.(*syntax.Lit); ok && err == nil && codeQualifier.MatchString(l.Value) {
-					err = fmt.Errorf("a zsh glob qualifier that can run code: %s", l.Value)
+				}
+			case *syntax.ParamExp:
+				if zsh && (x.GlobSubst == syntax.OptOn || x.Flags != nil && strings.ContainsAny(x.Flags.Value, "e%~$`")) {
+					err = errors.New("a zsh parameter expansion that can run code: the e, % or ~ flag, a substitution in a flag, or ${~x}")
 				}
 			}
-		}
-		return err == nil
+			return err == nil
+		})
 	}
-	syntax.Walk(f, check)
+	walk(f, false)
 	return err
+}
+
+// ansiC decodes the text of $'…' when it has only the escapes that bash and zsh decode alike; ok is false otherwise.
+// The others (numbers such as \x67, \c, \u, \M-, and an unknown escape, which bash keeps and zsh drops) are refused,
+// so that $'\x67it' cannot hide a program name.
+func ansiC(s string) (_ string, ok bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			continue
+		}
+		if i++; i == len(s) {
+			return "", false
+		}
+		c := strings.IndexByte(`abeEfnrtv\'"?`, s[i])
+		if c < 0 {
+			return "", false
+		}
+		b.WriteByte("\a\b\x1b\x1b\f\n\r\t\v\\'\"?"[c])
+	}
+	return b.String(), true
 }
 
 func (r *reader) text(n syntax.Node) string { return r.src[n.Pos().Offset():n.End().Offset()] }
@@ -163,6 +211,9 @@ func (r *reader) stmt(s *syntax.Stmt, h at, grouped bool) error {
 	case nil: // only redirections, such as ">out"
 		c = r.newCommand(h, grouped)
 	case *syntax.CallExpr:
+		if r.zsh && len(x.Args) > 0 && x.Args[0].Lit() == "coproc" {
+			return errors.New("zsh's coproc, which mvdan/sh reads as a word")
+		}
 		c = r.newCommand(h, grouped)
 		for _, a := range x.Assigns {
 			r.word(c, r.assign(a), a)
@@ -304,18 +355,22 @@ func (r *reader) word(c *command, text string, n syntax.Node) {
 	c.Words = append(c.Words, text)
 }
 
-// substsAt lists the commands of each substitution in n, landing at h.
+// substsAt lists the commands of each substitution in n, landing at h. The first error that a substitution's
+// commands give is kept in r.err, and Parse refuses the line.
 func (r *reader) substsAt(n syntax.Node, h at) {
 	if n == nil {
 		return
 	}
 	syntax.Walk(n, func(n syntax.Node) bool {
+		if r.err != nil {
+			return false
+		}
 		switch x := n.(type) {
 		case *syntax.CmdSubst:
-			r.stmts(x.Stmts, h, false)
+			r.err = r.stmts(x.Stmts, h, false)
 			return false
 		case *syntax.ProcSubst:
-			r.stmts(x.Stmts, h, false)
+			r.err = r.stmts(x.Stmts, h, false)
 			return false
 		}
 		return true
@@ -350,7 +405,8 @@ func (r *reader) partText(p syntax.WordPart, inDouble bool) string {
 		return unescape(x.Value, inDouble)
 	case *syntax.SglQuoted:
 		if x.Dollar {
-			return r.text(x)
+			v, _ := ansiC(x.Value) // checks refused the line if this fails
+			return v
 		}
 		return x.Value
 	case *syntax.DblQuoted:
@@ -361,6 +417,11 @@ func (r *reader) partText(p syntax.WordPart, inDouble bool) string {
 		return b.String()
 	case *syntax.CmdSubst, *syntax.ProcSubst:
 		return "$(…)"
+	case *syntax.ParamExp:
+		// mvdan/sh v3.14.1 ends a zsh $=x or $^x at the end of the line one byte early: end it after the name.
+		if x.Short && x.Index == nil && x.Param != nil {
+			return r.src[x.Pos().Offset():max(x.End().Offset(), x.Param.Pos().Offset()+uint(len(x.Param.Value)))]
+		}
 	}
 	return r.text(p)
 }

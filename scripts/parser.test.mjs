@@ -3,10 +3,13 @@
 // Nothing here runs a command line: the parser only reads text.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseCommands, MAX_LENGTH } from "../plugins/sage/hooks/parser/parser.mjs";
+import { parseCommands, parseRaw, MAX_LENGTH } from "../plugins/sage/hooks/parser/parser.mjs";
 
 const LOADER = fileURLToPath(new URL("../plugins/sage/hooks/parser/parser.mjs", import.meta.url));
 const read = (src, zsh) => {
@@ -88,7 +91,8 @@ test("R466-FAILCLOSED: each line that the hook's reader cannot read is refused i
 // one word (the shell refuses it too). zsh mode also refuses ;;&.
 const OPEN = ["git push origin main", "gh pr merge 1 --admin"].flatMap((x) => [`(case x in a) ${x}`, `( ${x}`, `case x in a) ${x}`, `x=$(case x in a) ${x})`, `(case x in a) ${x} )`, `echo '${x}`]);
 const PATTERN = ["git push origin main", "gh pr merge 1 --admin"].flatMap((x) => [`case $1 in\n ${x}) echo top;;\n ps|kill) echo other;;\nesac`, `case x in (${x}) :;; esac`, `x=$(case $1 in ${x}) echo t;; esac); echo "$x"`]);
-const BASH_REFUSES = ['echo "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', "git push origin 'feat", ...OPEN, ...PATTERN];
+// $'\x67h' spells gh: a $'…' escape other than the 13 that bash and zsh read alike is refused (T125-C2-ANSIC).
+const BASH_REFUSES = ["$'\\x67h' pr merge 41 --admin", 'echo "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', "git push origin 'feat", ...OPEN, ...PATTERN];
 const ZSH_REFUSES = [...BASH_REFUSES, ...["git push origin main", "gh pr merge 1 --admin"].map((x) => `case x in a) :;& b) ${x};;& esac`)];
 
 test("main's regression list: each line parses with its push, merge, API call or process program in a command, or is refused", () => {
@@ -106,7 +110,8 @@ test("main's regression list: each line parses with its push, merge, API call or
 
 test("strictness: bash mode refuses the 5 invalid probes that tolerant parsers accept; zsh mode accepts only what zsh accepts", () => {
   for (const line of ["fi", "done", "while; do :; done", "case x in (a b) :;; esac", "( )"]) assert.ok(read(line, false) instanceof Error, line);
-  for (const line of ["fi", "done", "case x in (a b) :;; esac", "( )"]) assert.ok(read(line, true) instanceof Error, line); // zsh -n accepts the last two: stricter, so fail closed
+  for (const line of ["fi", "done", "case x in (a b) :;; esac"]) assert.ok(read(line, true) instanceof Error, line); // zsh -n accepts the last one: stricter, so fail closed
+  assert.deepEqual(parseCommands("( )", { zsh: true }), [], "zsh -n accepts an empty subshell, and it runs nothing");
   assert.deepEqual(parseCommands("while; do :; done", { zsh: true }).map((c) => c.words), [[":"]], "zsh -n accepts it too");
 });
 
@@ -146,4 +151,174 @@ test("speed: a new process loads the parser and parses a typical line in well un
   const { user, system } = process.cpuUsage(t);
   console.log(`a line of ${big.length} characters, warm: ${((user + system) / 1000).toFixed(1)} ms of CPU`);
   assert.ok((user + system) / 1000 < 500, "the longest line that the cap lets in parses well inside the hook's 10 s");
+});
+
+const words = (src, zsh = false) => parseCommands(src, { zsh }).map((c) => c.words);
+
+test("T125-Q3-EMPTY: a line with no command gives an empty list, in both modes", () => {
+  for (const zsh of MODES) for (const line of ["", "   ", "# note", "\n", ">out", "2>/dev/null"]) assert.deepEqual(parseCommands(line, { zsh }), [], `${zsh}: ${JSON.stringify(line)}`);
+  assert.deepEqual(words("# note\nps"), [["ps"]], "a comment line before a command");
+});
+
+test("T125-Q2-NUL: a NUL byte is refused by the loader and by the parser itself", () => {
+  for (const zsh of MODES) assert.match(read("ps\0;kill 1", zsh).message, /a NUL byte/);
+  assert.match(parseRaw("ps\0;kill 1").error, /a NUL byte/, "the parser, without the loader's check");
+});
+
+test("T125-Q1-ZSHPARAM: zsh mode refuses each parameter expansion that makes a value into code", () => {
+  const CODE = ["echo ${(e):-'$(ps)'}", "x='$(ps)'; echo ${(e)x}", "echo ${(Xe)x}", "echo \"${(e)x}\"", "x='*(e:ps:)'; echo ${~x}", "echo $~x", "echo ${x:-$~y}", "echo ${(%%)x}", "echo ${(%)x}", "echo ${(~j.|.)x}", "echo ${(pj:$sep:)x}", "cat <<EOF\n${(e)x}\nEOF", "echo $(echo ${(e)x})"];
+  for (const line of CODE) assert.match(read(line, true).message, /a zsh parameter expansion that can run code/, line);
+  assert.deepEqual(words("echo ${(j:,:)x} ${(U)x} ${~~x} ${=x} ${#x}", true), [["echo", "${(j:,:)x}", "${(U)x}", "${~~x}", "${=x}", "${#x}"]], "flags that run no code pass");
+  assert.ok(read("echo ${(e)x}", false) instanceof Error, "bash has no flags: mvdan/sh refuses them");
+});
+
+test("T125-Q5-DOLLARTILDE: $~x at the end of a line is refused; $=x keeps its name", () => {
+  assert.match(read("echo $~x", true).message, /a zsh parameter expansion that can run code/);
+  assert.deepEqual(words("echo $=x", true), [["echo", "$=x"]]);
+  assert.deepEqual(words("echo $^x", true), [["echo", "$^x"]]);
+});
+
+test("T125-Q4-COPROC: zsh mode refuses coproc, also inside a substitution (T125-S4-SUBERR); bash mode unwraps it", () => {
+  for (const line of ["coproc ps", "coproc (ps)", "echo $(coproc ps)", "cat <(coproc kill 1)", "x=$(coproc ps)"]) assert.match(read(line, true).message, /zsh's coproc/, line);
+  assert.deepEqual(parseCommands("coproc ps").map((c) => [c.words, c.grouped]), [[["ps"], true]]);
+});
+
+test("T125-C1-ARITH: the commands in (( )) and $(( )) are commands, and a backtick is a substitution", () => {
+  for (const zsh of MODES) {
+    assert.deepEqual(parseCommands("(( x = $(kill 1) ))", { zsh }).map((c) => c.words), [["kill", "1"]], `${zsh}`);
+    assert.deepEqual(parseCommands("echo $(( $(ps) + 1 ))", { zsh }).map((c) => [c.words, c.host?.index]), [[["ps"], 1], [["echo", "$(( $(ps) + 1 ))"], undefined]], `${zsh}`);
+    assert.deepEqual(parseCommands("echo `ps -ax`", { zsh }).map((c) => [c.words, c.host?.index]), [[["ps", "-ax"], 1], [["echo", "$(…)"], undefined]], `${zsh}`);
+    assert.deepEqual(parseCommands("(( `kill 1` ))", { zsh }).map((c) => c.words), [["kill", "1"]], `${zsh}`);
+    assert.deepEqual(parseCommands("let x=$(ps)", { zsh }).map((c) => c.words), [["ps"], ["let", "x=$(ps)"]], `${zsh}`);
+  }
+});
+
+test("T125-C2-ANSIC: $'…' gives its decoded text, and an escape that could spell a name is refused, in both modes", () => {
+  for (const zsh of MODES) {
+    assert.deepEqual(words("git commit -m $'fix\\n\\tbody \\'q\\' \\\\ \\\"x\\\" \\?'", zsh), [["git", "commit", "-m", "fix\n\tbody 'q' \\ \"x\" ?"]]);
+    assert.deepEqual(words("printf $'\\a\\b\\e\\E\\f\\r\\v'", zsh), [["printf", "\x07\b\x1b\x1b\f\r\v"]]);
+    for (const line of ["$'\\x67it' push", "$'\\147it' push", "g$'\\u0069't push", "$'\\U00000067'it push", "$'\\cG'", "$'\\M-a'", "$'\\q'", "echo $(echo $'\\x70s')"]) assert.match(read(line, zsh).message, /an ANSI-C string with an escape other than/, `${zsh}: ${line}`);
+  }
+});
+
+test("T125-C3-DEPTH: a 60-step && chain, a 600-command pipe and 300 nested $( ) parse; deeper is refused with the reason, and the next call works", () => {
+  assert.equal(parseCommands(Array.from({ length: 60 }, (_, i) => `step${i} --flag`).join(" && ")).length, 60);
+  assert.equal(parseCommands(Array(600).fill("a").join(" | ")).length, 600);
+  assert.equal(parseCommands(`echo ${"$(".repeat(300)}x${")".repeat(300)}`).length, 301);
+  for (const line of [Array(4000).fill("a").join("|"), `echo ${"$(".repeat(3000)}x${")".repeat(3000)}`]) assert.match(read(line).message, /the parser stopped .*1 MiB stack.*about 600 commands in one pipe or && chain/);
+  assert.deepEqual(words("ps"), [["ps"]]);
+});
+
+/** A copy of the loader beside a given parser.wasm, with a given sha256 record (the right one unless given). */
+function loaderWith(wasm, record = `${createHash("sha256").update(wasm).digest("hex")}  parser.wasm\n`) {
+  const dir = mkdtempSync(join(tmpdir(), "sage-parser-loader-"));
+  cpSync(LOADER, join(dir, "parser.mjs"));
+  writeFileSync(join(dir, "parser.wasm"), wasm);
+  if (record !== undefined && record !== null) writeFileSync(join(dir, "parser.wasm.sha256"), record);
+  return import(join(dir, "parser.mjs"));
+}
+const REAL = readFileSync(new URL("../plugins/sage/hooks/parser/parser.wasm", import.meta.url));
+
+test("T125-S2-LOADHASH: the loader runs parser.wasm only when its sha256 is the recorded one", async () => {
+  const changed = Buffer.from(REAL);
+  changed[changed.length - 1] ^= 1;
+  const swapped = await loaderWith(changed, `${createHash("sha256").update(REAL).digest("hex")}  parser.wasm\n`);
+  assert.throws(() => swapped.parseCommands("ps"), /parser\.wasm differs from its recorded hash.*git checkout HEAD -- plugins\/sage\/hooks\/parser\/parser\.wasm.*TinyGo 0\.42\.0 and Go 1\.26\.8/);
+  assert.throws(() => swapped.parseCommands("ps"), /differs from its recorded hash/, "it stays refused");
+  const bad = await loaderWith(REAL, "not a hash\n");
+  assert.throws(() => bad.parseCommands("ps"), /parser\.wasm\.sha256 is not a valid hash record/);
+  const none = await loaderWith(REAL, null);
+  assert.throws(() => none.parseCommands("ps"), /parser\.wasm\.sha256 is missing/);
+  assert.deepEqual((await loaderWith(REAL)).parseCommands("ps").map((c) => c.words), [["ps"]], "the real file with its record runs");
+});
+
+/** A WebAssembly module with the parser's exports whose parse gives json, whatever the line. */
+function fakeParser(json) {
+  const uleb = (n) => { const b = []; do { let x = n & 0x7f; n >>>= 7; if (n) x |= 0x80; b.push(x); } while (n); return b; };
+  const sleb = (n) => { const b = []; for (;;) { const x = Number(n & 0x7fn); n >>= 7n; if ((n === 0n && !(x & 0x40)) || (n === -1n && x & 0x40)) { b.push(x); return b; } b.push(x | 0x80); } };
+  const vec = (items) => [...uleb(items.length), ...items.flat()];
+  const name = (s) => [...uleb(s.length), ...Buffer.from(s)];
+  const section = (id, bytes) => [id, ...uleb(bytes.length), ...bytes];
+  const body = (code) => [...uleb(code.length + 1), 0, ...code];
+  const data = [...Buffer.from(json)];
+  return Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
+    ...section(1, vec([[0x60, 0, 0], [0x60, 1, 0x7f, 1, 0x7f], [0x60, 2, 0x7f, 0x7f, 1, 0x7e]])),
+    ...section(3, vec([[0], [1], [2]])),
+    ...section(5, vec([[0, 1]])),
+    ...section(7, vec([[...name("memory"), 2, 0], [...name("_initialize"), 0, 0], [...name("alloc"), 0, 1], [...name("parse"), 0, 2]])),
+    ...section(10, vec([body([0x0b]), body([0x41, 0, 0x0b]), body([0x42, ...sleb((1024n << 32n) | BigInt(data.length)), 0x0b])])),
+    ...section(11, vec([[0, 0x41, 0x80, 0x08, 0x0b, ...uleb(data.length), ...data]]))]);
+}
+
+test("T125-S3-SHAPE: the loader refuses a parser result of the wrong shape", async () => {
+  const good = { words: ["ps"], bodies: [], host: null, piped: false, pipeTo: null, grouped: false, writes: false };
+  const ok = await loaderWith(fakeParser(JSON.stringify({ commands: [good] })));
+  assert.deepEqual(ok.parseCommands("x").map((c) => c.words), [["ps"]], "the fake parser works when its result has the right shape");
+  for (const result of [{}, { commands: null }, { commands: [{ ...good, words: "ps" }] }, { commands: [{ ...good, words: [1] }] }, { commands: [{ ...good, bodies: undefined }] }, { commands: [{ ...good, host: { cmd: 1, index: 0 } }] }, { commands: [{ ...good, host: { cmd: 0, index: -2 } }] }, { commands: [{ ...good, pipeTo: 5 }] }, { commands: [{ ...good, piped: "no" }] }, { commands: [], extra: 1 }, { error: 1 }]) {
+    const m = await loaderWith(fakeParser(JSON.stringify(result)));
+    assert.throws(() => m.parseCommands("x"), /the parser gave a result of the wrong shape/, JSON.stringify(result));
+  }
+});
+
+/** A copy of this repository, where a test can change the parser's files and run a script with a given PATH. */
+function repo() {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-parser-repo-")); // the real path, so that the script sees that it runs as the script
+  const ROOT = fileURLToPath(new URL("..", import.meta.url));
+  cpSync(ROOT, dir, { recursive: true, filter: (src) => ![".git", ".claude", "node_modules"].includes(relative(ROOT, src)) });
+  const bin = join(dir, ".bin");
+  mkdirSync(bin);
+  const run = (script, env = {}) => spawnSync(process.execPath, [join(dir, "scripts", `${script}.mjs`)], { encoding: "utf8", env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: dir, ...env } });
+  const file = (rel) => join(dir, "plugins/sage/hooks/parser", rel);
+  /** A fake tinygo on PATH that names a version and builds nothing. */
+  const tinygo = (version) => { writeFileSync(join(bin, "tinygo"), `#!/bin/sh\necho "tinygo version ${version} linux/amd64 (using go version go1.26.8 and LLVM version 22.1.4)"\n`); chmodSync(join(bin, "tinygo"), 0o755); };
+  return { dir, run, file, tinygo };
+}
+
+test("T125-S1-CIREBUILD and T125-U5-SKIPLINE: without the pinned tools, CI fails and a local check names the tools, where to get them and what it found", () => {
+  const r = repo();
+  const local = r.run("check");
+  assert.equal(local.status, 0, local.stderr);
+  assert.match(local.stdout, /- parser\.wasm: recorded sha256 checked, not rebuilt: PATH has no tinygo, not tinygo 0\.42\.0 with go1\.26\.8\. To rebuild and compare, install TinyGo 0\.42\.0 \(https:\/\/github\.com\/tinygo-org\/tinygo\/releases\/tag\/v0\.42\.0\) and Go 1\.26\.8 exactly \(https:\/\/go\.dev\/dl\/\)/);
+  const ci = r.run("check", { CI: "true" });
+  assert.equal(ci.status, 1);
+  assert.match(ci.stderr, /✗ plugins\/sage\/hooks\/parser\/parser\.wasm: CI must rebuild it from its sources and compare, but PATH has no tinygo, not tinygo 0\.42\.0 with go1\.26\.8\. Install TinyGo 0\.42\.0/);
+  r.tinygo("0.41.0");
+  assert.match(r.run("check").stdout, /PATH has tinygo 0\.41\.0 with go1\.26\.8, not tinygo 0\.42\.0 with go1\.26\.8/);
+  assert.equal(r.run("check", { CI: "true" }).status, 1, "a wrong TinyGo fails in CI too");
+  rmSync(r.dir, { recursive: true, force: true });
+});
+
+test("T125-U6-BUILDERR: npm run parser without the tools names scripts/build-parser.mjs, the tools and where to get them", () => {
+  const r = repo();
+  const out = r.run("build-parser");
+  assert.equal(out.status, 1);
+  assert.match(out.stderr, /✗ scripts\/build-parser\.mjs \(npm run parser\) builds with tinygo 0\.42\.0 with go1\.26\.8, and PATH has no tinygo\. Install TinyGo 0\.42\.0 \(https:\/\/github\.com\/tinygo-org\/tinygo\/releases\/tag\/v0\.42\.0\) and Go 1\.26\.8 exactly \(https:\/\/go\.dev\/dl\/\)/);
+  rmSync(r.dir, { recursive: true, force: true });
+});
+
+test("T125-U1-HASHMSG, T125-U4-NOSHA and T125-C4-LICTEXT: each broken parser file gives a ✗ line with its fix, and the other checks still run", () => {
+  const r = repo();
+  const wasm = readFileSync(r.file("parser.wasm"));
+  const check = () => r.run("check");
+  const changed = Buffer.from(wasm);
+  changed[100] ^= 1;
+  writeFileSync(r.file("parser.wasm"), changed);
+  let out = check();
+  assert.equal(out.status, 1);
+  assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/parser\.wasm differs from its recorded hash: its sha256 is [0-9a-f]{64}, and parser\.wasm\.sha256 records [0-9a-f]{64}\. The usual fix is to restore both from git: git checkout HEAD -- plugins\/sage\/hooks\/parser\/parser\.wasm plugins\/sage\/hooks\/parser\/parser\.wasm\.sha256\. After a change to parse\.go, rebuild instead with npm run parser, which needs TinyGo 0\.42\.0 and Go 1\.26\.8 on PATH/);
+  writeFileSync(r.file("parser.wasm"), wasm);
+  writeFileSync(r.file("parser.wasm.sha256"), "f0ee18da  parser.wasm\n");
+  out = check();
+  assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/parser\.wasm\.sha256 is not a valid hash record/);
+  assert.doesNotMatch(out.stderr, /differs from its recorded hash/);
+  rmSync(r.file("parser.wasm.sha256"));
+  writeFileSync(r.file("LICENSE-go"), readFileSync(r.file("LICENSE-go"), "utf8").replace("Redistribution", "Distribution"));
+  rmSync(r.file("COPYRIGHT-musl"));
+  out = check();
+  assert.equal(out.status, 1);
+  assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/parser\.wasm\.sha256 is missing\. Restore it from git: git checkout HEAD --/);
+  assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/THIRD-PARTY\.md: LICENSE-go is not the text that was reviewed/);
+  assert.match(out.stderr, /✗ plugins\/sage\/hooks\/parser\/THIRD-PARTY\.md: COPYRIGHT-musl does not ship/);
+  assert.doesNotMatch(out.stderr, /\n\s+at /, "no stack trace");
+  rmSync(r.dir, { recursive: true, force: true });
 });
