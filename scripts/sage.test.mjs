@@ -20,19 +20,24 @@ const MODEL_DEFAULTS = "model.code-reviewer.tiny=fable model.code-reviewer.small
 /** Every line that the tool printed in this file's tests: the last test reads them. */
 const said = [];
 
-/** A store for one made-up project, in a new root or in home. ok() expects success, no() expects a refusal; both return the output. */
-function store(home = mkdtempSync(join(tmpdir(), "sage-home-")), name = "sage-project-") {
+/**
+ * A store for one made-up project, in a new root or in home. ok() expects success, no() expects a refusal; both return the
+ * output. Its commands ask pids, not the system, about a lock's holder: pids maps a pid to its start time, or to null when
+ * it is dead; a pid not in it is alive, with an unknown start. So no test reads or signals a real process.
+ */
+function store(home = mkdtempSync(join(tmpdir(), "sage-home-")), name = "sage-project-", extra = {}) {
   const project = mkdtempSync(join(tmpdir(), name));
-  const env = { ...process.env, SAGE_HOME: home };
+  const pids = {};
+  const env = () => ({ ...process.env, ...extra, SAGE_HOME: home, SAGE_TEST_PIDS: JSON.stringify(pids) });
   const run = (...args) => {
-    const r = spawnSync("node", [TOOL, ...args, "--project", project], { encoding: "utf8", env, timeout });
+    const r = spawnSync("node", [TOOL, ...args, "--project", project], { encoding: "utf8", env: env(), timeout });
     said.push(r.stdout, r.stderr);
     return r;
   };
   /** Runs a command in its own process and does not wait for it, as a second chief session does. */
   const go = (...args) =>
     new Promise((done) =>
-      execFile("node", [TOOL, ...args, "--project", project], { env, timeout }, (err, stdout, stderr) => {
+      execFile("node", [TOOL, ...args, "--project", project], { env: env(), timeout }, (err, stdout, stderr) => {
         said.push(stdout, stderr);
         done({ status: err ? err.code : 0, stdout, stderr });
       }),
@@ -47,7 +52,7 @@ function store(home = mkdtempSync(join(tmpdir(), "sage-home-")), name = "sage-pr
     assert.equal(r.status, 1, `sage ${args.join(" ")} should be refused, printed: ${r.stdout}`);
     return r.stderr.trim();
   };
-  return { home, project, run, go, ok, no, dir: ok("init").replace(/^\S+ /, "") }; // init prints "logbook <folder>"
+  return { home, project, pids, run, go, ok, no, dir: ok("init").replace(/^\S+ /, "") }; // init prints "logbook <folder>"
 }
 
 /** The rows of one table in a store. */
@@ -72,8 +77,9 @@ function hold(dir, crash) {
   const done = join(mkdtempSync(join(tmpdir(), "sage-hold-")), "release");
   const inside = crash ? `process.kill(process.pid, "SIGKILL")` : `for (const end = Date.now() + 60_000; !existsSync(${JSON.stringify(done)}) && Date.now() < end; ) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)`;
   const args = ["--input-type=module", "-e", `import { existsSync } from "node:fs"; import { withLock } from ${JSON.stringify(LIB)}; withLock(${JSON.stringify(dir)}, () => { console.log("holding"); ${inside}; });`];
-  if (crash) return spawnSync("node", args, { encoding: "utf8" });
-  const child = spawn("node", args);
+  const env = { ...process.env, SAGE_TEST_PIDS: "{}" };
+  if (crash) return spawnSync("node", args, { encoding: "utf8", env });
+  const child = spawn("node", args, { env });
   const exited = once(child, "exit");
   return new Promise((held, failed) => {
     child.stdout.once("data", () => held({ pid: child.pid, exited, release: () => writeFileSync(done, "") }));
@@ -81,10 +87,12 @@ function hold(dir, crash) {
   });
 }
 
-/** Leaves the lock of a crashed command in the store, with its owner record changed by edit. Returns the lock's path. */
-function crash(dir, edit = {}) {
-  assert.equal(hold(dir, true).signal, "SIGKILL");
-  const lock = join(dir, ".lock");
+/** Leaves the lock of a crashed command in store s, with its owner record changed by edit, and its pid dead. Returns the lock's path. */
+function crash(s, edit = {}) {
+  const r = hold(s.dir, true);
+  assert.equal(r.signal, "SIGKILL");
+  s.pids[r.pid] = null;
+  const lock = join(s.dir, ".lock");
   const owner = join(lock, readdirSync(lock)[0]);
   writeFileSync(owner, JSON.stringify({ ...JSON.parse(readFileSync(owner, "utf8")), ...edit }));
   return lock;
@@ -432,27 +440,38 @@ test("two implementer runs on one branch at once: exactly one is refused, every 
   assert.deepEqual(outcomes, Array(10).fill("0 and 1"));
 });
 
-test("a lock left by a crashed command is cleared by the next command", () => {
-  const s = store();
+test("a lock left by a crashed command is cleared by the next command, and no command asks the system about a process", () => {
+  // A ps and a kill first on PATH that only log their calls: the tool asks its fake pids, so the log stays empty.
+  const fakes = mkdtempSync(join(tmpdir(), "sage-fakes-"));
+  for (const name of ["ps", "kill"]) writeFileSync(join(fakes, name), `#!/bin/sh\necho "${name} $*" >> "${join(fakes, "calls")}"\n`, { mode: 0o755 });
+  const s = store(undefined, undefined, { PATH: `${fakes}:${process.env.PATH}` });
   s.ok("task", "add", "--title", "t", "--size", "small");
-  const lock = crash(s.dir);
+  const lock = crash(s);
   // A waiter that could not clear the lock would refuse after 3 s: status 0 shows that it cleared it.
   let r = s.run("task", "T1", "set", "branch=after-crash");
   assert.equal(r.status, 0, r.stderr);
   assert.equal(existsSync(lock), false);
   assert.equal(rows(s.dir, "tasks")[0].branch, "after-crash");
 
-  crash(s.dir, { boot: 1 }); // the machine started again since the lock was taken
+  crash(s, { boot: 1 }); // the machine started again since the lock was taken
   r = s.run("task", "T1", "set", "branch=after-boot");
   assert.equal(r.status, 0, r.stderr);
 
-  crash(s.dir, { pid: process.pid, start: 1000 }); // its pid now names another live process, which started later: this test
+  crash(s, { pid: 424242, start: 1000 });
+  s.pids[424242] = Date.now(); // its pid now names another live process, which started later
   const t0 = Date.now();
   r = s.run("task", "T1", "set", "branch=after-reuse");
   assert.equal(r.status, 0, r.stderr);
   assert.ok(Date.now() - t0 >= 500, "the start time is checked after 500 ms"); // a lower bound: a busy machine only adds time
   assert.equal(existsSync(lock), false);
   assert.equal(rows(s.dir, "tasks")[0].branch, "after-reuse");
+
+  crash(s, { pid: 424243, start: Date.now() });
+  s.pids[424243] = Date.now() - 60_000; // a live process that started before the holder took the lock: the holder itself
+  r = s.run("task", "T1", "set", "branch=while-alive");
+  assert.match(r.stderr, /^sage: the logbook is busy: pid 424243 on /);
+  assert.equal(existsSync(lock), true);
+  assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps or kill");
 });
 
 test("a holder that may be alive keeps the lock: a waiter waits for it, or refuses after about 3 s with one line", async () => {
@@ -481,7 +500,7 @@ test("a holder that may be alive keeps the lock: a waiter waits for it, or refus
   assert.equal(rows(s.dir, "tasks")[0].branch, "after-wait", "it took the lock when the holder let go");
   await h.exited;
 
-  const lock = crash(s.dir, { host: "other-host", boot: 1 }); // this machine cannot check a process on another one
+  const lock = crash(s, { host: "other-host", boot: 1 }); // this machine cannot check a process on another one
   t0 = Date.now();
   r = s.run("task", "T1", "set", "branch=other-host");
   assert.equal(r.status, 1);
@@ -608,7 +627,7 @@ test("S1: a waiter takes the owner file's name only from the lock folder, so no 
   s.ok("task", "add", "--title", "t", "--size", "small");
   const victim = join(s.home, "important.txt");
   writeFileSync(victim, "keep me");
-  let lock = crash(s.dir, { file: "../../important.txt" }); // a dead holder whose record names another file
+  let lock = crash(s, { file: "../../important.txt" }); // a dead holder whose record names another file
   assert.match(s.ok("task", "T1", "set", "branch=after-plant"), /^T1 framed/, "the waiter clears the dead holder's own file");
   assert.equal(existsSync(lock), false);
   assert.equal(readFileSync(victim, "utf8"), "keep me");
@@ -637,7 +656,7 @@ test("S2: a planted lock never hangs a command, the refusal says which folder to
   assert.equal(live.ok("log", "-", "x", "--why", "w"), "logged");
 
   const s = store();
-  const lock = crash(s.dir);
+  const lock = crash(s);
   const killed = join(s.dir, `.lock.${basename(readdirSync(lock)[0], ".json")}`);
   renameSync(lock, killed); // the temp folder of a waiter that was killed before its rename
   const waiter = join(s.dir, `.lock.${randomUUID()}`); // the temp folder of a waiter that still runs: this process

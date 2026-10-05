@@ -853,21 +853,36 @@ function holder(folder) {
   }
 }
 
+/**
+ * How the lock asks about a process on this machine: is the pid alive, and when did it start (ms, NaN when unknown).
+ * The real probe asks for one pid only (kill 0 and ps -p), never for the process list. SAGE_TEST_PIDS, a JSON map of
+ * pid to start time (null for a dead pid; a pid not in it is alive, start unknown), replaces it in tests, so that no
+ * test reads or signals a real process.
+ */
+const probe = process.env.SAGE_TEST_PIDS
+  ? ((pids) => ({ alive: (pid) => pids[pid] !== null, started: (pid) => pids[pid] ?? NaN }))(JSON.parse(process.env.SAGE_TEST_PIDS))
+  : {
+      alive(pid) {
+        try {
+          return process.kill(pid, 0);
+        } catch (e) {
+          return e.code !== "ESRCH";
+        }
+      },
+      started(pid) {
+        try {
+          return Date.parse(execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, stdio: ["ignore", "pipe", "ignore"] }).trim());
+        } catch {
+          return NaN;
+        }
+      },
+    };
+
 /** True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one. */
 function gone(h, checkStart) {
   if (Math.abs(h.boot - BOOT) > 60_000) return h.host === hostname(); // another machine may still hold it
-  try {
-    process.kill(h.pid, 0);
-  } catch (e) {
-    return e.code === "ESRCH";
-  }
-  if (!checkStart) return false;
-  try {
-    const ps = execFileSync("ps", ["-o", "lstart=", "-p", String(h.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, stdio: ["ignore", "pipe", "ignore"] });
-    return Date.parse(ps.trim()) > h.start + 2000; // the pid now names a process that started after the holder
-  } catch {
-    return false;
-  }
+  if (!probe.alive(h.pid)) return true;
+  return checkStart && probe.started(h.pid) > h.start + 2000; // the pid now names a process that started after the holder
 }
 
 /** Removes a lock folder by its owner file's name, then the folder, which must then be empty. False if either fails. */
