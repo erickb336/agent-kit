@@ -717,6 +717,16 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   assert.match(merge(), /autopilot is off/, "the kill switch");
 });
 
+test("T54-1: the autopilot note says that a cycles key with no number blocks every merge, and never prints NaN", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  s.sage("init");
+  writeFileSync(join(s.vars.SAGE_HOME, "config.json"), '{"cycles.risk": "abc"}');
+  const note = context(s.send(prompt("autopilot on")));
+  assert.match(note, /autopilot is on\. cycles\.risk in config\.json is not a number: no merge until it is fixed \(sage config cycles\.risk=<n>\)\./);
+  assert.doesNotMatch(note, /NaN/);
+});
+
 test("F-T47-1: the autopilot note gives the clean cycles that the merge check asks, for a small, a large and a risky task", () => {
   const s = session();
   s.send(prompt("sage mode"));

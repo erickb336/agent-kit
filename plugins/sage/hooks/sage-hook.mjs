@@ -144,8 +144,10 @@ function switchModes({ owner, text, outside, all }, state) {
   } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
     state.autopilot = true;
     const c = stateTool.config();
+    const broken = Object.keys(c).find((k) => c[k] === "invalid");
     const [small, large, risky] = [{}, { size: "large" }, { risk: "auth" }].map((task) => stateTool.cyclesFor(task, c));
-    notes.push(`sage: autopilot is on. A pull request merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"} for a tiny or small task, ${large} for a large task and ${risky} for a task with a risk flag; a large task with a risk flag needs the larger count. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
+    if (broken) notes.push(`sage: autopilot is on. ${broken} in config.json is not a number: no merge until it is fixed (sage config ${broken}=<n>).`);
+    else notes.push(`sage: autopilot is on. A pull request merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"} for a tiny or small task, ${large} for a large task and ${risky} for a task with a risk flag; a large task with a risk flag needs the larger count. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
   }
   return notes;
 }
