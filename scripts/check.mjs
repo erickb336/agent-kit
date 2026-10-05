@@ -1,5 +1,6 @@
 // Checks the sources and that the generated files match them. Fails with a list of every problem.
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GENERATED, ROOT, outputs, parseSource } from "./build.mjs";
 import { checkWords, flaggedWords, yamlText } from "./dictionary.mjs";
@@ -7,6 +8,7 @@ import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
 import { files as graphics } from "./graphics.mjs";
+import { WASM, buildParser, goOnPath, pinnedGo, recorded, sha256 } from "./build-parser.mjs";
 
 const problems = [];
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
@@ -173,6 +175,20 @@ for (const f of readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".te
     else problems.push(`scripts/${f}:${i + 1}: a test holds a wall-clock time under a fixed number of ms, so a busy machine breaks it. Instead, ${FIX}.`);
   });
 }
+
+// The shell parser is the binary file that its sources build: its sha256 is the recorded one, and, when the pinned Go
+// is on PATH, a fresh build gives the same sha256. Without that Go, only the recorded sha256 is checked.
+if (sha256(WASM) !== recorded()) problems.push("plugins/sage/hooks/parser/parser.wasm: its sha256 is not the one in parser.wasm.sha256; run npm run parser");
+else if (goOnPath() === pinnedGo()) {
+  const dir = mkdtempSync(join(tmpdir(), "sage-parser-"));
+  try {
+    const built = buildParser(join(dir, "parser.wasm"));
+    if (built !== recorded()) problems.push(`plugins/sage/hooks/parser/parser.wasm: a build from its sources with ${pinnedGo()} gives sha256 ${built}, not the recorded one; run npm run parser`);
+    else console.log(`✓ parser.wasm rebuilt with ${pinnedGo()}: same sha256`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+} else console.log(`- parser.wasm: recorded sha256 checked; to rebuild and compare it, put ${pinnedGo()} on PATH`);
 
 // The build reads the dictionary too, so a problem in it comes twice: report it once.
 if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }

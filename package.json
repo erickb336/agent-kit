@@ -7,9 +7,10 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
-    "test": "node --test scripts/dictionary.test.mjs scripts/hooks.test.mjs scripts/launcher.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs scripts/sync-pstack.test.mjs",
+    "test": "node --test scripts/dictionary.test.mjs scripts/hooks.test.mjs scripts/launcher.test.mjs scripts/parser.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs scripts/sync-pstack.test.mjs",
     "sync": "node scripts/sync-pstack.mjs",
-    "graphics": "node scripts/graphics.mjs"
+    "graphics": "node scripts/graphics.mjs",
+    "parser": "node scripts/build-parser.mjs"
   },
   "engines": {
     "node": ">=20"
