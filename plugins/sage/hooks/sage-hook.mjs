@@ -409,7 +409,7 @@ function firstCreation({ owner, repo, branch, sha }) {
     const top = t.tree.map((e) => String(e.path)).filter((p) => !p.includes("/"));
     const more = top.length > 10 ? ` and ${t.truncated ? "more" : `${top.length - 10} more`}` : t.truncated ? " and more" : "";
     const names = top.length ? `; top level: ${top.slice(0, 10).map(quoted).join(", ")}${more}` : "";
-    const count = files || t.truncated ? `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}` : "no files";
+    const count = t.tree.length || t.truncated ? `${t.truncated ? "more than " : ""}${files} file${files === 1 && !t.truncated ? "" : "s"}` : "no files";
     return { decision: "ask", reason: `this is the first creation of ${branch} on ${where}: GitHub has no ${branch}, and commit ${sha} is one root commit with ${count}${names}. The user must approve it. After this, sage tries to turn on branch protection for ${branch} (GitHub offers it for public repos, and for private repos on paid plans).` };
   } catch (e) {
     return no(`the check on GitHub failed (${e.message})`);

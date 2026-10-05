@@ -514,8 +514,20 @@ test("a root commit with git's empty tree asks the user and says it has no files
   assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST(`GitHub has no commit ${ROOT_SHA} in o/r \\(answer 404\\)`), "an unknown commit is still refused");
   s.github({ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: ROOT_SHA, url: `https://api.github.com/repos/o/r-new/git/commits/${ROOT_SHA}`, tree: { sha: EMPTY_TREE }, parents: [] } } });
   assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("GitHub answered for another repository than o/r"), "a redirect is still refused");
+  s.github({ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: ROOT_SHA, url: COMMIT_URL(ROOT_SHA), tree: { sha: EMPTY_TREE }, parents: [{ sha: CHILD_SHA }] } } });
+  assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST(`commit ${ROOT_SHA} has a parent, so it is not one root commit`), "an empty tree with a parent is still refused (T43-TEST-GAP)");
+  s.github({ [`repos/o/r/git/commits/${ROOT_SHA}`]: { status: 200, body: { sha: CHILD_SHA, url: COMMIT_URL(CHILD_SHA), tree: { sha: EMPTY_TREE }, parents: [] } } });
+  assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST(`GitHub has no commit ${ROOT_SHA} in o/r \\(answer 200\\)`), "an empty tree under another commit's sha is still refused (T43-TEST-GAP)");
   s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 404, body: { message: "Not Found" } } });
   assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST(`GitHub did not give the files of commit ${ROOT_SHA} \\(answer 404\\)`), "a 404 for another tree is still refused");
+});
+
+test("a tree with no files but with a gitlink or an empty subtree gives the count, not \"no files\" (T43-NO-FILES-WORDING)", () => {
+  const s = firstSession();
+  for (const [type, path] of [["commit", "sub"], ["tree", "empty"]]) {
+    s.github({ [`repos/o/r/git/trees/${TREE_SHA}?recursive=1`]: { status: 200, body: { truncated: false, tree: [{ path, type }] } } });
+    assert.equal(asked(s.send(bash(CREATE))), `sage: this is the first creation of main on github.com/o/r: GitHub has no main, and commit ${ROOT_SHA} is one root commit with 0 files; top level: "${path}". The user must approve it. ${LOCK}`, type);
+  }
 });
 
 test("the exact form is refused when GitHub does not show a first creation at one root commit (T24 REPLACE-GRAFTS, TAG-OR-SHALLOW-AS-ROOT, UPLOAD-CONFIG-REDIRECT)", () => {
