@@ -19,11 +19,11 @@
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The state tool. When it cannot load, the hook still runs, and its merge check refuses every merge.
+// The state tool. When it cannot load, the hook still runs: its merge check refuses every merge, and it starts no new agent.
 const stateTool = await import("../skills/sage/sage.mjs").catch((error) => ({ error }));
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // The mode phrases, in a message from the user (promptOf). "sage mode" (also "sage mode on"), "sage mode off" and
@@ -194,13 +194,19 @@ export function handle(input, state, slots) {
   if (main && AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
     if (missing.length) return deny(event, `the brief has no ${missing.join(", ")}. Every brief has all of ${BRIEF_FIELDS.join(", ")}, each at the start of a line. A tiny task may keep each field to one line.`);
-    const caps = stateTool.config();
-    const project = input.cwd ? stateTool.projectName(input.cwd) : "other";
+    let caps, project;
+    try {
+      if (stateTool.error) throw stateTool.error;
+      caps = stateTool.config();
+      project = input.cwd ? stateTool.projectName(input.cwd) : "other";
+    } catch (e) {
+      return deny(event, `the state tool cannot load (${e?.message ?? e}), so sage starts no new agent: reinstall or update the sage plugin, and tell the user.`);
+    }
     const cap = caps[`cap.${project}`] ?? caps.max_agents;
     const r = slots.take(project, cap, caps.cap_total, input.tool_use_id ?? String(Date.now()));
     if (r.refused) {
       slots.log(`${project} ${r.project}/${cap} total ${r.total}/${caps.cap_total}`);
-      const raise = (key, n) => `Wait for one to finish, or raise the cap: node "${join(ROOT, "skills/sage/sage.mjs")}" config ${key}=${n + 1}`;
+      const raise = (key, n) => `${SPACE_NOTE}Wait for one to finish, or raise the cap: ${stateCommand(`config ${key}=${n + 1}`)}`;
       if (r.refused === "mark") return deny(event, `the agent cap could not mark its slot (${r.error}), so it refuses this spawn. Tell the user.`);
       if (r.refused === "total") return deny(event, `${running(r.total)} across all projects, and the total cap is ${caps.cap_total} (${project} has ${r.project}). ${raise("cap_total", caps.cap_total)}`);
       return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
@@ -497,6 +503,14 @@ function mergeForm(command) {
  * printf -v sets a variable, so it is not harmless.
  */
 const TOOL = join(ROOT, "skills/sage/sage.mjs");
+/**
+ * The chief's spelling of a state tool command: node and the tool's absolute path, unquoted, the one form that the
+ * sandbox's excluded entry matches (a quoted path stays in the sandbox). A path with a space has no such form, so
+ * then it quotes the path, which works while the sandbox is off. SPACE_NOTE says what the sandbox needs; a text puts it
+ * as its own sentence before the command, so that the command after it stays one that a shell runs as pasted.
+ */
+export const stateCommand = (args) => (/\s/.test(TOOL) ? `node "${TOOL}" ${args}` : `node ${TOOL} ${args}`);
+const SPACE_NOTE = /\s/.test(TOOL) ? "The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. " : "";
 function harmless([a, b, c, ...rest]) {
   if (a === "echo" || a === "cat" || a === "grep" || (a === "printf" && ![b, c, ...rest].some((w) => w?.startsWith("-v")))) return 1;
   if ((a === "git" && b === "commit") || (a === "node" && b === TOOL)) return 2;
@@ -700,7 +714,7 @@ export function chiefText() {
   const skills = [...m[1].matchAll(/^\s+-\s+(\S+)\s*$/gm)].map((x) => x[1]);
   return [
     `sage: sage mode is on. You are the user's chief of staff until a message from the user starts with "sage mode off".`,
-    `The state tool: node "${join(ROOT, "skills/sage/sage.mjs")}" <command> --project <path>. Each shell call starts fresh, so write this full command every time; do not keep it in a variable. Load these skills now: ${skills.join(", ")}.`,
+    `${SPACE_NOTE}The state tool: ${stateCommand("<command> --project <path>")}. Each shell call starts fresh, so write this full command every time; do not keep it in a variable. Load these skills now: ${skills.join(", ")}.`,
     m[2].trim(),
   ].join("\n\n");
 }
@@ -841,7 +855,10 @@ export function slotsFor(dir, session, now = Date.now()) {
   };
 }
 
-const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(tmpdir(), "sage-hooks");
+// The mode, autopilot and slot state lives under the sage root, never in the temp folder, which sandboxed commands may write.
+// The hook finds the root itself, by the state tool's rule (sageRoot in sage.mjs), so that it still works when the state
+// tool does not load. Every merge then stays refused, because the merge check needs the tool.
+const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(process.env.SAGE_HOME ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sage"), ".hooks");
 
 // Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.env.SAGE_HOOKS !== "off") {

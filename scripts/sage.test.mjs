@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -1745,6 +1745,168 @@ test("T40: each agent role gets its model by task size; run add prints it and re
   assert.equal(o.ok("run", "done", "R1", "--status", "done"), "R1 done");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) o.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.match(o.ok("merge-check", "--sha", SHA), /may merge/);
+});
+
+// T94: sandbox part 2. One branch pattern, neutral git, a project that git cannot redirect, and a pages folder.
+/** A scratch HOME and sage root, and a git project in it. sage() runs the tool there and returns its exit code and lines. */
+function sandboxPrep(extra = {}) {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "sage-t94-")));
+  const env = testEnv({ HOME: join(base, "home"), SAGE_HOME: join(base, "sage"), SAGE_WORKTREES: undefined, ...extra });
+  const repo = (name) => {
+    const dir = join(base, name);
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+    return dir;
+  };
+  const project = repo("project");
+  const sage = (args, at = project, more = {}) => {
+    const r = spawnSync("node", [TOOL, ...args, "--project", at], { encoding: "utf8", env: { ...env, ...more }, timeout });
+    return { status: r.status, out: (r.stdout + r.stderr).trim() };
+  };
+  return { base, env, repo, project, sage };
+}
+
+test("T94: one branch pattern accepts today's task branches and refuses main, refs, .., @{, control characters and a leading -", async () => {
+  const { BRANCH } = await import(LIB);
+  const good = ["tool/t83-agent-state-writes", "claude/main-fix", "origins/t1", "my-origin/t1", "hook/t56-autopilot-scope", "claude/t94", "claude/fix-the-crash", "orc-029-pass4d"];
+  const bad = ["main", "master", "HEAD", "refs/heads/main", "refs/heads/claude/t1", "a..b", "a@{1}", "-x", "--force", "a\tb", "a\u001bb", "a b", "a~1", "a:b", "/a", "a/", "a//b", "a/.b", "a.lock", "", "MAIN", "Main", "Master", "head", "heads/main", "heads/claude/t1", "remotes/origin/main", "origin/main", "origin/claude/t1", "Refs/heads/main", "REMOTES/x"];
+  assert.deepEqual(good.filter((b) => !BRANCH.test(b)), [], "every task branch passes");
+  assert.deepEqual(bad.filter((b) => BRANCH.test(b)), [], "every other name is refused");
+  const { sage } = sandboxPrep();
+  sage(["init"]);
+  sage(["task", "add", "--title", "t", "--size", "small"]);
+  assert.match(sage(["task", "T1", "set", "branch=refs/heads/main"]).out, /"refs\/heads\/main" is not a task branch/);
+  assert.match(sage(["task", "T1", "set", "branch=tool/t83-agent-state-writes"]).out, /· tool\/t83-agent-state-writes$/);
+  assert.deepEqual(sage(["run", "add", "T1", "--role", "implementer", "--branch=-x"]).status, 1, "run add refuses the same names");
+  assert.match(sage(["run", "add", "T1", "--role", "implementer", "--branch", "claude/t1"]).out, /^R1 running · implementer on T1 · claude\/t1/);
+  assert.match(sage(["task", "T1", "set", "branch="]).out, /route build,code-review,qa$/, "branch= clears it");
+});
+
+test("T94: every git call of the state tool carries the neutral options and environment", () => {
+  const { base, env, project, sage } = sandboxPrep();
+  // A fake git first on PATH records its arguments and the neutral environment, then runs the real git.
+  const bin = join(base, "bin");
+  const log = join(base, "git.log");
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s|%s|%s|%s\\n' "$*" "$GIT_CONFIG_NOSYSTEM" "$GIT_ALLOW_PROTOCOL" "$GIT_TERMINAL_PROMPT" >> '${log}'\nexec '${real}' "$@"\n`);
+  chmodSync(join(bin, "git"), 0o755);
+  assert.equal(sage(["init"], project, { PATH: `${bin}:${env.PATH}` }).status, 0);
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  assert.ok(calls.length > 0, "the tool ran git");
+  for (const call of calls) assert.match(call, /^-c core\.fsmonitor=false -c core\.hooksPath=\/dev\/null -C \S+ rev-parse .*\|1\|file:https:ssh\|0$/);
+});
+
+test("T94: a planted .git/commondir does not lend a folder another project's logbook; a linked worktree keeps its project's", () => {
+  const { base, repo, project, sage } = sandboxPrep();
+  sage(["init"]);
+  const logbook = sage(["logbook"]).out;
+  execFileSync("git", ["-C", project, "worktree", "add", "-q", join(base, "linked"), "-b", "claude/t1"]);
+  assert.equal(sage(["logbook"], join(base, "linked")).out, logbook, "a real linked worktree shares the project's logbook");
+  const clone = repo("clone");
+  writeFileSync(join(clone, ".git", "commondir"), join(project, ".git"));
+  assert.equal(execFileSync("git", ["-C", clone, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), join(project, ".git"), "git itself follows the planted commondir");
+  assert.match(sage(["logbook"], clone).out, /^sage: no logbook for the project \S+\/clone\. Run: sage init/, "the state tool does not: the clone is a project of its own");
+});
+
+test("T94: a linked worktree with relative paths (git worktree add --relative-paths) keeps its project's logbook", () => {
+  const { base, sage } = sandboxPrep();
+  sage(["init"]);
+  const logbook = sage(["logbook"]).out;
+  execFileSync("git", ["-C", join(base, "project"), "worktree", "add", "-q", "--relative-paths", join(base, "linked"), "-b", "claude/t1"]);
+  assert.equal(readFileSync(join(base, "project", ".git", "worktrees", "linked", "gitdir"), "utf8").trim(), "../../../../linked/.git", "git wrote a relative gitdir");
+  assert.equal(sage(["logbook"], join(base, "linked")).out, logbook, "the relative path counts from its own folder, not from the tool's folder");
+});
+
+test("T94: pages <task> prints the task's pages folder outside the sage root, and pages record logs a page with its sha256", () => {
+  const { base, project, sage } = sandboxPrep();
+  sage(["init"]);
+  sage(["task", "add", "--title", "t", "--size", "small"]);
+  const key = basename(sage(["logbook"]).out);
+  assert.match(key, /^project-[0-9a-f]{6}$/, "the logbook key: the project's name and a hash");
+  const folder = join(base, "home", "sage-worktrees", key, "pages", "T1");
+  assert.equal(sage(["pages", "T1"]).out, folder, "by default under ~/sage-worktrees");
+  assert.equal(sage(["pages", "T1"], project, { SAGE_WORKTREES: join(base, "wt") }).out, join(base, "wt", key, "pages", "T1"));
+  assert.match(sage(["pages", "T2"]).out, /no task T2/);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "plan.html"), "<p>plan</p>\n");
+  assert.equal(sage(["pages", "T1", "record", join(folder, "plan.html")]).out, `page ${join(folder, "plan.html")} · sha256 ef0e5b886a1d7667f27fc2c5cc9488de5c8c6b90b12931f0c60854ac04ef17ed`);
+  assert.deepEqual(rows(sage(["logbook"]).out, "decisions").map((d) => [d.task, d.decision]).at(-1), ["T1", `page ${join(folder, "plan.html")} sha256 ef0e5b886a1d7667f27fc2c5cc9488de5c8c6b90b12931f0c60854ac04ef17ed`], "the decision trail keeps the path and the sha256");
+  writeFileSync(join(base, "elsewhere.html"), "x");
+  assert.match(sage(["pages", "T1", "record", join(base, "elsewhere.html")]).out, /is not a file in .*pages\/T1/);
+});
+
+test("T94-Q-NOFOLDER: pages <task> makes its folder (mode 700); pages record checks the folder before the file exists", () => {
+  const { base, sage } = sandboxPrep();
+  sage(["init"]);
+  sage(["task", "add", "--title", "t", "--size", "small"]);
+  sage(["task", "add", "--title", "u", "--size", "small"]);
+  const folder = join(base, "home", "sage-worktrees", basename(sage(["logbook"]).out), "pages", "T1");
+  assert.match(sage(["pages", "T1", "record", join(base, "elsewhere.html")]).out, new RegExp(`${join(base, "elsewhere.html")} is not a file in ${folder}\\.`), "outside the folder, before the folder exists");
+  assert.match(sage(["pages", "T1", "record", join(folder, "..", "T2", "x.html")]).out, new RegExp(`${join(dirname(folder), "T2", "x.html")} is not a file in ${folder}\\.`), "T1/../T2 is in the folder of T2, not of T1");
+  assert.match(sage(["pages", "T1", "record", join(folder, "x.html")]).out, new RegExp(`${join(folder, "x.html")} does not exist\\.`), "inside the folder, the file must exist");
+  rmSync(folder, { recursive: true });
+  assert.equal(sage(["pages", "T2"]).out, join(dirname(folder), "T2"));
+  assert.equal(lstatSync(join(dirname(folder), "T2")).mode & 0o777, 0o700, "the folder exists, and only the user can open it");
+});
+
+test("T94-Q-ODDNAME: pages record refuses a page name with a control character, on one line, and logs nothing", () => {
+  const { sage } = sandboxPrep();
+  sage(["init"]);
+  sage(["task", "add", "--title", "t", "--size", "small"]);
+  const folder = sage(["pages", "T1"]).out;
+  mkdirSync(folder, { recursive: true });
+  const before = rows(sage(["logbook"]).out, "decisions").length;
+  for (const name of ["a\tb.html", "a\nb.html", "a\u001bb.html"]) {
+    writeFileSync(join(folder, name), "x");
+    const r = sage(["pages", "T1", "record", join(folder, name)]);
+    assert.equal(r.status, 1);
+    assert.equal(r.out, `sage: ${JSON.stringify(join(folder, name))} has a control character (a tab, a line break or another): give the page a name without one.`);
+  }
+  assert.equal(rows(sage(["logbook"]).out, "decisions").length, before, "the trail did not change");
+});
+
+test("T94C2-L1: two projects with the same folder name get different pages folders, each under its logbook key", () => {
+  const { base, repo, sage } = sandboxPrep();
+  const [one, two] = [repo("a/app"), repo("b/app")];
+  const folders = [one, two].map((at) => {
+    sage(["init"], at);
+    sage(["task", "add", "--title", "t", "--size", "small"], at);
+    const out = sage(["pages", "T1"], at).out;
+    assert.equal(out, join(base, "home", "sage-worktrees", basename(sage(["logbook"], at).out), "pages", "T1"));
+    return out;
+  });
+  assert.notEqual(folders[0], folders[1]);
+});
+
+test("T94C2-L2: pages record refuses a FIFO, a link and a file over 16 MiB at once, and leaves the logbook lock free", () => {
+  // A fake ps first on PATH prints a start time in the past, so a waiter would take a blocked holder as alive and wait.
+  const { base, env, sage } = sandboxPrep();
+  const bin = join(base, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "ps"), "#!/bin/sh\necho 'Thu Jan  1 00:00:00 2015'\n");
+  chmodSync(join(bin, "ps"), 0o755);
+  const fake = { PATH: `${bin}:${env.PATH}` };
+  const at = join(base, "project");
+  sage(["init"], at, fake);
+  sage(["task", "add", "--title", "t", "--size", "small"], at, fake);
+  const folder = sage(["pages", "T1"], at, fake).out;
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "page.html"), "<p>page</p>\n");
+  execFileSync("mkfifo", [join(folder, "pipe.html")]);
+  symlinkSync(join(folder, "page.html"), join(folder, "link.html"));
+  writeFileSync(join(folder, "big.html"), "");
+  truncateSync(join(folder, "big.html"), 16 * 1024 * 1024 + 1);
+  writeFileSync(join(folder, "full.html"), "");
+  truncateSync(join(folder, "full.html"), 16 * 1024 * 1024);
+  for (const name of ["pipe.html", "link.html", "big.html"]) {
+    const r = sage(["pages", "T1", "record", join(folder, name)], at, fake);
+    assert.equal(r.status, 1, `${name} is refused, and the command ends before the 10 s timeout`);
+    assert.match(r.out, new RegExp(`${name} is not a page that pages record takes: it takes only a regular file of at most 16 MiB, not a link, a named pipe`));
+    assert.equal(sage(["log", "-", `after ${name}`, "--why", "the lock is free"], at, fake).out, "logged", `the lock is free after ${name}`);
+  }
+  assert.match(sage(["pages", "T1", "record", join(folder, "full.html")], at, fake).out, /^page \S+full\.html · sha256 [0-9a-f]{64}$/, "a file of exactly 16 MiB passes");
+  assert.equal(rows(sage(["logbook"], at, fake).out, "decisions").filter((d) => /^page /.test(d.decision)).length, 1, "only the regular file is recorded");
 });
 
 test("no command that these tests started called process.kill on another process (the kill spy's log is empty)", () => {

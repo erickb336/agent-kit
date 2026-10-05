@@ -1,7 +1,7 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -59,7 +59,7 @@ test("sage mode makes the session the chief of staff, and only subagents may cha
   const on = context(s.send(prompt("sage mode. Ramen Finder: fix the crash reports")));
   assert.match(on, /sage mode is on/);
   assert.match(on, /# Chief of staff \(sage mode\)/);
-  assert.match(on, /The state tool: node ".*skills\/sage\/sage\.mjs" <command> --project <path>\. Each shell call starts fresh, so write this full command every time/);
+  assert.match(on, /The state tool: node \S+\/skills\/sage\/sage\.mjs <command> --project <path>\. Each shell call starts fresh, so write this full command every time/);
   assert.match(on, /Load these skills now: sage:sage, sage:principle-never-block-on-the-human/);
   assert.doesNotMatch(on, /^disallowedTools:/m, "the agent's frontmatter is left out");
   assert.match(denied(s.send(edit())), /Give this change to a sage:implementer/);
@@ -90,7 +90,7 @@ test("at most max_agents sage agents run at once, also when the chief starts the
   s.send(prompt("sage mode"));
   const four = await Promise.all([1, 2, 3, 4].map((n) => s.sendAsync(spawnAgent("sage:qa", BRIEF, `tu${n}`))));
   assert.equal(four.filter((out) => !denied(out)).length, 3, "exactly 3 of 4 simultaneous spawns pass");
-  assert.match(four.map(denied).find(Boolean), /^sage: 3 sage agents are running for other, and its cap is 3 \(3 of 12 across all projects\)\. Wait for one to finish, or raise the cap: node ".*sage\.mjs" config cap\.other=4$/, "a spawn with no cwd counts under other");
+  assert.match(four.map(denied).find(Boolean), /^sage: 3 sage agents are running for other, and its cap is 3 \(3 of 12 across all projects\)\. Wait for one to finish, or raise the cap: node \S+\/skills\/sage\/sage\.mjs config cap\.other=4$/, "a spawn with no cwd counts under other");
 
   const allowed = [1, 2, 3, 4].filter((n, i) => !denied(four[i]));
   allowed.forEach((n, i) => s.send({ hook_event_name: "SubagentStart", agent_id: `ag${i}`, agent_type: "sage:qa" }));
@@ -252,12 +252,12 @@ test("each project has its own cap, the total across all projects wins, and each
   for (const [session_id, cwd] of [["sA", alpha], ["sB", beta]]) s.send({ ...prompt("sage mode"), session_id });
   const spawnIn = (session_id, cwd, n) => s.send(spawnAgent("sage:qa", BRIEF, `${session_id}-${n}`, { session_id, cwd }));
   for (let n = 1; n <= 5; n++) assert.equal(spawnIn("sA", alpha, n), undefined, `alpha starts agent ${n} of 5`);
-  assert.match(denied(spawnIn("sA", alpha, 6)), /^sage: 5 sage agents are running for alpha, and its cap is 5 \(5 of 12 across all projects\)\. Wait for one to finish, or raise the cap: node ".*" config cap\.alpha=6$/);
+  assert.match(denied(spawnIn("sA", alpha, 6)), /^sage: 5 sage agents are running for alpha, and its cap is 5 \(5 of 12 across all projects\)\. Wait for one to finish, or raise the cap: node \S+\/skills\/sage\/sage\.mjs config cap\.alpha=6$/);
   for (let n = 1; n <= 3; n++) assert.equal(spawnIn("sB", beta, n), undefined, `beta starts agent ${n} of 3 while alpha is full`);
   assert.match(denied(spawnIn("sB", beta, 4)), /3 sage agents are running for beta, and its cap is 3 \(8 of 12/);
   s.sage("config", "cap.beta=9");
   for (let n = 4; n <= 7; n++) assert.equal(spawnIn("sB", beta, n), undefined, `beta starts agent ${n} of 9`);
-  assert.match(denied(spawnIn("sB", beta, 8)), /^sage: 12 sage agents are running across all projects, and the total cap is 12 \(beta has 7\)\. Wait for one to finish, or raise the cap: node ".*" config cap_total=13$/);
+  assert.match(denied(spawnIn("sB", beta, 8)), /^sage: 12 sage agents are running across all projects, and the total cap is 12 \(beta has 7\)\. Wait for one to finish, or raise the cap: node \S+\/skills\/sage\/sage\.mjs config cap_total=13$/);
   s.send({ ...tool("TaskStop", { task_id: "none" }), session_id: "sA" });
   assert.ok(denied(spawnIn("sA", alpha, 7)), "a TaskStop of an unknown task frees nothing");
   const lines = readFileSync(join(s.vars.SAGE_HOOKS_STATE, "refusals.log"), "utf8").trimEnd().split("\n");
@@ -1293,4 +1293,107 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
   const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
+});
+
+// T94: sandbox part 2. The sandbox runs the state tool outside it only for its unquoted absolute spelling, and refuses
+// writes to the temp folder of the hook, so the hook spells the tool unquoted and keeps its state under the sage root.
+test("T94: the chief's text, the cap refusal and the state tool's skill spell the state tool unquoted, with its absolute path", async () => {
+  const { chiefText } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const text = chiefText();
+  assert.ok(text.includes(`The state tool: node ${TOOL} <command> --project <path>.`), "the chief gets the unquoted absolute spelling");
+  assert.doesNotMatch(text, /node\s+["']/, "and no quoted one");
+  const skill = readFileSync(fileURLToPath(new URL("../plugins/sage/skills/sage/SKILL.md", import.meta.url)), "utf8");
+  assert.ok(skill.includes("Run it as `node ${CLAUDE_SKILL_DIR}/sage.mjs <command> --project <path to the project>`"), "the skill gives the unquoted spelling");
+  assert.doesNotMatch(skill, /node\s+["']/, "and no quoted one");
+  const s = session();
+  s.send(prompt("sage mode"));
+  mkdirSync(s.vars.SAGE_HOME, { recursive: true });
+  writeFileSync(join(s.vars.SAGE_HOME, "config.json"), `{"max_agents": 1}`);
+  s.send(spawnAgent("sage:qa", BRIEF, "tu1"));
+  assert.equal(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2"))).split("raise the cap: ")[1], `node ${TOOL} config cap.other=2`);
+});
+
+test("T94-Q-SPACEPATH: with the plugin in a folder with a space, the chief text and the cap hint give a note, then a quoted command that runs as pasted", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage space-")));
+  cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "my plugins", "sage"), { recursive: true });
+  const tool = join(dir, "my plugins", "sage", "skills", "sage", "sage.mjs");
+  const note = "The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces.";
+  const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
+  const send = (event) => {
+    const r = spawnSync("node", [join(dir, "my plugins", "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout ? JSON.parse(r.stdout) : undefined;
+  };
+  assert.ok(context(send(prompt("sage mode"))).includes(`${note} The state tool: node "${tool}" <command> --project <path>.`), "the chief gets the note, then the quoted command");
+  mkdirSync(join(dir, "root"), { recursive: true });
+  writeFileSync(join(dir, "root", "config.json"), `{"max_agents": 1}`);
+  send(spawnAgent("sage:qa", BRIEF, "tu1"));
+  const reason = denied(send(spawnAgent("sage:qa", BRIEF, "tu2")));
+  assert.ok(reason.includes(`${note} Wait for one to finish`), "the note is its own sentence before the hint");
+  const hint = reason.split("raise the cap: ")[1];
+  assert.equal(hint, `node "${tool}" config cap.other=2`);
+  const r = spawnSync("/bin/sh", ["-c", hint], { encoding: "utf8", env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(readFileSync(join(dir, "root", "config.json"), "utf8"))["cap.other"], 2, "the whole pasted hint runs in a shell and sets the cap");
+});
+
+test("T94: the hook keeps the mode and autopilot state under the sage root, never in the temp folder", () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "sage-temp-")));
+  const s = session({ SAGE_HOOKS_STATE: undefined, TMPDIR: temp });
+  s.send(prompt("sage mode"));
+  s.send(prompt("autopilot on"));
+  const saved = JSON.parse(readFileSync(join(s.vars.SAGE_HOME, ".hooks", "s1.json"), "utf8"));
+  assert.deepEqual([saved.sage, saved.autopilot], [true, true], "the state file is in <sage root>/.hooks");
+  assert.deepEqual(readdirSync(temp), [], "nothing in the temp folder");
+  assert.match(denied(s.send(bash(MERGE))) ?? "", /merge check/, "the next event reads the state back: autopilot is on, so the merge check runs");
+});
+
+test("T94: when the state tool does not load, the hook still keeps its state under the sage root, and still refuses merges and pushes to main", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-broken-")));
+  cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "sage"), { recursive: true });
+  writeFileSync(join(dir, "sage", "skills", "sage", "sage.mjs"), 'throw new Error("the state tool is broken");\n');
+  const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
+  const send = (event) => {
+    const r = spawnSync("node", [join(dir, "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout ? JSON.parse(r.stdout) : undefined;
+  };
+  assert.match(context(send(prompt("sage mode"))), /sage mode is on/);
+  assert.equal(JSON.parse(readFileSync(join(dir, "root", ".hooks", "s1.json"), "utf8")).sage, true, "the state file is in <SAGE_HOME>/.hooks");
+  assert.match(denied(send(edit())) ?? "", /Give this change to a sage:implementer/, "the next event reads the state back");
+  assert.match(denied(send(bash("git push origin main"))) ?? "", TO_MAIN);
+  assert.match(denied(send(bash(MERGE))) ?? "", /autopilot is off/);
+  assert.equal(send(bash("git status")), undefined, "a plain command goes through");
+});
+
+test("T94: when the state tool does not load, or its config throws, the hook refuses a new agent and still refuses merges and pushes to main", () => {
+  for (const [body, cause] of [
+    ['throw new Error("the state tool is broken");\n', "the state tool is broken"],
+    ['export const config = () => { throw new Error("config.json cannot be read"); };\nexport const projectName = () => "p";\n', "config.json cannot be read"],
+  ]) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-broken-")));
+    cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "sage"), { recursive: true });
+    writeFileSync(join(dir, "sage", "skills", "sage", "sage.mjs"), body);
+    const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
+    const send = (event) => {
+      const r = spawnSync("node", [join(dir, "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout ? JSON.parse(r.stdout) : undefined;
+    };
+    send(prompt("sage mode"));
+    assert.equal(denied(send(spawnAgent("sage:qa", BRIEF, "tu1", { cwd: dir }))), `sage: the state tool cannot load (${cause}), so sage starts no new agent: reinstall or update the sage plugin, and tell the user.`);
+    assert.match(denied(send(bash("git push origin main"))) ?? "", TO_MAIN);
+    assert.match(denied(send(bash(MERGE))) ?? "", /autopilot is off/);
+  }
+});
+
+test("T94: an old hook state file in the temp folder is ignored, not trusted", () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "sage-temp-")));
+  mkdirSync(join(temp, "sage-hooks"));
+  writeFileSync(join(temp, "sage-hooks", "s1.json"), JSON.stringify({ sage: true, autopilot: true }));
+  const s = session({ SAGE_HOOKS_STATE: undefined, TMPDIR: temp });
+  assert.equal(s.send(edit()), undefined, "sage mode is not on: the old file does not turn it on");
+  s.send(prompt("sage mode"));
+  assert.match(denied(s.send(bash(MERGE))) ?? "", /autopilot is off/, "autopilot is not on: the old file does not turn it on");
+  assert.match(denied(s.send(edit())) ?? "", /Give this change to a sage:implementer/, "the hook's own state still works");
 });

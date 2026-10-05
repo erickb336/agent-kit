@@ -89,7 +89,7 @@ test("the real hook, run through the launcher from an old session, names the new
   copyFileSync(join(HOOKS, "../agents/chief-of-staff.md"), join(h.newer, "agents", "chief-of-staff.md"));
   h.record(h.newer);
   const out = JSON.parse(h.run(HOOK, { session_id: "s1", hook_event_name: "UserPromptSubmit", prompt: "sage mode. Ramen Finder: fix the crash" }));
-  assert.match(out.hookSpecificOutput.additionalContext, new RegExp(`The state tool: node "${join(h.newer, "skills/sage/sage.mjs")}"`));
+  assert.match(out.hookSpecificOutput.additionalContext, new RegExp(`The state tool: node ${join(h.newer, "skills/sage/sage.mjs")} <command>`));
 });
 
 test("the launcher adds under 50 ms of CPU time to an event", () => {
