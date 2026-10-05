@@ -683,13 +683,13 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   s.send(prompt("autopilot on"));
   s.send(prompt("sage mode"));
   assert.match(merge(), /autopilot is off, so the user merges/, "autopilot on before sage mode does not count");
-  assert.match(context(s.send(prompt("autopilot on"))), /autopilot is on\. A pull request merges after 1 clean cycle for tiny and small tasks, 2 for large or risky ones, on its head SHA\./);
+  assert.match(context(s.send(prompt("autopilot on"))), /autopilot is on\. A pull request merges on its head SHA after 1 clean cycle for a tiny or small task, 2 for a large task and 2 for a task with a risk flag; a large task with a risk flag needs the larger count\./);
   s.send(prompt("autopilot off"));
   s.sage("config", "cycles.small=2", "cycles.large=3");
-  assert.match(context(s.send(prompt("autopilot on"))), /merges after 2 clean cycles for tiny and small tasks, 3 for large or risky ones/, "the note reads cycles.small and cycles.large from the config");
+  assert.match(context(s.send(prompt("autopilot on"))), /after 2 clean cycles for a tiny or small task, 3 for a large task and 2 for a task with a risk flag/, "the note reads the counts from the config");
   s.sage("config", "cycles.small=1", "cycles.large=2");
   s.send(prompt("autopilot off"));
-  assert.match(context(s.send(prompt("autopilot on"))), /merges after 1 clean cycle/);
+  assert.match(context(s.send(prompt("autopilot on"))), /after 1 clean cycle for/);
   assert.match(merge(""), /add --match-head-commit/);
   assert.match(merge(), /^sage: the merge check refuses: no verdicts recorded/);
 
@@ -700,6 +700,22 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   assert.equal(merge(`--match-head-commit=${SHA}`), undefined);
   assert.match(context(s.send(prompt("autopilot off"))), /autopilot is off/);
   assert.match(merge(), /autopilot is off/, "the kill switch");
+});
+
+test("F-T47-1: the autopilot note gives the clean cycles that the merge check asks, for a small, a large and a risky task", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  s.sage("init");
+  s.sage("config", "cycles.small=3", "cycles.risk=4");
+  assert.match(context(s.send(prompt("autopilot on"))), /after 3 clean cycles for a tiny or small task, 3 for a large task and 4 for a task with a risk flag;/);
+  const asks = {};
+  for (const [n, args] of [["1", ["--size", "small"]], ["2", ["--size", "large"]], ["3", ["--size", "small", "--risk", "auth"]]]) {
+    s.sage("task", "add", "--title", "t", ...args);
+    const sha = n.repeat(40);
+    for (const kind of ["checks-pass", "review-clean", "security-clean", "qa-pass"]) s.sage("verdict", `T${n}`, "--sha", sha, "--kind", kind);
+    asks[args.join(" ")] = spawnSync("node", [TOOL, "merge-check", "--sha", sha, "--project", s.dir], { encoding: "utf8", env: s.vars }).stderr.match(/\d of (\d+) clean cycles/)?.[1];
+  }
+  assert.deepEqual(asks, { "--size small": "3", "--size large": "3", "--size small --risk auth": "4" }, "the merge check asks the counts that the note gives");
 });
 
 test("the autopilot note comes only when autopilot goes from on to off, so never outside sage mode", () => {
