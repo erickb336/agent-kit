@@ -837,6 +837,46 @@ export function slotsFor(dir, session, now = Date.now()) {
 
 const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(tmpdir(), "sage-hooks");
 
+/**
+ * Leftover test browsers (T68). A Playwright browser that outlives the agent that started it runs on with launchd
+ * (pid 1) as its parent. At each SubagentStop and each Stop the hook stops every such browser: a process with launchd as
+ * its parent and a temporary Playwright profile (--user-data-dir under a temp folder, named playwright_chromiumdev_profile-*,
+ * or with --headless and --remote-debugging-pipe). The owner's own Chrome has no temporary profile, so the hook never
+ * touches it. A live agent's browser still has its runner as its parent, so it stays until the runner ends. SIGTERM
+ * first; a browser that ps still lists after the grace gets SIGKILL. Each stopped pid goes to stderr.
+ */
+const TEMP_ROOTS = [...new Set([tmpdir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"])];
+/** The leftover test browsers in the text of ps -axo pid,ppid,etime,command. A line of another form does not count. */
+export function strayBrowsers(ps) {
+  const found = [];
+  for (const line of ps.split("\n")) {
+    const [, pid, ppid, age, command] = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line) ?? [];
+    const dir = / --user-data-dir=(\S+)/.exec(command ?? "")?.[1];
+    if (ppid !== "1" || !dir || !TEMP_ROOTS.some((root) => resolve(dir).startsWith(`${root}/`))) continue;
+    if (/\/playwright_chromiumdev_profile-[^/]*$/.test(dir) || (/ --headless\b/.test(command) && / --remote-debugging-pipe\b/.test(command))) found.push({ pid: Number(pid), age });
+  }
+  return found;
+}
+const PS = () => execFileSync("/bin/ps", ["-axo", "pid,ppid,etime,command"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"] });
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** Stops the leftover test browsers. The defaults are the real ps, kill and clock; the tests give their own. */
+export function stopStrayBrowsers({ ps = PS, kill = (pid, signal) => process.kill(pid, signal), wait = pause, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  const send = (b, signal) => {
+    try {
+      kill(b.pid, signal);
+      log(`sage: stopped a leftover test browser, pid ${b.pid}, age ${b.age} (${signal})`);
+    } catch {
+      /* it ended by itself */
+    }
+  };
+  const stray = strayBrowsers(ps());
+  if (!stray.length) return;
+  for (const b of stray) send(b, "SIGTERM");
+  wait(1000);
+  const left = strayBrowsers(ps());
+  for (const b of left) if (stray.some((s) => s.pid === b.pid)) send(b, "SIGKILL");
+}
+
 // Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.env.SAGE_HOOKS !== "off") {
   let input;
@@ -858,6 +898,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
       renameSync(`${file}.${process.pid}`, file);
     }
     if (output) process.stdout.write(JSON.stringify(output));
+    if (/^(Subagent)?Stop$/.test(input.hook_event_name) && process.env.SAGE_BROWSER_SWEEP !== "off") stopStrayBrowsers();
   } catch (e) {
     // Never break the session, but never let a merge or a push through because the hook failed.
     const command = [].concat(input?.tool_input?.command ?? []).join(" ");

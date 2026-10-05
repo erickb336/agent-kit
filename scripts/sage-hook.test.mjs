@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+// The hook stops leftover test browsers at each Stop: in a test it must never signal a real process (T68).
+process.env.SAGE_BROWSER_SWEEP = "off";
 
 // Through the launcher, as Claude Code runs it. HOME is a fake home without plugins, so the launcher runs this tree's hook.
 const HOOK = fileURLToPath(new URL("../plugins/sage/hooks/sage-hook.mjs", import.meta.url));
@@ -1271,4 +1273,34 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
   const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
+});
+
+// T68: a test browser never outlives its agent, and the owner's own Chrome is never touched. A fake ps and a fake kill:
+// the test never signals a real process.
+test("the hook stops leftover test browsers, and never the owner's Chrome or a live agent's browser", async () => {
+  const { stopStrayBrowsers } = await import(HOOK);
+  const TMP = "/var/folders/xy/abc/T";
+  const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; // chrome-ok: the process list that ps shows
+  const orphan = `  4101     1 01:48:02 ${CHROME} --headless --remote-debugging-pipe --user-data-dir=${TMP}/playwright_chromiumdev_profile-AbC123 about:blank`;
+  const owners = `   612     1 3-02:11:40 ${CHROME} --restore-last-session`;
+  const ownersProfile = `   613     1 3-02:11:40 ${CHROME} --user-data-dir=/Users/me/Library/Application Support/Google/Chrome --headless --remote-debugging-pipe`;
+  const live = (ppid) => `  4202 ${ppid} 00:00:41 ${CHROME} --headless --remote-debugging-pipe --user-data-dir=${TMP}/playwright_chromiumdev_profile-Live99 about:blank`;
+  const runner = "  4200  4100 00:00:43 node tests/pages/look.mjs";
+  const helper = `  4102  4101 01:48:01 ${CHROME} Helper --type=renderer --user-data-dir=${TMP}/playwright_chromiumdev_profile-AbC123`;
+  const malformed = ["PID  PPID ELAPSED COMMAND", "  4303 1", "abc 1 00:01 x --user-data-dir=/tmp/playwright_chromiumdev_profile-z", "", "  4304     1"];
+  const run = (lists) => {
+    const signals = [];
+    const left = [...lists];
+    stopStrayBrowsers({ ps: () => (left.length > 1 ? left.shift() : left[0]).join("\n"), kill: (pid, signal) => signals.push(`${pid} ${signal}`), wait: () => {}, log: () => {} });
+    return signals;
+  };
+
+  // The orphan: launchd is its parent and its profile is a temporary Playwright one. It ends at SIGTERM.
+  assert.deepEqual(run([[...malformed, owners, ownersProfile, orphan, helper, runner, live(4200)], [owners, ownersProfile, runner, live(4200)]]), ["4101 SIGTERM"]);
+  // An orphan that ps still lists after the grace gets SIGKILL.
+  assert.deepEqual(run([[orphan], [orphan]]), ["4101 SIGTERM", "4101 SIGKILL"]);
+  // The owner's Chrome (no temporary profile), a live agent's browser and malformed lines: nothing is signalled.
+  assert.deepEqual(run([[...malformed, owners, ownersProfile, runner, live(4200)]]), []);
+  // The live agent's browser is stopped once its agent has ended and launchd is its parent.
+  assert.deepEqual(run([[owners, live(1)], [owners]]), ["4202 SIGTERM"]);
 });
