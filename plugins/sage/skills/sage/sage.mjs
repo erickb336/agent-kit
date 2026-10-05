@@ -131,22 +131,27 @@ export function storeDir(project, env = process.env) {
 }
 
 /**
- * A config value in its stored form, or undefined when it is not valid. A count is valid as a whole number, or a string
- * of one ("3"), at or above its floor. Above its limit, a cycles count keeps its value (fewer would ease a merge) and
- * any other count reads as the limit (more would start more agents or rounds than written).
+ * A config value in its stored form, or undefined when it has no number. A count is a whole number, or a string of one
+ * ("3"); a cycles count is also any finite number or numeric string ("03", " 3", 2.5), rounded up. Below its floor a count
+ * reads as the floor. Above its limit, a cycles count keeps its value (fewer would ease a merge) and any other count
+ * reads as the limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
  */
 function valid(key, value) {
   if (key === "arena_models") {
     const models = typeof value === "string" ? list(value) : [];
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
   }
-  const n = typeof value === "string" && /^[1-9][0-9]*$/.test(value) ? Number(value) : value;
-  if (!(Object.hasOwn(COUNTS, key) || CAP.test(key)) || !Number.isInteger(n) || n < floor(key)) return undefined;
-  return key.startsWith("cycles.") ? n : Math.min(n, limit(key));
+  if (!(Object.hasOwn(COUNTS, key) || CAP.test(key))) return undefined;
+  const cycles = key.startsWith("cycles.");
+  let n = typeof value === "string" && (cycles ? value.trim() : /^(0|[1-9][0-9]*)$/.test(value)) ? Number(value) : value;
+  if (cycles && Number.isFinite(n)) n = Math.ceil(n);
+  if (!Number.isInteger(n)) return undefined;
+  n = Math.max(n, floor(key));
+  return cycles ? n : Math.min(n, limit(key));
 }
 
 /** A count typed on the command line, or undefined when it is not a whole number from its floor to its limit. */
-const typed = (key, text) => (/^[1-9]\d*$/.test(text) && Number(text) <= limit(key) ? valid(key, Number(text)) : undefined);
+const typed = (key, text) => (/^[1-9]\d*$/.test(text) && Number(text) >= floor(key) && Number(text) <= limit(key) ? Number(text) : undefined);
 
 /** The refusal for a path that holds something other than a regular file: a folder, a FIFO or a device. */
 const notRegular = (path) => new Refusal(`${path} is not a regular file. Ask the user to fix or remove it.`);
@@ -187,8 +192,8 @@ function saved(env) {
 
 /**
  * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value (a count
- * as "3x", for one), a count below its floor, or a config.json that is not a regular file, gives the default (each
- * floor is its default). Above its limit, a cycles count keeps its value and any other count reads as the limit. A file of
+ * as "3x", for one), or a config.json that is not a regular file, gives the default. A count reads as valid() gives it:
+ * never below its floor, and never more agents or rounds, or fewer cycles, than written. A file of
  * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
@@ -311,15 +316,27 @@ function write(dir, table, rows) {
 }
 
 const now = () => new Date().toISOString().slice(0, 19) + "Z";
+/** The cells that hold ids: each table's own id, the columns that name the id of another row, and a decision's subject. */
+const IDS = { tasks: ["id", "keys"], runs: ["id", "task"], findings: ["task", "key"], ledger: ["task", "run"], gates: ["id", "task"], decisions: ["task"] };
 /**
- * A new id: the highest whole number after the prefix that any row of the logbook names, plus 1. So an id never comes
- * back, also when its own row is lost while another row (a verdict's run, a decision, a round's keys) still names it.
- * Only digits count ("Infinity" does not), and BigInt keeps a long number exact.
+ * A new id: the highest whole number after the prefix that any id cell of the logbook names, plus 1. So an id never
+ * comes back, also when its own row is lost while another row (a verdict's run, a decision, a round's keys) still names
+ * it. Free text does not count: a path or a title can hold "-T9" by chance. In a decision, only its subjects count: the
+ * first word ("F-T2-1 opened again", "G1 was answered by phone"), and in a move, also the new task and key ("F-T1-1 moved
+ * to T2 as F-T2-1: …"). Only digits count ("Infinity" does not), and BigInt keeps a long number exact.
  */
+/** The ids a decision is about: its first word, and the new task and key of a move (the form that finding move writes). */
+const subjects = (decision) => /^(\S+) moved to (\S+) as (\S+):/.exec(decision)?.slice(1) ?? [decision];
 function nextId(dir, prefix) {
   let max = 0n;
-  for (const table of Object.keys(TABLES)) {
-    for (const [, n] of (readRegular(join(dir, `${table}.tsv`)) ?? "").matchAll(new RegExp(`(?<![A-Za-z0-9])${prefix}(\\d+)`, "g"))) if (BigInt(n) > max) max = BigInt(n);
+  const take = (text, re) => {
+    for (const [, n] of text.matchAll(re)) if (BigInt(n) > max) max = BigInt(n);
+  };
+  for (const [table, cols] of Object.entries(IDS)) {
+    for (const row of read(dir, table)) {
+      for (const c of cols) take(row[c], new RegExp(`(?<![A-Za-z0-9])${prefix}(\\d+)`, "g"));
+      if (table === "decisions") for (const word of subjects(row.decision)) take(word, new RegExp(`^${prefix}(\\d+)(?![A-Za-z0-9])`, "g"));
+    }
   }
   return `${prefix}${max + 1n}`;
 }

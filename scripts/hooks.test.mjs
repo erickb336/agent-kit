@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ROOT } from "./build.mjs";
 
-const HOOK = join(ROOT, "plugins/sage/hooks/principles-hook.mjs");
+// Through the launcher, as Claude Code runs it. HOME is a fake home without plugins, so the launcher runs this tree's hook.
+const LAUNCHER = [join(ROOT, "plugins/sage/hooks/launcher.mjs"), "principles-hook.mjs"];
+const FAKE_HOME = mkdtempSync(join(tmpdir(), "agent-kit-home-"));
 
 /** A session in a new git repository with one committed code file. */
 function session(env = {}) {
@@ -19,7 +21,7 @@ function session(env = {}) {
   git("commit", "-qm", "start");
   const stateDir = mkdtempSync(join(tmpdir(), "agent-kit-state-"));
   const send = (event) => {
-    const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s1", cwd: repo, ...event }), encoding: "utf8", env: { ...process.env, AGENT_KIT_HOOKS_STATE: stateDir, ...env } });
+    const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s1", cwd: repo, ...event }), encoding: "utf8", env: { ...process.env, HOME: FAKE_HOME, AGENT_KIT_HOOKS_STATE: stateDir, ...env } });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout ? JSON.parse(r.stdout) : undefined;
   };
@@ -108,7 +110,7 @@ test("a browser look counts as a check", () => {
 
 test("no stop check outside a git repository", () => {
   const dir = mkdtempSync(join(tmpdir(), "agent-kit-nogit-"));
-  const send = (e) => spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "n", cwd: dir, ...e }), encoding: "utf8", env: { ...process.env, AGENT_KIT_HOOKS_STATE: dir } }).stdout;
+  const send = (e) => spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "n", cwd: dir, ...e }), encoding: "utf8", env: { ...process.env, HOME: FAKE_HOME, AGENT_KIT_HOOKS_STATE: dir } }).stdout;
   send(prompt("Change it"));
   writeFileSync(join(dir, "a.js"), "x");
   assert.equal(send(stop()), "");

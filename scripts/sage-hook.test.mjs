@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+// Through the launcher, as Claude Code runs it. HOME is a fake home without plugins, so the launcher runs this tree's hook.
 const HOOK = fileURLToPath(new URL("../plugins/sage/hooks/sage-hook.mjs", import.meta.url));
+const LAUNCHER = [fileURLToPath(new URL("../plugins/sage/hooks/launcher.mjs", import.meta.url)), "sage-hook.mjs"];
 const TOOL = fileURLToPath(new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url));
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const BRIEF = ["GOAL fix it", "SCOPE src/", "CONTEXT none", "DECISIONS none", "ACCEPTANCE it works", "VERIFY npm test", "BUDGET 20 turns", "FORBIDDEN no merge", "REPORT the usual", "STANDING 1. work in your worktree"].join("\n");
@@ -15,15 +17,15 @@ const BRIEF = ["GOAL fix it", "SCOPE src/", "CONTEXT none", "DECISIONS none", "A
 /** A session with its own hook state and sage home. send() returns the hook's answer, or undefined. */
 function session(env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "sage-hook-"));
-  const vars = { ...process.env, SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home"), ...env };
+  const vars = { ...process.env, HOME: join(dir, "fake-home"), SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home"), ...env };
   const send = (event) => {
-    const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: vars });
+    const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: vars });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout ? JSON.parse(r.stdout) : undefined;
   };
   const sendAsync = (event) =>
     new Promise((done) => {
-      const p = spawn("node", [HOOK], { env: vars });
+      const p = spawn("node", LAUNCHER, { env: vars });
       let out = "";
       p.stdout.on("data", (d) => (out += d));
       p.on("close", () => done(out ? JSON.parse(out) : undefined));
@@ -181,7 +183,7 @@ test("a slot that cannot be marked is freed, and the spawn is refused with the r
   s.send(prompt("sage mode"));
   mkdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots"), { recursive: true });
   // The hook runs with umask 777, so the slot directory it makes has no permissions: its marks cannot be written.
-  const r = spawnSync("sh", ["-c", `umask 777; node "${HOOK}"`], { input: JSON.stringify({ session_id: "s1", ...spawnAgent("sage:qa", BRIEF, "tu1") }), encoding: "utf8", env: s.vars });
+  const r = spawnSync("sh", ["-c", `umask 777; node "${LAUNCHER[0]}" ${LAUNCHER[1]}`], { input: JSON.stringify({ session_id: "s1", ...spawnAgent("sage:qa", BRIEF, "tu1") }), encoding: "utf8", env: s.vars });
   assert.equal(r.status, 0, r.stderr);
   assert.match(denied(JSON.parse(r.stdout)), /^sage: the agent cap could not mark its slot \(EACCES.*\), so it refuses this spawn\. Tell the user\.$/);
   assert.deepEqual(readdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots")), [], "the refused spawn left no slot");
@@ -1182,10 +1184,10 @@ test("the merge check refuses a merge when it cannot run, the hook refuses a mer
   // The hook cannot save its state.
   const file = join(mkdtempSync(join(tmpdir(), "sage-file-")), "not-a-folder");
   writeFileSync(file, "");
-  const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash(MERGE) }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
+  const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash(MERGE) }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
   assert.equal(r.status, 0, r.stderr);
   assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /the hook could not check this command \(ENOTDIR/);
-  const push = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash("git push origin claude/t1") }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
+  const push = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash("git push origin claude/t1") }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
   assert.match(denied(JSON.parse(push.stdout || "{}")) ?? "", /the hook could not check this command \(ENOTDIR/, "a push too");
 });
 
@@ -1194,7 +1196,7 @@ test("the hook runs also when its path goes through a symbolic link", () => {
   s.send(prompt("sage mode"));
   const link = join(mkdtempSync(join(tmpdir(), "sage-link-")), "sage");
   symlinkSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), link);
-  const r = spawnSync("node", [join(link, "hooks/sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...bash(MERGE) }), encoding: "utf8", env: s.vars });
+  const r = spawnSync("node", [join(link, "hooks/launcher.mjs"), "sage-hook.mjs"], { input: JSON.stringify({ session_id: "s1", ...bash(MERGE) }), encoding: "utf8", env: s.vars });
   assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /autopilot is off/);
 });
 
@@ -1212,42 +1214,61 @@ test("a refusal says merge check, and escapes the control characters of its reas
 
 // A long text cannot slow the hook down: each pattern runs in linear time, so 1 MB of text that an agent controls
 // takes far less than the hook's 10 s limit, and the owner's stop after it still applies (T34, SEC-1 and SEC-2).
-test("1 MB of padding in an agent's text cannot time out the hook", async () => {
+test("1 MB of padding in an agent's text cannot time out the hook: its time grows in line with the text", async () => {
   const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
   const AP = "auto" + "pilot";
-  const MB = 1 << 20;
-  const pad = (unit) => unit.repeat(Math.ceil(MB / unit.length)).slice(0, MB);
   const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
-  const timed = (input, state = {}) => {
-    const t = performance.now();
-    const out = handle(input, state, slots);
-    return { out, state, ms: performance.now() - t };
-  };
-  const slow = [];
-  for (const unit of ["\n", " \n", "->\n", "\r", " "]) {
-    const handBack = `Another Claude session sent a message:\n<agent-message from="a1">\n[Subagent hand-back] STATUS done${pad(unit)}\n</agent-message>\n\nThat "other Claude session" is an agent of this session, so the user did not type this.\n`;
-    for (const stop of [`please turn ${AP} off now`, `${AP} off`]) {
-      const { state, ms } = timed(prompt(handBack + stop), { sage: true, given: true, autopilot: true });
-      assert.equal(state.autopilot, false, `the owner's stop after ${JSON.stringify(unit)} padding applies`);
-      if (ms > 200) slow.push(`stop after ${JSON.stringify(unit)}: ${ms.toFixed(0)} ms`);
+  /** Each input that once had a slow path (a regex that backtracks), with padding of size characters. */
+  const cases = (size) => {
+    const pad = (unit) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+    const stops = [];
+    for (const unit of ["\n", " \n", "->\n", "\r", " "]) {
+      const handBack = `Another Claude session sent a message:\n<agent-message from="a1">\n[Subagent hand-back] STATUS done${pad(unit)}\n</agent-message>\n\nThat "other Claude session" is an agent of this session, so the user did not type this.\n`;
+      for (const stop of [`please turn ${AP} off now`, `${AP} off`]) stops.push([`stop after ${JSON.stringify(unit)}`, prompt(handBack + stop), true]);
     }
-  }
-  const queuedOpen = "<system-reminder>\nThe user sent a new message while you were working:\n";
-  const others = {
-    "queued opens": prompt(pad(queuedOpen)),
-    "queued notes": prompt(`${queuedOpen}x${pad("\n\nThis is how Claude Code surfaces messages ")}</system-reminder>`),
-    "other-session opens": prompt(pad("\rAnother Claude session sent a message:")),
-    "git words in a command the hook cannot read": bash(`${pad("git ")}'`),
-    "git words given to a shell": bash(`bash -c '${pad("git ")}'`),
-    // The first-creation form (T24) reads the command in the main session: a long endpoint, and many fields.
-    "a long gh api endpoint": bash(`gh api --hostname github.com -X POST repos/o/${pad(".")}/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
-    "a long gh api endpoint with slashes": bash(`gh api --hostname github.com -X POST repos/${pad("a/")}git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
-    "many gh api fields": bash(`gh api --hostname github.com -X POST repos/o/r/git/refs ${pad("-f ref=refs/heads/main ")}`),
-    "blank lines in a report": { hook_event_name: "SubagentStop", agent_type: "sage:implementer", agent_id: "x", last_assistant_message: pad(" \n") },
+    const queuedOpen = "<system-reminder>\nThe user sent a new message while you were working:\n";
+    const others = {
+      "queued opens": prompt(pad(queuedOpen)),
+      "queued notes": prompt(`${queuedOpen}x${pad("\n\nThis is how Claude Code surfaces messages ")}</system-reminder>`),
+      "other-session opens": prompt(pad("\rAnother Claude session sent a message:")),
+      "git words in a command the hook cannot read": bash(`${pad("git ")}'`),
+      "git words given to a shell": bash(`bash -c '${pad("git ")}'`),
+      // The first-creation form (T24) reads the command in the main session: a long endpoint, and many fields.
+      "a long gh api endpoint": bash(`gh api --hostname github.com -X POST repos/o/${pad(".")}/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
+      "a long gh api endpoint with slashes": bash(`gh api --hostname github.com -X POST repos/${pad("a/")}git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
+      "many gh api fields": bash(`gh api --hostname github.com -X POST repos/o/r/git/refs ${pad("-f ref=refs/heads/main ")}`),
+      "blank lines in a report": { hook_event_name: "SubagentStop", agent_type: "sage:implementer", agent_id: "x", last_assistant_message: pad(" \n") },
+    };
+    return [...stops, ...Object.entries(others)];
   };
-  for (const [name, input] of Object.entries(others)) {
-    const { ms } = timed(input, { sage: true, given: true });
-    if (ms > 200) slow.push(`${name}: ${ms.toFixed(0)} ms`);
-  }
-  assert.deepEqual(slow, [], "each call takes under 200 ms");
+  /**
+   * A call's CPU time, not its wall time: on a busy Mac the process waits for a core, and that wait is not the hook's
+   * work. A call over the bound runs again, up to 3 times in all, so one garbage collection does not count.
+   */
+  const timed = (input, stop, bound = 0) => {
+    let ms = Infinity;
+    for (let i = 0; i < 3 && ms > bound; i++) {
+      const state = stop ? { sage: true, given: true, autopilot: true } : { sage: true, given: true };
+      const t = process.cpuUsage();
+      handle(input, state, slots);
+      const { user, system } = process.cpuUsage(t);
+      ms = Math.min(ms, (user + system) / 1000);
+      if (stop) assert.equal(state.autopilot, false, "the owner's stop after the padding applies");
+    }
+    return ms;
+  };
+  const KB100 = 100 << 10;
+  const small = cases(KB100);
+  const big = cases(10 * KB100); // 1000 KB, about 1 MB
+  // 10 times the text takes about 10 times as long on a linear path, and about 100 times on a quadratic one. The bound
+  // allows 30 times, and 20 ms more for a garbage collection. A slow linear path also fails: 1000 KB may take at most
+  // 2 s of CPU time (about 60 ms today), well inside the hook's own budget of 10 s.
+  const bound = (t) => Math.min(30 * t + 20, 2000);
+  const times = big.map(([name, input, stop], i) => {
+    const t = timed(small[i][1], stop); // the fastest of 3
+    return { name, small: t, big: timed(input, stop, bound(t)) };
+  });
+  if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
+  const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
+  assert.deepEqual(slow, [], "the time of each call grows in line with its text");
 });
