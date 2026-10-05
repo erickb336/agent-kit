@@ -8,7 +8,7 @@
 // run two versions of this tool, so a command refuses to change a logbook that a newer version wrote (ready).
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,7 +76,7 @@ const TABLES = {
 };
 /** The columns that a later version added: an older table without them reads with them empty, and its next write adds them. */
 const ADDED = { runs: ["model"] };
-const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "board"];
+const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "board"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
   "logbook repair": ["accept-loss"],
@@ -113,11 +113,29 @@ export function sageRoot(env = process.env) {
   return env.SAGE_HOME ?? join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sage");
 }
 
-/** The main checkout of a project, also from inside one of its worktrees. */
+/**
+ * git with neutral options: no fsmonitor, no hooks and no system config of the project's machine, only local, https or
+ * ssh transports, and never a prompt. Every git call of the state tool goes through it, because the tool also runs
+ * outside the sandbox, on a folder that an agent may have written.
+ */
+export function git(args, env = process.env) {
+  const neutral = { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_ALLOW_PROTOCOL: "file:https:ssh", GIT_TERMINAL_PROMPT: "0" };
+  return execFileSync("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8", env: neutral, stdio: ["ignore", "pipe", "ignore"] });
+}
+
+/**
+ * The main checkout of a project, also from inside one of its linked worktrees. git's answer counts only when it points
+ * back to the folder: the main checkout holds its git folder, or the git folder is a linked worktree of that main
+ * checkout and names this folder as its worktree (a relative name counts from the git folder, as git reads it). Else (a planted .git/commondir or .git file, for example) the folder
+ * is a project of its own, so no folder can borrow another project's logbook.
+ */
 export function projectRoot(path) {
   try {
-    const common = execFileSync("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return dirname(common);
+    const [common, gitDir, top] = git(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir", "--show-toplevel"]).trim().split("\n");
+    const [realCommon, realGit, realTop] = [common, gitDir, top].map((p) => realpathSync(p));
+    const main = realGit === realCommon && dirname(realCommon) === realTop;
+    const linked = dirname(realGit) === join(realCommon, "worktrees") && realpathSync(resolve(realGit, readFileSync(join(realGit, "gitdir"), "utf8").trim())) === join(realTop, ".git");
+    return main || linked ? dirname(common) : resolve(path);
   } catch {
     return resolve(path);
   }
@@ -125,6 +143,26 @@ export function projectRoot(path) {
 
 /** A name as a slug: lower case, each run of other characters than a-z and 0-9 as one "-", or "project" when nothing is left. */
 export const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+
+/** The folder of the task copies (default ~/sage-worktrees; $SAGE_WORKTREES overrides it). It is outside the sage root, so agents may write in it. */
+export const worktreeRoot = (env = process.env) => env.SAGE_WORKTREES ?? join(homedir(), "sage-worktrees");
+/**
+ * The folder where agents save a task's pages (research, designs, findings): <worktree root>/<logbook key>/pages/<task>.
+ * The logbook key (name and hash) keeps two projects with the same folder name apart.
+ */
+const pagesDir = (project, task, env) => join(worktreeRoot(env), basename(storeDir(project, env)), "pages", task);
+/** The largest page that pages record reads: 16 MiB, the size limit of a published page. */
+const PAGE_MAX = 16 * 1024 * 1024;
+
+/**
+ * A branch that a task or a writer run may name: letters, digits and . _ / -, as today's branches (claude/t94,
+ * tool/t83-agent-state-writes). Not main, master or HEAD in any case (a Mac's file names ignore case), not under refs/,
+ * heads/, remotes/ or origin/ (git reads those as other refs), not starting with - or a /, and none of the
+ * forms that git refuses or reads otherwise: .., //, /., a final / or ., or .lock. @{, ~, ^, :, spaces and control
+ * characters are outside the letters. The one pattern for every branch check in this tool: task set and run add.
+ */
+export const BRANCH = /^(?![-./])(?!(?:refs|heads|remotes|origin)\/)(?!(?:main|master|HEAD)$)(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|[/.]$))[A-Za-z0-9._/-]+$/i;
+const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(name)} is not a task branch: use letters, digits and . _ / - (for example claude/t12 or tool/t12-short-name), not main, master or HEAD in any case, not under refs/, heads/, remotes/ or origin/, and not a name that starts with - or holds .., @{ or a space.`));
 
 /** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
 export function projectName(path) {
@@ -168,19 +206,29 @@ const notRegular = (path) => new Refusal(`${path} is not a regular file. Ask the
 /**
  * The text of a regular file, also through a link, or undefined when nothing is there. Something else (a FIFO, a device
  * or a folder) refuses, and so does a file it cannot read, with its path. It never blocks: the open does not wait for a
- * FIFO's writer, and the check is on the open file.
+ * FIFO's writer, and the check is on the open file. With link: false a link refuses too; with max, a file over max
+ * bytes refuses, and it reads at most max + 1 bytes, also from a file that grows. encoding: null gives the bytes.
  */
-function readRegular(path) {
+function readRegular(path, { link = true, max = Infinity, encoding = "utf8" } = {}) {
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (link ? 0 : constants.O_NOFOLLOW));
   } catch (e) {
     if (e.code === "ENOENT") return undefined;
+    if (e.code === "ELOOP") throw notRegular(path);
     throw e;
   }
   try {
-    if (!fstatSync(fd).isFile()) throw notRegular(path);
-    return readFileSync(fd, "utf8");
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw notRegular(path);
+    if (max === Infinity) return readFileSync(fd, encoding);
+    const tooBig = () => new Refusal(`${path} is over ${max} bytes.`);
+    if (st.size > max) throw tooBig();
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (let r; n < buf.length && (r = readSync(fd, buf, n, buf.length - n, null)) > 0; ) n += r;
+    if (n > max) throw tooBig();
+    return encoding ? buf.toString(encoding, 0, n) : buf.subarray(0, n);
   } catch (e) {
     e.path ??= path; // a file too long for a string, for one
     throw e;
@@ -596,20 +644,20 @@ export function sage(argv, env = process.env) {
     refuse(`no logbook for the project ${printed}. ${printed === project ? `Run: sage init --project ${shell(project)}` : "Its path has control characters, so no command is printed to paste. Rename the folder, or run sage init from inside it."}`);
   }
   // A read takes no lock: every file is replaced whole, so it sees the store before or after a change, never half of one.
-  if ((cmd === "logbook" && !repair) || cmd === "status" || (cmd === "standing" && pos[0] !== "add")) return act(cmd, pos, opt, dir, env);
+  if ((cmd === "logbook" && !repair) || cmd === "status" || (cmd === "standing" && pos[0] !== "add") || (cmd === "pages" && pos[1] !== "record")) return act(cmd, pos, opt, dir, env, [], project);
   if (cmd === "init") {
     mkdirSync(join(dir, "briefs"), { recursive: true });
     mkdirSync(join(dir, "reports"), { recursive: true });
   }
   return withLock(dir, () => {
     ready(dir, skip);
-    const out = act(cmd, pos, opt, dir, env, skip);
+    const out = act(cmd, pos, opt, dir, env, skip, project);
     status(dir, true);
     return out;
   });
 }
 
-function act(cmd, pos, opt, dir, env, skip) {
+function act(cmd, pos, opt, dir, env, skip, project) {
   const [sub, id, ...more] = pos;
   switch (cmd) {
     case "init":
@@ -690,7 +738,8 @@ function act(cmd, pos, opt, dir, env, skip) {
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
           } else if (k === "pr") setPr(task, v);
-          else if (["branch", "title"].includes(k)) task[k] = v;
+          else if (k === "branch") task.branch = v && branchOf(v); // branch= clears it
+          else if (k === "title") task.title = v;
           else refuse(`task set takes state=, branch=, pr= or title=`);
         }
         write(dir, "tasks", tasks);
@@ -725,7 +774,7 @@ function act(cmd, pos, opt, dir, env, skip) {
       if (sub === "add") {
         const { task } = taskOf(dir, need(id, "the task id"));
         const role = need(opt.role, "--role");
-        const branch = opt.branch ?? "";
+        const branch = opt.branch === undefined ? "" : branchOf(opt.branch);
         if (WRITERS.includes(role)) {
           if (!branch) refuse(`a ${role} run needs --branch`);
           const other = runs.find((r) => r.branch === branch && r.status === "running" && WRITERS.includes(r.role));
@@ -835,6 +884,30 @@ function act(cmd, pos, opt, dir, env, skip) {
     }
     case "status":
       return status(dir);
+    case "pages": {
+      // pages <T> makes the task's pages folder (mode 700) and prints it. pages <T> record <file> logs a page in it, with its sha256.
+      const folder = pagesDir(project, taskOf(dir, need(sub, "the task id")).task.id, env);
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+      if (id === undefined) return folder;
+      if (id !== "record" || more.length !== 1) refuse(`pages takes <task>, or <task> record <file>`);
+      if (/\p{Cc}/u.test(more[0])) refuse(`${JSON.stringify(more[0])} has a control character (a tab, a line break or another): give the page a name without one.`);
+      // The page must be inside the folder (by its real path, where its folder exists) before it must exist.
+      const path = resolve(more[0]);
+      const file = existsSync(dirname(path)) ? join(realpathSync(dirname(path)), basename(path)) : path;
+      if (![folder, realpathSync(folder)].some((f) => file.startsWith(`${f}/`))) refuse(`${file} is not a file in ${folder}. Save the page there first.`);
+      // The page is the regular file itself: one open that follows no link and never waits, and at most PAGE_MAX bytes.
+      let bytes;
+      try {
+        bytes = readRegular(file, { link: false, max: PAGE_MAX, encoding: null });
+      } catch (e) {
+        if (!(e instanceof Refusal)) throw e;
+        refuse(`${file} is not a page that pages record takes: it takes only a regular file of at most 16 MiB, not a link, a named pipe, a folder or a device. Save the page itself in ${folder}.`);
+      }
+      if (bytes === undefined) refuse(`${file} does not exist. Save the page in ${folder} first.`);
+      const sha = createHash("sha256").update(bytes).digest("hex");
+      write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: sub, decision: `page ${file} sha256 ${sha}`, why: "the chief recorded a page" }]);
+      return `page ${file} · sha256 ${sha}`;
+    }
   }
 }
 
