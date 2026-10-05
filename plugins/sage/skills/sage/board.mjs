@@ -8,7 +8,7 @@
 // board's own PR links, built from digits.
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import { BLOCKS, RISKS, STATES, optionsOf, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
 
@@ -148,23 +148,31 @@ function sessionBooks(books, project, env) {
 }
 
 /**
- * The folder where `gate answer --project <folder>` writes to this logbook: the session's project for its own logbook,
- * else the checkout that checkout.txt names, when storeDir gives this logbook from it. Else null: a folder with a control
- * character in its path is never named, as it cannot go into a command.
+ * A folder's home: its main checkout (root) and the logbook folder that storeDir gives it (dir). Null for no folder, or
+ * one with a control character in its path, as it cannot go into a command. A folder that is its own main checkout, as
+ * checkout.txt names it, costs one git call: storeDir would only ask git for the same root again.
  */
-function answerPath(b, project, env) {
-  for (const p of [project, b.checkout]) {
-    try {
-      if (p && !/\p{Cc}/u.test(p) && storeDir(p, env) === b.dir) return projectRoot(resolve(p));
-    } catch {}
-  }
-  return null;
+function home(p, env) {
+  if (!p || /\p{Cc}/u.test(p)) return null;
+  const root = projectRoot(resolve(p));
+  const dir = root === resolve(p) ? join(sageRoot(env), `${slug(basename(root))}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`) : storeDir(p, env);
+  return { root, dir };
+}
+/**
+ * The folder where `gate answer --project <folder>` writes to this logbook: the session's project for its own logbook,
+ * else the checkout that checkout.txt names, when storeDir gives this logbook from it. Else null. here: home(project),
+ * found once per board.
+ */
+function answerPath(b, here, env) {
+  const h = here?.dir === b.dir ? here : home(b.checkout, env);
+  return h?.dir === b.dir ? h.root : null;
 }
 /** Each logbook with an open gate, by its key, and the folder where its answers go (null when none is known). */
 export function answerPaths({ project, env = process.env } = {}) {
+  const here = home(project, env);
   return logbooks(sageRoot(env))
     .filter((b) => b.gates.some((g) => !g.answer))
-    .map((b) => ({ key: b.key, path: answerPath(b, project, env) }));
+    .map((b) => ({ key: b.key, path: answerPath(b, here, env) }));
 }
 
 /**
@@ -226,8 +234,9 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   // A logbook's real name and PR links come from its home: the folder where its gate answers go (answerPath), so only
   // a folder whose storeDir is this logbook. A folder that only shares the logbook's name, or a checkout.txt that names
   // a folder of another logbook, gives neither: the board shows the key and no links.
+  const here = home(project, env);
   for (const b of books) {
-    b.home = answerPath(b, project, env);
+    b.home = answerPath(b, here, env);
     b.real = b.home ? basename(b.home).normalize("NFC") : null;
     b.repo = b.home ? repoOf(b.home) : null;
   }
