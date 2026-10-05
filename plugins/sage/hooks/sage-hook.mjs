@@ -23,7 +23,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The state tool. When it cannot load, the hook still runs, and its merge check refuses every merge.
+// The state tool. When it cannot load, the hook still runs: its merge check refuses every merge, and it starts no new agent.
 const stateTool = await import("../skills/sage/sage.mjs").catch((error) => ({ error }));
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // The mode phrases, in a message from the user (promptOf). "sage mode" (also "sage mode on"), "sage mode off" and
@@ -194,8 +194,14 @@ export function handle(input, state, slots) {
   if (main && AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
     if (missing.length) return deny(event, `the brief has no ${missing.join(", ")}. Every brief has all of ${BRIEF_FIELDS.join(", ")}, each at the start of a line. A tiny task may keep each field to one line.`);
-    const caps = stateTool.config();
-    const project = input.cwd ? stateTool.projectName(input.cwd) : "other";
+    let caps, project;
+    try {
+      if (stateTool.error) throw stateTool.error;
+      caps = stateTool.config();
+      project = input.cwd ? stateTool.projectName(input.cwd) : "other";
+    } catch (e) {
+      return deny(event, `the state tool cannot load (${e?.message ?? e}), so sage starts no new agent: reinstall or update the sage plugin, and tell the user.`);
+    }
     const cap = caps[`cap.${project}`] ?? caps.max_agents;
     const r = slots.take(project, cap, caps.cap_total, input.tool_use_id ?? String(Date.now()));
     if (r.refused) {

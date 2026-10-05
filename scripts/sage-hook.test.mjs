@@ -1342,6 +1342,27 @@ test("T94: when the state tool does not load, the hook still keeps its state und
   assert.equal(send(bash("git status")), undefined, "a plain command goes through");
 });
 
+test("T94: when the state tool does not load, or its config throws, the hook refuses a new agent and still refuses merges and pushes to main", () => {
+  for (const [body, cause] of [
+    ['throw new Error("the state tool is broken");\n', "the state tool is broken"],
+    ['export const config = () => { throw new Error("config.json cannot be read"); };\nexport const projectName = () => "p";\n', "config.json cannot be read"],
+  ]) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-broken-")));
+    cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "sage"), { recursive: true });
+    writeFileSync(join(dir, "sage", "skills", "sage", "sage.mjs"), body);
+    const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
+    const send = (event) => {
+      const r = spawnSync("node", [join(dir, "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout ? JSON.parse(r.stdout) : undefined;
+    };
+    send(prompt("sage mode"));
+    assert.equal(denied(send(spawnAgent("sage:qa", BRIEF, "tu1", { cwd: dir }))), `sage: the state tool cannot load (${cause}), so sage starts no new agent: reinstall or update the sage plugin, and tell the user.`);
+    assert.match(denied(send(bash("git push origin main"))) ?? "", TO_MAIN);
+    assert.match(denied(send(bash(MERGE))) ?? "", /autopilot is off/);
+  }
+});
+
 test("T94: an old hook state file in the temp folder is ignored, not trusted", () => {
   const temp = realpathSync(mkdtempSync(join(tmpdir(), "sage-temp-")));
   mkdirSync(join(temp, "sage-hooks"));
