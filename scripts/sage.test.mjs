@@ -895,6 +895,22 @@ test("S1: a large task's PR cannot be framed again as small: every task that was
   assert.equal(u.ok("merge-check", "--sha", SHA, "--pr", "1"), "T2 may merge: 2 clean cycles on this SHA");
 });
 
+test("S1: a task whose only link to the PR is its verdicts on another commit stays in the PR's merge check (T83-C4, the ledger history)", () => {
+  const s = store();
+  const A = "0123456789abcdef0123456789abcdef01234567";
+  s.ok("task", "add", "--title", "the large change", "--size", "large");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", A, "--kind", kind, "--pr", "1");
+  s.ok("task", "add", "--title", "a small change", "--size", "small");
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T2", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "1");
+  // As in a logbook from before the decision rows: T1 has no pr= and no decision row, only its ledger rows on A name PR 1.
+  byHand(s.dir, "tasks", 0, "T1", (cells) => cells.with(7, ""));
+  byHand(s.dir, "decisions", 1, "T1", () => null);
+  assert.match(s.no("merge-check", "--sha", SHA, "--pr", "1"), / T1 was a task of PR 1 but has no verdicts on this SHA/);
+  // Without those ledger rows, T1 is not in PR 1's merge check.
+  byHand(s.dir, "ledger", 0, "T1", () => null);
+  assert.equal(s.ok("merge-check", "--sha", SHA, "--pr", "1"), "T2 may merge: 2 clean cycles on this SHA");
+});
+
 test("S1: each change of a task's pr= writes a decision row; the same value, and a cleared investigation, write none", () => {
   const s = store();
   s.ok("task", "add", "--title", "a change", "--size", "small");
