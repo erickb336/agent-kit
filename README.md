@@ -174,7 +174,7 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
 | A repair round re-checks only the repair's diff, with the roles that found the problems. A new medium or low finding goes to a follow-up task; a high one blocks. | A round that re-reviews the whole branch finds new scope, not the fix. |
 | A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
-| Test browsers are Playwright's bundled Chromium, never your Google Chrome app (`npm run check` refuses it in sage's scripts). When an agent or a turn ends, the hook stops each headless test browser that outlived its agent: launchd is its parent, and its profile is a temporary Playwright one. | A leftover browser uses memory and can crash your own Chrome. Your Chrome has no temporary profile, so the hook never touches it. |
+| Test browsers are Playwright's bundled Chromium, never your Google Chrome app (`npm run check` refuses it in sage's scripts). When an agent or a turn ends, the hook stops each headless test browser that outlived its agent: launchd is its parent, its program is Playwright's Chromium, and its profile is a temporary Playwright one. | A leftover browser uses memory and can crash your own Chrome. Your Chrome and other tools' browsers are none of these, so the hook never touches them. |
 
 **The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. It does three things:
 

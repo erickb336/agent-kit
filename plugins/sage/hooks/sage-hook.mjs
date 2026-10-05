@@ -846,31 +846,34 @@ const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(tmpdir(), "sage-hook
 /**
  * Leftover test browsers (T68). A Playwright browser that outlives the agent that started it runs on with launchd
  * (pid 1) as its parent. At each SubagentStop and each Stop the hook stops every such browser: a process with launchd as
- * its parent and a temporary Playwright profile (--user-data-dir under a temp folder, named playwright_chromiumdev_profile-*,
- * or with --headless and --remote-debugging-pipe). The owner's own Chrome has no temporary profile, so the hook never
- * touches it. A live agent's browser still has its runner as its parent, so it stays until the runner ends. SIGTERM
- * first; a browser that ps still lists after the grace gets SIGKILL. Each stopped pid goes to stderr.
+ * its parent, whose program is Playwright's own Chromium or headless shell, and whose profile is a temporary Playwright
+ * one (--user-data-dir=<a temp folder>/playwright_<browser>dev_profile-*). The owner's own Chrome, another tool's browser
+ * and a shell or node process with that text are none of these, so the hook never touches them. A live agent's browser
+ * still has its runner as its parent, so it stays until the runner ends. SIGTERM first; after the grace, SIGKILL goes
+ * only to a process that ps still lists with the same pid, start time and command line. Each stopped pid goes to stderr.
  */
 const TEMP_ROOTS = [...new Set([tmpdir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"])];
-/** The leftover test browsers in the text of ps -axo pid,ppid,etime,command. A line of another form does not count. */
+/** Playwright's browsers: <cache>/chromium-<n>/… or <cache>/chromium_headless_shell-<n>/…, then the browser binary. */
+const PLAYWRIGHT_CHROMIUM = /^\/\S*\/chromium(?:_headless_shell)?-\d+\/.*\/(?:Chromium|Google Chrome for Testing|chrome|headless_shell|chrome-headless-shell)$/;
+/** The leftover test browsers in the text of ps -axo pid,ppid,lstart,command. A line of another form does not count. */
 export function strayBrowsers(ps) {
   const found = [];
   for (const line of ps.split("\n")) {
-    const [, pid, ppid, age, command] = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line) ?? [];
-    const dir = / --user-data-dir=(\S+)/.exec(command ?? "")?.[1];
-    if (ppid !== "1" || !dir || !TEMP_ROOTS.some((root) => resolve(dir).startsWith(`${root}/`))) continue;
-    if (/\/playwright_chromiumdev_profile-[^/]*$/.test(dir) || (/ --headless\b/.test(command) && / --remote-debugging-pipe\b/.test(command))) found.push({ pid: Number(pid), age });
+    const [, pid, ppid, started, command = ""] = /^\s*(\d+)\s+(\d+)\s+(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+(.+)$/.exec(line) ?? [];
+    const dir = / --user-data-dir=(\S+)/.exec(command)?.[1];
+    if (ppid !== "1" || !PLAYWRIGHT_CHROMIUM.test(command.split(" --")[0]) || !/\/playwright_[a-z]+dev_profile-[^/]+$/.test(dir ?? "")) continue;
+    if (TEMP_ROOTS.some((root) => resolve(dir).startsWith(`${root}/`))) found.push({ pid: Number(pid), started, command });
   }
   return found;
 }
-const PS = () => execFileSync("/bin/ps", ["-axo", "pid,ppid,etime,command"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"] });
+const PS = () => execFileSync("ps", ["-axo", "pid,ppid,lstart,command"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, LC_ALL: "C" } });
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 /** Stops the leftover test browsers. The defaults are the real ps, kill and clock; the tests give their own. */
 export function stopStrayBrowsers({ ps = PS, kill = (pid, signal) => process.kill(pid, signal), wait = pause, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
   const send = (b, signal) => {
     try {
       kill(b.pid, signal);
-      log(`sage: stopped a leftover test browser, pid ${b.pid}, age ${b.age} (${signal})`);
+      log(`sage: stopped a leftover test browser, pid ${b.pid}, started ${b.started} (${signal})`);
     } catch {
       /* it ended by itself */
     }
@@ -879,8 +882,8 @@ export function stopStrayBrowsers({ ps = PS, kill = (pid, signal) => process.kil
   if (!stray.length) return;
   for (const b of stray) send(b, "SIGTERM");
   wait(1000);
-  const left = strayBrowsers(ps());
-  for (const b of left) if (stray.some((s) => s.pid === b.pid)) send(b, "SIGKILL");
+  const same = (a, b) => a.pid === b.pid && a.started === b.started && a.command === b.command;
+  for (const b of strayBrowsers(ps())) if (stray.some((s) => same(s, b))) send(b, "SIGKILL");
 }
 
 // Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
