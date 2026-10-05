@@ -122,7 +122,7 @@ There are two loops:
 
 The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
 
-Each agent that changes files works in its own git worktree beside your checkout, for example `~/workspace/sage-t45`. When a task ends, sage removes its worktree and branch, but it keeps one with work that is not committed or not pushed, with an ignored file that a build cannot make again (such as `.env`) or a nested repository, and says why. `sage worktrees` tidies every project at once.
+Each agent that changes files works in its own git worktree beside your checkout, for example `~/workspace/sage-t45`. When a task ends, sage removes its worktree folder, but it keeps one with work that is not committed or not pushed, with an ignored file that a build cannot make again (such as `.env`) or a nested repository, and says why. sage never deletes a branch: `sage worktrees` tidies every project at once and lists the branches it kept, for you to delete with `git branch -d`.
 
 ### The team
 
