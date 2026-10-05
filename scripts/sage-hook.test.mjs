@@ -1,7 +1,7 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -1322,4 +1322,33 @@ test("T94: the hook keeps the mode and autopilot state under the sage root, neve
   assert.deepEqual([saved.sage, saved.autopilot], [true, true], "the state file is in <sage root>/.hooks");
   assert.deepEqual(readdirSync(temp), [], "nothing in the temp folder");
   assert.match(denied(s.send(bash(MERGE))) ?? "", /merge check/, "the next event reads the state back: autopilot is on, so the merge check runs");
+});
+
+test("T94: when the state tool does not load, the hook still keeps its state under the sage root, and still refuses merges and pushes to main", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-broken-")));
+  cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "sage"), { recursive: true });
+  writeFileSync(join(dir, "sage", "skills", "sage", "sage.mjs"), 'throw new Error("the state tool is broken");\n');
+  const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
+  const send = (event) => {
+    const r = spawnSync("node", [join(dir, "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout ? JSON.parse(r.stdout) : undefined;
+  };
+  assert.match(context(send(prompt("sage mode"))), /sage mode is on/);
+  assert.equal(JSON.parse(readFileSync(join(dir, "root", ".hooks", "s1.json"), "utf8")).sage, true, "the state file is in <SAGE_HOME>/.hooks");
+  assert.match(denied(send(edit())) ?? "", /Give this change to a sage:implementer/, "the next event reads the state back");
+  assert.match(denied(send(bash("git push origin main"))) ?? "", TO_MAIN);
+  assert.match(denied(send(bash(MERGE))) ?? "", /autopilot is off/);
+  assert.equal(send(bash("git status")), undefined, "a plain command goes through");
+});
+
+test("T94: an old hook state file in the temp folder is ignored, not trusted", () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "sage-temp-")));
+  mkdirSync(join(temp, "sage-hooks"));
+  writeFileSync(join(temp, "sage-hooks", "s1.json"), JSON.stringify({ sage: true, autopilot: true }));
+  const s = session({ SAGE_HOOKS_STATE: undefined, TMPDIR: temp });
+  assert.equal(s.send(edit()), undefined, "sage mode is not on: the old file does not turn it on");
+  s.send(prompt("sage mode"));
+  assert.match(denied(s.send(bash(MERGE))) ?? "", /autopilot is off/, "autopilot is not on: the old file does not turn it on");
+  assert.match(denied(s.send(edit())) ?? "", /Give this change to a sage:implementer/, "the hook's own state still works");
 });

@@ -19,6 +19,7 @@
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -847,7 +848,9 @@ export function slotsFor(dir, session, now = Date.now()) {
 }
 
 // The mode, autopilot and slot state lives under the sage root, never in the temp folder, which sandboxed commands may write.
-const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(stateTool.sageRoot(), ".hooks");
+// The hook finds the root itself, by the state tool's rule (sageRoot in sage.mjs), so that it still works when the state
+// tool does not load. Every merge then stays refused, because the merge check needs the tool.
+const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(process.env.SAGE_HOME ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sage"), ".hooks");
 
 // Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.env.SAGE_HOOKS !== "off") {
