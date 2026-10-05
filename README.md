@@ -267,17 +267,17 @@ Start a message with `show board` to see the board in the chat. It is short Mark
 | Say | You see |
 | --- | --- |
 | `show board` or `show board for this project` | The project of the session, and one line for each other project with something waiting, for example "order-chaser: 1 gate waiting". |
-| `show board for all` | Every project: what needs you and what runs at the top, then one short section per project. |
+| `show board for all` or `show board for all projects` | Every project: what needs you and what runs at the top, then one short section per project, with at most 8 active tasks each ("and 3 more (show board for sage)"). |
 | `show board for sage-bot` | One project. The name can be in any case. An unknown name lists the known projects. |
 
 The board has these parts, in this order:
 
-1. **Needs you:** the open gates with the recommendation and the default, and the pull requests that wait for your merge (a large or risk-flagged task, or a small one outside the night window).
+1. **Needs you:** the open gates with their options, the recommendation and the default, and every verified pull request that is not merged, with the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off).
 2. **Running now:** each agent with its task, role and age.
 3. **Merged since the last board**, with links. The sage folder keeps the last board's list in `board.json`.
 4. **One section per project:** a line per active task (id, title, state, pull request link, round), the count of framed tasks, and the next 3 framed tasks by id.
 
-After the board, the chief asks each open gate as a choice card. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
+Agents write the gate and task text, so the board escapes it: a link, an image or HTML in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the gate's options. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
 
 ## Principles
 
