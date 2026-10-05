@@ -1223,14 +1223,18 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
     };
     return [...stops, ...Object.entries(others)];
   };
-  /** A call's time. A call over the bound runs again, up to 3 times in all, so one pause of a busy Mac does not count. */
+  /**
+   * A call's CPU time, not its wall time: on a busy Mac the process waits for a core, and that wait is not the hook's
+   * work. A call over the bound runs again, up to 3 times in all, so one garbage collection does not count.
+   */
   const timed = (input, stop, bound = 0) => {
     let ms = Infinity;
     for (let i = 0; i < 3 && ms > bound; i++) {
       const state = stop ? { sage: true, given: true, autopilot: true } : { sage: true, given: true };
-      const t = performance.now();
+      const t = process.cpuUsage();
       handle(input, state, slots);
-      ms = Math.min(ms, performance.now() - t);
+      const { user, system } = process.cpuUsage(t);
+      ms = Math.min(ms, (user + system) / 1000);
       if (stop) assert.equal(state.autopilot, false, "the owner's stop after the padding applies");
     }
     return ms;
