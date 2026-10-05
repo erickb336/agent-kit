@@ -96,10 +96,10 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 ## Worktrees
 
 - Each writer works in its own worktree beside the main checkout, never inside the repository: `<project folder>-<task id>`, for example `~/workspace/sage-t45`. Its branch is `<area>/<task id>-<slug>`, in lowercase. Put both in the brief's SCOPE.
-- When a task moves to merged, concluded or abandoned, `sage task` removes its worktree folder, and prints the worktree line (removed, or kept and why) and a line that the branch is kept. sage never deletes a branch: the user deletes it. The rule is in the tool. Do not remove a worktree or a branch by hand.
-- It keeps a worktree with changes that are not committed, with files hidden from git status, with an ignored file outside a rebuildable folder (such as `.env`; `node_modules` and `dist` are rebuildable), with a nested git repository, or with a last commit that the remote does not have. It keeps all when the remote or GitHub cannot be reached. Tell the user about each kept one.
+- When a task moves to merged, concluded or abandoned, `sage task` removes its worktree folder, and prints one line for every folder of the task's branch (removed, or kept and why) and a line that the branch is kept. sage never deletes a branch: the user deletes it. The rule is in the tool. Do not remove a worktree or a branch by hand.
+- It keeps a worktree that is locked, whose `.git` file does not point back to the repository, with changes that are not committed, with files hidden from git status, with an ignored file outside a rebuildable folder (such as `.env`; `node_modules` and `dist` are rebuildable), with a nested git repository, or with a last commit that the remote does not have. It keeps all when the remote or GitHub cannot be reached. Tell the user about each kept one.
 - While a task owns a branch, only the task's state ends it: closing its pull request removes nothing.
-- `sage worktrees` does the same for every project, and also for a branch that no task owns whose pull request merged or closed. It lists the kept branches of finished tasks. `--dry-run` only lists them.
+- `sage worktrees` does the same for every project, and also for a branch that no task owns whose pull request merged or closed. It prints one line for every worktree folder (for example "kept: T5 is building" or "kept: the main checkout"), then the kept branches of finished tasks. `--dry-run` only lists them, with the same kept lines.
 
 ## The arena
 

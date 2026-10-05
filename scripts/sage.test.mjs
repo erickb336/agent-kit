@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -1596,7 +1596,10 @@ function rig() {
     return git(other, "rev-parse", "HEAD");
   };
   const refs = () => git(main, "for-each-ref", "--format=%(refname) %(objectname)");
-  return { top, main, dir, git, run, ok, work, pull, prs, offline, trees, branches, advertise, elsewhere, refs };
+  /** What a tidy of the project prints: the main checkout's line first, then the given lines. */
+  const first = `${main} · main: kept: the main checkout`;
+  const withMain = (lines) => `${first}\n${lines}`;
+  return { top, main, dir, git, run, ok, work, pull, prs, offline, trees, branches, advertise, elsewhere, refs, first, withMain };
 }
 
 /** The line for a local branch of a finished task whose worktree is gone: sage keeps every branch. */
@@ -1621,7 +1624,7 @@ test("T45: sage worktrees removes the clean worktrees of finished work that are 
   const branchOnly = r.work("concluded", { tree: false });
   r.ok("task", "add", "--title", "the main checkout", "--size", "small");
   r.ok("task", "T11", "set", "branch=main");
-  byHand(r.dir, "tasks", 0, "T11", (cells) => cells.with(5, "merged")); // the main checkout holds main: no line
+  byHand(r.dir, "tasks", 0, "T11", (cells) => cells.with(5, "merged")); // the main checkout holds main: its own line
   mkdirSync(join(r.top, "app-t12")); // a folder that is no worktree
   r.prs([
     { number: 5, state: "OPEN", headRefName: open.branch, headRefOid: open.head, isCrossRepository: false },
@@ -1637,10 +1640,13 @@ test("T45: sage worktrees removes the clean worktrees of finished work that are 
     `${open.path} · ${open.branch} · T5 abandoned: kept: PR 5 is open`,
     `${running.path} · ${running.branch} · T8 merged: kept: run R1 is running`,
   ];
+  const buildingLine = `${building.path} · ${building.branch}: kept: T6 is building`;
   const all = (verb) => [
+    r.first,
     `${done.path} · ${done.branch} · T1 merged: ${verb}`,
     ...kept,
     openLine,
+    buildingLine,
     `${closed.path} · ${closed.branch} · PR 7 closed: ${verb}`,
     runningLine,
     `${squashed.path} · ${squashed.branch} · T9 merged: ${verb}`,
@@ -1655,7 +1661,7 @@ test("T45: sage worktrees removes the clean worktrees of finished work that are 
   assert.equal(r.refs(), before[1], "every branch stays at its commit");
   assert.deepEqual([existsSync(done.path), existsSync(join(r.top, "app-t12")), readFileSync(join(modified.path, "a.txt"), "utf8")], [false, true, "changed\n"]);
 
-  const again = [...kept, openLine, runningLine, ...gone].join("\n");
+  const again = [r.first, ...kept, openLine, buildingLine, runningLine, ...gone].join("\n");
   assert.equal(r.ok("worktrees"), again, "a second run removes nothing more and prints the same kept lines");
   assert.equal(r.ok("worktrees", "--dry-run"), again);
 });
@@ -1675,32 +1681,32 @@ test("T45: sage worktrees removes a worktree whose ignored files are all in rebu
     `${env.path} · ${env.branch} · T2 merged: kept: ignored files that are not rebuildable: .env`,
     `${data.path} · ${data.branch} · T3 merged: kept: ignored files that are not rebuildable: data/`,
   ];
-  assert.equal(r.ok("worktrees", "--dry-run"), [`${built.path} · ${built.branch} · T1 merged: would remove`, ...kept].join("\n"));
+  assert.equal(r.ok("worktrees", "--dry-run"), [r.first, `${built.path} · ${built.branch} · T1 merged: would remove`, ...kept].join("\n"));
   const branch = keptBranch(built.branch, "T1 merged");
-  assert.equal(r.ok("worktrees"), [`${built.path} · ${built.branch} · T1 merged: removed`, ...kept, branch].join("\n"));
+  assert.equal(r.ok("worktrees"), [r.first, `${built.path} · ${built.branch} · T1 merged: removed`, ...kept, branch].join("\n"));
   assert.deepEqual([existsSync(built.path), readFileSync(join(env.path, ".env"), "utf8"), readFileSync(join(data.path, "data/foo.db"), "utf8")], [false, "x\n", "x\n"]);
-  assert.equal(r.ok("worktrees"), [...kept, branch].join("\n"), "a second run keeps the same ones");
+  assert.equal(r.ok("worktrees"), [r.first, ...kept, branch].join("\n"), "a second run keeps the same ones");
 });
 
 test("T45: when GitHub cannot be reached, a finished task's worktree is kept, as its PR state is unknown", () => {
   const r = rig();
   const done = r.work("merged");
-  r.work("building");
+  const building = r.work("building");
   r.offline();
-  assert.equal(r.ok("worktrees"), `${done.path} · ${done.branch} · T1 merged: kept: GitHub cannot be reached, so its PR state is unknown`);
+  assert.equal(r.ok("worktrees"), [r.first, `${done.path} · ${done.branch} · T1 merged: kept: GitHub cannot be reached, so its PR state is unknown`, `${building.path} · ${building.branch}: kept: T2 is building`].join("\n"));
   assert.ok(existsSync(done.path));
 });
 
-test("T45: sage worktrees tidies every project's logbook, also run from another project, and says so when it finds nothing", () => {
+test("T45: sage worktrees tidies every project's logbook, also run from another project, and names each main checkout", () => {
   const a = rig();
   const done = a.work("merged");
   a.prs([]);
   const b = rig();
   b.prs([]);
-  assert.equal(b.ok("worktrees", "--dry-run"), "no stale worktrees");
+  assert.equal(b.ok("worktrees", "--dry-run"), b.first);
   const env = { ...process.env, SAGE_HOME: join(a.top, "home"), SAGE_GH: join(a.top, "gh"), GIT_CONFIG_GLOBAL: join(a.top, "gitconfig") };
   const r = spawnSync("node", [TOOL, "worktrees", "--project", b.main], { encoding: "utf8", env, timeout });
-  assert.equal(r.stdout.trim(), `${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`, r.stderr);
+  assert.equal(r.stdout.trim(), a.withMain(`${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`), r.stderr);
 });
 
 test("T45: moving a task to merged, concluded or abandoned tidies its worktree in one line, and the move never fails for it", () => {
@@ -1716,7 +1722,7 @@ test("T45: moving a task to merged, concluded or abandoned tidies its worktree i
 
   const locked = r.work("building");
   r.git(r.main, "worktree", "lock", locked.path);
-  assert.match(r.ok("task", locked.id, "set", "state=abandoned"), new RegExp(`\nworktree ${locked.path} · ${locked.branch} · T3 abandoned: kept: git refused: .*locked`), "no --force");
+  assert.equal(r.ok("task", locked.id, "set", "state=abandoned").split("\n")[1], `worktree ${locked.path} · ${locked.branch} · T3 abandoned: kept: it is locked`, "no --force");
   assert.ok(existsSync(locked.path));
 
   const unknown = r.work("building");
@@ -1833,10 +1839,10 @@ test("T45-BUILDING-REMOVED: while a task owns the branch, only its state makes t
   const orphan = r.work("building", { owned: false });
   const same = (n, state, w) => ({ number: n, state, headRefName: w.branch, headRefOid: w.head, isCrossRepository: false });
   r.prs([same(1, "CLOSED", building), same(2, "MERGED", repairing), same(3, "CLOSED", orphan)]);
-  const lines = [`${orphan.path} · ${orphan.branch} · PR 3 closed: removed`];
-  assert.equal(r.ok("worktrees"), lines.join("\n"));
+  const kept = [`${building.path} · ${building.branch}: kept: T1 is building`, `${repairing.path} · ${repairing.branch}: kept: T2 is repairing`];
+  assert.equal(r.ok("worktrees"), r.withMain([...kept, `${orphan.path} · ${orphan.branch} · PR 3 closed: removed`].join("\n")));
   assert.deepEqual([existsSync(building.path), existsSync(repairing.path), existsSync(orphan.path)], [true, true, false]);
-  assert.equal(r.ok("worktrees"), "no stale worktrees", "a second run finds nothing");
+  assert.equal(r.ok("worktrees"), r.withMain(kept.join("\n")), "a second run removes nothing more");
 });
 
 test("T45-PR-NAME-MATCH: a PR makes a branch that no task owns stale only when its head is the branch's head and it comes from the same repository", () => {
@@ -1847,7 +1853,7 @@ test("T45-PR-NAME-MATCH: a PR makes a branch that no task owns stale only when i
     { number: 1, state: "MERGED", headRefName: moved.branch, headRefOid: "0".repeat(40), isCrossRepository: false },
     { number: 2, state: "MERGED", headRefName: fork.branch, headRefOid: fork.head, isCrossRepository: true },
   ]);
-  assert.equal(r.ok("worktrees"), "no stale worktrees");
+  assert.equal(r.ok("worktrees"), r.withMain([moved, fork].map((w) => `${w.path} · ${w.branch}: kept: no task owns the branch`).join("\n")));
   assert.deepEqual([existsSync(moved.path), existsSync(fork.path)], [true, true]);
 });
 
@@ -1868,8 +1874,8 @@ test("T45-REBUILDABLE-NAME: a nested git repository in a rebuildable folder keep
     `${dep.path} · ${dep.branch} · T1 merged: kept: a nested git repository: node_modules/dep`,
     `${venv.path} · ${venv.branch} · T2 merged: kept: a nested git repository: .venv/src/pkg`,
   ].join("\n");
-  assert.equal(r.ok("worktrees"), kept);
-  assert.equal(r.ok("worktrees"), kept, "a second run prints the same lines");
+  assert.equal(r.ok("worktrees"), r.withMain(kept));
+  assert.equal(r.ok("worktrees"), r.withMain(kept), "a second run prints the same lines");
   assert.deepEqual([existsSync(join(dep.path, "node_modules", "dep", "x.js")), existsSync(join(venv.path, ".venv", "src", "pkg", ".git"))], [true, true]);
 });
 
@@ -1886,8 +1892,8 @@ test("T45-SKIPWORKTREE-LOST: a file marked skip-worktree or assume-unchanged kee
     `${skip.path} · ${skip.branch} · T1 merged: kept: files hidden from git status: a.txt`,
     `${assume.path} · ${assume.branch} · T2 merged: kept: files hidden from git status: T2.txt, a.txt`,
   ].join("\n");
-  assert.equal(r.ok("worktrees"), kept);
-  assert.equal(r.ok("worktrees"), kept, "a second run prints the same lines");
+  assert.equal(r.ok("worktrees"), r.withMain(kept));
+  assert.equal(r.ok("worktrees"), r.withMain(kept), "a second run prints the same lines");
   assert.equal(readFileSync(join(skip.path, "a.txt"), "utf8"), "hidden edit\n");
 });
 
@@ -1904,11 +1910,11 @@ test("T45-STALE-TRACKING-REF: the last commit must be on the remote itself: a fo
   r.git(other, "push", "-q", "origin", ahead.branch);
   r.git(r.main, "update-ref", "-d", `refs/remotes/origin/${ahead.branch}`); // no local ref holds the remote's new commit
   r.prs([]);
-  assert.equal(r.ok("worktrees"), [
+  assert.equal(r.ok("worktrees"), r.withMain([
     `${forged.path} · ${forged.branch} · T1 merged: kept: its last commit ${forged.head.slice(0, 7)} is not on the remote`,
     `${ahead.path} · ${ahead.branch} · T2 merged: removed`,
     keptBranch(ahead.branch, "T2 merged"),
-  ].join("\n"));
+  ].join("\n")));
   assert.deepEqual([r.branches(), r.git(r.main, "rev-parse", ahead.branch)], [[forged.branch, ahead.branch, "main"].sort(), ahead.head], "the fetch changes no local branch");
 
   const away = r.work("merged");
@@ -1918,8 +1924,8 @@ test("T45-STALE-TRACKING-REF: the last commit must be on the remote itself: a fo
     `${away.path} · ${away.branch} · T3 merged: kept: the remote cannot be reached`,
     keptBranch(ahead.branch, "T2 merged"),
   ].join("\n");
-  assert.equal(r.ok("worktrees"), kept);
-  assert.equal(r.ok("worktrees"), kept, "a second run prints the same lines");
+  assert.equal(r.ok("worktrees"), r.withMain(kept));
+  assert.equal(r.ok("worktrees"), r.withMain(kept), "a second run prints the same lines");
 });
 
 test("T45-ANY-LOCAL-BRANCH: sage deletes no branch, also not the remote's default, main or master: it removes only the worktree folder", () => {
@@ -1938,8 +1944,8 @@ test("T45-ANY-LOCAL-BRANCH: sage deletes no branch, also not the remote's defaul
   r.prs([]);
   const before = r.refs();
   const lines = [`${develop} · develop · T1 merged: removed`, keptBranch("develop", "T1 merged"), keptBranch("master", "T2 merged")];
-  assert.equal(r.ok("worktrees"), lines.join("\n"));
-  assert.equal(r.ok("worktrees"), lines.slice(1).join("\n"), "a second run prints the same kept lines");
+  assert.equal(r.ok("worktrees"), r.withMain(lines.join("\n")));
+  assert.equal(r.ok("worktrees"), r.withMain(lines.slice(1).join("\n")), "a second run prints the same kept lines");
   assert.deepEqual([existsSync(develop), r.refs()], [false, before]);
 });
 
@@ -1953,10 +1959,10 @@ test("T45-CHECKOUT-HINT: sage worktrees names the main checkout of the project i
   const bHome = join(b.top, "home");
   const env = { ...process.env, SAGE_HOME: bHome, SAGE_GH: join(b.top, "gh"), GIT_CONFIG_GLOBAL: join(b.top, "gitconfig") };
   const dry = spawnSync("node", [TOOL, "worktrees", "--dry-run", "--project", b.main], { encoding: "utf8", env, timeout });
-  assert.equal(dry.stdout.trim(), `${done.path} · ${done.branch} · T1 merged: would remove`, dry.stderr);
+  assert.equal(dry.stdout.trim(), b.withMain(`${done.path} · ${done.branch} · T1 merged: would remove`), dry.stderr);
   assert.equal(readFileSync(join(b.dir, "checkout.txt"), "utf8"), `${b.main}\n`);
   const r = spawnSync("node", [TOOL, "worktrees", "--project", a.main], { encoding: "utf8", env, timeout });
-  assert.equal(r.stdout.trim(), `${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`, r.stderr);
+  assert.equal(r.stdout.trim(), b.withMain(`${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`), r.stderr);
 });
 
 test("T45-SYMREF-DELETE: a branch that is a symbolic ref is kept, and no ref changes", () => {
@@ -1969,8 +1975,8 @@ test("T45-SYMREF-DELETE: a branch that is a symbolic ref is kept, and no ref cha
   const before = r.refs();
   const kept = keptBranch("alias", "T1 merged");
   assert.equal(r.ok("task", id, "set", "state=merged"), `T1 merged · small · round 0 · route build,code-review,qa · alias\nworktree ${kept}`);
-  assert.equal(r.ok("worktrees"), kept);
-  assert.equal(r.ok("worktrees"), kept, "a second run prints the same kept line");
+  assert.equal(r.ok("worktrees"), r.withMain(kept));
+  assert.equal(r.ok("worktrees"), r.withMain(kept), "a second run prints the same kept line");
   assert.deepEqual([r.refs(), r.git(r.main, "symbolic-ref", "refs/heads/alias"), r.git(r.main, "reflog", "exists", "refs/heads/main")], [before, "refs/heads/main", ""]);
 });
 
@@ -2002,7 +2008,7 @@ test("T45-CASE-ALIAS: a finished task whose branch differs from a real branch on
   const ids = twins.map((b) => finished(r, b));
   const before = r.refs();
   // A line names only a branch that git lists by its exact name: on a case-sensitive file system the twin is a real branch.
-  const kept = twins.flatMap((b, i) => (exact(b) ? [keptBranch(b, `${ids[i]} merged`)] : [])).join("\n") || "no stale worktrees";
+  const kept = [r.first, ...twins.flatMap((b, i) => (exact(b) ? [keptBranch(b, `${ids[i]} merged`)] : []))].join("\n");
   assert.equal(r.ok("worktrees"), kept);
   assert.equal(r.ok("worktrees"), kept, "a second run prints the same lines");
   assert.equal(r.refs(), before, "no branch moved or went");
@@ -2026,8 +2032,8 @@ test("T45-PACKED-TWIN: a packed Feat with unpushed commits beside a loose feat: 
   const before = r.refs();
   assert.match(before, new RegExp(`^refs/heads/Feat ${unpushed}$`, "m"));
   const kept = [keptBranch("Feat", `${Feat} merged`), keptBranch("feat", `${feat} merged`)];
-  assert.equal(r.ok("worktrees"), [`${tree} · feat · ${feat} merged: removed`, ...kept].join("\n"));
-  assert.equal(r.ok("worktrees"), kept.join("\n"), "a second run prints the same kept lines");
+  assert.equal(r.ok("worktrees"), r.withMain([`${tree} · feat · ${feat} merged: removed`, ...kept].join("\n")));
+  assert.equal(r.ok("worktrees"), r.withMain(kept.join("\n")), "a second run prints the same kept lines");
   assert.deepEqual([existsSync(tree), r.refs()], [false, before], "no branch moved or went, and Feat keeps its unpushed commit");
 });
 
@@ -2040,7 +2046,7 @@ test("T45-REMOTE-REFNAME: a remote that gives a name with ':' moves no local bra
   r.advertise(`${bait}\trefs/heads/a:refs/heads/victim\n`);
   const done = r.work("merged");
   r.elsewhere(done.branch);
-  assert.equal(r.ok("worktrees"), `${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`);
+  assert.equal(r.ok("worktrees"), r.withMain(`${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`));
   assert.equal(r.git(r.main, "rev-parse", "victim"), victim, "victim did not move");
 });
 
@@ -2050,7 +2056,7 @@ test("T45-REMOTE-REFNAME: a ref that the remote gives at the zero commit counts 
   r.advertise(`${"0".repeat(40)}\trefs/heads/ghost\n`);
   const done = r.work("merged");
   r.elsewhere(done.branch);
-  assert.equal(r.ok("worktrees"), `${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`);
+  assert.equal(r.ok("worktrees"), r.withMain(`${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`));
 });
 
 test("T45-FETCH-REFMAP: whatever remote.origin.fetch says, the proof fetch changes no local branch and no remote-tracking ref", () => {
@@ -2063,7 +2069,7 @@ test("T45-FETCH-REFMAP: whatever remote.origin.fetch says, the proof fetch chang
   const done = r.work("merged");
   r.elsewhere(done.branch);
   const before = r.refs();
-  assert.equal(r.ok("worktrees"), `${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`);
+  assert.equal(r.ok("worktrees"), r.withMain(`${done.path} · ${done.branch} · T1 merged: removed\n${keptBranch(done.branch, "T1 merged")}`));
   assert.equal(r.refs(), before);
   assert.equal(r.git(r.main, "rev-parse", "keepme"), unpushed);
 });
@@ -2091,9 +2097,9 @@ test("T45-SILENT-KEEP: a final move prints a kept line with the reason for a sha
   lines.push(keptBranch("master", `${master} abandoned`));
   assert.equal(move(master, "branch=master"), `worktree ${lines.at(-1)}`);
   const main = r.ok("task", "add", "--title", "main", "--size", "small").split(" ")[0];
-  assert.equal(move(main, "branch=main"), "", "the main checkout holds main: its worktree is not gone, so no line");
-  assert.equal(r.ok("worktrees"), lines.join("\n"));
-  assert.equal(r.ok("worktrees"), lines.join("\n"), "a second run prints the same kept lines");
+  assert.equal(move(main, "branch=main"), `worktree ${r.first}`, "the main checkout holds main: it says so");
+  assert.equal(r.ok("worktrees"), r.withMain(lines.join("\n")));
+  assert.equal(r.ok("worktrees"), r.withMain(lines.join("\n")), "a second run prints the same kept lines");
   assert.deepEqual([existsSync(shared.path), existsSync(running.path), existsSync(open.path), r.branches().includes("master")], [true, true, true, true]);
 });
 
@@ -2106,7 +2112,7 @@ test("T45-PRUNE: an owner's worktree on a disk that is not mounted keeps its ent
   renameSync(join(r.top, "volume"), join(r.top, "unmounted")); // the disk goes away
   const done = r.work("merged");
   r.prs([]);
-  assert.equal(r.ok("worktrees"), [`${done.path} · ${done.branch} · T1 merged: removed`, keptBranch(done.branch, "T1 merged")].join("\n"));
+  assert.equal(r.ok("worktrees"), r.withMain([`${done.path} · ${done.branch} · T1 merged: removed`, `${owner} · owner: kept: its folder is missing, and sage never prunes`, keptBranch(done.branch, "T1 merged")].join("\n")));
   renameSync(join(r.top, "unmounted"), join(r.top, "volume")); // the disk comes back
   assert.deepEqual([r.git(owner, "rev-parse", "--abbrev-ref", "HEAD"), r.git(owner, "status", "--porcelain")], ["owner", "A  staged.txt"], "the entry and its staged index are still there");
 });
@@ -2130,7 +2136,7 @@ test("T45-WT-REFS: a worktree that holds refs only it has, or a HEAD reflog comm
     `${reset.path} · ${reset.branch} · T2 merged: kept: its HEAD reflog has a commit on no branch or remote: ${lost.slice(0, 7)}`,
     `${clean.path} · ${clean.branch} · T3 merged: removed`,
   ];
-  assert.equal(r.ok("worktrees"), [...lines, keptBranch(clean.branch, "T3 merged")].join("\n"));
+  assert.equal(r.ok("worktrees"), r.withMain([...lines, keptBranch(clean.branch, "T3 merged")].join("\n")));
   assert.deepEqual([existsSync(kept.path), existsSync(reset.path), existsSync(clean.path)], [true, true, false]);
 });
 
@@ -2142,7 +2148,7 @@ test("T45-NEWLINE: a worktree path with a line end in it is read as one worktree
   mkdirSync(dirname(odd), { recursive: true });
   r.git(r.main, "worktree", "move", done.path, odd);
   r.prs([]);
-  assert.equal(r.ok("worktrees"), [`${odd} · ${done.branch} · T2 merged: removed`, keptBranch(done.branch, "T2 merged")].join("\n"));
+  assert.equal(r.ok("worktrees"), r.withMain([`${other.path} · ${other.branch}: kept: T1 is building`, `${odd} · ${done.branch} · T2 merged: removed`, keptBranch(done.branch, "T2 merged")].join("\n")));
   assert.deepEqual([existsSync(other.path), existsSync(odd)], [true, false], "the building task's worktree stays");
 });
 
@@ -2154,11 +2160,82 @@ test("T45-EXACT-KEEP: a task, a run or an open PR on a branch name that differs 
   r.ok("task", other, "set", `branch=${alias(building.branch)}`);
   r.ok("run", "add", other, "--role", "implementer", "--branch", alias(running.branch));
   r.prs([{ number: 9, state: "OPEN", headRefName: alias(open.branch), headRefOid: open.head, isCrossRepository: false }]);
-  assert.equal(r.ok("worktrees"), [
+  assert.equal(r.ok("worktrees"), r.withMain([
     `${building.path} · ${building.branch} · T1 merged: kept: ${other} still uses the branch (framed)`,
     `${running.path} · ${running.branch} · T2 merged: kept: run R1 is running`,
     `${open.path} · ${open.branch} · T3 merged: kept: PR 9 is open`,
-  ].join("\n"));
+  ].join("\n")));
+});
+
+test("T45-S1-GITDIR-EXEC: a worktree whose .git file names a repository that an agent made is kept, and sage runs none of its fsmonitor or filter", () => {
+  const r = rig();
+  const bad = r.work("merged");
+  const planted = join(bad.path, "dist", "e");
+  mkdirSync(planted, { recursive: true });
+  r.git(planted, "init", "-q");
+  const ran = (what) => join(r.top, `ran-${what}`);
+  writeFileSync(join(r.top, "hook.sh"), `#!/bin/sh\ntouch '${ran("fsmonitor")}'\n`);
+  chmodSync(join(r.top, "hook.sh"), 0o755);
+  r.git(planted, "config", "core.fsmonitor", join(r.top, "hook.sh"));
+  r.git(planted, "config", "filter.x.clean", `touch '${ran("filter")}'; cat`);
+  writeFileSync(join(bad.path, ".gitattributes"), "* filter=x\n");
+  writeFileSync(join(bad.path, ".git"), "gitdir: dist/e/.git\n");
+  execFileSync("git", ["--git-dir=dist/e/.git", "--work-tree=.", "add", `${bad.id}.txt`], { cwd: bad.path, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } });
+  for (const what of ["fsmonitor", "filter"]) rmSync(ran(what), { force: true }); // the add above ran both; only sage's runs count
+  utimesSync(join(bad.path, `${bad.id}.txt`), new Date(), new Date(Date.now() + 5000)); // a new mtime makes git status clean the file again
+  r.prs([]);
+  const kept = [`${r.main} · main: kept: the main checkout`, `${bad.path} · ${bad.branch} · T1 merged: kept: its .git file does not point back to this repository`].join("\n");
+  const [dry, real] = [r.ok("worktrees", "--dry-run"), r.ok("worktrees")];
+  assert.deepEqual([existsSync(ran("fsmonitor")), existsSync(ran("filter")), existsSync(bad.path)], [false, false, true], "no code of the planted repository ran");
+  assert.deepEqual([dry, real], [kept, kept]);
+});
+
+test("T45-LOCKED-DRYRUN: a locked worktree of finished work is kept with its reason in the dry run and the real run alike", () => {
+  const r = rig();
+  const [locked, bare] = [r.work("merged"), r.work("merged")];
+  r.git(r.main, "worktree", "lock", "--reason", "on a USB disk", locked.path);
+  r.git(r.main, "worktree", "lock", bare.path);
+  r.prs([]);
+  const kept = [`${r.main} · main: kept: the main checkout`, `${locked.path} · ${locked.branch} · T1 merged: kept: it is locked (on a USB disk)`, `${bare.path} · ${bare.branch} · T2 merged: kept: it is locked`].join("\n");
+  assert.equal(r.ok("worktrees", "--dry-run"), kept);
+  assert.equal(r.ok("worktrees"), kept);
+  assert.deepEqual([existsSync(locked.path), existsSync(bare.path)], [true, true]);
+});
+
+test("T45-SILENT-STATES: the dry run and the real run print one line for every worktree folder, and the same kept lines", () => {
+  const r = rig();
+  const done = r.work("merged");
+  const dirty = r.work("merged");
+  writeFileSync(join(dirty.path, "a.txt"), "changed\n");
+  const unpushed = r.work("merged", { push: false });
+  const running = r.work("building");
+  const run = r.ok("run", "add", running.id, "--role", "implementer", "--branch", running.branch).split(" ")[0];
+  byHand(r.dir, "tasks", 0, running.id, (cells) => cells.with(5, "merged"));
+  const building = r.work("building");
+  const verified = r.work("verified");
+  const orphan = r.work("building", { owned: false });
+  const locked = r.work("merged");
+  r.git(r.main, "worktree", "lock", "--reason", "owner", locked.path);
+  r.prs([]);
+  const kept = [
+    `${r.main} · main: kept: the main checkout`,
+    `${dirty.path} · ${dirty.branch} · T2 merged: kept: it has changes that are not committed`,
+    `${unpushed.path} · ${unpushed.branch} · T3 merged: kept: its last commit ${unpushed.head.slice(0, 7)} is not on the remote`,
+    `${running.path} · ${running.branch} · T4 merged: kept: run ${run} is running`,
+    `${building.path} · ${building.branch}: kept: T5 is building`,
+    `${verified.path} · ${verified.branch}: kept: T6 is verified, not finished`,
+    `${orphan.path} · ${orphan.branch}: kept: no task owns the branch`,
+    `${locked.path} · ${locked.branch} · T8 merged: kept: it is locked (owner)`,
+  ];
+  const all = (verdict) => [kept[0], `${done.path} · ${done.branch} · T1 merged: ${verdict}`, ...kept.slice(1)];
+  const dry = r.ok("worktrees", "--dry-run");
+  assert.equal(dry, all("would remove").join("\n"));
+  const real = r.ok("worktrees");
+  assert.equal(real, [...all("removed"), keptBranch(done.branch, "T1 merged")].join("\n"));
+  const keptOf = (out) => out.split("\n").filter((l) => l.includes(": kept: "));
+  assert.deepEqual(keptOf(real), keptOf(dry), "the kept lines match");
+  assert.equal(r.ok("task", building.id, "set", "state=abandoned").split("\n").slice(1).join("\n"), `worktree ${building.path} · ${building.branch} · T5 abandoned: removed\nworktree ${keptBranch(building.branch, "T5 abandoned")}`);
+  assert.deepEqual(r.branches(), ["main", ...[done, dirty, unpushed, running, building, verified, orphan, locked].map((w) => w.branch)].sort(), "no branch is deleted");
 });
 
 test("T40: each agent role gets its model by task size; run add prints it and records it; an old runs.tsv gets the column at its next write", () => {
