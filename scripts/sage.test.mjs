@@ -750,7 +750,7 @@ test("F2: with --pr, every task of that pull request must pass on the SHA, so a 
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", old, "--kind", kind, "--pr", "5");
   s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass"); // the head after a repair push, recorded under the tiny task
   assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T2 may merge: 1 clean cycle on this SHA", "without --pr, as the hook calls it until T4");
-  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass; 1 fails. ${s.dir} T1 is a task of PR 5 but has no verdicts on this SHA. Record them, or, if it is no longer part of PR 5, clear its PR (sage task T1 set pr=). To merge, make each one pass.`);
+  assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass; 1 fails. ${s.dir} T1 is a task of PR 5 but has no verdicts on this SHA. Every task that was ever on PR 5 counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges. To merge, make each one pass.`);
   assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "6"), `sage: no task of PR 6 has verdicts on a1b2c3d: only ${s.dir} T2 has. Record PR 6's verdicts under its own task (sage verdict <T> --sha <sha> --pr 6), or set its PR: sage task <T> set pr=6.`);
   assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "#5"), "sage: --pr is the pull request's number, for example --pr 5");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
@@ -855,16 +855,60 @@ test("QA-1: an investigation takes no PR number, and the merge check names the w
   assert.equal(s.ok("merge-check", "--sha", SHA, "--pr", "7"), "T2 may merge: 1 clean cycle on this SHA");
 });
 
-test("F-R49-2: with --pr, a task of the PR without verdicts on the SHA, also an abandoned one, is named with its way out", () => {
+test("F-R49-2: with --pr, a task of the PR without verdicts on the SHA, also an abandoned one, is named, and a cleared pr= does not take it out (S1)", () => {
   const s = store();
   s.ok("task", "add", "--title", "old", "--size", "tiny");
   s.ok("task", "add", "--title", "new", "--size", "tiny");
   s.ok("verdict", "T1", "--sha", "0123456789abcdef0123456789abcdef01234567", "--kind", "checks-pass", "--pr", "9");
   s.ok("task", "T1", "set", "state=abandoned");
   s.ok("verdict", "T2", "--sha", SHA, "--kind", "checks-pass", "--pr", "9");
-  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "9"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 9, and each must pass; 1 fails. ${s.dir} T1 (abandoned) is a task of PR 9 but has no verdicts on this SHA. Record them, or, if it is no longer part of PR 9, clear its PR (sage task T1 set pr=). To merge, make each one pass.`, "a new commit is no way out here");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "9"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 9, and each must pass; 1 fails. ${s.dir} T1 (abandoned) is a task of PR 9 but has no verdicts on this SHA. Every task that was ever on PR 9 counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges. To merge, make each one pass.`, "a new commit is no way out here");
   s.ok("task", "T1", "set", "pr=");
-  assert.equal(s.ok("merge-check", "--sha", SHA, "--pr", "9"), "T2 may merge: 1 clean cycle on this SHA");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "9"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 9, and each must pass; 1 fails. ${s.dir} T1 (abandoned) was a task of PR 9 but has no verdicts on this SHA. Every task that was ever on PR 9 counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges. To merge, make each one pass.`);
+});
+
+test("S1: a large task's PR cannot be framed again as small: every task that was ever on the PR stays in its merge check", () => {
+  const s = store();
+  const A = "0123456789abcdef0123456789abcdef01234567";
+  s.ok("task", "add", "--title", "the large change", "--size", "large");
+  s.ok("task", "T1", "set", "pr=1");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", A, "--kind", kind);
+  // 1. commit B is pushed (SHA). 2. A small task. 3. B's verdicts under it with --pr 1. 4. The large task's PR is cleared.
+  s.ok("task", "add", "--title", "a small change", "--size", "small");
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T2", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "1");
+  s.ok("task", "T1", "set", "pr=");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "1"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 1, and each must pass; 1 fails. ${s.dir} T1 was a task of PR 1 but has no verdicts on this SHA. Every task that was ever on PR 1 counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges. To merge, make each one pass.`);
+  // Also when the large task had no verdicts on the PR at all: the decision row alone keeps it in.
+  const t = store();
+  t.ok("task", "add", "--title", "the large change", "--size", "large");
+  t.ok("task", "T1", "set", "pr=1");
+  t.ok("task", "T1", "set", "pr=2");
+  t.ok("task", "add", "--title", "a small change", "--size", "small");
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) t.ok("verdict", "T2", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "1");
+  assert.match(t.no("merge-check", "--sha", SHA, "--pr", "1"), / T1 was a task of PR 1 but has no verdicts on this SHA/);
+  // The history is per PR: a large task that was only ever on PR 2 is not in PR 1's merge check.
+  const u = store();
+  u.ok("task", "add", "--title", "the large change", "--size", "large");
+  u.ok("task", "T1", "set", "pr=2");
+  u.ok("task", "add", "--title", "a small change", "--size", "small");
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) u.ok("verdict", "T2", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "1");
+  assert.equal(u.ok("merge-check", "--sha", SHA, "--pr", "1"), "T2 may merge: 2 clean cycles on this SHA");
+});
+
+test("S1: each change of a task's pr= writes a decision row; the same value, and a cleared investigation, write none", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "a change", "--size", "small");
+  s.ok("task", "T1", "set", "pr=4");
+  s.ok("task", "T1", "set", "pr=4");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass", "--pr", "5");
+  s.ok("task", "T1", "set", "pr=");
+  assert.deepEqual(rows(s.dir, "decisions").map((d) => [d.task, d.decision, d.why]), [
+    ["T1", "PR none → 4", "task set"],
+    ["T1", "PR 4 → 5", "verdict --pr"],
+    ["T1", "PR 5 → none", "task set"],
+  ]);
+  assert.equal(s.no("task", "T1", "set", "pr=6", "state=bogus").startsWith("sage: "), true);
+  assert.equal(rows(s.dir, "decisions").length, 3, "a refused command writes no decision");
 });
 
 test("QA-3: a bad count gives the reason for its value, and a SHA in capitals names the same commit", () => {

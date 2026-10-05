@@ -17,8 +17,10 @@
 //   - A sage agent may finish only with the full report of the sage:report skill.
 //   - Only the chief writes the logbook, in any mode (agentProblem): an agent runs the state tool only as one plain read
 //     command, never the PR script, never a command outside the sandbox, and never writes under the sage root.
+//   - Only sage.mjs changes the logbook (chiefProblem): the chief's own file tools and shell writes never change it.
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge,
-// a push, and an agent's file change or command that names the state tool or the PR script.
+// a push, an agent's file change or command that names the state tool or the PR script, and a chief's shell write that
+// names a logbook file.
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -192,8 +194,9 @@ export function handle(input, state, slots) {
   }
   if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
   if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
-  const agentWhy = event === "PreToolUse" && !main ? agentProblem(input) : undefined;
-  if (agentWhy) return deny(event, `${agentWhy} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
+  const why = event === "PreToolUse" ? (main ? chiefProblem(input, state.sage) : agentProblem(input)) : undefined;
+  if (why && main) return deny(event, `${why} Only sage.mjs changes the logbook: run the state tool's command for this change (node <path to skills/sage/sage.mjs> ...), as a command of its own. If no command does it, ask the user.`);
+  if (why) return deny(event, `${why} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
   if (event !== "PreToolUse" || !state.sage) return undefined;
 
   const tool = input.tool_name ?? "";
@@ -434,17 +437,58 @@ function firstCreation({ owner, repo, branch, sha }) {
 const READS = { status: () => true, "merge-check": () => true, logbook: (pos) => pos[0] !== "repair", standing: (pos) => pos[0] !== "add", config: (pos) => !pos.length };
 const READ_FORM = "node <path to skills/sage/sage.mjs> <status, merge-check, logbook, standing or config> [--project <path>], as one plain command: no quote, variable, ;, &&, ||, |, `, $(, >, < or newline, and config with no key=value";
 const PLAIN = /^[\w./=:@,+-]+(?:[ \t]+[\w./=:@,+-]+)*$/;
-/** A write form in a shell command: a redirection, or a command that writes, moves or removes a file. */
-const WRITES = /[>]|\b(?:tee|cp|mv|rm|ln|touch|truncate|dd|rsync|install)\b|\bsed\b.*\s-[a-zA-Z]*i/;
+/** A write form in a shell command: a redirection, or a command that writes, moves or removes a file, or edits it in place. */
+const WRITES = /[>]|\b(?:tee|cp|mv|rm|ln|touch|truncate|dd|rsync|install|sponge|patch|unlink|shred)\b|\b(?:sed|perl|ruby)\b.*\s-[a-zA-Z]*i|\bg?awk\b.*\s-i\s*inplace/;
+/** Text that names the sage root without its full path. */
+const ROOT_TEXT = /\.claude\/sage(?![\w-])|\bSAGE_HOME\b/;
+/** The logbook's files by name (S2). Only in sage mode: outside it, a project's own config.json is no logbook file. */
+const TABLE_NAMES = /\b(?:(?:tasks|runs|findings|gates|ledger|decisions)\.tsv|config\.json|standing\.md|status\.md)\b/;
+/** The file that a file tool changes, as a real path under the sage root, or undefined. */
+function underRoot(input) {
+  const ti = input.tool_input ?? {};
+  const root = real(stateTool.sageRoot(process.env));
+  const path = real(resolve(input.cwd ?? process.cwd(), String(ti.file_path ?? ti.notebook_path ?? "")));
+  return path === root || path.startsWith(root + sep) ? `the sage root ${root} (${path})` : undefined;
+}
+/** Is the command only the state tool: one command, node and the tool's path, with no redirection, pipe, chain or substitution? */
+function stateToolOnly(command) {
+  try {
+    const [c, ...more] = shellCommands(command);
+    return !more.length && !c.writes && !c.piped && !c.grouped && !c.bodies.length && c.words[0] === "node" && /(?:^|\/)skills\/sage\/sage\.mjs$/.test(c.words[1] ?? "") && !c.words[1].split("/").includes("..");
+  } catch {
+    return false; // the hook cannot read it
+  }
+}
+/**
+ * The chief's own tools change no logbook file either (S2): only sage.mjs does, so each change leaves its record. A file
+ * tool never writes under the sage root, and a command that names the sage root (or, in sage mode, a logbook file) with a
+ * write form is refused, unless it is only the state tool. The hook sees the command, not the files that sage.mjs writes.
+ * The owner's own ! commands are no hook events, so they stay free. Undefined, or the reason for the refusal.
+ */
+function chiefProblem(input, sage) {
+  if (FILE_TOOLS.test(input.tool_name ?? "")) {
+    try {
+      const at = underRoot(input);
+      return at && `the chief never writes under ${at} with a file tool.`;
+    } catch {
+      return undefined; // the sage root cannot be read: in sage mode, the rule that the chief changes no file still refuses
+    }
+  }
+  if (!COMMAND_TOOLS.test(input.tool_name ?? "")) return undefined;
+  const ti = input.tool_input ?? {};
+  const flat = flatText(ti);
+  const command = typeof ti.command === "string" ? ti.command : "";
+  if (!WRITES.test(flat) || stateToolOnly(command)) return undefined;
+  const named = ROOT_TEXT.test(flat) || (sage && TABLE_NAMES.test(flat)) || flat.includes(stateTool.sageRoot(process.env));
+  return named ? "the chief never writes, moves or removes a logbook file from the shell." : undefined;
+}
 function agentProblem(input) {
   const ti = input.tool_input ?? {};
   const file = FILE_TOOLS.test(input.tool_name ?? "");
   if (!file && !COMMAND_TOOLS.test(input.tool_name ?? "")) return undefined;
+  const at = file && underRoot(input);
+  if (file) return at ? `an agent never writes under ${at}.` : undefined;
   const root = real(stateTool.sageRoot(process.env));
-  if (file) {
-    const path = real(resolve(input.cwd ?? process.cwd(), String(ti.file_path ?? ti.notebook_path ?? "")));
-    return path === root || path.startsWith(root + sep) ? `an agent never writes under the sage root ${root} (${path}).` : undefined;
-  }
   if (ti.dangerouslyDisableSandbox) return "an agent never runs a command outside the sandbox (dangerouslyDisableSandbox).";
   const command = typeof ti.command === "string" ? ti.command : "";
   const flat = flatText(ti);
@@ -460,7 +504,7 @@ function agentProblem(input) {
     }
     return Object.hasOwn(READS, cmd ?? "") && READS[cmd](pos) ? undefined : `"${[cmd, ...pos.slice(0, 1)].join(" ")}" writes the logbook, or is not a read command of the state tool.`;
   }
-  const logbook = flat.includes(root) || flat.includes(stateTool.sageRoot(process.env)) || /\.claude\/sage(?![\w-])|\bSAGE_HOME\b/.test(flat);
+  const logbook = flat.includes(root) || flat.includes(stateTool.sageRoot(process.env)) || ROOT_TEXT.test(flat);
   return logbook && WRITES.test(flat) ? "an agent never writes, moves or removes a logbook file from the shell." : undefined;
 }
 
@@ -929,8 +973,10 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   } catch (e) {
     // Never break the session, but never let a merge or a push through because the hook failed.
     const command = [].concat(input?.tool_input?.command ?? []).join(" ");
-    const agentWrite = input?.agent_id && (FILE_TOOLS.test(input.tool_name ?? "") || /sage(?:-pr)?\.mjs/i.test(flatText(input.tool_input)));
-    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command) || agentWrite)) {
+    const flat = flatText(input?.tool_input);
+    const agentWrite = input?.agent_id && (FILE_TOOLS.test(input.tool_name ?? "") || /sage(?:-pr)?\.mjs/i.test(flat));
+    const chiefWrite = !input?.agent_id && COMMAND_TOOLS.test(input?.tool_name ?? "") && (ROOT_TEXT.test(flat) || TABLE_NAMES.test(flat)) && WRITES.test(flat) && !stateToolOnly(command);
+    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command) || agentWrite || chiefWrite)) {
       process.stdout.write(JSON.stringify(deny("PreToolUse", `the hook could not check this command (${e?.message ?? e}), so it refuses it. Tell the user.`)));
     }
   }

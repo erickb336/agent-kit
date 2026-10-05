@@ -418,12 +418,26 @@ function move(task, to) {
   task.state = to;
 }
 
-/** Gives a task its pull request, or clears it with "". An investigation changes no code, so it may only clear one. */
-function setPr(task, pr) {
+/**
+ * Gives a task its pull request, or clears it with "". An investigation changes no code, so it may only clear one. A
+ * change gives its decision row (S1), which the caller writes before the task: a task that was ever on a PR stays in
+ * that PR's merge check (prHistory), so a cleared or changed pr= cannot take its verdicts out of the merge.
+ */
+function setPr(task, pr, why) {
   if (pr && !builds(task)) refuse(`${task.id} is an investigation: it changes no code, so it has no pull request. A build is its own task: sage task add --size tiny, small or large, then give that task the PR.`);
   if (pr && !PR.test(pr)) refuse(`${JSON.stringify(pr)} is not a pull request number. Give only its digits, for example pr=5 or --pr 5.`);
+  const was = task.pr;
   task.pr = pr;
+  // An investigation never has commits on a PR, so the PR that an old logbook gave it leaves no trace when it is cleared.
+  return was === pr || !builds(task) ? [] : [{ at: now(), task: task.id, decision: `PR ${was || "none"} → ${pr || "none"}`, why }];
 }
+/** The ids of the tasks that are or ever were on PR pr: by the tasks' pr, the decision rows of setPr, and their verdicts on a commit of the PR. */
+const prHistory = (pr, tasks, decisions, ledger) =>
+  new Set([
+    ...tasks.filter((t) => t.pr === pr).map((t) => t.id),
+    ...decisions.filter((d) => /^PR (\S+) → (\S+)$/.exec(d.decision)?.slice(1).includes(pr)).map((d) => d.task),
+    ...ledger.filter((r) => r.pr === pr && r.sha).map((r) => r.task),
+  ]);
 
 /** Why sha cannot name a commit in the ledger, or "". A short SHA could match another commit with the same prefix. Case does not matter. */
 const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(sha)} is not a full commit SHA: a short one can match another commit. Give all 40 characters: git rev-parse <branch>.`);
@@ -431,14 +445,13 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
 /**
  * Does one task have the clean cycles its route needs on one SHA? tasks and findings are its logbook's tables, read once
  * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
- * its PR number.
+ * its PR history (prHistory).
  */
-function judge(dir, task, findings, id, rows, cycles, repaired, cfg) {
+function judge(dir, task, findings, id, rows, cycles, repaired, cfg, pr) {
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
-  const clear = `clear its PR (sage task ${task.id} set pr=)`;
-  if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: ${clear}.` };
-  if (!rows.length) return { ok: false, reason: `${who} is a task of PR ${task.pr} but has no verdicts on this SHA. Record them, or, if it is no longer part of PR ${task.pr}, ${clear}.` };
+  if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: clear its PR (sage task ${task.id} set pr=).` };
+  if (!rows.length) return { ok: false, reason: `${who} ${task.pr === pr ? "is" : "was"} a task of PR ${pr} but has no verdicts on this SHA. Every task that was ever on PR ${pr} counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges.` };
   const open = findings.filter((f) => f.task === task.id && f.status === "open");
   if (open.length) return { ok: false, reason: `${who} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
   const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
@@ -482,16 +495,17 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       // none: init has not finished it, or it lost its tasks. Its verdicts name tasks that it does not have, so they refuse.
       const book = lstatSync(join(dir, "tasks.tsv"), { throwIfNoEntry: false }) && check(dir);
       if (!book && !readRegular(join(dir, "ledger.tsv"))?.trim()) return [];
-      const rows = rowsOf(book ? book.ledger : sheet(dir, "ledger")).filter((r) => r.sha === sha);
+      const ledger = rowsOf(book ? book.ledger : sheet(dir, "ledger"));
+      const rows = ledger.filter((r) => r.sha === sha);
       if (!rows.length) return [];
-      const [tasks, findings] = book ? [rowsOf(book.tasks), rowsOf(book.findings)] : [[], []];
-      const repaired = book && rowsOf(book.decisions).some((d) => d.decision.startsWith("tasks.tsv started again without rows"));
-      const ofPr = new Set(pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : []);
+      const [tasks, findings, decisions] = book ? [rowsOf(book.tasks), rowsOf(book.findings), rowsOf(book.decisions)] : [[], [], []];
+      const repaired = decisions.some((d) => d.decision.startsWith("tasks.tsv started again without rows"));
+      const ofPr = pr ? prHistory(pr, tasks, decisions, ledger) : new Set();
       // Each table is grouped by task once, so thousands of tasks on one SHA take linear time, not the square of it.
       const [byId, ownOf, findingsOf] = [new Map(tasks.map((t) => [t.id, t])), group(rows), group(findings)];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const [own, task] = [ownOf.get(id) ?? [], byId.get(id)];
-        return { dir, id, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
+        return { dir, id, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg, pr) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -655,6 +669,7 @@ function act(cmd, pos, opt, dir, env, skip) {
       }
       const { tasks, task } = taskOf(dir, need(sub, "the task id")); // task <T> [set key=value ...]
       if (id === "set") {
+        const decided = [];
         for (const kv of more) {
           const [k, v] = [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)];
           if (k === "state") {
@@ -675,10 +690,11 @@ function act(cmd, pos, opt, dir, env, skip) {
               const r = judge(dir, task, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
-          } else if (k === "pr") setPr(task, v);
+          } else if (k === "pr") decided.push(...setPr(task, v, "task set"));
           else if (["branch", "title"].includes(k)) task[k] = v;
           else refuse(`task set takes state=, branch=, pr= or title=`);
         }
+        if (decided.length) write(dir, "decisions", [...read(dir, "decisions"), ...decided]);
         write(dir, "tasks", tasks);
       }
       return `${task.id} ${task.state} · ${task.size} · round ${task.round} · route ${task.route}${task.branch ? ` · ${task.branch}` : ""}${task.pr ? ` · PR ${task.pr}` : ""}`;
@@ -793,7 +809,8 @@ function act(cmd, pos, opt, dir, env, skip) {
       if (!builds(task) && opt.sha) refuse(`${task.id} has no build block, so its verdicts name no commit: leave out --sha`);
       if (opt.sha && notFull(opt.sha)) refuse(notFull(opt.sha));
       const sha = opt.sha?.toLowerCase() ?? ""; // as git prints it
-      if (opt.pr) setPr(task, opt.pr);
+      const decided = opt.pr ? setPr(task, opt.pr, "verdict --pr") : [];
+      if (decided.length) write(dir, "decisions", [...read(dir, "decisions"), ...decided]);
       write(dir, "tasks", tasks);
       write(dir, "ledger", [...read(dir, "ledger"), { task: task.id, pr: task.pr, sha, kind, cycle: opt.cycle ?? "1", run: opt.run ?? "", at: now() }]);
       const open = NOT_CLEAN.includes(kind) ? [] : findings.filter((f) => f.triage === "fix");

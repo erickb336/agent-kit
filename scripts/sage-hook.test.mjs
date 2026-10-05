@@ -1179,8 +1179,20 @@ test("the merge form: one --match-head-commit with the full SHA, the pull reques
 test("the merge check gets the pull request's number from the merge command", () => {
   const s = autopilotSession();
   s.sage("task", "T1", "set", "pr=40");
-  assert.match(denied(s.send(bash(MERGE))) ?? "", /^sage: the merge check refuses: no task of PR 41 has verdicts on a1b2c3d/);
+  assert.match(denied(s.send(bash(`gh pr merge 42 --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", /^sage: the merge check refuses: no task of PR 42 has verdicts on a1b2c3d/);
   assert.equal(s.send(bash(`gh pr merge 40 --squash --delete-branch --match-head-commit ${SHA}`)), undefined);
+  assert.equal(s.send(bash(MERGE)), undefined, "T1 was on PR 41 too, and it passes on the SHA");
+});
+
+test("S1: the hook refuses the merge of a large task's PR that was framed again as small (T83)", () => {
+  const s = autopilotSession(); // T1 (small) has 2 clean cycles on SHA under PR 41
+  const B = "b".repeat(40);
+  s.sage("task", "add", "--title", "the large change", "--size", "large");
+  s.sage("task", "T2", "set", "pr=7");
+  s.sage("task", "add", "--title", "a small change", "--size", "small");
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T3", "--sha", B, "--kind", kind, "--cycle", cycle, "--pr", "7");
+  s.sage("task", "T2", "set", "pr=");
+  assert.match(denied(s.send(bash(`gh pr merge 7 --squash --delete-branch --match-head-commit ${B}`))) ?? "", /^sage: the merge check refuses: .* T2 was a task of PR 7 but has no verdicts on this SHA/);
 });
 
 test("the merge rule refuses a merge after a long command (F-R79-2); the 1 MB padding test shows that its time grows in line with the text", () => {
@@ -1377,7 +1389,7 @@ test("an agent's file change under the sage root is refused, also through a link
   ];
   for (const event of refused) {
     assert.match(denied(s.send({ ...event, ...AGENT, cwd: event.cwd ?? s.dir })) ?? "", /never writes under the sage root[\s\S]*Only the chief writes the logbook/, JSON.stringify(event.tool_input));
-    assert.equal(denied(s.send({ ...event, cwd: event.cwd ?? s.dir })), undefined, "the chief outside sage mode");
+    assert.match(denied(s.send({ ...event, cwd: event.cwd ?? s.dir })) ?? "", /the chief never writes under the sage root[\s\S]*Only sage.mjs changes the logbook/, "the chief outside sage mode (S2)");
   }
   assert.equal(denied(s.send({ ...tool("Write", { file_path: join(s.dir, "home-notes.md") }), ...AGENT })), undefined, "a file next to the root");
   assert.equal(denied(s.send(edit(AGENT))), undefined);
@@ -1388,7 +1400,7 @@ test("an agent's shell write to a logbook path is refused; a read of it passes (
   const ledger = join(s.vars.SAGE_HOME, "proj-abc123", "ledger.tsv");
   for (const command of [`echo x >> ${ledger}`, "printf x > ~/.claude/sage/p/ledger.tsv", 'cp /tmp/x "$HOME/.claude/sage/p/ledger.tsv"', "rm -rf $SAGE_HOME/p", `sed -i '' s/a/b/ ${ledger}`, `tee ${ledger} < /tmp/x`, "mv /tmp/x ~/.claude/sage/config.json"]) {
     assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /never writes, moves or removes a logbook file[\s\S]*Only the chief/, command);
-    assert.equal(denied(s.send(bash(command))), undefined, `chief: ${command}`);
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file[\s\S]*Only sage.mjs changes the logbook/, `chief (S2): ${command}`);
   }
   for (const command of [`cat ${ledger}`, "grep T2 ~/.claude/sage/p/tasks.tsv", "echo x > /tmp/out"]) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
 });
@@ -1416,10 +1428,12 @@ test("the rule holds for every tool that runs a command: Monitor, PowerShell and
   const forged = `node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA} --project /p`;
   const read = `node ${TOOL} status --project /p`;
   for (const name of ["Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
-    for (const command of [forged, `node ${PR_SCRIPT} create T2`, `echo x >> ${join(s.vars.SAGE_HOME, "p", "ledger.tsv")}`]) {
+    const write = `echo x >> ${join(s.vars.SAGE_HOME, "p", "ledger.tsv")}`;
+    for (const command of [forged, `node ${PR_SCRIPT} create T2`, write]) {
       assert.match(denied(s.send({ ...tool(name, { command, description: "d" }), ...AGENT })) ?? "", ONLY_CHIEF, `${name}: ${command}`);
-      assert.equal(denied(s.send(tool(name, { command, description: "d" }))), undefined, `chief ${name}: ${command}`);
+      if (command !== write) assert.equal(denied(s.send(tool(name, { command, description: "d" }))), undefined, `chief ${name}: ${command}`);
     }
+    assert.match(denied(s.send(tool(name, { command: write, description: "d" }))) ?? "", /Only sage.mjs changes the logbook/, `chief ${name}: a shell write (S2)`);
     assert.equal(denied(s.send({ ...tool(name, { command: read, description: "d" }), ...AGENT })), undefined, `${name}: a read`);
   }
   assert.match(denied(s.send({ ...tool("mcp__terminal__run_in_terminal", { script: forged }), ...AGENT })) ?? "", ONLY_CHIEF, "the command in another field");
@@ -1432,4 +1446,52 @@ test("a malformed agent event makes the rule throw, and the hook refuses the age
   const write = { ...tool("Write", { file_path: "notes.md", content: "x" }), ...AGENT, cwd: 5 };
   assert.match(denied(s.send(write)) ?? "", /could not check this command/);
   assert.equal(denied(s.send({ ...write, agent_id: undefined, agent_type: undefined })), undefined, "the chief is unchanged");
+});
+
+// S2: only sage.mjs changes the logbook, also for the chief's own shell and file tools.
+const ONLY_TOOL = /^sage: the chief never [\s\S]*Only sage.mjs changes the logbook/;
+
+test("S2: the chief's shell writes to a logbook file are refused, in sage mode by the file's name too; the state tool passes (T83)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const book = join(s.vars.SAGE_HOME, "proj-abc123");
+  const refused = [
+    "sed -i '' 's/\tsmall\t/\tlarge\t/' tasks.tsv",
+    "echo 'T1\tx' >> ledger.tsv",
+    "cp /tmp/x config.json",
+    "perl -pi -e s/large/small/ tasks.tsv",
+    `printf x > ${join(book, "gates.tsv")}`,
+    `node ${TOOL} status > ${join(book, "status.md")}`,
+    `node ${TOOL} task add --title x --size small; sed -i '' s/a/b/ tasks.tsv`,
+    `node ${TOOL} status && mv /tmp/x decisions.tsv`,
+    "rm ~/.claude/sage/p/runs.tsv",
+  ];
+  for (const command of refused) assert.match(denied(s.send(bash(command, book))) ?? "", ONLY_TOOL, command);
+  const allowed = [
+    `node ${TOOL} task add --title "a > b, in tasks.tsv" --size small --project ${s.dir}`,
+    `node "${TOOL}" task T1 set pr= --project ${s.dir}`,
+    `node ${TOOL} config cycles.small=3`,
+    "cat tasks.tsv",
+    "grep T1 ~/.claude/sage/p/ledger.tsv",
+    "echo x > /tmp/notes.md",
+  ];
+  for (const command of allowed) assert.equal(denied(s.send(bash(command, book))), undefined, command);
+});
+
+test("S2: the chief's Write, Edit, MultiEdit and NotebookEdit under the sage root are refused, in sage mode and out of it (T83)", () => {
+  for (const on of [false, true]) {
+    const s = session();
+    if (on) s.send(prompt("sage mode"));
+    const tasks = join(s.vars.SAGE_HOME, "proj-abc123", "tasks.tsv");
+    for (const event of [tool("Write", { file_path: tasks, content: "x" }), tool("Edit", { file_path: tasks, old_string: "small", new_string: "large" }), tool("MultiEdit", { file_path: tasks, edits: [] }), tool("NotebookEdit", { notebook_path: join(s.vars.SAGE_HOME, "n.ipynb") })]) {
+      assert.match(denied(s.send({ ...event, cwd: s.dir })) ?? "", ONLY_TOOL, `sage mode ${on}: ${event.tool_name}`);
+    }
+  }
+});
+
+test("S2: out of sage mode, a project's own config.json is no logbook file; a shell write that names the sage root is still refused (T83)", () => {
+  const s = session();
+  assert.equal(denied(s.send(bash("cp /tmp/x config.json"))), undefined);
+  assert.equal(denied(s.send(tool("Write", { file_path: join(s.dir, "config.json") }, { cwd: s.dir }))), undefined);
+  assert.match(denied(s.send(bash(`cp /tmp/x ${join(s.vars.SAGE_HOME, "config.json")}`))) ?? "", ONLY_TOOL);
 });
