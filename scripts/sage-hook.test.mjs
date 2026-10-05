@@ -6,8 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-// The hook stops leftover test browsers at each Stop: in a test it must never signal a real process (T68).
-process.env.SAGE_BROWSER_SWEEP = "off";
 
 // Through the launcher, as Claude Code runs it. HOME is a fake home without plugins, so the launcher runs this tree's hook.
 const HOOK = fileURLToPath(new URL("../plugins/sage/hooks/sage-hook.mjs", import.meta.url));
@@ -1297,168 +1295,19 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
 });
 
-// T68: a test browser never outlives its agent, and the owner's own Chrome is never touched. A fake ps and a fake kill:
-// the test never signals a real process.
-const T68 = {
-  TMP: "/var/folders/xy/abc/T",
-  START: "Mon Oct  5 09:12:44 2026",
-  CHROMIUM: "/Users/me/Library/Caches/ms-playwright/chromium-1187/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-  SHELL: "/Users/me/Library/Caches/ms-playwright/chromium_headless_shell-1187/chrome-headless-shell-mac-arm64/chrome-headless-shell",
-};
-/** One line of ps -axo pid,ppid,lstart,command. */
-const psLine = (pid, ppid, command, start = T68.START) => `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${start}     ${command}`;
-const pwProfile = (name) => `--user-data-dir=${T68.TMP}/playwright_chromiumdev_profile-${name}`;
-/** Runs the sweep on a fake ps that gives each list in turn (the last one again), and returns the signals it sent. */
-async function sweep(lists) {
-  const { stopStrayBrowsers } = await import(HOOK);
-  const signals = [];
-  const left = [...lists];
-  stopStrayBrowsers({ ps: () => (left.length > 1 ? left.shift() : left[0]).join("\n"), kill: (pid, signal) => signals.push(`${pid} ${signal}`), wait: () => {}, log: () => {} });
-  return signals;
-}
-
-test("the hook stops leftover test browsers, and never the owner's Chrome or a live agent's browser", async () => {
-  const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; // chrome-ok: the process list that ps shows
-  const orphan = psLine(4101, 1, `${T68.CHROMIUM} --headless --remote-debugging-pipe ${pwProfile("AbC123")} about:blank`);
-  const shell = psLine(4111, 1, `${T68.SHELL} --headless --remote-debugging-pipe ${pwProfile("Sh1")} about:blank`);
-  const owners = psLine(612, 1, `${CHROME} --restore-last-session`, "Fri Oct  2 07:01:09 2026");
-  const ownersProfile = psLine(613, 1, `${CHROME} --user-data-dir=/Users/me/Library/Application Support/Google/Chrome --headless --remote-debugging-pipe`);
-  const live = (ppid) => psLine(4202, ppid, `${T68.CHROMIUM} --headless --remote-debugging-pipe ${pwProfile("Live99")} about:blank`);
-  const runner = psLine(4200, 4100, "node tests/pages/look.mjs");
-  const helper = psLine(4102, 4101, `${T68.CHROMIUM} Helper --type=renderer ${pwProfile("AbC123")}`);
-  const malformed = ["  PID  PPID STARTED                      COMMAND", "  4303 1", `abc 1 ${T68.START} x ${pwProfile("z")}`, "", "  4304     1"];
-
-  // The orphans of Playwright's Chromium and headless shell: launchd is the parent, the profile is Playwright's. They end at SIGTERM.
-  assert.deepEqual(await sweep([[...malformed, owners, ownersProfile, orphan, shell, helper, runner, live(4200)], [owners, ownersProfile, runner, live(4200)]]), ["4101 SIGTERM", "4111 SIGTERM"]);
-  // An orphan that ps still lists after the grace, with the same start and command line, gets SIGKILL.
-  assert.deepEqual(await sweep([[orphan], [orphan]]), ["4101 SIGTERM", "4101 SIGKILL"]);
-  // The owner's Chrome (no temporary profile), a live agent's browser and malformed lines: nothing is signalled.
-  assert.deepEqual(await sweep([[...malformed, owners, ownersProfile, runner, live(4200)]]), []);
-  // The live agent's browser is stopped once its agent has ended and launchd is its parent.
-  assert.deepEqual(await sweep([[owners, live(1)], [owners]]), ["4202 SIGTERM"]);
-});
-
-test("the sweep stops only Playwright's own profiles: another tool's headless browser with a temporary profile stays (T68-F1)", async () => {
-  const puppeteer = psLine(5101, 1, `${T68.CHROMIUM} --headless --remote-debugging-pipe --user-data-dir=${T68.TMP}/puppeteer_dev_chrome_profile-Xy12 about:blank`);
-  const plain = psLine(5102, 1, `${T68.SHELL} --headless --remote-debugging-pipe --user-data-dir=/tmp/my-scraper-profile about:blank`);
-  const firefoxName = psLine(5103, 1, `${T68.CHROMIUM} --headless --user-data-dir=${T68.TMP}/playwright_firefoxdev_profile-Q1`);
-  assert.deepEqual(await sweep([[puppeteer, plain]]), []);
-  assert.deepEqual(await sweep([[puppeteer, plain, firefoxName], [puppeteer, plain]]), ["5103 SIGTERM"], "any playwright_*dev_profile- prefix counts");
-});
-
-test("the sweep stops only a browser program: a shell or node process with the same text stays (T68-F2)", async () => {
-  const text = `--headless --remote-debugging-pipe ${pwProfile("Txt1")}`;
-  const shell = psLine(5201, 1, `/bin/sh -c echo ${text}`);
-  const node = psLine(5202, 1, `node /Users/me/x/chromium-1187/chrome-mac/chrome.mjs ${text}`);
-  const zsh = psLine(5203, 1, `/bin/zsh -c ${T68.CHROMIUM} ${text}`);
-  const relative = psLine(5204, 1, `chromium-1187/chrome-linux/chrome ${text}`);
-  const browser = psLine(5205, 1, `${T68.CHROMIUM} ${text}`);
-  assert.deepEqual(await sweep([[shell, node, zsh, relative, browser], [shell, node, zsh, relative]]), ["5205 SIGTERM"]);
-});
-
-test("SIGKILL goes only to the same process: a new process with the old pid stays (T68-F3)", async () => {
-  const orphan = psLine(5301, 1, `${T68.CHROMIUM} --headless ${pwProfile("Old1")}`);
-  const newStart = psLine(5301, 1, `${T68.CHROMIUM} --headless ${pwProfile("Old1")}`, "Mon Oct  5 09:12:45 2026");
-  const newCommand = psLine(5301, 1, `${T68.CHROMIUM} --headless ${pwProfile("New2")}`);
-  assert.deepEqual(await sweep([[orphan], [newStart]]), ["5301 SIGTERM"], "another start time");
-  assert.deepEqual(await sweep([[orphan], [newCommand]]), ["5301 SIGTERM"], "another command line");
-  assert.deepEqual(await sweep([[orphan], [orphan]]), ["5301 SIGTERM", "5301 SIGKILL"], "the same process");
-});
-
-test("Stop and SubagentStop start the sweep, other events do not, and a failed ps keeps the Stop answer (T68-F6)", async () => {
-  // A fake ps and a fake kill first on PATH, in a temporary folder. The fake ps lists one process that this test starts and
-  // owns as a leftover browser; the fake kill only records. The real ps and kill never run, so no real process is read or signalled.
-  const dir = mkdtempSync(join(tmpdir(), "sage-sweep-"));
-  const victim = spawn("sleep", ["60"], { stdio: "ignore" });
-  try {
-    mkdirSync(join(dir, "bin"));
-    const calls = join(dir, "calls");
-    const kills = join(dir, "kills");
-    writeFileSync(
-      join(dir, "bin/ps"),
-      `#!/bin/sh\necho "$*" >> "${calls}"\n[ -e "${dir}/fail" ] && exit 1\necho '${psLine(victim.pid, 1, `${T68.CHROMIUM} --headless ${pwProfile("W1")}`)}'\n`,
-      { mode: 0o755 },
-    );
-    writeFileSync(join(dir, "bin/kill"), `#!/bin/sh\necho "$*" >> "${kills}"\n`, { mode: 0o755 });
-    const s = session({ PATH: `${join(dir, "bin")}:${process.env.PATH}`, SAGE_BROWSER_SWEEP: "on" });
-    const count = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean).length : 0);
-    const run = (event) => {
-      const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: s.vars });
-      assert.equal(r.status, 0, r.stderr);
-      return { out: r.stdout ? JSON.parse(r.stdout) : undefined, err: r.stderr };
-    };
-
-    for (const event of [prompt("hello"), edit(), { hook_event_name: "SubagentStart", agent_id: "a1", agent_type: "sage:qa" }, { hook_event_name: "PostToolUse", tool_name: "Edit", tool_input: {} }]) {
-      run(event);
-      assert.equal(count(), 0, `${event.hook_event_name} does not start the sweep`);
-    }
-
-    // A failed ps: SubagentStop still gives its answer (a block, because the report has no fields), and nothing is signalled.
-    writeFileSync(join(dir, "fail"), "");
-    const failed = run({ hook_event_name: "SubagentStop", agent_id: "ag1", agent_type: "sage:qa", last_assistant_message: "done" });
-    assert.equal(failed.out?.decision, "block");
-    assert.equal(count(), 1, "SubagentStop starts the sweep");
-    assert.equal(failed.err, "");
-    assert.equal(existsSync(kills), false);
-
-    // The fake ps still lists the browser after the grace, so the fake kill gets SIGTERM, then SIGKILL.
-    rmSync(join(dir, "fail"));
-    const stopped = run({ hook_event_name: "Stop" });
-    assert.equal(count(), 3, "Stop starts the sweep: ps before and after the grace");
-    assert.match(stopped.err, new RegExp(`sage: stopped a leftover test browser, pid ${victim.pid}, started Mon Oct  5 09:12:44 2026 \\(SIGTERM\\)`));
-    assert.equal(readFileSync(kills, "utf8"), `-s TERM ${victim.pid}\n-s KILL ${victim.pid}\n`);
-    assert.equal(victim.exitCode ?? victim.signalCode, null, "the fake kill signals nothing: the process still runs");
-  } finally {
-    victim.kill();
-  }
-});
-
-test("under a test, the sweep refuses a ps or kill that is not a fake in a temporary folder, and reads and signals nothing (T88)", async () => {
-  const { stopStrayBrowsers } = await import(HOOK);
-  // The stand-in for the real ps: a fake that records its calls, in a folder that is not temporary (this repository).
-  // The test never puts the real ps on PATH, so even a broken guard reads no real process list.
-  const outside = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".sweep-test-"));
-  const temp = mkdtempSync(join(tmpdir(), "sage-sweep-"));
-  const calls = join(temp, "calls");
-  const PATH = process.env.PATH;
-  try {
-    for (const d of [outside, temp]) writeFileSync(join(d, "ps"), `#!/bin/sh\necho "$*" >> "${calls}"\necho '${psLine(4101, 1, `${T68.CHROMIUM} --headless ${pwProfile("R1")}`)}'\n`, { mode: 0o755 });
-    mkdirSync(join(temp, "link"));
-    symlinkSync(join(outside, "ps"), join(temp, "link/ps"));
-    const sweepWith = (bin) => {
-      process.env.PATH = `${bin}:${PATH}`;
-      const signals = [];
-      const logs = [];
-      stopStrayBrowsers({ kill: (pid, signal) => signals.push(`${pid} ${signal}`), wait: () => {}, log: (line) => logs.push(line) });
-      process.env.PATH = PATH;
-      return { signals, logs, ps: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean).length : 0 };
-    };
-    const refused = { signals: [], logs: ["sage: sweep refused: tests must use a fake ps and a fake kill"], ps: 0 };
-    assert.deepEqual(sweepWith(outside), refused, "a ps outside a temporary folder");
-    assert.deepEqual(sweepWith(join(temp, "link")), refused, "a link in a temporary folder to a ps outside one");
-    // A fake ps in a temporary folder: the sweep runs.
-    assert.deepEqual(sweepWith(temp), { signals: ["4101 SIGTERM", "4101 SIGKILL"], logs: ["sage: stopped a leftover test browser, pid 4101, started Mon Oct  5 09:12:44 2026 (SIGTERM)", "sage: stopped a leftover test browser, pid 4101, started Mon Oct  5 09:12:44 2026 (SIGKILL)"], ps: 2 });
-  } finally {
-    process.env.PATH = PATH;
-    rmSync(outside, { recursive: true, force: true });
-    rmSync(temp, { recursive: true, force: true });
-  }
-});
-
-test("npm run check fails a test that turns the sweep on without a fake ps, or signals or lists processes itself (T88)", () => {
+test("npm run check fails a test that signals or lists processes itself (T68)", () => {
   const dir = mkdtempSync(join(tmpdir(), "sage-check-"));
   const check = (name, text) => {
     writeFileSync(join(dir, name), text);
     return spawnSync("node", [fileURLToPath(new URL("check.mjs", import.meta.url)), join(dir, name)], { encoding: "utf8" }).stderr;
   };
   try {
-    const on = 'spawnSync("node", [hook], { env: { ...process.env, SAGE_BROWSER_SWEEP: "on" } });\n';
-    assert.match(check("bad.test.mjs", on), /bad\.test\.mjs: turns the browser sweep on without a fake ps and kill first on PATH/);
-    assert.doesNotMatch(check("good.test.mjs", `const PATH = \`\${join(dir, "bin")}:\${process.env.PATH}\`;\nconst env = { PATH: \`\${join(dir, "bin")}:\${process.env.PATH}\` };\n${on}`), /good\.test\.mjs/);
     const signals = check("kill.test.mjs", ["process", "kill(4101);"].join("."));
     assert.match(signals, /kill\.test\.mjs:1: signals a process with process\.kill/);
     assert.match(check("ps.test.mjs", `execFileSync("${"ps"}", ["-ax"]);`), /ps\.test\.mjs:1: runs ps or kill/);
+    assert.match(check("killall.test.mjs", `spawnSync("/usr/bin/${"pkill"}", ["node"]);`), /killall\.test\.mjs:1: runs ps or kill/);
     assert.doesNotMatch(check("self.test.mjs", ["process", "kill(process.pid);"].join(".")), /self\.test\.mjs/);
+    assert.doesNotMatch(check("child.test.mjs", 'const c = spawn("sleep", ["1"]);\nc.kill();\n'), /child\.test\.mjs/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

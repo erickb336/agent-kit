@@ -185,18 +185,13 @@ for (const f of [...walk("scripts"), ...walk("plugins")].filter((f) => /\.(m?js|
   });
 }
 
-// No test or script reads or signals the real process list (T88). A file that turns the browser sweep on puts a fake
-// ps and kill first on PATH (PATH: `${<a temp folder>}:${process.env.PATH}`); none signals a process other than its own
-// or runs ps or kill itself. The hook refuses the real programs under a test too; this check fails the pull request.
-// Extra files to check come as arguments, so a test can check a fixture: node scripts/check.mjs <file>…
-const SWEEP_ON = /SAGE_BROWSER_SWEEP["']?\s*[:=]\s*["'`]?on\b/;
-const FAKE_PATH = /PATH["']?\s*[:=]\s*`\$\{[^`]+\}:\$\{process\.env\.PATH\}`/;
+// No test or script reads or signals the real process list (standing order 14). A test signals only a child that it
+// started (child.kill()) or itself, and never runs ps or kill. Extra files to check come as arguments, so a test can check
+// a fixture: node scripts/check.mjs <file>…
 const SIGNALS = /\bprocess\.kill\((?!\s*process\.pid\b)/;
 const RUNS_PS = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\(\s*["'`](?:\/usr)?(?:\/s?bin\/)?(?:ps|kill|pkill|killall)\b/;
 for (const f of [...walk("scripts").filter((f) => /\.(m?js|cjs|sh)$/.test(f)), ...process.argv.slice(2)]) {
-  const text = readFileSync(resolve(ROOT, f), "utf8");
-  if (SWEEP_ON.test(text) && !FAKE_PATH.test(text)) problems.push(`${f}: turns the browser sweep on without a fake ps and kill first on PATH; set PATH: \`\${<a temp folder with fake ps and kill>}:\${process.env.PATH}\``);
-  text.split("\n").forEach((line, i) => {
+  readFileSync(resolve(ROOT, f), "utf8").split("\n").forEach((line, i) => {
     if (SIGNALS.test(line)) problems.push(`${f}:${i + 1}: signals a process with process.kill; a test signals only a child it started (child.kill()) or itself`);
     if (RUNS_PS.test(line)) problems.push(`${f}:${i + 1}: runs ps or kill, which reads or signals the real process list; give the code a fake ps and kill`);
   });

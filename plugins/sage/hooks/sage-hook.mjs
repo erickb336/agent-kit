@@ -18,7 +18,7 @@
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, appendFileSync, constants, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -843,70 +843,6 @@ export function slotsFor(dir, session, now = Date.now()) {
 
 const stateDir = () => process.env.SAGE_HOOKS_STATE ?? join(tmpdir(), "sage-hooks");
 
-/**
- * Leftover test browsers (T68). A Playwright browser that outlives the agent that started it runs on with launchd
- * (pid 1) as its parent. At each SubagentStop and each Stop the hook stops every such browser: a process with launchd as
- * its parent, whose program is Playwright's own Chromium or headless shell, and whose profile is a temporary Playwright
- * one (--user-data-dir=<a temp folder>/playwright_<browser>dev_profile-*). The owner's own Chrome, another tool's browser
- * and a shell or node process with that text are none of these, so the hook never touches them. A live agent's browser
- * still has its runner as its parent, so it stays until the runner ends. SIGTERM first; after the grace, SIGKILL goes
- * only to a process that ps still lists with the same pid, start time and command line. Each stopped pid goes to stderr.
- */
-const TEMP_ROOTS = [...new Set([tmpdir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"])];
-/** Playwright's browsers: <cache>/chromium-<n>/… or <cache>/chromium_headless_shell-<n>/…, then the browser binary. */
-const PLAYWRIGHT_CHROMIUM = /^\/\S*\/chromium(?:_headless_shell)?-\d+\/.*\/(?:Chromium|Google Chrome for Testing|chrome|headless_shell|chrome-headless-shell)$/;
-/** The leftover test browsers in the text of ps -axo pid,ppid,lstart,command. A line of another form does not count. */
-export function strayBrowsers(ps) {
-  const found = [];
-  for (const line of ps.split("\n")) {
-    const [, pid, ppid, started, command = ""] = /^\s*(\d+)\s+(\d+)\s+(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+(.+)$/.exec(line) ?? [];
-    const dir = / --user-data-dir=(\S+)/.exec(command)?.[1];
-    if (ppid !== "1" || !PLAYWRIGHT_CHROMIUM.test(command.split(" --")[0]) || !/\/playwright_[a-z]+dev_profile-[^/]+$/.test(dir ?? "")) continue;
-    if (TEMP_ROOTS.some((root) => resolve(dir).startsWith(`${root}/`))) found.push({ pid: Number(pid), started, command });
-  }
-  return found;
-}
-const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-/** The first program of this name on PATH, as a real path (so a link to /bin/ps is /bin/ps), or undefined. */
-function onPath(name) {
-  for (const dir of (process.env.PATH ?? "").split(":").filter(Boolean)) {
-    try {
-      accessSync(join(dir, name), constants.X_OK);
-      return realpathSync(join(dir, name));
-    } catch {
-      /* not in this folder */
-    }
-  }
-}
-/**
- * Stops the leftover test browsers with ps and kill: the programs first on PATH, or the functions that a test gives.
- * Under a test (node --test sets NODE_TEST_CONTEXT; the hook's own tests set SAGE_BROWSER_SWEEP=on), each program must be
- * a fake in a temporary folder, or the sweep refuses: no test can read or signal the real process list (T88).
- */
-export function stopStrayBrowsers({ ps, kill, wait = pause, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
-  const programs = [ps ? null : onPath("ps"), kill ? null : onPath("kill")];
-  if ((process.env.NODE_TEST_CONTEXT !== undefined || process.env.SAGE_BROWSER_SWEEP === "on") && programs.some((p) => p !== null && !TEMP_ROOTS.some((root) => p?.startsWith(`${root}/`)))) {
-    log("sage: sweep refused: tests must use a fake ps and a fake kill");
-    return;
-  }
-  ps ??= () => execFileSync(programs[0] ?? "ps", ["-axo", "pid,ppid,lstart,command"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, LC_ALL: "C" } });
-  kill ??= (pid, signal) => execFileSync(programs[1] ?? "kill", ["-s", signal.replace(/^SIG/, ""), String(pid)], { timeout: 2000, stdio: "ignore" });
-  const send = (b, signal) => {
-    try {
-      kill(b.pid, signal);
-      log(`sage: stopped a leftover test browser, pid ${b.pid}, started ${b.started} (${signal})`);
-    } catch {
-      /* it ended by itself */
-    }
-  };
-  const stray = strayBrowsers(ps());
-  if (!stray.length) return;
-  for (const b of stray) send(b, "SIGTERM");
-  wait(1000);
-  const same = (a, b) => a.pid === b.pid && a.started === b.started && a.command === b.command;
-  for (const b of strayBrowsers(ps())) if (stray.some((s) => same(s, b))) send(b, "SIGKILL");
-}
-
 // Node gives this module its real path, so a path to the hook through a symbolic link is compared as a real path too.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.env.SAGE_HOOKS !== "off") {
   let input;
@@ -928,7 +864,6 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
       renameSync(`${file}.${process.pid}`, file);
     }
     if (output) process.stdout.write(JSON.stringify(output));
-    if (/^(Subagent)?Stop$/.test(input.hook_event_name) && process.env.SAGE_BROWSER_SWEEP !== "off") stopStrayBrowsers();
   } catch (e) {
     // Never break the session, but never let a merge or a push through because the hook failed.
     const command = [].concat(input?.tool_input?.command ?? []).join(" ");

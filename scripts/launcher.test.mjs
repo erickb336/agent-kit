@@ -7,8 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-// The hook stops leftover test browsers at each Stop: in a test it must never signal a real process (T68).
-process.env.SAGE_BROWSER_SWEEP = "off";
 
 const HOOKS = fileURLToPath(new URL("../plugins/sage/hooks", import.meta.url));
 const HOOK = "sage-hook.mjs";
