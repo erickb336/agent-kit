@@ -60,8 +60,6 @@ const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 /** The tools that run a command. The PreToolUse matcher in claude.json names each of them. */
 const COMMAND_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.*)$/;
-/** All the text of a tool call's input, with its quotes and backslashes removed, so that sa''ge.mjs or sage.m\js still names the tool. */
-const flatText = (ti) => JSON.stringify(ti ?? {}).replace(/['"\\]/g, "");
 const CHIEF = /(^|:)chief-of-staff$/;
 const OURS = /^sage:/;
 /** An agent's event: Claude Code sets agent_id only for a subagent's events. An empty agent_id, or a sage role other than the chief, counts too (fail closed). */
@@ -443,8 +441,6 @@ const READ_FORM = "node <path to skills/sage/sage.mjs> <status, merge-check, log
 const PLAIN = /^[\w./=:@,+-]+(?:[ \t]+[\w./=:@,+-]+)*$/;
 /** The logbook's files by name (S2). */
 const TABLES = ["tasks.tsv", "runs.tsv", "findings.tsv", "gates.tsv", "ledger.tsv", "decisions.tsv", "config.json", "standing.md", "status.md"];
-/** The variables that set the sage root (sageRoot). */
-const ROOT_VARS = /\b(?:SAGE_HOME|CLAUDE_CONFIG_DIR)\b/i;
 /** All the text of a tool call's input, one string per field. */
 const fields = (v) => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(fields) : []);
 /** Text as APFS compares names: it ignores case and Unicode form, and folds compatibility forms (ſ is s, ﬆ is st). */
@@ -483,10 +479,30 @@ function rootsOf(strict) {
     return raw ? [fold(raw)] : [];
   }
 }
-/** Does the text name the sage root: its path or variables, or .claude then sage in one path, in any case or as a pattern? */
-function namesRoot(text, words, roots) {
+/** Does the text name the sage root: its path or a variable that sets it, or .claude then sage in one path, in any case or as a pattern? */
+function namesRoot(text, words, roots, cwd) {
   const low = fold(text.replace(/['"\\]/g, ""));
-  return ROOT_VARS.test(text) || roots.some((r) => low.includes(r)) || words.some(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")));
+  return usesRootVar(text, roots[1], cwd) || roots.some((r) => low.includes(r)) || words.some(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")));
+}
+/**
+ * Does the text use a variable that sets the sage root (sageRoot: SAGE_HOME, CLAUDE_CONFIG_DIR)? An assignment of a
+ * plain path that does not overlap the real root (a scratch or temp SAGE_HOME for tests) is no use, and nor is a later
+ * $VAR of a variable that the text assigned so. Every other mention is a use: a $VAR (also ${VAR}, $env:VAR, %VAR%) that
+ * the text did not assign so, an assignment of any other value, and a bare name in a command with a substitution or a
+ * pipe, which can read the variable (printenv). Without the real root (root), every mention is a use.
+ */
+function usesRootVar(text, root, cwd) {
+  const safe = new Set();
+  const reads = /\$\(|`|\|/.test(text);
+  for (const [, ref, name, set, value] of text.replace(/['"\\]/g, "").matchAll(/(\$\{?|\$env:|%)?\b(SAGE_HOME|CLAUDE_CONFIG_DIR)\b(=([^\s;&|<>()`]*))?/gi)) {
+    if (ref) {
+      if (!safe.has(name)) return true;
+    } else if (set) {
+      if (!root || !value || /[$`*?[{%]/.test(value) || overlaps(canonical(from(cwd, pathOf(value))), root)) return true;
+      safe.add(name);
+    } else if (reads) return true;
+  }
+  return false;
 }
 /** Does the text name a logbook file, in any case or as a pattern? */
 const namesTable = (words) => words.some(({ parts }) => parts.some((p) => TABLES.some((t) => names(p, t))));
@@ -521,7 +537,7 @@ function nearLogbook(text, roots, cwd) {
     words.some(({ word, parts }) => /^(?:cd|pushd)$/.test(word) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(word) && !/^\/dev\/(?:null|stdout|stderr)$/.test(word)));
   const resolved = [...new Set(wordsOf(text))].filter((w) => !/[$`]/.test(w)).map((w) => canonical(from(cwd, pathOf(w))));
   return (
-    namesRoot(text, plain, roots) ||
+    namesRoot(text, plain, roots, cwd) ||
     plain.some(({ word, parts }) => parts.includes(".claude") && !worktree(word)) ||
     (leaves && (words.length > plain.length || namesTable(words))) ||
     resolved.some((p) => overlaps(p, roots[1])) ||
@@ -617,11 +633,11 @@ function underRoot(input) {
   return path === root || path.startsWith(root + sep) ? `the sage root ${root} (${path})` : undefined;
 }
 /** Does a command tool's input write a logbook file? sage: in sage mode a logbook file's name counts too. */
-function shellWrite(ti, sage) {
+function shellWrite(ti, sage, cwd) {
   const text = fields(ti);
   const all = text.join("\n");
   const words = partsOf(all);
-  return text.some(writes) && (namesRoot(all, words, rootsOf(false)) || (sage && namesTable(words))) && !stateToolOnly(typeof ti.command === "string" ? ti.command : "");
+  return text.some(writes) && (namesRoot(all, words, rootsOf(false), cwd) || (sage && namesTable(words))) && !stateToolOnly(typeof ti.command === "string" ? ti.command : "");
 }
 /**
  * The chief's own tools change no logbook file either (S2): only sage.mjs does, so each change leaves its record. A file
@@ -639,7 +655,54 @@ function chiefProblem(input, sage) {
     }
   }
   if (!COMMAND_TOOLS.test(input.tool_name ?? "")) return undefined;
-  return shellWrite(input.tool_input ?? {}, sage) ? "the chief never writes, moves or removes a logbook file from the shell." : undefined;
+  return shellWrite(input.tool_input ?? {}, sage, input.cwd ?? process.cwd()) ? "the chief never writes, moves or removes a logbook file from the shell." : undefined;
+}
+/**
+ * Does a command's text run the state tool ("tool") or the PR script ("pr")? It decides on the program that runs, not on
+ * a mention, so a read, a diff or a commit message that names sage.mjs passes (T83-C2). The program is the first word
+ * after assignments, options and wrappers (env, xargs, ...), and the word after -exec. It runs the file when it is the
+ * file; when it is an interpreter (node, python, ...) whose words up to its script, whose heredoc or whose piped input
+ * name the file; and when text that a shell or eval runs does. A variable or substitution there runs the file when the
+ * text names it anywhere, and so does text that the hook cannot read. Deliberate forgery past this is the sandbox's job.
+ */
+const kind = (text) => (/sage-pr\.mjs/i.test(text) ? "pr" : /sage\.mjs/i.test(text) ? "tool" : undefined);
+const WRAPPERS = /^(?:sudo|doas|env|nice|nohup|timeout|gtimeout|xargs|exec|stdbuf|caffeinate|watch|command|builtin|time|noglob|nocorrect)$/;
+const INTERPRETERS = /^(?:node|nodejs|deno|bun|python[\d.]*|perl|ruby|php|osascript|source|\.)$/;
+const SHELL_RUNNERS = /^(?:sh|bash|zsh|dash|ksh|fish|pwsh|powershell)$/;
+function scriptRun(text, depth = 0) {
+  const named = kind(text.replace(/['"\\]/g, ""));
+  if (!named) return undefined;
+  let commands;
+  try {
+    commands = shellCommands(text);
+  } catch {
+    return named;
+  }
+  for (const c of commands) {
+    for (const start of [0, ...c.words.flatMap((w, k) => (/^-(?:exec|execdir|ok|okdir)$/.test(w) ? [k + 1] : []))]) {
+      const words = c.words.slice(start);
+      const k = words.findIndex((w) => !/^\w+=/.test(w) && !w.startsWith("-") && !/^\d+[smhd]?$/.test(w) && !WRAPPERS.test(basename(w)));
+      if (k < 0) continue;
+      const name = basename(words[k]).toLowerCase();
+      const rest = words.slice(k + 1);
+      if (words[k].includes("$")) return named;
+      if (/^sage(?:-pr)?\.mjs$/.test(name)) return kind(name);
+      if (name === "eval" || SHELL_RUNNERS.test(name)) {
+        if (depth >= 3 || rest.some((w) => w.includes("$"))) return named;
+        const inner = [...(name === "eval" ? [rest.join(" ")] : rest.filter((w) => /\s/.test(w))), ...c.bodies];
+        const run = inner.map((t) => scriptRun(t, depth + 1)).sort()[0];
+        if (run) return run;
+      } else if (INTERPRETERS.test(name)) {
+        const script = rest.findIndex((w) => !w.startsWith("-"));
+        const head = script < 0 ? rest : rest.slice(0, script + 1);
+        if (head.some((w) => w.includes("$"))) return named;
+        const piped = commands.filter((p) => p.pipeTo === c).map((p) => p.words.join(" "));
+        const run = [...head, ...c.bodies, ...piped].map(kind).sort()[0];
+        if (run) return run;
+      }
+    }
+  }
+  return undefined;
 }
 /** An agent's check fails closed: when it throws, the agent's command or file change is refused. */
 function agentProblem(input) {
@@ -660,9 +723,9 @@ function agentCheck(input, file) {
   }
   if (ti.dangerouslyDisableSandbox) return "an agent never runs a command outside the sandbox (dangerouslyDisableSandbox).";
   const command = typeof ti.command === "string" ? ti.command : "";
-  const flat = flatText(ti);
-  if (/sage-pr\.mjs/i.test(flat)) return "only the chief runs the PR script (sage-pr.mjs).";
-  if (/sage\.mjs/i.test(flat)) {
+  const run = fields(ti).map((t) => scriptRun(t)).sort()[0]; // "pr" sorts before "tool"
+  if (run === "pr") return "only the chief runs the PR script (sage-pr.mjs).";
+  if (run === "tool") {
     const [node, path, cmd, ...args] = command.trim().split(/[ \t]+/);
     const own = PLAIN.test(command.trim()) && node === "node" && /(?:^|\/)skills\/sage\/sage\.mjs$/.test(path) && !path.split("/").includes("..");
     if (!own || canonical(resolve(input.cwd ?? process.cwd(), path)) !== canonical(TOOL)) return "an agent runs the state tool only as one plain command, with nothing before or after it, and only the copy that this hook loads.";
@@ -1158,7 +1221,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
     const agentWrite = agentEvent(input) && (tools(FILE_TOOLS) || tools(COMMAND_TOOLS)); // fail closed: an agent does nothing unchecked
     let chiefWrite;
     try {
-      chiefWrite = tools(COMMAND_TOOLS) && shellWrite(input.tool_input ?? {}, true);
+      chiefWrite = tools(COMMAND_TOOLS) && shellWrite(input.tool_input ?? {}, true, input.cwd ?? process.cwd());
     } catch {
       chiefWrite = tools(COMMAND_TOOLS);
     }

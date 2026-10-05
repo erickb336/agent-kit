@@ -1773,3 +1773,67 @@ test("S-HOMEBRACE: ${HOME} is the home folder, as $HOME is, so a cd to it then a
     }
   }
 });
+
+// T83 cycle 1 (R429): the rule decides on the program that runs (C2) and on the folder that a root variable names (C3).
+test("C2: an agent's read, diff or commit that names sage.mjs passes; running the state tool's write or the PR script is refused (T83)", () => {
+  for (const on of [false, true]) {
+    const s = session();
+    if (on) s.send(prompt("sage mode"));
+    const path = "plugins/sage/skills/sage/sage.mjs";
+    const reads = [`cat ${path}`, `grep -n x ${path}`, `git diff main -- ${path}`, 'git commit -m "fix sage.mjs"', 'git commit -m "fix sage-pr.mjs and sage.mjs"', `cat ${TOOL} | head -5`];
+    for (const command of reads) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, `sage mode ${on}: ${command}`);
+    assert.equal(denied(s.send({ ...tool("Bash", { command: "npm test", description: "Test sage.mjs and sage-pr.mjs" }, { cwd: FEATURE }), ...AGENT })), undefined, "a description that names them");
+    const runs = [
+      `node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA}`,
+      `bash -c "node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA}"`,
+      `eval node ${TOOL} task T2 set branch=main`,
+      `find . -exec node ${TOOL} init ;`,
+      `echo init | xargs node ${TOOL}`,
+      `cat ${TOOL} | node - verdict T2`,
+      `node -e "import('${TOOL}')"`,
+      `S=${TOOL}; node $S verdict T2`,
+    ];
+    for (const command of runs) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", ONLY_CHIEF, `sage mode ${on}: ${command}`);
+    assert.match(denied(s.send(bash(`git log && node ${PR_SCRIPT} create T2`, FEATURE, AGENT))) ?? "", /only the chief runs the PR script/);
+    assert.match(denied(s.send({ ...tool("Write", { file_path: join(s.vars.SAGE_HOME, "p", "ledger.tsv"), content: "x" }), ...AGENT, cwd: s.dir })) ?? "", /never writes under the sage root/);
+  }
+});
+
+test("C3: a SAGE_HOME or CLAUDE_CONFIG_DIR set to a scratch folder passes, for an agent and the chief; one that names the real sage root is refused (T83)", () => {
+  const s = session();
+  const scratch = mkdtempSync(join(tmpdir(), "sage-scratch-"));
+  const allowed = [
+    `SAGE_HOME=${scratch} npm test > ${scratch}/log.txt`,
+    `SAGE_HOME=${scratch} npm test > ${scratch}/log.txt 2>&1`,
+    `export SAGE_HOME=${scratch}; node x.mjs > $SAGE_HOME/out.txt`,
+    `CLAUDE_CONFIG_DIR=${scratch} npm test 2>&1 | tee ${scratch}/log.txt`,
+  ];
+  const refused = [
+    `SAGE_HOME=${s.vars.SAGE_HOME} npm test > ${scratch}/log.txt`,
+    `SAGE_HOME=${join(s.vars.SAGE_HOME, "p")} npm test > ${scratch}/log.txt`,
+    `SAGE_HOME=${scratch}; rm -rf $CLAUDE_CONFIG_DIR/sage`,
+    `SAGE_HOME=${scratch} cp x ${join(s.vars.SAGE_HOME, "p", "ledger.tsv")}`,
+    `SAGE_HOME=$HOME/.claude/sage npm test > ${scratch}/log.txt`,
+    `cp x "$(printenv SAGE_HOME)"/p/x`,
+    "rm -rf $SAGE_HOME/p",
+  ];
+  for (const command of allowed) {
+    assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, `agent: ${command}`);
+    assert.equal(denied(s.send(bash(command))), undefined, `chief: ${command}`);
+  }
+  for (const command of refused) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `chief: ${command}`);
+  }
+});
+
+test("C4: a file tool's path to a sage root that does not exist yet is compared in any case and compatibility form (T83)", () => {
+  const s = session({ SAGE_HOME: join(mkdtempSync(join(tmpdir(), "sage-")), "case-st") }); // the root is not made
+  const at = dirname(s.vars.SAGE_HOME);
+  for (const file of [join(at, "CASE-ST", "ledger.tsv"), join(at, "ca\u017Fe-\uFB06", "p", "tasks.tsv")]) {
+    const write = tool("Write", { file_path: file, content: "x" }, { cwd: s.dir });
+    assert.match(denied(s.send({ ...write, ...AGENT })) ?? "", /never writes under the sage root/, `agent: ${file}`);
+    assert.match(denied(s.send(write)) ?? "", /the chief never writes under the sage root/, `chief: ${file}`);
+  }
+  assert.equal(denied(s.send({ ...tool("Write", { file_path: join(at, "CASE-STS", "x") }, { cwd: s.dir }), ...AGENT })), undefined, "a folder next to the root");
+});
