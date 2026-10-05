@@ -38,9 +38,9 @@ test("show board: the session's project, and one line per other project with som
       "**sage board · sage** · built 2026-10-05 19:00 UTC",
       "",
       "**Needs you (4)**",
-      "- **G1** (T6) Sample: keep the old config key or drop it? Recommended: drop: nobody uses it. Default: keep.",
+      "- **G1** (T6) Sample: keep the old config key or drop it? Options: keep / drop. Recommended: drop: nobody uses it. Default: keep.",
       "- T2 [#7](https://github.com/acme/sage/pull/7) waits for your merge (risk input): Sample: the chat board",
-      "- T3 [#8](https://github.com/acme/sage/pull/8) waits for your merge (outside the night window): Sample: a docs fix",
+      "- T3 [#8](https://github.com/acme/sage/pull/8) waits for your merge (autopilot may merge it tonight): Sample: a docs fix",
       "- T4 [#9](https://github.com/acme/sage/pull/9) waits for your merge (large): Sample: the large rebuild",
       "",
       "**Running now (2)**",
@@ -99,15 +99,16 @@ test("a session outside every project shows all projects", () => {
   assert.deepEqual(out.match(/^\*\*[a-z-]+\*\*/gm), ["**order-chaser**", "**sage**", "**sage-bot**"]);
 });
 
-test("needs you: at night a small verified task without a risk flag is autopilot's, so it is not listed", () => {
+test("needs you: a verified PR that is not merged is always listed, with the reason, by day and at night", () => {
   const w = world();
-  const night = w.show("this", w.sage, NIGHT);
-  assert.match(night, /\*\*Needs you \(3\)\*\*/);
-  assert.doesNotMatch(night, /T3 \[#8\][^\n]*waits/);
-  assert.match(night, /T2 \[#7\][^\n]*waits for your merge \(risk input\)/);
-  assert.match(night, /T4 \[#9\][^\n]*waits for your merge \(large\)/);
-  assert.match(w.show("this"), /T3 \[#8\][^\n]*waits for your merge \(outside the night window\)/);
-  assert.doesNotMatch(night, /G2/); // an answered gate
+  for (const now of [DAY, NIGHT]) {
+    const out = w.show("this", w.sage, now);
+    assert.match(out, /\*\*Needs you \(4\)\*\*/);
+    assert.match(out, /\n- T3 \[#8\]\(https:\/\/github\.com\/acme\/sage\/pull\/8\) waits for your merge \(autopilot may merge it tonight\): Sample: a docs fix\n/);
+    assert.match(out, /T2 \[#7\][^\n]*waits for your merge \(risk input\)/);
+    assert.match(out, /T4 \[#9\][^\n]*waits for your merge \(large\)/);
+    assert.doesNotMatch(out, /G2/); // an answered gate
+  }
 });
 
 test("merged since the last board: the next board lists only the new merges, and board.json holds the shown ones", () => {
@@ -145,6 +146,80 @@ test("sage board through the CLI: read-only with --remember no, and a bad option
   assert.equal(existsSync(join(w.home, "board.json")), true);
 });
 
+/** Appends one row (its cells in the table's column order) to a table of a fixture logbook. */
+function add(w, book, table, cells) {
+  const file = join(w.home, book, `${table}.tsv`);
+  writeFileSync(file, readFileSync(file, "utf8") + cells.join("\t") + "\n");
+}
+/** Every "](" that is not escaped must open one of the board's own PR links. */
+const ownLinksOnly = (out) => assert.doesNotMatch(out, /(?<!\\)\]\((?!https:\/\/github\.com\/acme\/sage\/pull\/\d+\))/);
+
+test("agent-written text is escaped: no link, image, comment or HTML reaches the owner live", () => {
+  const w = world();
+  add(w, "sage-aaaaaa", "gates", ["G3", "T6", "Approve? [Approve here](https://evil.example/approve) ![x](https://evil.example/x.png) <!-- hide -->", "[ok](https://evil.example/a)|no", "**yes** `rm -rf`", "<b>x</b>", "", "2026-10-05T03:00:00Z"]);
+  add(w, "sage-aaaaaa", "tasks", ["T12", "<img src=x onerror=alert(1)>\u200b ~~a~~ #|_\u202e", "small", "", "build", "building", "t12", "", "0", ""]);
+  const out = w.show("this");
+  assert.ok(
+    out.includes(
+      "\n- **G3** (T6) Approve? \\[Approve here\\]\\(https://evil.example/approve\\) \\!\\[x\\]\\(https://evil.example/x.png\\) \\<\\!-- hide --\\> Options: \\[ok\\]\\(https://evil.example/a\\) / no. Recommended: \\*\\*yes\\*\\* \\`rm -rf\\`. Default: \\<b\\>x\\</b\\>.\n",
+    ),
+    out,
+  );
+  assert.ok(out.includes("\n- T12 \\<img src=x onerror=alert\\(1\\)\\> \\~\\~a\\~\\~ \\#\\|\\_ · building · no PR\n"), out);
+  ownLinksOnly(out);
+  assert.doesNotMatch(out, /(?<!\\)</);
+});
+
+test("an id-like cell is kept only in its format, else shown as ?: a hand-made PR cell gives no link to another host", () => {
+  const w = world();
+  add(w, "sage-aaaaaa", "tasks", ["T13", "Sample: a forged PR cell", "small", "", "build", "verified", "t13", "7](https://evil.example/pr) [#7", "0", ""]);
+  add(w, "sage-aaaaaa", "tasks", ["T14```", "Sample: a forged id", "small", "input```", "build", "building```", "t14", "", "1```", ""]);
+  add(w, "sage-aaaaaa", "gates", ["G4```", "T6```", "Sample: a forged gate", "a|b", "a", "a", "", "2026-10-05T03:00:00Z"]);
+  add(w, "sage-aaaaaa", "runs", ["R4", "T5```", "implementer```", "0", "", "t5", "running", "", "", "2026-10-05T05:00:00Z", ""]);
+  const out = w.show("this");
+  assert.ok(out.includes("\n- T13 PR ? waits for your merge (autopilot may merge it tonight): Sample: a forged PR cell\n"), out);
+  assert.ok(out.includes("\n- ? Sample: a forged id · ? · no PR · round ?\n"), out);
+  assert.ok(out.includes("\n- **?** (?) Sample: a forged gate Options: a / b. Recommended: a. Default: a.\n"), out);
+  assert.ok(out.includes("\n- ? ? · 14 h\n"), out);
+  assert.doesNotMatch(out, /`|evil/);
+  ownLinksOnly(out);
+});
+
+test("board.json: a FIFO, a big file, a bad date or a non-array list is ignored and rewritten", () => {
+  for (const make of [
+    (file) => execFileSync("mkfifo", [file]),
+    (file) => writeFileSync(file, JSON.stringify({ at: "2026-10-05T18:00:00Z", merged: { sage: [] }, pad: "x".repeat(70000) })),
+    (file) => writeFileSync(file, JSON.stringify({ at: "[x](https://evil.example)", merged: { sage: [] } })),
+    (file) => writeFileSync(file, JSON.stringify({ at: "2026-10-05T18:00:00Z", merged: { sage: 5 } })),
+    (file) => writeFileSync(file, JSON.stringify({ at: "2026-10-05T18:00:00Z", merged: { sage: [7] } })),
+  ]) {
+    const w = world();
+    const file = join(w.home, "board.json");
+    make(file);
+    const out = w.show("this");
+    assert.match(out, /\*\*Merged since the last board \(0\)\*\*\n- nothing\n- first board for sage/);
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { at: "2026-10-05T19:00:00Z", merged: { sage: ["T1"] } });
+  }
+});
+
+test("a remote that only names github.com in its path gives no PR links", () => {
+  const w = world();
+  execFileSync("git", ["-C", w.sage, "remote", "set-url", "origin", "https://evil.example/github.com/acme/sage.git"]);
+  const out = w.show("this");
+  assert.match(out, /- T2 PR #7 waits for your merge/);
+  assert.match(out, /^\*\*sage\*\*$/m);
+  assert.doesNotMatch(out, /evil/);
+});
+
+test("the all-projects board shows at most 8 active tasks per project, then a count and the phrase for the rest", () => {
+  const w = world();
+  for (let i = 20; i < 25; i++) add(w, "sage-aaaaaa", "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
+  const all = w.show("all");
+  assert.match(all, /\n- T6 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 [^\n]*\n- and 2 more \(show board for sage\)\n- framed backlog: 4/);
+  assert.doesNotMatch(all, /T23 Sample/);
+  assert.match(w.show("this"), /- T24 Sample: busy 24 · building · no PR\n- framed backlog/); // one project: every line
+});
+
 /** The hook's note for one prompt, or "" when it gives none. */
 function note(prompt) {
   const dir = mkdtempSync(join(tmpdir(), "sage-board-hook-"));
@@ -161,6 +236,10 @@ test("the board phrase: each scope at the start of the owner's message gives the
   assert.ok(note("show board for all").includes(cmd("all")));
   assert.ok(note("show board for Order-Chaser").includes(cmd("order-chaser")));
   assert.match(note("show board"), /choice card/);
+  assert.ok(note("show board for all projects").includes(cmd("all")));
+  assert.ok(note("show board for thistle").includes(cmd("thistle")));
+  assert.ok(note("show board for this-app").includes(cmd("this-app")));
+  assert.ok(note("show board for this").includes(cmd("this")));
 });
 
 test("the board phrase: no board inside a quote, an agent's report, a question or a longer word", () => {

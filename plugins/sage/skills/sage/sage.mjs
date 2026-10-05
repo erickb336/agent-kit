@@ -49,6 +49,7 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
+export const STATES = Object.keys(NEXT);
 export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
 /** The owner's floors (gate G18): a large or risk-flagged task needs at least 2 clean cycles. Only a code change lowers them; every other count is 1 or more. */

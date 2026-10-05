@@ -2,23 +2,37 @@
 // fits a phone screen. `sage board [this|all|<project>]` prints it. It takes no lock and never writes to a logbook:
 // every table is replaced whole, so a read sees it before or after a change. It writes one file at the sage root,
 // board.json, the merged tasks it has shown, so that the next board lists only what merged since.
+// Every cell is agent-written data. An id-like cell is kept only in its format, else it shows as "?". Free text is
+// escaped, so that the only links, images and HTML on the board are the board's own PR links, built from digits.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { projectName, read, sageRoot, storeDir } from "./sage.mjs";
+import { BLOCKS, RISKS, STATES, projectName, read, sageRoot, storeDir } from "./sage.mjs";
 
 const FOLDER = /^([a-z0-9-]+)-[0-9a-f]{6}$/;
 const CLOSED = ["merged", "concluded", "abandoned"];
 const WAITS = ["verified", "pr-ready"];
-/** The night window in which autopilot may merge a tiny or small task without a risk flag: 22:00 to 07:00, the owner's time. */
-const NIGHT = { from: 22, to: 7, zone: "America/Los_Angeles" };
-const CAP = { needs: 8, running: 8, merged: 8, next: 3 };
+const CAP = { needs: 8, running: 8, merged: 8, next: 3, active: 8 };
+// The agent roles beside the step names. The lists from sage.mjs are read at call time: the two modules import each other.
+const AGENTS = ["implementer", "designer", "code-reviewer", "security-reviewer", "ux-reviewer", "arena-judge", "researcher"];
+/** The format of each id-like cell. A cell that does not match shows as "?"; an empty cell stays empty. */
+const FORMAT = {
+  tasks: { id: /^T\d+$/, state: (v) => STATES.includes(v), pr: /^\d+$/, round: /^\d+$/, risk: (v) => v.split(",").every((r) => RISKS.includes(r)) },
+  runs: { task: /^T\d+$/, role: (v) => BLOCKS.includes(v) || AGENTS.includes(v) },
+  gates: { id: /^G\d+$/, task: /^T\d+$/ },
+};
+const fits = (test, v) => (typeof test === "function" ? test(v) : test.test(v));
+const clean = (table, row) => {
+  for (const [k, test] of Object.entries(FORMAT[table])) if (row[k] && !fits(test, row[k])) row[k] = "?";
+  return row;
+};
 
-/** One line of a list: no line breaks, at most max characters. */
-function cut(s, max) {
-  const chars = [...String(s ?? "").replace(/\s+/g, " ").trim()];
-  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
+/** One line of free text: no line breaks or hidden characters, at most max characters, Markdown and HTML escaped. */
+function text(s, max) {
+  const chars = [...String(s ?? "").replace(/\s+/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim()];
+  const line = chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
+  return line.replace(/[\\`*_[\]()<>!#|~]/g, "\\$&");
 }
 const n = (id) => Number(String(id).replace(/\D/g, "")) || 0;
 const plural = (k, word) => `${k} ${word}${k === 1 ? "" : "s"}`;
@@ -28,17 +42,12 @@ function age(ms) {
   if (m < 48 * 60) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
   return `${Math.floor(m / 1440)} d`;
 }
-const hourIn = (date, zone) => Number(new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric", hourCycle: "h23" }).format(date));
-const atNight = (date) => {
-  const h = hourIn(date, NIGHT.zone);
-  return h >= NIGHT.from || h < NIGHT.to;
-};
 
 /** The GitHub repository of a checkout, as https://github.com/<owner>/<repo>, or null. */
 function repoOf(path) {
   try {
     const url = execFileSync("git", ["-C", path, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url);
+    const m = /^(?:https:\/\/|ssh:\/\/git@|git@)github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url);
     return m ? `https://github.com/${m[1]}/${m[2]}` : null;
   } catch {
     return null;
@@ -66,9 +75,9 @@ function logbooks(root) {
     } catch {}
     const book = { key: FOLDER.exec(name)[1], dir, checkout, tasks: [], runs: [], gates: [], error: null };
     try {
-      for (const t of ["tasks", "runs", "gates"]) book[t] = read(dir, t);
+      for (const t of ["tasks", "runs", "gates"]) book[t] = read(dir, t).map((row) => clean(t, row));
     } catch (e) {
-      book.error = cut(e.message, 120);
+      book.error = text(e.message, 120);
     }
     return book;
   });
@@ -83,10 +92,16 @@ function sessionBook(books, project, env) {
   return books.find((b) => b.dir === exact) ?? books.find((b) => b.checkout && real(b.checkout) === root) ?? books.find((b) => !b.checkout && b.key === name) ?? null;
 }
 
+/** The last board's board.json, or null when it is not a regular file under 64 KB in the right shape (the next board rewrites it). */
 function seen(root) {
+  const file = join(root, "board.json");
   try {
-    const s = JSON.parse(readFileSync(join(root, "board.json"), "utf8"));
-    return s && typeof s.at === "string" && s.merged && typeof s.merged === "object" ? s : null;
+    const st = lstatSync(file);
+    if (!st.isFile() || st.size >= 64 * 1024) return null;
+    const s = JSON.parse(readFileSync(file, "utf8"));
+    const lists = s?.merged && typeof s.merged === "object" && !Array.isArray(s.merged) ? Object.values(s.merged) : null;
+    const ok = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?Z$/.test(s?.at) && lists?.every((l) => Array.isArray(l) && l.every((id) => typeof id === "string"));
+    return ok ? s : null;
   } catch {
     return null;
   }
@@ -126,29 +141,29 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     else [shown, title] = [books, "all projects (this folder has no logbook)"];
   } else {
     shown = books.filter((b) => b.key === want);
-    if (!shown.length) return `No project named "${cut(scope, 40)}". Known projects: ${known}.`;
+    if (!shown.length) return `No project named "${text(scope, 40)}". Known projects: ${known}.`;
     title = want;
   }
 
   const mine = sessionBook(books, project, env);
   const sessionRepo = project && mine ? repoOf(project) : null;
   for (const b of books) b.repo = b.checkout ? repoOf(b.checkout) : b === mine ? sessionRepo : null;
-  const pr = (b, t) => (t.pr ? (b.repo ? `[#${t.pr}](${b.repo}/pull/${t.pr})` : `PR #${t.pr}`) : "no PR");
+  const pr = (b, t) => (!t.pr ? "no PR" : t.pr === "?" ? "PR ?" : b.repo ? `[#${t.pr}](${b.repo}/pull/${t.pr})` : `PR #${t.pr}`);
   const many = shown.length > 1;
   const tag = (b) => (many ? `${b.key} ` : "");
 
-  // Needs you: open gates, then pull requests that only the owner merges.
+  // Needs you: open gates, then every verified pull request that is not merged. Autopilot is a per-session switch,
+  // so the board cannot know that it will merge a small one: it says so, and still lists it.
   const gates = (b) => b.gates.filter((g) => !g.answer);
-  const night = atNight(now);
   const waiting = (b) =>
     b.tasks
       .filter((t) => WAITS.includes(t.state) && t.pr)
-      .map((t) => ({ t, why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : night ? null : "outside the night window" }))
-      .filter((w) => w.why);
+      .map((t) => ({ t, why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : "autopilot may merge it tonight" }));
+  const options = (g) => text(String(g.options ?? "").split(/[|,]/).map((o) => o.trim()).filter(Boolean).join(" / "), 80) || "none";
   const L = [`**sage board · ${title}** · built ${built} UTC`];
   const needs = shown.flatMap((b) => [
-    ...gates(b).map((g) => `${tag(b)}**${g.id}** (${g.task}) ${cut(g.question, 110)} Recommended: ${cut(g.recommendation, 60) || "none"}. Default: ${cut(g.default, 40) || "none"}.`),
-    ...waiting(b).map(({ t, why }) => `${tag(b)}${t.id} ${pr(b, t)} waits for your merge (${why}): ${cut(t.title, 50)}`),
+    ...gates(b).map((g) => `${tag(b)}**${g.id}** (${g.task}) ${text(g.question, 110)} Options: ${options(g)}. Recommended: ${text(g.recommendation, 60) || "none"}. Default: ${text(g.default, 40) || "none"}.`),
+    ...waiting(b).map(({ t, why }) => `${tag(b)}${t.id} ${pr(b, t)} waits for your merge (${why}): ${text(t.title, 50)}`),
   ]);
   const section = (head, rows, cap) => {
     L.push("", `**${head}**`);
@@ -158,11 +173,11 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   };
   section(`Needs you (${needs.length})`, needs, CAP.needs);
   const running = shown.flatMap((b) => b.runs.filter((r) => r.status === "running").map((r) => ({ b, r }))).sort((x, y) => Date.parse(x.r.started) - Date.parse(y.r.started));
-  section(`Running now (${running.length})`, running.map(({ b, r }) => `${tag(b)}${r.task} ${r.role} · ${r.started ? age(now - Date.parse(r.started)) : "age unknown"}`), CAP.running);
+  section(`Running now (${running.length})`, running.map(({ b, r }) => `${tag(b)}${r.task} ${r.role} · ${Number.isFinite(Date.parse(r.started)) ? age(now - Date.parse(r.started)) : "age unknown"}`), CAP.running);
 
   // Merged since the last board: the merged tasks that the last board did not show.
   const last = seen(root);
-  const fresh = shown.flatMap((b) => b.tasks.filter((t) => t.state === "merged" && last?.merged?.[b.key] && !last.merged[b.key].includes(t.id)).map((t) => `${tag(b)}${t.id} ${pr(b, t)} ${cut(t.title, 50)}`));
+  const fresh = shown.flatMap((b) => b.tasks.filter((t) => t.state === "merged" && last?.merged?.[b.key] && !last.merged[b.key].includes(t.id)).map((t) => `${tag(b)}${t.id} ${pr(b, t)} ${text(t.title, 50)}`));
   const firstFor = shown.filter((b) => !b.error && !last?.merged?.[b.key]);
   const since = last ? `since ${last.at.slice(0, 16).replace("T", " ")} UTC` : "since the last board";
   section(`Merged ${since} (${fresh.length})`, fresh, CAP.merged);
@@ -177,9 +192,11 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     }
     const active = b.tasks.filter((t) => !CLOSED.includes(t.state) && t.state !== "framed").sort((x, y) => n(x.id) - n(y.id));
     const framed = b.tasks.filter((t) => t.state === "framed").sort((x, y) => n(x.id) - n(y.id));
-    for (const t of active) L.push(`- ${t.id} ${cut(t.title, 40)} · ${t.state} · ${pr(b, t)}${Number(t.round) ? ` · round ${t.round}` : ""}`);
+    const cap = many ? CAP.active : active.length;
+    for (const t of active.slice(0, cap)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
+    if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${b.key})`);
     if (!active.length) L.push("- no active tasks");
-    L.push(`- framed backlog: ${framed.length}${framed.length ? ` · next up (framed, in id order): ${framed.slice(0, CAP.next).map((t) => `${t.id} ${cut(t.title, 30)}`).join("; ")}` : ""}`);
+    L.push(`- framed backlog: ${framed.length}${framed.length ? ` · next up (framed, in id order): ${framed.slice(0, CAP.next).map((t) => `${t.id} ${text(t.title, 30)}`).join("; ")}` : ""}`);
   }
   const elsewhere = others
     .map((b) => {
