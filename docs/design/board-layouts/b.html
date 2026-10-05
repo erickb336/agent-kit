@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
+<title>sage board, layout B</title><style>
+:root{--bg:#fbfaf7;--surface:#fff;--surface-2:#f5f3ee;--text:#1d1d1b;--muted:#5f5e58;--line:#e3e0d8;--accent:#6b4fd8;--accent-soft:#efeafd;
+--ok:#1f7a4d;--ok-soft:#e4f3ea;--warn:#8f5400;--warn-soft:#fbefdc;--stop:#b3261e;--stop-soft:#fbe7e5;--strip:#2a2442;--strip-text:#f3efff;
+--p1:#6b4fd8;--p1s:#efeafd;--p2:#0d7d77;--p2s:#e0f3f1;--p3:#a35a00;--p3s:#fbefdc;--p4:#6c6a62;--p4s:#efede7;--shadow:0 1px 2px rgba(0,0,0,.05),0 6px 18px rgba(0,0,0,.05)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#151514;--surface:#1d1d1b;--surface-2:#232320;--text:#ecebe6;--muted:#a7a59d;--line:#34332f;--accent:#a995ff;--accent-soft:#2a2442;
+--ok:#5cc28e;--ok-soft:#173326;--warn:#e3a447;--warn-soft:#3a2a12;--stop:#ff8a80;--stop-soft:#3d1c1a;--strip:#efeafd;--strip-text:#2a2442;
+--p1:#b7a6ff;--p1s:#2a2442;--p2:#4cc7bd;--p2s:#12302e;--p3:#e8a95a;--p3s:#3a2a12;--p4:#b3b1a8;--p4s:#2a2a27;--shadow:0 1px 2px rgba(0,0,0,.4)}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;overflow-x:hidden}
+.strip{background:var(--strip);color:var(--strip-text);font-size:.75rem;font-weight:600;letter-spacing:.02em;padding:5px 16px;text-align:center}
+header.top{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.top-in{max-width:1400px;margin:0 auto;padding:10px 16px}
+.top-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{font-weight:700;font-size:1rem;display:flex;align-items:center;gap:8px}
+.brand i{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:7px;background:var(--accent);color:var(--surface);font-style:normal;font-size:.8rem}
+.live{color:var(--muted);font-size:.8rem;display:flex;align-items:center;gap:6px;margin-left:auto}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+.dot.on{box-shadow:0 0 0 3px var(--ok-soft)}
+.totals{display:flex;gap:6px 14px;flex-wrap:wrap;margin-top:6px;font-size:.82rem;color:var(--muted)}
+.totals b{color:var(--text)}.totals .need b{color:var(--stop)}
+nav.chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none}
+nav.chips a{flex:none;text-decoration:none;color:var(--text);border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:3px 10px;font-size:.8rem;white-space:nowrap}
+nav.chips a .n{color:var(--muted);margin-left:4px}nav.chips a.need{border-color:var(--stop);}nav.chips a.need .n{color:var(--stop);font-weight:700}
+main{max-width:1400px;margin:0 auto;padding:16px}
+h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 8px;display:flex;gap:8px;align-items:baseline}
+h2 .n{font-weight:700;color:var(--text)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0 0 8px;box-shadow:var(--shadow)}
+.card.gate{border-color:var(--stop);background:linear-gradient(var(--stop-soft),var(--stop-soft)) top/100% 4px no-repeat,var(--surface)}
+.card.merge{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}
+.card.warn{border-style:dashed}.card.hot{border-color:var(--warn)}.card.held{opacity:.8}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:.75rem}
+.mut{color:var(--muted)}
+.ptag{font-weight:600;font-size:.72rem;padding:1px 7px;border-radius:5px}
+.p1{color:var(--p1);background:var(--p1s)}.p2{color:var(--p2);background:var(--p2s)}.p3{color:var(--p3);background:var(--p3s)}.p4{color:var(--p4);background:var(--p4s)}
+.kind{font-weight:700;font-size:.7rem;text-transform:uppercase;letter-spacing:.04em}
+.k-gate{color:var(--stop)}.k-merge{color:var(--ok)}.k-run{color:var(--accent)}.k-rev{color:var(--p2)}.k-held{color:var(--warn)}
+.q{margin:6px 0;font-weight:600}.title{margin:5px 0 2px;font-weight:600}
+.sub{margin:3px 0 0;font-size:.8rem;color:var(--muted)}.ok{color:var(--ok)}.warnt{color:var(--warn)}
+.opts{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px}
+.opts li{display:flex;flex-wrap:wrap;gap:2px 6px;align-items:baseline;font-size:.82rem;padding:4px 8px;border-radius:6px;background:var(--surface-2)}
+.opts li span{color:var(--muted)}.opts li.rec{outline:1.5px solid var(--accent);background:var(--accent-soft)}
+.badge{font-style:normal;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-left:auto}
+.badge.ghost{color:var(--muted);margin-left:6px}.opts li.rec .badge.ghost{margin-left:6px}
+.why{margin:4px 0 0;font-size:.8rem}.how{margin:4px 0 0;font-size:.75rem;color:var(--muted)}
+.agents{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:2px;font-size:.8rem}
+.agents li .dot{margin-right:6px;vertical-align:1px}
+.rows{list-style:none;margin:0;padding:0;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.row{display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;padding:7px 10px;border-top:1px solid var(--line);font-size:.82rem}
+.row:first-child{border-top:0}.row .rt{flex:1 1 220px;min-width:0}.row .rs{color:var(--muted);font-size:.76rem}
+.row.night .rs{color:var(--accent)}
+.more{font-size:.78rem;color:var(--muted);margin:6px 2px 0}
+.empty{font-size:.82rem;color:var(--muted);border:1px dashed var(--line);border-radius:10px;padding:10px 12px}
+@media (max-width:700px){header.top{position:static}}
+footer{max-width:1400px;margin:0 auto;padding:8px 16px 32px;color:var(--muted);font-size:.78rem}
+
+.board{display:grid;grid-template-columns:1.45fr 1fr 1fr 1fr 1fr;gap:14px;align-items:start}
+.col{min-width:0;scroll-margin-top:130px}
+.col h2{position:sticky;top:122px;background:var(--bg);padding:4px 0;z-index:1}
+.col .rows .row{flex-direction:column;align-items:flex-start}.col .rows .row .rt{flex:none}
+.col-need h2{color:var(--stop)}
+@media (max-width:1100px){.board{grid-template-columns:1fr 1fr}.col-need{grid-column:1/-1}}
+@media (max-width:700px){.board{grid-template-columns:1fr}.col h2{position:static}}
+.filters{font-size:.78rem;color:var(--muted);margin:0 0 12px}
+</style></head><body><div class="strip" role="note">SAMPLE DATA, shaped on the real logbooks of 4 Oct. Read-only board: to act, tell a chief in Claude.</div>
+<header class="top"><div class="top-in">
+<div class="top-row"><span class="brand"><i aria-hidden="true">s</i>sage board</span><span class="mut" style="font-size:.8rem">all projects</span>
+<span class="live"><span class="dot on" aria-hidden="true"></span>Live · updated 21:40:12</span></div>
+<div class="totals"><span class="need"><b>5</b> need you (3 gates, 2 merges)</span><span><b>6</b> agents running</span><span><b>5</b> in review or repair</span><span><b>14</b> merged today</span></div>
+<nav class="chips" aria-label="Columns"><a href="#c-need" class="need">Needs you<span class="n">5</span></a><a href="#c-run" class="">Running<span class="n">3</span></a><a href="#c-rev" class="">In review<span class="n">5</span></a><a href="#c-next" class="">Next<span class="n">7</span></a><a href="#c-done" class="">Done today<span class="n">14</span></a></nav>
+</div></header><main><p class="filters">Every project: <span class="ptag p3">order-chaser</span> <span class="ptag p1">sage</span> <span class="ptag p2">sage-bot</span> <span class="ptag p4">orchestration</span></p><div class="board"><section class="col col-need" id="c-need"><h2>Needs you <span class="n">5</span></h2><article class="card gate" id="order-chaser-G23">
+  <div class="meta"><span class="ptag p3">order-chaser</span><span class="kind k-gate">Gate G23</span><span class="mut">T42 · open 1 h</span></div>
+  <p class="q">Licence for the public order-chaser repo.</p>
+  <ul class="opts"><li class="rec"><b>MIT</b> <span>same as sage; anyone may reuse it with credit</span><em class="badge">recommended</em></li><li class=""><b>Apache-2.0</b> <span>MIT plus a patent grant</span></li><li class=""><b>none yet</b> <span>all rights reserved; the README says so</span><em class="badge ghost">default</em></li></ul>
+  <p class="why"><b>Why MIT:</b> The repo is public now. Without a licence, nobody may legally reuse it.</p>
+  <p class="how">Answer in Claude: the chief asks this gate as a choice card.</p>
+</article><article class="card gate" id="sage-G47">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-gate">Gate G47</span><span class="mut">T45 · open 18 min</span></div>
+  <p class="q">Worktree cleanup (PR 20): the reviews found two smaller data issues. A prune can drop the entry of a worktree on an unplugged disk, and a removal drops refs kept only in that worktree.</p>
+  <ul class="opts"><li class="rec"><b>a</b> <span>one more pass with both small fixes</span><em class="badge">recommended</em><em class="badge ghost">default</em></li><li class=""><b>b</b> <span>stop T45 and keep the findings in the logbook</span></li></ul>
+  <p class="why"><b>Why a:</b> Both fixes are small. No commit is lost today.</p>
+  <p class="how">Answer in Claude: the chief asks this gate as a choice card.</p>
+</article><article class="card gate" id="sage-G14">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-gate">Gate G14</span><span class="mut">T22 · open 11 h</span></div>
+  <p class="q">Orchestrator: keep it narrow for one-shot apps with a handoff to sage, or archive it and add a new-app route to sage?</p>
+  <ul class="opts"><li class="rec"><b>narrow</b> <span>one-shot apps, then a handoff to sage</span><em class="badge">recommended</em></li><li class=""><b>new-app route</b> <span>archive it; sage gets a route for new apps</span></li></ul>
+  <p class="why"><b>Why narrow:</b> Keeps what works and costs one small task.</p>
+  <p class="how">Answer in Claude: the chief asks this gate as a choice card.</p>
+</article><article class="card merge">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-merge">Your merge</span><span class="mut">PR 28 · T43</span></div>
+  <p class="title">First main: refuse an empty root commit</p>
+  <p class="sub"><span class="ok">✓ 2 clean cycles on e43f6bb</span> · risk flag auth: only you merge it · waits 2 h</p>
+</article><article class="card merge">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-merge">Your merge</span><span class="mut">PR 26 · T40</span></div>
+  <p class="title">A model per role, recorded per run</p>
+  <p class="sub"><span class="ok">✓ 2 clean cycles on 3c19a0e</span> · verified; your merge (G20 a) · waits 40 min</p>
+</article></section><section class="col col-run" id="c-run"><h2>Running <span class="n">3</span></h2><article class="card">
+  <div class="meta"><span class="ptag p3">order-chaser</span><span class="kind k-run">build</span><span class="mut">T4</span></div>
+  <p class="title">Live trading: Keychain key, signed requests, safety timer</p>
+  <ul class="agents"><li><span class="dot on" aria-hidden="true"></span><b>implementer</b> <span class="mut">R118 · 8 min</span></li></ul><p class="sub">unit U1 of 6</p>
+</article><article class="card">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-run">design</span><span class="mut">T7</span></div>
+  <p class="title">The board: design of two layouts</p>
+  <ul class="agents"><li><span class="dot on" aria-hidden="true"></span><b>designer</b> <span class="mut">R311 · 7 min</span></li></ul><p class="sub">for your pick</p>
+</article><article class="card warn">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-run">build</span><span class="mut">T36</span></div>
+  <p class="title">Risk-based routes: the review set follows the change</p>
+  <p class="sub warnt">! No agent runs. It waits for a free slot (5 of 5 busy).</p>
+</article></section><section class="col col-rev" id="c-rev"><h2>In review <span class="n">5</span></h2><article class="card">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-rev">in review</span><span class="mut">PR 33 · T56</span></div>
+  <p class="title">Autopilot merges only small tasks, at night</p>
+  <ul class="agents"><li><span class="dot on" aria-hidden="true"></span><b>security-reviewer</b> <span class="mut">R307 · 7 min</span></li><li><span class="dot on" aria-hidden="true"></span><b>qa</b> <span class="mut">R308 · 7 min</span></li></ul><p class="sub">round 2 of 3 · QA failed on the last head</p>
+</article><article class="card hot">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-rev">in review</span><span class="mut">PR 30 · T57</span></div>
+  <p class="title">Agent write guard: no writes in your home folder</p>
+  <ul class="agents"><li><span class="dot on" aria-hidden="true"></span><b>security-reviewer</b> <span class="mut">R309 · 7 min</span></li><li><span class="dot on" aria-hidden="true"></span><b>qa</b> <span class="mut">R310 · 7 min</span></li></ul><p class="sub warnt">round 3 of 3 · last round</p>
+</article><article class="card">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-rev">repair or next cycle</span><span class="mut">PR 32 · T60</span></div>
+  <p class="title">First-main follow-ups: tests for an empty tree</p>
+  <p class="sub">cycle 1 · code review is next</p>
+</article><article class="card">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-rev">repair or next cycle</span><span class="mut">PR 5 · T5</span></div>
+  <p class="title">A safe logbook: lock, run ids, end states</p>
+  <p class="sub">cycle 1 clean · cycle 2 is next</p>
+</article><article class="card held">
+  <div class="meta"><span class="ptag p1">sage</span><span class="kind k-held">held</span><span class="mut">PR 20 · T45</span></div>
+  <p class="title">Worktree cleanup: worktrees only</p>
+  <p class="sub">held by gate G47</p>
+</article></section><section class="col col-next" id="c-next"><h2>Next <span class="n">7</span></h2><ul class="rows"><li class="row night"><span class="ptag p1">sage</span><span class="rt"><b>T55</b> Design page: link colour in dark mode <span class="mut">PR 25</span></span><span class="rs">☾ verified · autopilot merges it at 22:00 (night window)</span></li><li class="row night"><span class="ptag p1">sage</span><span class="rt"><b>T53</b> Last wall-clock tests measure CPU time <span class="mut">PR 29</span></span><span class="rs">☾ verified · autopilot merges it at 22:00 (night window)</span></li><li class="row"><span class="ptag p3">order-chaser</span><span class="rt"><b>T44</b> First order refused as would-cross: wait and place it again</span><span class="rs">framed · your G21 answer B</span></li><li class="row"><span class="ptag p1">sage</span><span class="rt"><b>T6</b> Automatic capture of each run</span><span class="rs">framed</span></li><li class="row"><span class="ptag p1">sage</span><span class="rt"><b>T9</b> Programs: a breakdown you approve</span><span class="rs">briefed · large</span></li><li class="row"><span class="ptag p2">sage-bot</span><span class="rt"><b>T44</b> Post only gates marked for a team vote</span><span class="rs">framed · your G13 answer</span></li><li class="row"><span class="ptag p3">order-chaser</span><span class="rt"><b>T45</b> Phone width: no sideways scroll at 375 px</span><span class="rs">framed</span></li></ul><p class="more">+ 58 more framed in 4 projects</p></section><section class="col col-done" id="c-done"><h2>Done today <span class="n">14</span></h2><ul class="rows"><li class="row"><span class="ptag p3">order-chaser</span><span class="rt"><b>T40</b> Page tests follow page state, not timers <span class="mut">PR 4</span></span><span class="rs">✓ 21:32 · autopilot</span></li><li class="row"><span class="ptag p3">order-chaser</span><span class="rt"><b>T42</b> Demo-ready README <span class="mut">PR 3</span></span><span class="rs">✓ 21:17 · autopilot</span></li><li class="row"><span class="ptag p3">order-chaser</span><span class="rt"><b>T5</b> Margin orders, dry run first <span class="mut">PR 2</span></span><span class="rs">✓ 20:39 · autopilot</span></li><li class="row"><span class="ptag p2">sage-bot</span><span class="rt"><b>T51</b> Demo: one chief session end to end <span class="mut">PR 8</span></span><span class="rs">✓ 19:06 · the chief</span></li><li class="row"><span class="ptag p2">sage-bot</span><span class="rt"><b>T40</b> Bridge lock survives SIGTERM <span class="mut">PR 7</span></span><span class="rs">✓ 19:05 · the chief</span></li><li class="row"><span class="ptag p1">sage</span><span class="rt"><b>T44</b> Hook launcher: updates reach running sessions <span class="mut">PR 18</span></span><span class="rs">✓ 18:58 · you</span></li></ul><p class="more">+ 8 earlier today</p></section></div></main><footer>Read-only. The board updates while agents work (local server on 127.0.0.1). Gates stay choice cards in Claude. Times are owner time.</footer></body></html>

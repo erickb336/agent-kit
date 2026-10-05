@@ -1,0 +1,90 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
+<title>Board layouts A and B</title><style>
+:root{--bg:#fbfaf7;--surface:#fff;--surface-2:#f5f3ee;--text:#1d1d1b;--muted:#5f5e58;--line:#e3e0d8;--accent:#6b4fd8;--accent-soft:#efeafd;
+--ok:#1f7a4d;--ok-soft:#e4f3ea;--warn:#8f5400;--warn-soft:#fbefdc;--stop:#b3261e;--stop-soft:#fbe7e5;--strip:#2a2442;--strip-text:#f3efff;
+--p1:#6b4fd8;--p1s:#efeafd;--p2:#0d7d77;--p2s:#e0f3f1;--p3:#a35a00;--p3s:#fbefdc;--p4:#6c6a62;--p4s:#efede7;--shadow:0 1px 2px rgba(0,0,0,.05),0 6px 18px rgba(0,0,0,.05)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#151514;--surface:#1d1d1b;--surface-2:#232320;--text:#ecebe6;--muted:#a7a59d;--line:#34332f;--accent:#a995ff;--accent-soft:#2a2442;
+--ok:#5cc28e;--ok-soft:#173326;--warn:#e3a447;--warn-soft:#3a2a12;--stop:#ff8a80;--stop-soft:#3d1c1a;--strip:#efeafd;--strip-text:#2a2442;
+--p1:#b7a6ff;--p1s:#2a2442;--p2:#4cc7bd;--p2s:#12302e;--p3:#e8a95a;--p3s:#3a2a12;--p4:#b3b1a8;--p4s:#2a2a27;--shadow:0 1px 2px rgba(0,0,0,.4)}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;overflow-x:hidden}
+.strip{background:var(--strip);color:var(--strip-text);font-size:.75rem;font-weight:600;letter-spacing:.02em;padding:5px 16px;text-align:center}
+header.top{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.top-in{max-width:1400px;margin:0 auto;padding:10px 16px}
+.top-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{font-weight:700;font-size:1rem;display:flex;align-items:center;gap:8px}
+.brand i{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:7px;background:var(--accent);color:var(--surface);font-style:normal;font-size:.8rem}
+.live{color:var(--muted);font-size:.8rem;display:flex;align-items:center;gap:6px;margin-left:auto}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+.dot.on{box-shadow:0 0 0 3px var(--ok-soft)}
+.totals{display:flex;gap:6px 14px;flex-wrap:wrap;margin-top:6px;font-size:.82rem;color:var(--muted)}
+.totals b{color:var(--text)}.totals .need b{color:var(--stop)}
+nav.chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none}
+nav.chips a{flex:none;text-decoration:none;color:var(--text);border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:3px 10px;font-size:.8rem;white-space:nowrap}
+nav.chips a .n{color:var(--muted);margin-left:4px}nav.chips a.need{border-color:var(--stop);}nav.chips a.need .n{color:var(--stop);font-weight:700}
+main{max-width:1400px;margin:0 auto;padding:16px}
+h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 8px;display:flex;gap:8px;align-items:baseline}
+h2 .n{font-weight:700;color:var(--text)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0 0 8px;box-shadow:var(--shadow)}
+.card.gate{border-color:var(--stop);background:linear-gradient(var(--stop-soft),var(--stop-soft)) top/100% 4px no-repeat,var(--surface)}
+.card.merge{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}
+.card.warn{border-style:dashed}.card.hot{border-color:var(--warn)}.card.held{opacity:.8}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:.75rem}
+.mut{color:var(--muted)}
+.ptag{font-weight:600;font-size:.72rem;padding:1px 7px;border-radius:5px}
+.p1{color:var(--p1);background:var(--p1s)}.p2{color:var(--p2);background:var(--p2s)}.p3{color:var(--p3);background:var(--p3s)}.p4{color:var(--p4);background:var(--p4s)}
+.kind{font-weight:700;font-size:.7rem;text-transform:uppercase;letter-spacing:.04em}
+.k-gate{color:var(--stop)}.k-merge{color:var(--ok)}.k-run{color:var(--accent)}.k-rev{color:var(--p2)}.k-held{color:var(--warn)}
+.q{margin:6px 0;font-weight:600}.title{margin:5px 0 2px;font-weight:600}
+.sub{margin:3px 0 0;font-size:.8rem;color:var(--muted)}.ok{color:var(--ok)}.warnt{color:var(--warn)}
+.opts{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px}
+.opts li{display:flex;flex-wrap:wrap;gap:2px 6px;align-items:baseline;font-size:.82rem;padding:4px 8px;border-radius:6px;background:var(--surface-2)}
+.opts li span{color:var(--muted)}.opts li.rec{outline:1.5px solid var(--accent);background:var(--accent-soft)}
+.badge{font-style:normal;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-left:auto}
+.badge.ghost{color:var(--muted);margin-left:6px}.opts li.rec .badge.ghost{margin-left:6px}
+.why{margin:4px 0 0;font-size:.8rem}.how{margin:4px 0 0;font-size:.75rem;color:var(--muted)}
+.agents{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:2px;font-size:.8rem}
+.agents li .dot{margin-right:6px;vertical-align:1px}
+.rows{list-style:none;margin:0;padding:0;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.row{display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;padding:7px 10px;border-top:1px solid var(--line);font-size:.82rem}
+.row:first-child{border-top:0}.row .rt{flex:1 1 220px;min-width:0}.row .rs{color:var(--muted);font-size:.76rem}
+.row.night .rs{color:var(--accent)}
+.more{font-size:.78rem;color:var(--muted);margin:6px 2px 0}
+.empty{font-size:.82rem;color:var(--muted);border:1px dashed var(--line);border-radius:10px;padding:10px 12px}
+@media (max-width:700px){header.top{position:static}}
+footer{max-width:1400px;margin:0 auto;padding:8px 16px 32px;color:var(--muted);font-size:.78rem}
+
+.wrap{max-width:1400px;margin:0 auto;padding:16px}
+h1{font-size:1.3rem;margin:4px 0 6px}.lead{max-width:760px;color:var(--muted);margin:0 0 16px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.frame{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.frame h3{margin:0;padding:10px 12px;font-size:.95rem;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.frame h3 a{margin-left:auto;font-size:.8rem;font-weight:500;color:var(--accent)}
+.vp{position:relative;height:620px;overflow:hidden}
+.vp iframe{border:0;width:1280px;height:1290px;transform-origin:0 0;position:absolute;left:0;top:0}
+.states{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:8px}
+.st{margin:0}.st figcaption{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:6px}
+.sk{height:12px;border-radius:6px;background:var(--surface-2);margin:8px 0}.sk.w6{width:60%}.sk.w8{width:80%}
+.bar{display:flex;gap:8px;align-items:center;font-size:.8rem;padding:8px 10px;border-radius:8px}
+.bar.bad{background:var(--stop-soft);color:var(--stop)}.bar.wait{background:var(--warn-soft);color:var(--warn)}
+.flash{outline:2px solid var(--ok);outline-offset:2px}
+.qs{max-width:820px}.qs li{margin:4px 0}
+@media (max-width:760px){.pair{grid-template-columns:1fr}.vp{height:640px}.vp iframe{width:100%;height:640px;transform:none!important;position:static}}
+</style></head><body><div class="strip" role="note">SAMPLE DATA. Design for task T7 (the board). Pick a layout: A or B.</div>
+<div class="wrap"><h1>Two board layouts: pick A or B</h1>
+<p class="lead">Both pages show the same sample data from all four logbooks: what needs you, what runs, what is in review, what is next and what merged today. A groups the board by project. B puts every project into one set of columns. The board is read-only; you act in Claude.</p>
+<div class="pair">
+<div class="frame"><h3>A · grouped by project <span class="mut">today's design</span><a href="a.html">Open A full size</a></h3><div class="vp"><iframe src="a.html" title="Layout A" loading="lazy"></iframe></div></div>
+<div class="frame"><h3>B · one set of columns <span class="mut">across all projects</span><a href="b.html">Open B full size</a></h3><div class="vp"><iframe src="b.html" title="Layout B" loading="lazy"></iframe></div></div>
+</div>
+<h2 style="margin-top:24px">States that both layouts share <span class="mut">sample</span></h2>
+<div class="states">
+<figure class="st"><figcaption>Loading (first read of the logbooks)</figcaption><div class="sv"><div class="card"><div class="sk w6"></div><div class="sk"></div><div class="sk w8"></div><p class="sub">Reading 4 logbooks…</p></div></div></figure>
+<figure class="st"><figcaption>Updated live (correction)</figcaption><div class="sv"><div class="card merge flash"><div class="meta"><span class="ptag p3">order-chaser</span><span class="kind k-gate">Gate G23</span><span class="mut">answered just now</span></div><p class="title">Licence: MIT (your answer)</p><p class="sub">This card leaves Needs you in 10 s. The chief records it in the logbook.</p></div></div></figure>
+<figure class="st"><figcaption>Connection lost</figcaption><div class="sv"><div class="bar wait"><span class="dot" style="background:var(--warn)"></span>Live updates stopped at 21:38. Retrying every 5 s. The data below can be old.</div></div></figure>
+<figure class="st"><figcaption>A logbook cannot be read (failure)</figcaption><div class="sv"><div class="bar bad">! sage-bot: tasks.tsv has a duplicate task id. Shown: the last good read, 21:31.</div></div></figure>
+<figure class="st"><figcaption>Nothing needs you (empty, success)</figcaption><div class="sv"><div class="empty">✓ No open gates and no merges wait for you. 3 agents run; the next merge is at 22:00 (night window).</div></div></figure>
+</div>
+</div><script>
+for (const vp of document.querySelectorAll(".vp")) { const f = () => { const i = vp.querySelector("iframe"); if (innerWidth > 760) i.style.transform = "scale(" + (vp.clientWidth / 1280) + ")"; }; f(); addEventListener("resize", f); }
+</script></body></html>
