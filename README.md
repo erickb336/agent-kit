@@ -120,7 +120,7 @@ There are two loops:
 </picture>
 </a>
 
-The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work. Two more folders hold the rest: the hook keeps the mode, autopilot and the agent slots in `~/.claude/sage/.hooks/`, and agents save their pages (research, designs) in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook (`sage pages <task>` prints the folder).
+The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work. Two more folders hold the rest: the hook keeps the mode, autopilot and the agent slots in `~/.claude/sage/.hooks/`, and agents save their pages (research, designs) in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook (`sage pages <task>` makes and prints the folder).
 
 ### The team
 
@@ -171,6 +171,7 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | At most 3 sage agents run at once for a project (`max_agents`; `config cap.<project>=n` sets one project's own cap), and at most 12 across all projects (`cap_total`). A slot frees as soon as its agent ends, fails or is stopped. | Cost and focus. Several sessions share the total. |
 | One writer per branch. Nobody force-pushes or pushes to main. A push is only `git push [-u] origin <branch>`, with the branch's own name. | Parallel writers conflict. Work reaches main only through a pull request. |
 | A task's branch, and the branch of a writer run, is a plain task branch such as `claude/t12`: letters, digits and `. _ / -`. It is never main, master or HEAD in any case, and never a name under `refs/`, `heads/`, `remotes/` or `origin/`. | Git reads those names as main or as another ref, so a writer could reach main without a pull request. |
+| Agents save their pages (research, designs, findings pages) in the task's pages folder, outside the logbook. `pages <task>` makes the folder (only you can open it) and prints it; `pages <task> record <file>` logs a page in it with its sha256. It takes only a regular file of at most 16 MiB inside that folder, with no control character in its name. | A sandboxed agent cannot write the logbook, and the sha256 shows later that the page did not change. |
 | Every finding is triaged: fix, dismiss with a reason, or ask you. | No finding is dropped. |
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
 | A repair round re-checks only the repair's diff, with the roles that found the problems. A new medium or low finding goes to a follow-up task; a high one blocks. | A round that re-reviews the whole branch finds new scope, not the fix. |

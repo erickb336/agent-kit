@@ -1682,7 +1682,7 @@ test("T40: each agent role gets its model by task size; run add prints it and re
 /** A scratch HOME and sage root, and a git project in it. sage() runs the tool there and returns its exit code and lines. */
 function sandboxPrep(extra = {}) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "sage-t94-")));
-  const env = { ...process.env, HOME: join(base, "home"), SAGE_HOME: join(base, "sage"), ...extra };
+  const env = { ...process.env, HOME: join(base, "home"), SAGE_HOME: join(base, "sage"), SAGE_WORKTREES: undefined, ...extra };
   const repo = (name) => {
     const dir = join(base, name);
     execFileSync("git", ["init", "-q", "-b", "main", dir]);
@@ -1765,6 +1765,36 @@ test("T94: pages <task> prints the task's pages folder outside the sage root, an
   assert.deepEqual(rows(sage(["logbook"]).out, "decisions").map((d) => [d.task, d.decision]).at(-1), ["T1", `page ${join(folder, "plan.html")} sha256 ef0e5b886a1d7667f27fc2c5cc9488de5c8c6b90b12931f0c60854ac04ef17ed`], "the decision trail keeps the path and the sha256");
   writeFileSync(join(base, "elsewhere.html"), "x");
   assert.match(sage(["pages", "T1", "record", join(base, "elsewhere.html")]).out, /is not a file in .*pages\/T1/);
+});
+
+test("T94-Q-NOFOLDER: pages <task> makes its folder (mode 700); pages record checks the folder before the file exists", () => {
+  const { base, sage } = sandboxPrep();
+  sage(["init"]);
+  sage(["task", "add", "--title", "t", "--size", "small"]);
+  sage(["task", "add", "--title", "u", "--size", "small"]);
+  const folder = join(base, "home", "sage-worktrees", basename(sage(["logbook"]).out), "pages", "T1");
+  assert.match(sage(["pages", "T1", "record", join(base, "elsewhere.html")]).out, new RegExp(`${join(base, "elsewhere.html")} is not a file in ${folder}\\.`), "outside the folder, before the folder exists");
+  assert.match(sage(["pages", "T1", "record", join(folder, "..", "T2", "x.html")]).out, new RegExp(`${join(dirname(folder), "T2", "x.html")} is not a file in ${folder}\\.`), "T1/../T2 is in the folder of T2, not of T1");
+  assert.match(sage(["pages", "T1", "record", join(folder, "x.html")]).out, new RegExp(`${join(folder, "x.html")} does not exist\\.`), "inside the folder, the file must exist");
+  rmSync(folder, { recursive: true });
+  assert.equal(sage(["pages", "T2"]).out, join(dirname(folder), "T2"));
+  assert.equal(lstatSync(join(dirname(folder), "T2")).mode & 0o777, 0o700, "the folder exists, and only the user can open it");
+});
+
+test("T94-Q-ODDNAME: pages record refuses a page name with a control character, on one line, and logs nothing", () => {
+  const { sage } = sandboxPrep();
+  sage(["init"]);
+  sage(["task", "add", "--title", "t", "--size", "small"]);
+  const folder = sage(["pages", "T1"]).out;
+  mkdirSync(folder, { recursive: true });
+  const before = rows(sage(["logbook"]).out, "decisions").length;
+  for (const name of ["a\tb.html", "a\nb.html", "a\u001bb.html"]) {
+    writeFileSync(join(folder, name), "x");
+    const r = sage(["pages", "T1", "record", join(folder, name)]);
+    assert.equal(r.status, 1);
+    assert.equal(r.out, `sage: ${JSON.stringify(join(folder, name))} has a control character (a tab, a line break or another): give the page a name without one.`);
+  }
+  assert.equal(rows(sage(["logbook"]).out, "decisions").length, before, "the trail did not change");
 });
 
 test("T94C2-L1: two projects with the same folder name get different pages folders, each under its logbook key", () => {

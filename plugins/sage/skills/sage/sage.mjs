@@ -153,7 +153,7 @@ const PAGE_MAX = 16 * 1024 * 1024;
  * tool/t83-agent-state-writes). Not main, master or HEAD in any case (a Mac's file names ignore case), not under refs/,
  * heads/, remotes/ or origin/ (git reads those as other refs), not starting with - or a /, and none of the
  * forms that git refuses or reads otherwise: .., //, /., a final / or ., or .lock. @{, ~, ^, :, spaces and control
- * characters are outside the letters. The one pattern for every branch check: task set, run add and the PR script.
+ * characters are outside the letters. The one pattern for every branch check in this tool: task set and run add.
  */
 export const BRANCH = /^(?![-./])(?!(?:refs|heads|remotes|origin)\/)(?!(?:main|master|HEAD)$)(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|[/.]$))[A-Za-z0-9._/-]+$/i;
 const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(name)} is not a task branch: use letters, digits and . _ / - (for example claude/t12 or tool/t12-short-name), not main, master or HEAD in any case, not under refs/, heads/, remotes/ or origin/, and not a name that starts with - or holds .., @{ or a space.`));
@@ -871,14 +871,17 @@ function act(cmd, pos, opt, dir, env, skip, project) {
     case "status":
       return status(dir);
     case "pages": {
-      // pages <T> prints the task's pages folder. pages <T> record <file> logs a page in it, with its sha256.
+      // pages <T> makes the task's pages folder (mode 700) and prints it. pages <T> record <file> logs a page in it, with its sha256.
       const folder = pagesDir(project, taskOf(dir, need(sub, "the task id")).task.id, env);
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
       if (id === undefined) return folder;
       if (id !== "record" || more.length !== 1) refuse(`pages takes <task>, or <task> record <file>`);
+      if (/\p{Cc}/u.test(more[0])) refuse(`${JSON.stringify(more[0])} has a control character (a tab, a line break or another): give the page a name without one.`);
+      // The page must be inside the folder (by its real path, where its folder exists) before it must exist.
+      const path = resolve(more[0]);
+      const file = existsSync(dirname(path)) ? join(realpathSync(dirname(path)), basename(path)) : path;
+      if (![folder, realpathSync(folder)].some((f) => file.startsWith(`${f}/`))) refuse(`${file} is not a file in ${folder}. Save the page there first.`);
       // The page is the regular file itself: one open that follows no link and never waits, and at most PAGE_MAX bytes.
-      const real = (p) => (existsSync(p) ? realpathSync(p) : refuse(`${p} does not exist. Save the page in ${folder} first.`));
-      const file = join(real(dirname(resolve(more[0]))), basename(more[0]));
-      if (!file.startsWith(`${real(folder)}/`)) refuse(`${file} is not a file in ${folder}. Save the page there first.`);
       let bytes;
       try {
         bytes = readRegular(file, { link: false, max: PAGE_MAX, encoding: null });
