@@ -955,7 +955,6 @@ function act(cmd, pos, opt, dir, env, skip, project) {
  * the lock, so they never wait for it.
  */
 const LOCK_WAIT_MS = 3000;
-const BOOT = Date.now() - uptime() * 1000;
 const START = Date.now() - process.uptime() * 1000;
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -1017,9 +1016,28 @@ function probeFor(dir) {
   return { alive: (pid) => map[pid] !== null, started: (pid) => map[pid] ?? NaN };
 }
 
-/** True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one. */
-function gone(h, checkStart, probe) {
-  if (Math.abs(h.boot - BOOT) > 60_000) return h.host === hostname(); // another machine may still hold it
+/**
+ * This machine's boot time (ms), or null when the system does not tell it: in the macOS sandbox, uptime() throws EPERM.
+ * It is read only when a command takes the lock, so that no other command depends on it.
+ */
+function bootTime() {
+  try {
+    return Date.now() - uptime() * 1000;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one.
+ * When either boot time is unknown, the boot rule says nothing: a holder on another host is never gone, and on this host
+ * only the pid and its start time decide.
+ */
+function gone(h, boot, checkStart, probe) {
+  const here = h.host === hostname();
+  if (!Number.isFinite(h.boot) || !Number.isFinite(boot)) {
+    if (!here) return false; // without both boot times, only the host name says that the holder is on this machine
+  } else if (Math.abs(h.boot - boot) > 60_000) return here; // another machine may still hold it
   if (!probe.alive(h.pid)) return true;
   return checkStart && probe.started(h.pid) > h.start + 2000; // the pid now names a process that started after the holder
 }
@@ -1038,11 +1056,12 @@ function clear(folder, file) {
 /** Runs fn while this process holds the store's lock. Refuses, with nothing changed, when the store stays busy. */
 export function withLock(dir, fn) {
   const probe = probeFor(dir);
+  const boot = bootTime();
   const lock = join(dir, ".lock");
   const token = randomUUID();
   const tmp = `${lock}.${token}`;
   mkdirSync(tmp);
-  writeFileSync(join(tmp, `${token}.json`), JSON.stringify({ pid: process.pid, host: hostname(), boot: BOOT, start: START, at: Date.now() }));
+  writeFileSync(join(tmp, `${token}.json`), JSON.stringify({ pid: process.pid, host: hostname(), boot, start: START, at: Date.now() }));
   const t0 = Date.now();
   for (let checked = ""; ; ) {
     try {
@@ -1058,7 +1077,7 @@ export function withLock(dir, fn) {
     const waited = Date.now() - t0;
     const checkStart = h && waited > 500 && checked !== h.file; // ps once per holder, and only for a slow one
     if (checkStart) checked = h.file;
-    if (h && gone(h, checkStart, probe) && clear(lock, h.file)) continue; // if clear fails, another waiter was first
+    if (h && gone(h, boot, checkStart, probe) && clear(lock, h.file)) continue; // if clear fails, another waiter was first
     if (waited >= LOCK_WAIT_MS) {
       rmSync(tmp, { recursive: true, force: true });
       const who = h ? `pid ${cell(h.pid)} on ${cell(h.host)} has held ${lock}${Number.isFinite(h.at) ? ` for ${((Date.now() - h.at) / 1000).toFixed(1)} s` : ""}` : `${lock} has no valid owner file`;
@@ -1070,7 +1089,7 @@ export function withLock(dir, fn) {
     // The temp folder of a waiter that was killed stays behind. Remove it by the lock's rules: owner surely gone, by name.
     for (const name of readdirSync(dir).filter((n) => new RegExp(`^\\.lock\\.${UUID}$`).test(n))) {
       const h = holder(join(dir, name));
-      if (h && gone(h, false, probe)) clear(join(dir, name), h.file);
+      if (h && gone(h, boot, false, probe)) clear(join(dir, name), h.file);
     }
     return fn();
   } finally {

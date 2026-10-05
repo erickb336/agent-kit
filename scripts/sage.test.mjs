@@ -12,7 +12,14 @@ import { fileURLToPath } from "node:url";
 const LIB = new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url).href;
 const TOOL = fileURLToPath(LIB);
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
-const BOOT = Date.now() - uptime() * 1000;
+/** This machine's boot time, or null in the macOS sandbox, where uptime() throws EPERM: the lock then needs no boot time. */
+const BOOT = (() => {
+  try {
+    return Date.now() - uptime() * 1000;
+  } catch {
+    return null;
+  }
+})();
 /** A command that hangs is stopped after this, so that a test fails instead of waiting for ever. */
 const timeout = 10_000;
 /** The model keys that sage config prints by default, after the numbers. */
@@ -493,6 +500,47 @@ test("a lock left by a crashed command is cleared by the next command, and no co
   r = s.run("task", "T1", "set", "branch=while-alive");
   assert.match(r.stderr, /^sage: the logbook is busy: pid 424243 on /);
   assert.equal(existsSync(lock), true);
+  assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
+  assert.equal(existsSync(kills), false, "no command called process.kill");
+});
+
+/** NODE_OPTIONS for a command in which os.uptime throws EPERM, as in the macOS sandbox: the kill spy, then the throw. */
+const NO_UPTIME = `--import=${JSON.stringify(SPY)} --import=data:text/javascript,${encodeURIComponent(`import os from "node:os"; import { syncBuiltinESMExports } from "node:module"; os.uptime = () => { throw Object.assign(new Error("uv_uptime returned EPERM"), { code: "EPERM" }); }; syncBuiltinESMExports();`)}`;
+
+test("T151: without uptime, as in the macOS sandbox, the tool works and the lock clears only a holder that is surely gone", () => {
+  const fakes = fakePs();
+  const kills = join(fakes, "kills");
+  const s = store(undefined, undefined, { PATH: `${fakes}:${process.env.PATH}`, SAGE_TEST_KILLS: kills, NODE_OPTIONS: NO_UPTIME });
+  const probe = spawnSync("node", ["-e", "require('node:os').uptime()"], { encoding: "utf8", env: testEnv({ NODE_OPTIONS: NO_UPTIME }) });
+  assert.match(probe.stderr, /uv_uptime returned EPERM/, "the injected uptime throws as in the sandbox");
+  assert.equal(s.ok("task", "add", "--title", "t", "--size", "small"), "T1 framed · small · route build,code-review,qa");
+
+  crash(s); // a dead holder on this host: no boot time is needed to clear it
+  assert.equal(s.run("task", "T1", "set", "branch=after-crash").status, 0);
+  assert.equal(rows(s.dir, "tasks")[0].branch, "after-crash");
+
+  let lock = crash(s, { boot: 1 }); // an earlier boot, but this command cannot know it: only the pid decides
+  const pid = JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8")).pid;
+  s.pids[pid] = Date.now() - 60_000; // the pid is alive and started before the holder: it may be the holder
+  let r = s.run("task", "T1", "set", "branch=while-alive");
+  assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on /);
+  assert.equal(existsSync(lock), true, "a live pid keeps the lock");
+  rmSync(lock, { recursive: true });
+
+  lock = crash(s, { host: "other-host" }); // another host, whose pid this machine cannot check
+  r = s.run("task", "T1", "set", "branch=other-host");
+  assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on other-host has held /);
+  assert.equal(existsSync(lock), true, "a holder on another host is never cleared on a guess");
+  rmSync(lock, { recursive: true });
+
+  // A holder that had no boot time, seen by a command that has one: alive on this host, so the lock stays.
+  const normal = store(undefined, undefined, { PATH: `${fakes}:${process.env.PATH}`, SAGE_TEST_KILLS: kills });
+  normal.ok("task", "add", "--title", "t", "--size", "small");
+  lock = crash(normal, { boot: null });
+  normal.pids[JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8")).pid] = Date.now() - 60_000;
+  r = normal.run("task", "T1", "set", "branch=while-alive");
+  assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on /);
+  assert.equal(existsSync(lock), true, "an unknown boot time is not an earlier boot");
   assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
   assert.equal(existsSync(kills), false, "no command called process.kill");
 });
