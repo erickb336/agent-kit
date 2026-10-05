@@ -393,7 +393,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 | `plugins/sage/agents/` | Sage mode's team. |
 | `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, the state tool `sage`, and `report`. |
 | `plugins/sage/hooks/` | `hooks.json`: the principle hooks. `claude.json`: the sage mode hook. |
-| `plugins/sage/hooks/parser/` | The shell parser for the hook's rules: [mvdan/sh](https://github.com/mvdan/sh) (the parser of shfmt), built to `parser.wasm` by TinyGo from pinned Go source, with its sha256 in `parser.wasm.sha256`. It reads a command line as bash or zsh and refuses what it cannot read. The hook does not use it yet (T125). |
+| `plugins/sage/hooks/parser/` | The shell parser for the hook's rules: [mvdan/sh](https://github.com/mvdan/sh) (the parser of shfmt), built to `parser.wasm` by TinyGo from pinned Go source, with its sha256 in `parser.wasm.sha256`. It reads a command line as bash or zsh and refuses what it cannot read. The hook does not use it yet: T141 wires it in. The built file is in the repository, so that you need no Go or TinyGo to install sage. It is about 0.47 MB, and a new process loads it and parses a line in about 10 ms. CI rebuilds it from its source and compares the sha256. |
 | `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
@@ -404,7 +404,14 @@ While the server runs, your claude.ai account can start sessions on your compute
 **Change it:**
 
 1. Edit a source: `principles/`, `writing/`, `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
-2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`. After a change to the parser's Go source, run `npm run parser` with TinyGo 0.42.0 and the Go of its `go.mod` on PATH. `npm run check` rebuilds the parser when both are on PATH, and compares the sha256.
+2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`. After a change to the parser's Go source, rebuild it (see below).
+
+**Rebuild the parser.** You need this only after a change to `plugins/sage/hooks/parser/` (its Go source, `go.mod`, `go.sum` or `target.json`), or to check the binary file yourself.
+
+1. Install Go 1.26.8 from [go.dev/dl](https://go.dev/dl/). The version must match exactly (`go.mod`'s toolchain line), because TinyGo compiles Go's standard library from it.
+2. Install TinyGo 0.42.0 from [its release page](https://github.com/tinygo-org/tinygo/releases/tag/v0.42.0). Put both `go` and `tinygo` on PATH, and check with `tinygo version`: it must say `0.42.0` and `go1.26.8`.
+3. Run `GOTOOLCHAIN=local npm run parser`. It writes `parser.wasm` and its sha256 in `parser.wasm.sha256`. Two builds from the same source give the same file.
+4. To compare the sha256 by hand, run `shasum -a 256 plugins/sage/hooks/parser/parser.wasm` and compare it with `plugins/sage/hooks/parser/parser.wasm.sha256`. `npm run check` rebuilds the parser in a temporary folder when both tools are on PATH, and compares the sha256. Without them, it checks only the recorded sha256 locally, and it fails in CI.
 
 ## Credits
 

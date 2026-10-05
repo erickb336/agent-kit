@@ -8,10 +8,27 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      GOTELEMETRY: "off"
+      DO_NOT_TRACK: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # npm run check rebuilds parser.wasm from its sources and compares its sha256, so a pull request cannot swap the
+      # binary file and its .sha256 together. It needs exactly Go 1.26.8 (go.mod's toolchain line) and TinyGo 0.42.0.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.8
+          cache: false
+      - name: Install TinyGo 0.42.0 (sha256 checked before unpacking)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/tinygo.tar.gz" https://github.com/tinygo-org/tinygo/releases/download/v0.42.0/tinygo0.42.0.linux-amd64.tar.gz
+          echo "b87688fa2e19cee7d813cad7fd7dadb71dff3198e47125aba66ba4af5e490438  $RUNNER_TEMP/tinygo.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/tinygo.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/tinygo/bin" >> "$GITHUB_PATH"
       - run: npm run check
       - run: npm test
