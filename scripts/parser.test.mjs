@@ -116,12 +116,11 @@ test("strictness: bash mode refuses the 5 invalid probes that tolerant parsers a
   assert.deepEqual(parseCommands("while; do :; done", { zsh: true }).map((c) => c.words), [[":"]], "zsh -n accepts it too");
 });
 
-test("zsh: =(ps) is a command of its own, and a glob qualifier that runs code is refused; bash mode reads neither as zsh", () => {
+test("zsh: =(ps) is a command of its own, and a glob qualifier group is refused; bash mode reads neither as zsh", () => {
   assert.deepEqual(parseCommands("cat =(ps)", { zsh: true }).map((c) => c.words.join(" ")), ["ps", "cat $(…)"]);
-  assert.match(read("echo *(e:'ps':)", true).message, /zsh glob qualifier that can run code/);
-  assert.match(read("echo *(+f)", true).message, /zsh glob qualifier/);
-  assert.match(read("echo (a|b)(e:ps:)", true).message, /zsh glob qualifier/, "a glob that starts with ( (mvdan/sh v3.14)");
-  assert.deepEqual(parseCommands("echo *(N)", { zsh: true }).map((c) => c.words), [["echo", "*(N)"]], "a qualifier that runs no code passes");
+  assert.match(read("echo *(e:'ps':)", true).message, /a zsh glob group that zsh can read as glob qualifiers/);
+  assert.match(read("echo *(+f)", true).message, /a zsh glob group that zsh can read as glob qualifiers/);
+  assert.match(read("echo (a|b)(e:ps:)", true).message, /a zsh glob group that zsh can read as glob qualifiers/, "a glob that starts with ( (mvdan/sh v3.14)");
   assert.ok(read("cat =(ps)", false) instanceof Error, "bash refuses =( )");
   assert.deepEqual(parseCommands("echo *(e:'ps':)").map((c) => c.words), [["echo", "*(e:'ps':)"]], "in bash, *( ) is an extended glob, which runs nothing");
 });
@@ -170,14 +169,15 @@ test("T125-F3-PARSERAW: parseCommands is the only way to the parser, so no calle
 });
 
 test("T125-F1-EXTGLOB: bash mode refuses an extended glob group with a substitution in it, in each place where bash runs it", () => {
-  const CODE = ["shopt -s extglob; echo @(a|$(ps))", "echo ?(a|$(ps))", "echo *(a|$(ps))", "echo +(a|$(ps))", "echo !(a|$(ps))", "echo @(a|`ps`)", "echo @(a|<(ps))", "echo @(a|${x})", "[[ $a == @(x|$(ps)) ]]", "case a in @(x|$(ps))) true;; esac", "x=@(a|$(ps))"];
+  const CODE = ["shopt -s extglob; echo @(a|$(ps))", "echo ?(a|$(ps))", "echo *(a|$(ps))", "echo +(a|$(ps))", "echo !(a|$(ps))", "echo @(a|`ps`)", "echo @(a|<(ps))", "echo @(a|>(ps))", "echo @(a|${x})", "[[ $a == @(x|$(ps)) ]]", "case a in @(x|$(ps))) true;; esac", "x=@(a|$(ps))"];
   for (const line of CODE) assert.match(read(line, false).message, /an extended glob group with a substitution/, line);
+  assert.match(read("echo @(a|$(ps))", false).message, /does not read: @\(a\|\$\(ps\)\)$/, "the group as written (T125-C7-EXTMSG)");
   assert.deepEqual(parseCommands("echo ${x/@(a|$(ps))/y}").map((c) => c.words), [["ps"], ["echo", "${x/@(a|$(ps))/y}"]], "mvdan/sh reads a pattern in ${ } itself, so its substitution is a command");
   assert.deepEqual(parseCommands("echo !(*.txt) @(a|b) +(c) ?(d) *(e:'f':)").map((c) => c.words), [["echo", "!(*.txt)", "@(a|b)", "+(c)", "?(d)", "*(e:'f':)"]], "a group of plain text runs nothing");
 });
 
 test("T125-F2-QUALPARAM: zsh mode refuses a glob group that holds an expansion where zsh makes file names, and a substitution in a group anywhere", () => {
-  for (const line of ["x='e:ps:'; print *(N${x})", "print *($x)", "print *(N$x)", "echo ${z:-*(N$y)}"]) assert.match(read(line, true).message, /a zsh glob group with (an expansion|a substitution)/, line);
+  for (const line of ["x='e:ps:'; print *(N${x})", "print *($x)", "print *(N$x)", "echo ${z:-*(N$y)}"]) assert.match(read(line, true).message, /a zsh glob group (?:that zsh can read as glob qualifiers|with a substitution)/, line);
   for (const line of ["echo (a|`ps`)", "x=a(b|`ps`)", "x=*(N`ps`)", "echo (a|'$x')"]) assert.match(read(line, true).message, /a zsh glob group with a substitution/, line);
   for (const line of ["echo *(N$(echo e:ps:))", "x=*(N$(ps))", "echo (a|<(ps))"]) assert.match(read(line, true).message, /a command can only contain words/, `${line}: mvdan/sh refuses a ) after a substitution in a group`);
 });
@@ -186,7 +186,24 @@ test("T125-Q8-QUALFALSE: a zsh qualifier is refused only where zsh makes file na
   const TEXT = ['echo "${x:-(none)}"', "x=${x:-(none)}", 'echo "${x:-(see)}"', "[[ $a == (yes|no) ]] && echo y", "local x=${x:-(see)}", "case $a in see|e+) true;; esac", 'echo "(see the docs)"', "echo $((1+(2)))", "[[ $v =~ ^([0-9]+\\.[0-9]+)$ ]]"];
   for (const line of TEXT) assert.ok(Array.isArray(read(line, true)), `${line}: ${read(line, true).message}`);
   const CODE = ["echo *(e:'ps':)", "x=( *(e:ps:) )", "echo hi > *(e:ps:)", "for f in *(e:ps:); do :; done", "echo ${x:-*(e:ps:)}", "[[ -n *(#qe:ps:) ]]", "echo (a|b)(e:ps:)", "echo *(+f)"];
-  for (const line of CODE) assert.match(read(line, true).message, /a zsh glob qualifier that can run code/, line);
+  for (const line of CODE) assert.match(read(line, true).message, /a zsh glob group that zsh can read as glob qualifiers/, line);
+});
+
+// zshexpn(1), "Glob Qualifiers": any qualifier can change the command, not only e and +. P and ^P add words, and a :
+// modifier rewrites them: in zsh 5.9, a(P:ps:) ran ps a and /bin/pwd(:s/wd/s/) ran /bin/ps where a file matched (R544).
+// A plain alternation such as *.(js|ts) is no qualifier group, but an escaped | or a brace makes one: m(P:x\|y:) and
+// m(P:x:{|,}) ran their P word (R545, with touch).
+test("T125-S8-QUALWORDS: in zsh mode, every glob qualifier group where zsh makes file names is refused, whatever it holds", () => {
+  const CODE = ["a(P:ps:)", "a(^P:ps:)", "zsh /dev/null(P:-c:P:ps:)", "git .(P:stash:)", "/bin/pwd(:s/wd/s/)", "x=(a(P:ps:)); $x", "print ${y:-a(P:ps:)}", "echo *(N)", "echo *(.)", "echo *(/)", "echo *(#q.)", "echo *.(js|ts)(P:ps:)", "echo m(P:x\\|y:)", "echo m(P:x:{|,})", "echo m{a,(}P:x:)", "echo m(#qa|b)"];
+  for (const line of CODE) assert.match(read(line, true).message, /a zsh glob group that zsh can read as glob qualifiers/, line);
+  const TEXT = ['echo "${x:-(none)}"', "x=${x:-(none)}", "[[ $a == (yes|no) ]]", "case $x in (a|b) true;; esac", "case $x in x(P:ps:)|y) true;; esac", 'echo "*(N)"'];
+  for (const line of TEXT) assert.ok(Array.isArray(read(line, true)), `${line}: ${read(line, true).message}`);
+  assert.deepEqual(words("ls *.(js|ts) (a|b)c", true), [["ls", "*.(js|ts)", "(a|b)c"]], "a plain alternation is no qualifier group");
+});
+
+test("T125-C6-ESCTEST: an escaped ( outside a group is text, not a group", () => {
+  assert.deepEqual(words("echo a\\(P:ps:\\) b\\(N\\)", true), [["echo", "a(P:ps:)", "b(N)"]]);
+  assert.match(read("echo a\\\\(N)", true).message, /a zsh glob group that zsh can read as glob qualifiers/, "an escaped backslash does not escape the (");
 });
 
 test("T125-Q1-ZSHPARAM: zsh mode refuses each parameter expansion that makes a value into code", () => {
@@ -203,7 +220,7 @@ test("T125-Q5-DOLLARTILDE: $~x at the end of a line is refused; $=x keeps its na
 });
 
 test("T125-Q4-COPROC: zsh mode refuses coproc, also inside a substitution (T125-S4-SUBERR); bash mode unwraps it", () => {
-  for (const line of ["coproc ps", "coproc (ps)", "echo $(coproc ps)", "cat <(coproc kill 1)", "x=$(coproc ps)"]) assert.match(read(line, true).message, /zsh's coproc/, line);
+  for (const line of ["coproc ps", "coproc (ps|top)", "echo $(coproc ps)", "cat <(coproc kill 1)", "x=$(coproc ps)"]) assert.match(read(line, true).message, /zsh's coproc/, line);
   assert.deepEqual(parseCommands("coproc ps").map((c) => [c.words, c.grouped]), [[["ps"], true]]);
 });
 
@@ -211,7 +228,7 @@ test("T125-Q4-COPROC: zsh mode refuses coproc, also inside a substitution (T125-
 // look like an argument. The other reserved words are keywords to mvdan/sh (select, time, function, [[, !), a syntax
 // error (always), or a word that the hook skips or that is the program itself (nocorrect, end, float, integer).
 test("T125-R2-ZSHRESERVED: zsh mode refuses repeat and foreach, also inside a substitution; bash mode reads them as words", () => {
-  const LINES = ["repeat 1 kill 1", "foreach x (a) kill 1; end", "echo $(repeat 1 kill 1)", "cat <(foreach x (a) kill 1; end)", "time repeat 1 kill 1", "true && repeat 2 ps"];
+  const LINES = ["repeat 1 kill 1", "foreach x (a|b) kill 1; end", "echo $(repeat 1 kill 1)", "cat <(foreach x (a|b) kill 1; end)", "time repeat 1 kill 1", "true && repeat 2 ps"];
   for (const line of LINES) assert.match(read(line, true).message, /zsh's (?:repeat|foreach), which mvdan\/sh reads as a word/, line);
   assert.deepEqual(words("repeat 1 kill 1", false), [["repeat", "1", "kill", "1"]], "bash has no repeat: it is a program");
   assert.deepEqual(words("echo repeat foreach; 'repeat' 1 x", true), [["echo", "repeat", "foreach"], ["repeat", "1", "x"]], "a quoted or later word is a word");

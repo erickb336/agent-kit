@@ -63,12 +63,16 @@ type reader struct {
 // word that the hook skips (nocorrect) or reads as the program (end, float, integer and the declarations).
 var zshReserved = []string{"coproc", "repeat", "foreach"}
 
-// Glob groups: one rule, an allow-list. mvdan/sh v3.14.1 keeps the text of a bash extglob group, @( ) ?( ) *( ) +( )
-// !( ), and of a zsh glob group, ( ), as a plain literal: it does not read the substitutions in it, and the shell runs
-// them (bash also in [[ ]] and case patterns). Where zsh does filename generation, it reads a group as glob qualifiers,
-// of which e and + run code, also when they come from a parameter (*(N$x)). So, outside double quotes and heredocs:
+// Glob groups: one rule. mvdan/sh v3.14.1 keeps the text of a bash extglob group, @( ) ?( ) *( ) +( ) !( ), and of a
+// zsh glob group, ( ), as a plain literal: it does not read the substitutions in it, and the shell runs them (bash also
+// in [[ ]] and case patterns). Where zsh does filename generation, it reads a trailing group with no | or ( in it, and
+// a (#q…) group, as glob qualifiers, and any qualifier can change the command: e and + run code, P and ^P add words
+// (a(P:ps:) runs ps a), and a : modifier rewrites them (/bin/pwd(:s/wd/s/) runs /bin/ps). So, outside double quotes
+// and heredocs:
 //   - a group's text may hold only plain bytes (see plain): no $, `, < or >, which start a substitution;
-//   - in zsh, where the shell does filename generation, a group may hold only literal parts, and no e or +.
+//   - in zsh, where the shell does filename generation, each ( ) must be a plain alternation, such as *.(js|ts): one or
+//     more | between letters, digits and _ . * ? -, in one literal. Anything else is refused: a backslash, a quote,
+//     an expansion, a brace or a nested group can turn a group with a | into qualifiers (m(P:x\|y:), m(P:x:{|,})).
 //
 // zsh does no filename generation in an assignment's value (x=, local x=), a case pattern, or the pattern of
 // [[ a == b ]], != and =~; it does in a command's words, an array, a redirection, a for list, ${x:-…} there, and
@@ -128,8 +132,8 @@ func fail(err error) []byte {
 //   - an ANSI-C string with an escape that ansiC does not decode, in both modes;
 //   - ${x@P}, which expands the value as a prompt and runs its substitutions (bash 4.4 and later; zsh mode refuses
 //     it as a syntax error), and an @ operator that mvdan/sh reads as more than one letter;
-//   - a glob group that the glob group rule (above) refuses: a substitution that mvdan/sh keeps as text, and in zsh a
-//     glob qualifier that can run code: *(e:'ps':), *(+f), *(#qe:…:), *(N$x);
+//   - a glob group that the glob group rule (above) refuses: a substitution that mvdan/sh keeps as text, and in zsh any
+//     group that zsh can read as glob qualifiers: *(N), a(P:ps:), *(e:'ps':), *(#q.), *(N$x);
 //   - in zsh mode, a parameter expansion that makes a value into code (zshexpn(1), "Parameter Expansion Flags"):
 //     the e flag runs the value's substitutions (${(e)x}); %% with PROMPT_SUBST does too; a substitution in a flag's
 //     argument runs (${(l:$(ps):)x}); ${~x}, $~x and the ~ flag make a value a glob pattern, which can hold a qualifier
@@ -189,7 +193,7 @@ func checks(f *syntax.File, zsh bool) (err error) {
 				}
 			case *syntax.ExtGlob:
 				if strings.IndexFunc(x.Pattern.Value, func(r rune) bool { return r < 0x80 && !plain(byte(r)) }) >= 0 {
-					err = fmt.Errorf("an extended glob group with a substitution, which the reader does not read: %s(%s)", x.Op, x.Pattern.Value)
+					err = fmt.Errorf("an extended glob group with a substitution, which the reader does not read: %s%s)", x.Op, x.Pattern.Value)
 				}
 			case *syntax.SglQuoted:
 				if _, ok := ansiC(x.Value); x.Dollar && !ok {
@@ -214,38 +218,57 @@ func checks(f *syntax.File, zsh bool) (err error) {
 	return err
 }
 
-// globGroups applies the glob group rule to a zsh word: each byte in a ( ) is plain, and where files is true, the
-// group holds only literal parts, with no e or +.
+// globGroups applies the glob group rule to a zsh word: each byte in a ( ) is plain, and where files is true, each
+// ( ) is a plain alternation and the parentheses balance.
 func globGroups(w *syntax.Word, files bool) error {
 	depth, group := 0, ""
+	qualifiers := func() error {
+		return fmt.Errorf("a zsh glob group that zsh can read as glob qualifiers, which can add, change or run words: %s", group)
+	}
 	for _, p := range w.Parts {
 		l, ok := p.(*syntax.Lit)
 		if !ok {
 			if depth > 0 && files {
-				return fmt.Errorf("a zsh glob group with an expansion in it, which can make a glob qualifier that runs code: %s…", group)
+				group += "…"
+				return qualifiers()
 			}
 			continue
 		}
 		for j := 0; j < len(l.Value); j++ {
-			switch c := l.Value[j]; {
-			case c == '\\' && depth == 0:
+			c := l.Value[j]
+			if depth == 0 && c == '\\' {
 				j++
-			case c == '(':
-				if depth == 0 {
-					group = l.Value[j:]
-				}
-				depth++
-			case c == ')' && depth > 0:
-				depth--
-			case depth > 0 && !plain(c):
-				return fmt.Errorf("a zsh glob group with a substitution, which the reader does not read: %s", group)
-			case depth > 0 && files && (c == 'e' || c == '+'):
-				return fmt.Errorf("a zsh glob qualifier that can run code: %s", group)
+				continue
 			}
+			if depth == 0 && c != '(' && (c != ')' || !files) {
+				continue
+			}
+			group += string(c)
+			switch {
+			case c == '(':
+				depth++
+			case c == ')':
+				depth--
+			case !plain(c):
+				return fmt.Errorf("a zsh glob group with a substitution, which the reader does not read: %s", group)
+			}
+			if depth > 0 {
+				continue
+			}
+			if files && (depth < 0 || !strings.Contains(group, "|") || strings.Trim(group[1:len(group)-1], alternation) != "") {
+				return qualifiers()
+			}
+			group = ""
 		}
+	}
+	if depth > 0 && files {
+		return qualifiers()
 	}
 	return nil
 }
+
+// alternation is the bytes of a plain alternation group, besides the parentheses.
+const alternation = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.*?-|"
 
 // plain is true for a byte that is literal text in a glob group: a letter, a digit, a blank, a non-ASCII byte, or one
 // of _.,:;/|*?!^~#@%+=-[]{}()'"\. It is false for $, `, < and >, which start a substitution, and for any other byte.
