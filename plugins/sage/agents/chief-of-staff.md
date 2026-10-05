@@ -75,7 +75,7 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 - **A repair round** re-runs only the roles that `sage round` names, on the repair's diff. Then the task needs its clean cycles on the final SHA, with every role.
 - **Autopilot off** (the start): the work stops at verified, and the user merges the pull request.
 - **Autopilot on** (the user starts a message with "autopilot on"): run fresh cycles until `sage merge-check --sha <sha> --pr <n>` passes, then merge with `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`, then tell the user in one line with the link.
-- **After a merge**, move the task to merged at once: `sage task <T> set state=merged`. Do the same when the user merges. The move removes its worktree (see "Worktrees").
+- **After a merge**, move the task to merged at once: `sage task <T> set state=merged`. Do the same when the user merges. The move sends its worktree folder to the Trash (see "Worktrees").
 - **Lock the default branch** once it first exists on GitHub: after the user approves its first creation, or after the first merge into a new repo. `<branch>` is the branch just created, main or master. The user's choice (gate G15) covers this step for every new project. Turn on branch protection with this one command, then read it back with `gh api --hostname github.com repos/<owner>/<repo>/branches/<branch>/protection`:
 
   ```
@@ -96,9 +96,9 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 ## Worktrees
 
 - Each writer works in its own worktree beside the main checkout, never inside the repository: `<project folder>-<task id>`, for example `~/workspace/sage-t45`. Its branch is `<area>/<task id>-<slug>`, in lowercase. Put both in the brief's SCOPE.
-- When a task moves to merged, concluded or abandoned, `sage task` removes its worktree folder, and prints one line for every folder of the task's branch (removed, or kept and why) and a line that the branch is kept. sage never deletes a branch: the user deletes it. The rule is in the tool. Do not remove a worktree or a branch by hand.
-- It keeps a worktree that is locked, whose `.git` file does not point back to the repository, with changes that are not committed, with files hidden from git status, with an ignored file outside a rebuildable folder (such as `.env`; `node_modules` and `dist` are rebuildable), with a nested git repository, or with a last commit that the remote does not have. It keeps all when the remote or GitHub cannot be reached. Tell the user about each kept one.
-- While a task owns a branch, only the task's state ends it: closing its pull request removes nothing.
+- When a task moves to merged, concluded or abandoned, `sage task` moves its worktree folder whole to the Trash (`~/.Trash/<project>-<task>-<UTC time>`) and makes git forget only that worktree. It prints one line for every folder of the task's branch (for example "moved to Trash: T5 (~/.Trash/sage-T5-20261005T0812Z)" or "kept: T5 is building") and a line that the branch is kept. sage never deletes a worktree folder or a branch: the user empties the Trash and deletes branches. The rule is in the tool. Do not remove a worktree or a branch by hand.
+- It keeps a worktree that is locked, whose folder is a link, whose `.git` file, admin folder or `commondir` does not point back to the repository, with its own `config.worktree`, with refs or HEAD reflog commits that only it has, or with a last commit that the remote does not have. It keeps all when the remote or GitHub cannot be reached, and one whose Trash is on another disk. Tell the user about each kept one.
+- While a task owns a branch, only the task's state ends it: closing its pull request moves nothing.
 - `sage worktrees` does the same for every project, and also for a branch that no task owns whose pull request merged or closed. It prints one line for every worktree folder (for example "kept: T5 is building" or "kept: the main checkout"), then the kept branches of finished tasks. `--dry-run` only lists them, with the same kept lines.
 
 ## The arena

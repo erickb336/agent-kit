@@ -118,8 +118,7 @@ export function sageRoot(env = process.env) {
 /** The main checkout of a project, also from inside one of its worktrees. */
 function projectRoot(path) {
   try {
-    const common = execFileSync("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return dirname(common);
+    return dirname(git(path, "rev-parse", "--path-format=absolute", "--git-common-dir"));
   } catch {
     return resolve(path);
   }
@@ -620,7 +619,17 @@ function nameCheckout(dir, project) {
   } catch {}
 }
 
-const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+/**
+ * Options and environment for every git command of sage, so that no config runs code. The shared config is not trusted:
+ * an agent can write it. GIT_ALLOW_PROTOCOL overrides every protocol setting, so no ext:: or remote helper runs.
+ */
+const NEUTRAL = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.sshCommand=ssh", "-c", "remote.origin.uploadpack=git-upload-pack", "-c", "core.pager=cat", "-c", "core.askPass=", "-c", "credential.helper="];
+const NEUTRAL_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "file:https:ssh" };
+
+/** git with the options above. A failure throws. */
+const gitRun = (args, { input, timeout } = {}) =>
+  execFileSync("git", [...NEUTRAL, ...args], { encoding: "utf8", input, timeout, env: { ...process.env, ...NEUTRAL_ENV }, stdio: ["pipe", "pipe", "pipe"] }).trim();
+const git = (cwd, ...args) => gitRun(["-C", cwd, ...args]);
 
 /** The pull requests of a project, or null when gh cannot give them, for example offline. $SAGE_GH names another gh. */
 function pullRequests(root, env) {
@@ -631,61 +640,35 @@ function pullRequests(root, env) {
   }
 }
 
-/** Folders that a build or an install makes again, at any depth. An ignored file outside them may be the owner's only copy. */
-const REBUILDABLE = new Set(["node_modules", "dist", "build", ".next", ".nuxt", ".turbo", ".cache", "coverage", ".parcel-cache", "__pycache__", ".pytest_cache", ".venv", "target", ".gradle"]);
-
-/** Config that runs no code: git status may start an fsmonitor, and a commit or a remove may start a hook. */
-const NO_CODE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
-
 /**
- * The admin folder of a linked worktree (<common>/worktrees/<id>), or undefined. Its .git must be a regular file that
- * names that folder, and the folder's gitdir file must name the worktree back. An agent can point .git at a repository
- * that it made, whose config runs code; so sage reads .git itself and gives git the admin folder, never the worktree.
+ * The admin folder of a linked worktree (<common>/worktrees/<id>), or a reason to keep it. Its .git must be a regular
+ * file that names that folder, the folder's gitdir file must name the worktree back, and its commondir must be this
+ * repository. An agent can point any of them at a repository that it made, whose config runs code; so sage reads them
+ * itself and gives git only a proven admin folder. A worktree with its own config (config.worktree) is kept: sage does
+ * not read it.
  */
 function adminDir(common, path) {
   const real = (p) => realpathSync(p);
+  const foreign = { why: "its .git file does not point back to this repository" };
   try {
-    if (!lstatSync(join(path, ".git")).isFile()) return undefined;
+    if (!lstatSync(join(path, ".git")).isFile()) return foreign;
     const to = /^gitdir: (.+?)\n?$/s.exec(readRegular(join(path, ".git")))?.[1];
     const admin = to && real(resolve(path, to));
     const back = admin && dirname(admin) === real(join(common, "worktrees")) && readRegular(join(admin, "gitdir"))?.replace(/\n$/, "");
-    return back && real(resolve(admin, back)) === real(join(path, ".git")) ? admin : undefined;
+    if (!back || real(resolve(admin, back)) !== real(join(path, ".git"))) return foreign;
+    const commondir = readRegular(join(admin, "commondir"))?.replace(/\n$/, "");
+    if (!commondir || real(resolve(admin, commondir)) !== real(common)) return { why: "its admin folder names another repository" };
+    if (existsSync(join(admin, "config.worktree"))) return { why: "it has its own git config (config.worktree)" };
+    return { admin };
   } catch {
-    return undefined;
-  }
-}
-
-/** git in a worktree through its admin folder, with no code from config. A failure throws, so the caller keeps the worktree. */
-const inTree = (admin, path) => (args, input) =>
-  execFileSync("git", [`--git-dir=${admin}`, `--work-tree=${path}`, ...NO_CODE, ...args], { cwd: path, encoding: "utf8", input, stdio: ["pipe", "pipe", "pipe"] });
-
-/** The ignored paths of a worktree. git remove deletes ignored files; a failed listing throws, so the caller keeps the worktree. */
-const ignoredPaths = (g) =>
-  g(["status", "-z", "--porcelain", "--ignored=matching"])
-    .split("\0")
-    .filter((e) => e.startsWith("!! ")) // matching names the folder a pattern matches ("a/node_modules/"), not the untracked folder above it
-    .map((e) => e.slice(3));
-const rebuildable = (p) => p.split("/").slice(0, -1).some((folder) => REBUILDABLE.has(folder)); // "dist/" and "a/dist/b" end in a name or ""
-
-/** The first folder at or under rel (relative to root) that holds a .git entry, a folder or a file: a repository with its own commits. Links are not followed. */
-function nestedRepo(root, rel) {
-  const todo = [rel.replace(/\/$/, "")];
-  while (todo.length) {
-    const at = todo.pop();
-    if (basename(at) === ".git") return dirname(at);
-    const st = lstatSync(join(root, at), { throwIfNoEntry: false });
-    if (!st?.isDirectory()) continue;
-    for (const e of readdirSync(join(root, at), { withFileTypes: true })) {
-      if (e.name === ".git") return at;
-      if (e.isDirectory()) todo.push(join(at, e.name));
-    }
+    return foreign;
   }
 }
 
 /** The refs of origin as the remote itself gives them, or null when the remote cannot be reached. */
 function remoteRefs(root) {
   try {
-    const lines = execFileSync("git", ["-C", root, "ls-remote", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 }).split("\n");
+    const lines = gitRun(["-C", root, "ls-remote", "origin"], { timeout: 30_000 }).split("\n");
     // A hostile remote can give any name: one with ':' is a refspec that moves a local branch, so only a plain branch or PR head counts.
     return { refs: lines.filter((l) => /^(?!0{40})[0-9a-f]{40}\t(refs\/heads\/[^:\s]+|refs\/pull\/\d+\/head)$/.test(l)).map((l) => l.split("\t")) };
   } catch {
@@ -696,65 +679,46 @@ function remoteRefs(root) {
 /** True when the remote has the commit: a branch or a PR head of origin is the commit, or contains it after a fetch that changes no local branch. */
 function onRemote(root, remote, sha) {
   if (remote.refs.some(([at]) => at === sha)) return true;
-  const known = (at) => {
+  const yes = (...args) => {
     try {
-      return git(root, "cat-file", "-t", at) === "commit";
+      return git(root, ...args);
     } catch {
       return false;
     }
   };
-  const valid = (ref) => {
-    try {
-      return git(root, "check-ref-format", ref) === "";
-    } catch {
-      return false;
-    }
-  };
-  const fetch = remote.refs.filter(([at, ref]) => !known(at) && valid(ref)).map(([, ref]) => ref);
+  const fetch = remote.refs.filter(([at, ref]) => yes("cat-file", "-t", at) !== "commit" && yes("check-ref-format", ref) === "").map(([, ref]) => ref);
   // No destination and an empty --refmap: the fetch writes only objects, whatever remote.origin.fetch says. No ref, no FETCH_HEAD.
   if (fetch.length) git(root, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--refmap=", "origin", ...fetch);
-  return remote.refs.some(([at]) => {
-    try {
-      return git(root, "merge-base", "--is-ancestor", sha, at) === "";
-    } catch {
-      return false;
-    }
-  });
+  return remote.refs.some(([at]) => yes("merge-base", "--is-ancestor", sha, at) === "");
 }
 
 /** Folds case and Unicode form: two names that a Mac file system can mix are equal. */
 const fold = (s) => (s ?? "").normalize("NFKC").toLowerCase();
 
-/**
- * The first commit of a worktree's HEAD reflog that no local branch and no ref of the remote reaches, or "". git worktree
- * remove deletes that reflog. One rev-list walks only the commits that the branches and the remote do not have.
- */
-function lostReflog(g, remote) {
-  const seen = g(["rev-list", "--walk-reflogs", "--ignore-missing", "HEAD"]);
-  return g(["rev-list", "-n", "1", "--ignore-missing", "--stdin"], `${seen}--not\n--branches\n${remote.refs.map(([at]) => at).join("\n")}\n`).trim();
-}
-
 /** What a kept branch line tells the owner: sage never deletes, moves or updates a ref, so the owner deletes a branch. */
 const KEPT_BRANCH = "kept (delete it yourself with git branch -d when you no longer need it)";
 
+/** The Trash that finished worktrees go to: $SAGE_TRASH, or the Mac's ~/.Trash. The owner empties it. */
+const trashOf = (env) => env.SAGE_TRASH ?? join(homedir(), ".Trash");
+const tilde = (p) => (p.startsWith(`${homedir()}/`) ? `~${p.slice(homedir().length)}` : p);
+
 /**
- * Prints one line for every worktree folder of one project, the main checkout first: removed, would remove, or kept and
- * why. It removes the folders of finished work, then prints one line for each local branch of a finished task whose
- * worktree is gone. Finished: every task that owns the branch is merged, concluded or abandoned; a branch that no task
- * owns is finished when its PR (same head, same repository) is merged or closed. Never while it is locked, its PR is
- * open or a run of its task or branch runs. It removes only a clean worktree whose .git file names its own admin folder,
- * with no file hidden from git status and no ref or HEAD reflog commit that only it has, whose last commit the remote
- * itself has, whose ignored files are all in rebuildable folders and hold no nested repository, and only when GitHub
- * gives the PR state: it fails closed. It runs git in a worktree only through its admin folder, with no fsmonitor and no
- * hooks, and git worktree remove without --force. It never deletes, moves or updates a ref: on a case- or
- * normalization-insensitive file system, a ref name can reach the file of another branch, so the owner deletes branches.
- * With task, only the folders of that task's branch.
+ * Prints one line for every worktree folder of one project, the main checkout first: moved to Trash, would move, or kept
+ * and why. sage never deletes a worktree folder. It moves the folder of finished work whole, with every file in it, to
+ * <trash>/<project>-<task>-<UTC time>, then removes only that worktree's own admin folder, so git forgets it. Then it
+ * prints one line for each local branch of a finished task whose worktree is gone. Finished: every task that owns the
+ * branch is merged, concluded or abandoned; a branch that no task owns is finished when its PR (same head, same
+ * repository) is merged or closed. It keeps a worktree that is locked, whose folder is a link, whose PR is open, that a
+ * task builds on or a run runs in, whose .git, admin folder or commondir is not proven, with refs or HEAD reflog commits
+ * that only it has, or whose last commit the remote itself does not have. It fails closed when the remote or GitHub
+ * cannot be reached. It never prunes and never deletes, moves or updates a ref. With task, only that task's branch.
  */
 function tidy(dir, root, env, { task: only, dry } = {}) {
   let trees, common;
+  const list = () => git(root, "worktree", "list", "--porcelain", "-z").split("\0\0").filter(Boolean).map((block) => Object.fromEntries(block.split("\0").map((l) => (l.includes(" ") ? [l.slice(0, l.indexOf(" ")), l.slice(l.indexOf(" ") + 1)] : [l, ""]))));
   try {
     // -z: a path may hold a line end. Each attribute ends in NUL, and an empty one ends a worktree. "locked" may have no reason.
-    trees = git(root, "worktree", "list", "--porcelain", "-z").split("\0\0").filter(Boolean).map((block) => Object.fromEntries(block.split("\0").map((l) => (l.includes(" ") ? [l.slice(0, l.indexOf(" ")), l.slice(l.indexOf(" ") + 1)] : [l, ""]))));
+    trees = list();
     common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
   } catch {
     return only ? [] : [`${root}: skipped: it is not a git checkout`];
@@ -762,7 +726,7 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
   const [tasks, runs] = [read(dir, "tasks"), read(dir, "runs")];
   const nameOf = (t) => (t.branch?.startsWith("refs/heads/") ? t.branch.slice(11) : undefined);
   const mine = (b) => (only ? Boolean(b) && b === only.branch : true);
-  const removed = new Set();
+  const moved = new Set();
   let prs, remote;
   const lines = [];
   const say = (t, verdict, who) => lines.push(`${t.worktree} · ${nameOf(t) ?? "no branch"}${who ? ` · ${who}` : ""}: ${verdict}`);
@@ -793,6 +757,7 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
       say(t, "kept: no task owns the branch");
       continue;
     }
+    const who = done ? done.id : `PR${ended.number}`;
     const line = (verdict) => say(t, verdict, done ? `${done.id} ${done.state}` : `PR ${ended.number} ${ended.state.toLowerCase()}`);
     // The keep checks fold case and Unicode form, so a near name keeps the worktree, as a Mac file system would mix them.
     const near = (b) => fold(b) === fold(branch);
@@ -800,46 +765,52 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
     const building = users.find((x) => !DONE.includes(x.state)); // a branch that two tasks share is done when both are
     const run = runs.find((r) => r.status === "running" && (near(r.branch) || users.some((x) => x.id === r.task)));
     const open = (prs ?? []).find((p) => p.state === "OPEN" && (near(p.headRefName) || users.some((x) => x.pr && String(p.number) === x.pr)));
-    /** The first reason to keep it, or "". git runs in the worktree only after its .git file proves its admin folder. */
+    let admin;
+    /** The first reason to keep it, or "". git reads the worktree's refs only through its proven admin folder. */
     const why = () => {
       if ("locked" in t) return `it is locked${t.locked ? ` (${t.locked})` : ""}`;
       if (building) return `${building.id} still uses the branch (${building.state})`;
       if (run) return `run ${run.id} is running`;
       if (open) return `PR ${open.number} is open`;
-      const admin = adminDir(common, t.worktree);
-      if (!admin) return "its .git file does not point back to this repository";
-      const g = inTree(admin, t.worktree);
-      if (g(["status", "--porcelain"]).trim()) return "it has changes that are not committed";
-      const hidden = g(["ls-files", "-v"]).split("\n").filter((l) => /^(S|[a-z]) /.test(l)).map((l) => l.slice(2));
-      if (hidden.length) return `files hidden from git status: ${hidden.slice(0, 3).join(", ")}`;
-      const ignored = ignoredPaths(g);
-      const nested = ignored.map((p) => nestedRepo(t.worktree, p)).find((p) => p !== undefined);
-      if (nested !== undefined) return `a nested git repository: ${nested}`;
-      const lost = ignored.filter((p) => !rebuildable(p));
-      if (lost.length) return `ignored files that are not rebuildable: ${lost.slice(0, 3).join(", ")}`;
+      const st = lstatSync(t.worktree, { throwIfNoEntry: false });
+      if (!st?.isDirectory() || realpathSync(t.worktree) !== t.worktree) return "its folder is a link";
+      const proof = adminDir(common, t.worktree);
+      if (proof.why) return proof.why;
+      admin = proof.admin;
       if (remote === null) return "the remote cannot be reached";
-      const ownRefs = g(["for-each-ref", "--format=%(refname)", "refs/worktree/", "refs/bisect/"]).trim(); // git worktree remove deletes them
+      const g = (args, input) => gitRun(["-C", root, `--git-dir=${admin}`, ...args], { input });
+      const ownRefs = g(["for-each-ref", "--format=%(refname)", "refs/worktree/", "refs/bisect/"]); // they live in the admin folder, which goes
       if (ownRefs) return `it holds refs only it has: ${ownRefs.split("\n").slice(0, 3).join(", ")}`;
       if (!onRemote(root, remote, t.HEAD)) return `its last commit ${t.HEAD.slice(0, 7)} is not on the remote`;
-      const gone = lostReflog(g, remote);
+      // The HEAD reflog is in the admin folder too. One rev-list walks only its commits that no branch and no remote ref has.
+      const gone = g(["rev-list", "-n", "1", "--ignore-missing", "--stdin"], `${g(["rev-list", "--walk-reflogs", "--ignore-missing", "HEAD"])}\n--not\n--branches\n${remote.refs.map(([at]) => at).join("\n")}\n`);
       if (gone) return `its HEAD reflog has a commit on no branch or remote: ${gone.slice(0, 7)}`;
       return prs === null ? "GitHub cannot be reached, so its PR state is unknown" : "";
     };
     try {
       const reason = why();
       if (reason || dry) {
-        line(reason ? `kept: ${reason}` : "would remove");
+        line(reason ? `kept: ${reason}` : "would move to Trash");
         continue;
       }
-      git(root, ...NO_CODE, "worktree", "remove", t.worktree);
-      removed.add(t.worktree);
-      line("removed");
+      const to = join(trashOf(env), `${projectName(root)}-${who}-${new Date().toISOString().replace(/[-:]/g, "").slice(0, 13)}Z`);
+      if (existsSync(to)) {
+        line(`kept: ${tilde(to)} is already in the Trash`);
+        continue;
+      }
+      // A rename moves the folder whole, or not at all. Across disks it fails, and sage never copies and deletes.
+      renameSync(t.worktree, to);
+      try {
+        rmSync(admin, { recursive: true }); // only this worktree's entry: git forgets it, and no other entry changes
+      } catch {} // the line below says when git still lists it
+      moved.add(t.worktree);
+      line(list().some((x) => x.worktree === t.worktree) ? `moved to Trash: ${who} (${tilde(to)}), but git still lists it` : `moved to Trash: ${who} (${tilde(to)})`);
     } catch (e) {
-      line(`kept: git refused: ${String(e.stderr || e.message).split("\n")[0].replace(/^(fatal|error): /, "")}`);
+      line(e.code === "EXDEV" ? "kept: it is on another disk; move it yourself" : `kept: ${String(e.stderr || e.message).split("\n")[0].replace(/^(fatal|error): /, "")}`);
     }
   }
   // The branches as git lists them, by exact name: a task's name that only a file system's folding finds gets no line.
-  const checkedOut = new Set(trees.filter((t) => !removed.has(t.worktree)).map(nameOf));
+  const checkedOut = new Set(trees.filter((t) => !moved.has(t.worktree)).map(nameOf));
   const branches = git(root, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads/").split("\n");
   for (const b of branches.filter((b) => b && mine(b) && !checkedOut.has(b))) {
     const own = tasks.filter((t) => t.branch === b);
