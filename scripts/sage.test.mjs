@@ -752,7 +752,7 @@ test("F2: with --pr, every task of that pull request must pass on the SHA, so a 
   assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1"), "T2 may merge: 1 clean cycle on this SHA", "without --pr, as the hook calls it until T4");
   assert.equal(s.no("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `sage: 2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass; 1 fails. ${s.dir} T1 is a task of PR 5 but has no verdicts on this SHA. Every task that was ever on PR 5 counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges. To merge, make each one pass.`);
   assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "6"), `sage: no task of PR 6 has verdicts on a1b2c3d: only ${s.dir} T2 has. Record PR 6's verdicts under its own task (sage verdict <T> --sha <sha> --pr 6), or set its PR: sage task <T> set pr=6.`);
-  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "#5"), "sage: --pr is the pull request's number, for example --pr 5");
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "#5"), "sage: --pr is the pull request's number, with no leading zero, for example --pr 5");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.equal(s.ok("merge-check", "--sha", SHA, "--cycles", "1", "--pr", "5"), `2 tasks have verdicts on a1b2c3d or belong to PR 5, and each must pass: ${s.dir} T2 may merge: 1 clean cycle on this SHA; ${s.dir} T1 may merge: 1 clean cycle on this SHA`);
 });
@@ -1214,9 +1214,9 @@ test("QA-R58-3: a refusal for a missing id names the latest ids that the logbook
 test("F-R57-2: a PR is only digits, so a typo never hides a task from merge-check --pr", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "tiny");
-  assert.equal(s.no("task", "T1", "set", "pr=#5"), 'sage: "#5" is not a pull request number. Give only its digits, for example pr=5 or --pr 5.');
+  assert.equal(s.no("task", "T1", "set", "pr=#5"), 'sage: "#5" is not a pull request number. Give only its digits, with no leading zero, for example pr=5 or --pr 5.');
   const url = "https://github.com/erickb336/sage/pull/5";
-  assert.equal(s.no("verdict", "T1", "--sha", SHA, "--kind", "checks-pass", "--pr", url), `sage: "${url}" is not a pull request number. Give only its digits, for example pr=5 or --pr 5.`);
+  assert.equal(s.no("verdict", "T1", "--sha", SHA, "--kind", "checks-pass", "--pr", url), `sage: "${url}" is not a pull request number. Give only its digits, with no leading zero, for example pr=5 or --pr 5.`);
   assert.deepEqual([rows(s.dir, "tasks")[0].pr, rows(s.dir, "ledger")], ["", []]);
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass", "--pr", "5");
   assert.equal(s.ok("merge-check", "--sha", SHA, "--pr", "5"), "T1 may merge: 1 clean cycle on this SHA");

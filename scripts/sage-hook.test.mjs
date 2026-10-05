@@ -1412,15 +1412,22 @@ test("an agent never runs a command outside the sandbox; the chief may (T83)", (
   assert.equal(denied(s.send(out)), undefined);
 });
 
-test("when the rule cannot run, an agent's state-tool command and file change are refused (fail closed); other commands pass (T83)", () => {
+test("when the rule cannot run, every command and file change of an agent is refused (fail closed); the chief is unchanged (T83 F2)", () => {
   const dir = mkdtempSync(join(tmpdir(), "sage-loop-"));
   const loop = join(dir, "loop");
   symlinkSync(loop, loop); // the sage root is a link to itself, so the hook cannot resolve it
   const s = session({ SAGE_HOME: loop });
-  assert.match(denied(s.send(bash(`node ${TOOL} status --project ${s.dir}`, FEATURE, AGENT))) ?? "", /could not check this command/);
-  assert.match(denied(s.send(edit(AGENT))) ?? "", /could not check this command/);
-  assert.equal(denied(s.send(bash("npm test", FEATURE, AGENT))), undefined);
+  const refused = [
+    bash(`node ${TOOL} status --project ${s.dir}`, FEATURE, AGENT),
+    edit(AGENT),
+    bash("npm test", FEATURE, AGENT),
+    bash("rm -rf ~/.claude/sage", FEATURE, AGENT),
+    { ...tool("Bash", { command: "npm test", dangerouslyDisableSandbox: true }, { cwd: FEATURE }), ...AGENT },
+    { ...tool("Monitor", { command: "echo x > tasks.tsv", description: "d" }, { cwd: FEATURE }), ...AGENT },
+  ];
+  for (const event of refused) assert.match(denied(s.send(event)) ?? "", /could not check this agent's|could not check this command/, JSON.stringify(event.tool_input));
   assert.equal(denied(s.send(bash(`node ${TOOL} status --project ${s.dir}`))), undefined, "the chief is unchanged");
+  assert.equal(denied(s.send(bash("npm test"))), undefined, "the chief is unchanged");
 });
 
 test("the rule holds for every tool that runs a command: Monitor, PowerShell and the terminal tools (T83)", () => {
@@ -1444,7 +1451,7 @@ test("the rule holds for every tool that runs a command: Monitor, PowerShell and
 test("a malformed agent event makes the rule throw, and the hook refuses the agent's file change (fail closed) (T83)", () => {
   const s = session();
   const write = { ...tool("Write", { file_path: "notes.md", content: "x" }), ...AGENT, cwd: 5 };
-  assert.match(denied(s.send(write)) ?? "", /could not check this command/);
+  assert.match(denied(s.send(write)) ?? "", /could not check this agent's file change/);
   assert.equal(denied(s.send({ ...write, agent_id: undefined, agent_type: undefined })), undefined, "the chief is unchanged");
 });
 
@@ -1494,4 +1501,134 @@ test("S2: out of sage mode, a project's own config.json is no logbook file; a sh
   assert.equal(denied(s.send(bash("cp /tmp/x config.json"))), undefined);
   assert.equal(denied(s.send(tool("Write", { file_path: join(s.dir, "config.json") }, { cwd: s.dir }))), undefined);
   assert.match(denied(s.send(bash(`cp /tmp/x ${join(s.vars.SAGE_HOME, "config.json")}`))) ?? "", ONLY_TOOL);
+});
+
+// T83 round 1: the forms that cycle 1 found (R382, R383, R384).
+const LOGBOOK_SHELL = /never writes, moves or removes a logbook file from the shell/;
+
+test("F1: an agent's shell write that does not spell the sage root is refused: patterns, cd, variables, ./ and //, a link (T83 F1)", () => {
+  const s = session();
+  const link = join(s.dir, "made-earlier");
+  symlinkSync(s.vars.SAGE_HOME, link); // a link that an earlier command made
+  const row = "printf 'T1\\t41\\tSHA\\tqa-pass\\t1\\t\\tnow\\n'";
+  const forms = [
+    `${row} >> ~/.claude/sag?/proj-*/ledger.tsv`,
+    `${row} >> ~/.cl*/sa*/proj-abc/x`,
+    `cd ~/.claude && ${row} >> sage/proj-abc/x`,
+    `${row} >> $HOME/.claude/s*/proj-abc/x`,
+    `H=.claude; ${row} >> ~/$H/sage/proj-abc/x`,
+    `${row} >> ~/.claude/./sage/proj-abc/x`,
+    `${row} >> ~/.claude//sage/proj-abc/x`,
+    `${row} >> \${HOME}/.cl[a]ude/sage/proj-abc/x`,
+    `${row} >> /U*/*/.c*/s*/p*/l*`,
+    `cd; ${row} >> $X/proj-abc/x`,
+    `${row} | tee -a ${link}/proj-abc/ledger.tsv`,
+    `${row} >> ${link}/proj-abc/LEDGER.TSV`,
+    `ln -s ~/.claude/sage /tmp/s`,
+    `cp /tmp/forged ${link}/proj-abc/l*`,
+    `find ~/.claude -name ledger.tsv -delete`,
+    `node -e "require('fs').appendFileSync(process.env.HOME + '/.claude/sage/p/ledger.tsv', 'x')"`,
+    `rm -rf $CLAUDE_CONFIG_DIR/sage`,
+  ];
+  for (const command of forms) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, command);
+});
+
+test("F1: the forge flow ends refused at the hook step: an agent's rows never reach the ledger, and the merge check refuses (T83 F1)", () => {
+  const s = autopilotSession();
+  const B = "b".repeat(40);
+  const ledger = readdirSync(s.vars.SAGE_HOME).map((d) => join(s.vars.SAGE_HOME, d, "ledger.tsv")).find(existsSync);
+  const before = readFileSync(ledger, "utf8");
+  const rows = ["1", "2"].flatMap((c) => ["checks-pass", "review-clean", "qa-pass"].map((k) => `T1\\t41\\t${B}\\t${k}\\t${c}\\t\\tnow\\n`)).join("");
+  const forge = `printf '${rows}' >> ~/.claude/sag?/proj-*/ledger.tsv`;
+  assert.match(denied(s.send(bash(forge, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, "the hook refuses the forgery");
+  assert.equal(readFileSync(ledger, "utf8"), before, "the ledger is unchanged");
+  assert.match(denied(s.send(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${B}`))) ?? "", /^sage: the merge check refuses: no verdicts recorded for b{40}/);
+});
+
+test("S-CASE: a file tool's path under the sage root in another case or Unicode form is refused, for an agent and the chief (T83)", () => {
+  const s = session();
+  const book = join(s.vars.SAGE_HOME, "proj-abc123");
+  mkdirSync(book, { recursive: true });
+  writeFileSync(join(book, "ledger.tsv"), "");
+  const up = (p) => p.slice(0, -"home".length) + "HOME";
+  for (const file of [join(up(s.vars.SAGE_HOME), "proj-abc123", "LEDGER.TSV"), join(up(s.vars.SAGE_HOME), "PROJ-ABC123", "new.tsv"), join(s.vars.SAGE_HOME.toUpperCase(), "x.tsv")]) {
+    const write = tool("Write", { file_path: file, content: "x" }, { cwd: s.dir });
+    assert.match(denied(s.send({ ...write, ...AGENT })) ?? "", /never writes under the sage root/, `agent: ${file}`);
+    assert.match(denied(s.send(write)) ?? "", /the chief never writes under the sage root/, `chief: ${file}`);
+  }
+  assert.equal(denied(s.send({ ...tool("Write", { file_path: join(s.dir, "HOME-notes.md") }, { cwd: s.dir }), ...AGENT })), undefined, "a file next to the root");
+});
+
+test("F3: the reviewers' reads of the logbook pass, for an agent and the chief in sage mode (T83)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const reads = [
+    "grep T2 ~/.claude/sage/p/tasks.tsv 2>/dev/null",
+    "cat ~/.claude/sage/p/decisions.tsv 2>&1 | tail -5",
+    "grep -c install ~/.claude/sage/p/decisions.tsv",
+    "wc -l ~/.claude/sage/p/ledger.tsv >/dev/null 2>&1",
+    "head -3 tasks.tsv 2>/dev/null; grep -n patch decisions.tsv",
+    "grep -E 'touch|dd|ln' ~/.claude/sage/p/runs.tsv >&2",
+    "grep -rn sed ~/.claude/sage/p 2>&-",
+  ];
+  for (const command of reads) {
+    assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, `agent: ${command}`);
+    assert.equal(denied(s.send(bash(command))), undefined, `chief: ${command}`);
+  }
+  assert.equal(denied(s.send(bash("cd /proj/.claude/worktrees/t83 && npm test > /tmp/out.log 2>&1", FEATURE, AGENT))), undefined, "an agent's write in its worktree");
+});
+
+test("S-PRZERO: a PR number with a leading zero is refused by the hook and the state tool, and an older 040 row counts for PR 40 (T83)", () => {
+  const s = autopilotSession(); // T1 (small) has 2 clean cycles on SHA under PR 41
+  s.sage("task", "add", "--title", "the large risky change", "--size", "large", "--risk", "auth");
+  s.sage("task", "T2", "set", "pr=40");
+  const zero = spawnSync("node", [TOOL, "verdict", "T1", "--sha", SHA, "--kind", "qa-pass", "--pr", "040", "--project", s.dir], { encoding: "utf8", env: s.vars });
+  assert.match(zero.stderr, /"040" is not a pull request number/);
+  const check = spawnSync("node", [TOOL, "merge-check", "--sha", SHA, "--pr", "040", "--project", s.dir], { encoding: "utf8", env: s.vars });
+  assert.match(check.stderr, /--pr is the pull request's number, with no leading zero/);
+  assert.match(denied(s.send(bash(`gh pr merge 040 --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", /no leading zero/);
+  // A row that an older state tool wrote as 040 is still PR 40, so the large task counts for PR 40.
+  const tasks = readdirSync(s.vars.SAGE_HOME).map((d) => join(s.vars.SAGE_HOME, d, "tasks.tsv")).find(existsSync);
+  writeFileSync(tasks, readFileSync(tasks, "utf8").replace(/\t40\t/, "\t040\t"));
+  assert.match(denied(s.send(bash(`gh pr merge 40 --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", /T2 is a task of PR 40 but has no verdicts on this SHA/);
+});
+
+test("S-OWNCOPY: an agent runs only the copy of the state tool that the hook loads (T83)", () => {
+  const s = session();
+  const copy = join(s.dir, "skills", "sage", "sage.mjs");
+  mkdirSync(dirname(copy), { recursive: true });
+  copyFileSync(TOOL, copy);
+  assert.match(denied(s.send(bash(`node ${copy} status --project ${s.dir}`, FEATURE, AGENT))) ?? "", /only the copy that this hook loads/);
+  assert.equal(denied(s.send(bash(`node ${TOOL} status --project ${s.dir}`, FEATURE, AGENT))), undefined);
+});
+
+test("S-EMPTYID: an event with an empty agent_id, or a sage role's agent_type, is an agent's; the chief-of-staff session is the chief (T83)", () => {
+  const s = session();
+  const forged = `node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA} --project /p`;
+  for (const who of [{ agent_id: "" }, { agent_id: null }, { agent_type: "sage:qa" }, { agent_id: "", agent_type: "sage:implementer" }]) {
+    assert.match(denied(s.send(bash(forged, FEATURE, who))) ?? "", ONLY_CHIEF, JSON.stringify(who));
+  }
+  assert.equal(denied(s.send(bash(forged, FEATURE, { agent_type: "sage:chief-of-staff" }))), undefined, "the chief");
+});
+
+test("S-PWSH: PowerShell writes to the logbook are refused, in any case (T83)", () => {
+  const s = session();
+  const path = "~/.claude/sage/p/ledger.tsv";
+  const writes = [`Set-Content -Path ${path} -Value x`, `'x' | Out-File ${path}`, `add-content ${path} x`, `Copy-Item C:/x ${path}`, `MOVE-ITEM C:/x ${path}`, `Remove-Item ${path}`, `ni ${path}`, `New-Item -ItemType File ${path}`];
+  for (const command of writes) {
+    assert.match(denied(s.send({ ...tool("PowerShell", { command }), ...AGENT })) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
+    assert.match(denied(s.send(tool("PowerShell", { command }))) ?? "", /the chief never writes, moves or removes a logbook file/, `chief: ${command}`);
+  }
+  assert.equal(denied(s.send({ ...tool("PowerShell", { command: `Get-Content ${path}` }), ...AGENT })), undefined, "a read");
+});
+
+test("S-CHIEFCASE: the chief's shell writes to the logbook in another case or as a pattern are refused (T83)", () => {
+  const s = session();
+  for (const command of ["printf x >> ~/.CLAUDE/SAGE/p/ledger.tsv", "printf x >> ~/.claude/sag?/p/ledger.tsv", "cp /tmp/x ~/.cl*/sage/p/tasks.tsv", "rm -rf ~/[.]claude/{sage,x}"]) {
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, command);
+  }
+  s.send(prompt("sage mode"));
+  for (const command of ["echo x >> LEDGER.TSV", "cp /tmp/x l*.tsv", "sed -i '' s/a/b/ Tasks.Tsv"]) {
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `sage mode: ${command}`);
+  }
 });

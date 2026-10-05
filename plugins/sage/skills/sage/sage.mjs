@@ -89,8 +89,10 @@ const OPTIONS = {
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
 };
-/** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
-const PR = /^\d+$/;
+/** A pull request's number: only digits with no leading zero, so that "#5", "05" or a link never hides a task from merge-check --pr. */
+const PR = /^[1-9]\d*$/;
+/** The canonical number of a PR in an older row: "040" is PR 40. */
+const prNumber = (pr) => (/^\d+$/.test(pr ?? "") ? String(BigInt(pr)) : pr);
 const STANDING = `# Standing orders
 
 Every brief carries these lines word for word. Add a line when you notice that you repeat an instruction.
@@ -425,7 +427,7 @@ function move(task, to) {
  */
 function setPr(task, pr, why) {
   if (pr && !builds(task)) refuse(`${task.id} is an investigation: it changes no code, so it has no pull request. A build is its own task: sage task add --size tiny, small or large, then give that task the PR.`);
-  if (pr && !PR.test(pr)) refuse(`${JSON.stringify(pr)} is not a pull request number. Give only its digits, for example pr=5 or --pr 5.`);
+  if (pr && !PR.test(pr)) refuse(`${JSON.stringify(pr)} is not a pull request number. Give only its digits, with no leading zero, for example pr=5 or --pr 5.`);
   const was = task.pr;
   task.pr = pr;
   // An investigation never has commits on a PR, so the PR that an old logbook gave it leaves no trace when it is cleared.
@@ -434,9 +436,9 @@ function setPr(task, pr, why) {
 /** The ids of the tasks that are or ever were on PR pr: by the tasks' pr, the decision rows of setPr, and their verdicts on a commit of the PR. */
 const prHistory = (pr, tasks, decisions, ledger) =>
   new Set([
-    ...tasks.filter((t) => t.pr === pr).map((t) => t.id),
-    ...decisions.filter((d) => /^PR (\S+) → (\S+)$/.exec(d.decision)?.slice(1).includes(pr)).map((d) => d.task),
-    ...ledger.filter((r) => r.pr === pr && r.sha).map((r) => r.task),
+    ...tasks.filter((t) => prNumber(t.pr) === pr).map((t) => t.id),
+    ...decisions.filter((d) => /^PR (\S+) → (\S+)$/.exec(d.decision)?.slice(1).map(prNumber).includes(pr)).map((d) => d.task),
+    ...ledger.filter((r) => prNumber(r.pr) === pr && r.sha).map((r) => r.task),
   ]);
 
 /** Why sha cannot name a commit in the ledger, or "". A short SHA could match another commit with the same prefix. Case does not matter. */
@@ -451,7 +453,7 @@ function judge(dir, task, findings, id, rows, cycles, repaired, cfg, pr) {
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
   if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: clear its PR (sage task ${task.id} set pr=).` };
-  if (!rows.length) return { ok: false, reason: `${who} ${task.pr === pr ? "is" : "was"} a task of PR ${pr} but has no verdicts on this SHA. Every task that was ever on PR ${pr} counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges.` };
+  if (!rows.length) return { ok: false, reason: `${who} ${prNumber(task.pr) === pr ? "is" : "was"} a task of PR ${pr} but has no verdicts on this SHA. Every task that was ever on PR ${pr} counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges.` };
   const open = findings.filter((f) => f.task === task.id && f.status === "open");
   if (open.length) return { ok: false, reason: `${who} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
   const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
@@ -483,7 +485,7 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
   try {
     if (notFull(sha)) return { ok: false, reason: notFull(sha) };
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
-    pr &&= String(pr); // the tasks table holds it as text
+    pr &&= prNumber(String(pr)); // the tasks table holds it as text; "040" is PR 40
     const cfg = config(env); // once: the merge check may judge thousands of tasks
     const broken = Object.keys(cfg).find((k) => cfg[k] === "invalid"); // fail closed: a default would ask fewer cycles than the owner meant
     if (broken) return { ok: false, reason: `the merge check refuses every merge, because ${broken} in ${join(root, "config.json")} is not a number. Set it with sage config ${broken}=<n> (a whole number from ${floor(broken)} to 10), or remove the key.` };
@@ -550,7 +552,7 @@ export function sage(argv, env = process.env) {
   const { pos, opt } = parse(cmd, rest);
   if (cmd === "merge-check") {
     const cycles = opt.cycles === undefined ? undefined : (typed("cycles.small", opt.cycles) ?? refuse("--cycles is a whole number from 1 to 10")); // the chief's explicit count: it only raises a task's own count
-    if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
+    if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, with no leading zero, for example --pr 5");
     const r = mergeCheck(opt.sha ?? refuse("merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
   }
