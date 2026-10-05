@@ -418,8 +418,7 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
  * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
  * its PR number.
  */
-function judge(dir, tasks, findings, id, rows, cycles, repaired, cfg) {
-  const task = tasks.find((t) => t.id === id);
+function judge(dir, task, findings, id, rows, cycles, repaired, cfg) {
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
   const clear = `clear its PR (sage task ${task.id} set pr=)`;
@@ -440,6 +439,9 @@ function judge(dir, tasks, findings, id, rows, cycles, repaired, cfg) {
   }
   return { ok: true, reason: `${task.id} may merge: ${clean} clean cycle${clean === 1 ? "" : "s"} on this SHA` };
 }
+
+/** The rows of a table by their task. */
+const group = (rows) => rows.reduce((m, r) => (m.has(r.task) ? m.get(r.task).push(r) : m.set(r.task, [r]), m), new Map());
 
 /**
  * The judgment of the merge check: may this head SHA merge? Every task that has verdicts on the full SHA, in every
@@ -469,11 +471,12 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       if (!rows.length) return [];
       const [tasks, findings] = book ? [rowsOf(book.tasks), rowsOf(book.findings)] : [[], []];
       const repaired = book && rowsOf(book.decisions).some((d) => d.decision.startsWith("tasks.tsv started again without rows"));
-      const ofPr = pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : [];
+      const ofPr = new Set(pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : []);
+      // Each table is grouped by task once, so thousands of tasks on one SHA take linear time, not the square of it.
+      const [byId, ownOf, findingsOf] = [new Map(tasks.map((t) => [t.id, t])), group(rows), group(findings)];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
-        const own = rows.filter((r) => r.task === id);
-        const task = tasks.find((t) => t.id === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
+        const [own, task] = [ownOf.get(id) ?? [], byId.get(id)];
+        return { dir, id, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
@@ -652,7 +655,7 @@ function act(cmd, pos, opt, dir, env, skip) {
             if (v === "verified") {
               const rows = read(dir, "ledger").filter((r) => r.task === task.id);
               const head = rows.at(-1)?.sha ?? refuse(`${task.id} has no verdicts yet`);
-              const r = judge(dir, tasks, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
+              const r = judge(dir, task, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
           } else if (k === "pr") setPr(task, v);

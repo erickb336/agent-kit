@@ -70,6 +70,34 @@ test("npm run check fails on a flagged word in an agent file, a skill or the REA
   }
 });
 
+test("npm run check refuses a wall-clock time under a fixed number of ms in a test, and names the file, line and fix (T53)", () => {
+  const c = copy();
+  const sample = (body) => c.write("scripts/sample.test.mjs", `import assert from "node:assert/strict";\n${body}\n`);
+  const refused = (line) => new RegExp(`✗ scripts/sample\\.test\\.mjs:${line}: a test holds a wall-clock time under a fixed number of ms, so a busy machine breaks it\\. Instead, assert CPU time \\(process\\.cpuUsage\\)`);
+  const forms = [
+    "const t0 = Date.now();\nwork();\nassert.ok(Date.now() - t0 < 3000);",
+    "const t0 = performance.now();\nwork();\nconst ms = performance.now() - t0;\nassert.ok(ms <= 50, `${ms} ms`);",
+    "const timed = (fn) => {\n  const t = process.hrtime.bigint();\n  fn();\n  return Number(process.hrtime.bigint() - t) / 1e6;\n};\nconst [a, b] = [timed(work), timed(work)];\nassert.ok(2000 > a + b);",
+  ];
+  for (const body of forms) {
+    sample(body);
+    const r = c.run("check");
+    assert.equal(r.status, 1, body);
+    assert.match(r.stderr, refused(body.split("\n").length + 1), body);
+  }
+  sample(`${forms[0]} // timing-ok: the hook's own 10 s budget`);
+  assert.match(c.run("check").stdout, /✓ all checks pass \(1 wall-clock bound carries "\/\/ timing-ok:"\)/, "an explicit escape passes, and the check counts it");
+  for (const allowed of [
+    "const t0 = Date.now();\nwork();\nassert.ok(Date.now() - t0 >= 3000, 'a lower bound: a busy machine only adds time');",
+    "const t = process.cpuUsage();\nwork();\nconst { user, system } = process.cpuUsage(t);\nassert.ok((user + system) / 1000 < 2000);",
+    "for (const end = Date.now() + 2500; Date.now() < end; ) work();\nassert.ok(count < 3, 'Date.now() < 3000 in a string');",
+  ]) {
+    sample(allowed);
+    const r = c.run("check");
+    assert.equal(r.status, 0, `${allowed}\n${r.stderr}`);
+  }
+});
+
 test("npm run check passes when the word is quoted, in a code span, in a code block or in a link URL", () => {
   const c = copy();
   for (const line of ['Do not say "store".', "Run `sage store`.", "```\nsage store\n```", "See [the docs](https://example.com/store)."]) {
@@ -175,8 +203,9 @@ test("a title on the design page and a Mermaid label there fail the check", () =
   const page = c.read("docs/design/sage-mode.html");
   c.write("docs/design/sage-mode.html", page.replace('S[("Logbook', 'S[("Store').replace("<main>", '<main><p title="the store">x</p>'));
   const r = c.run("check");
-  assert.match(r.stderr, /✗ docs\/design\/sage-mode\.html:105: "Store" is a flagged word/);
-  assert.match(r.stderr, new RegExp(`✗ docs/design/sage-mode\\.html:${page.slice(0, page.indexOf("<main>")).split("\n").length}: "store" is a flagged word`));
+  const lineOf = (text) => page.slice(0, page.indexOf(text)).split("\n").length;
+  assert.match(r.stderr, new RegExp(`✗ docs/design/sage-mode\\.html:${lineOf('S[("Logbook')}: "Store" is a flagged word`));
+  assert.match(r.stderr, new RegExp(`✗ docs/design/sage-mode\\.html:${lineOf("<main>")}: "store" is a flagged word`));
 });
 
 test("a README without its end marker gives one line from build and from check, not a stack trace", () => {

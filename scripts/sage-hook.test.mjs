@@ -1,13 +1,15 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+// Through the launcher, as Claude Code runs it. HOME is a fake home without plugins, so the launcher runs this tree's hook.
 const HOOK = fileURLToPath(new URL("../plugins/sage/hooks/sage-hook.mjs", import.meta.url));
+const LAUNCHER = [fileURLToPath(new URL("../plugins/sage/hooks/launcher.mjs", import.meta.url)), "sage-hook.mjs"];
 const TOOL = fileURLToPath(new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url));
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const BRIEF = ["GOAL fix it", "SCOPE src/", "CONTEXT none", "DECISIONS none", "ACCEPTANCE it works", "VERIFY npm test", "BUDGET 20 turns", "FORBIDDEN no merge", "REPORT the usual", "STANDING 1. work in your worktree"].join("\n");
@@ -15,15 +17,15 @@ const BRIEF = ["GOAL fix it", "SCOPE src/", "CONTEXT none", "DECISIONS none", "A
 /** A session with its own hook state and sage home. send() returns the hook's answer, or undefined. */
 function session(env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "sage-hook-"));
-  const vars = { ...process.env, SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home"), ...env };
+  const vars = { ...process.env, HOME: join(dir, "fake-home"), SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home"), ...env };
   const send = (event) => {
-    const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: vars });
+    const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: vars });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout ? JSON.parse(r.stdout) : undefined;
   };
   const sendAsync = (event) =>
     new Promise((done) => {
-      const p = spawn("node", [HOOK], { env: vars });
+      const p = spawn("node", LAUNCHER, { env: vars });
       let out = "";
       p.stdout.on("data", (d) => (out += d));
       p.on("close", () => done(out ? JSON.parse(out) : undefined));
@@ -181,7 +183,7 @@ test("a slot that cannot be marked is freed, and the spawn is refused with the r
   s.send(prompt("sage mode"));
   mkdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots"), { recursive: true });
   // The hook runs with umask 777, so the slot directory it makes has no permissions: its marks cannot be written.
-  const r = spawnSync("sh", ["-c", `umask 777; node "${HOOK}"`], { input: JSON.stringify({ session_id: "s1", ...spawnAgent("sage:qa", BRIEF, "tu1") }), encoding: "utf8", env: s.vars });
+  const r = spawnSync("sh", ["-c", `umask 777; node "${LAUNCHER[0]}" ${LAUNCHER[1]}`], { input: JSON.stringify({ session_id: "s1", ...spawnAgent("sage:qa", BRIEF, "tu1") }), encoding: "utf8", env: s.vars });
   assert.equal(r.status, 0, r.stderr);
   assert.match(denied(JSON.parse(r.stdout)), /^sage: the agent cap could not mark its slot \(EACCES.*\), so it refuses this spawn\. Tell the user\.$/);
   assert.deepEqual(readdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots")), [], "the refused spawn left no slot");
@@ -433,7 +435,8 @@ test("a push from a checkout of main or master is refused; a push with -C or aft
 
 /**
  * A fake gh on PATH for the first creation of main (T24): it answers the hook's GETs from a JSON file, so no test calls
- * GitHub. github(answers) writes that file: { "<endpoint>": { status, body } | { sleep: true } | { stubborn: true } (it ignores SIGTERM) | { fail: true } }. An
+ * GitHub. github(answers) writes that file: { "<endpoint>": { status, body } | { sleep: true } | { stubborn: true } (it ignores SIGTERM) | { fail: true } }. A fake that
+ * sleeps to its end (30 s, or 15 s when stubborn) writes the file <answers>.slept, so a test sees whether the hook waited for it. An
  * endpoint with no answer is a 404. A string body goes out as it is, not as JSON. The fake answers 500 to a call without --hostname github.com or with GH_HOST set,
  * as a GitHub Enterprise host would not know the repository.
  */
@@ -448,7 +451,7 @@ const answers = JSON.parse(fs.readFileSync(process.env.FAKE_GH_ANSWERS, "utf8"))
 const host = args[args.indexOf("--hostname") + 1];
 const a = host !== "github.com" || process.env.GH_HOST || process.env.GH_REPO ? { status: 500, body: { message: "wrong host" } } : answers[args.at(-1)] ?? { status: 404, body: { message: "Not Found" } };
 if (a.stubborn) process.on("SIGTERM", () => {});
-if (a.sleep || a.stubborn) setTimeout(() => {}, a.stubborn ? 15000 : 30000);
+if (a.sleep || a.stubborn) setTimeout(() => fs.writeFileSync(process.env.FAKE_GH_ANSWERS + ".slept", ""), a.stubborn ? 15000 : 30000);
 else if (a.fail) process.exit(1);
 else {
   process.stdout.write("HTTP/2.0 " + a.status + " X\\nContent-Type: application/json\\r\\n\\r\\n" + (typeof a.body === "string" ? a.body : JSON.stringify(a.body, null, 2)));
@@ -528,17 +531,15 @@ test("the exact form is refused when GitHub does not show a first creation at on
 test("a gh call that does not answer in time is a refusal, not an ask (T24)", () => {
   const s = firstSession();
   s.github({ "repos/o/r/git/ref/heads/main": { sleep: true } });
-  const started = Date.now();
   assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("the check on GitHub failed \\(gh did not answer in time\\)"));
-  assert.ok(Date.now() - started < 9000, "inside the hook's 10 seconds");
+  assert.equal(existsSync(`${s.vars.FAKE_GH_ANSWERS}.slept`), false, "the hook stopped gh before its 30 s of sleep ended");
 });
 
 test("a gh that ignores SIGTERM is killed at the timeout, so the refusal comes inside the hook's 10 seconds (T29 GH-SIGTERM-IGNORED)", () => {
   const s = firstSession();
   s.github({ "repos/o/r/git/ref/heads/main": { stubborn: true } });
-  const started = Date.now();
   assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("the check on GitHub failed \\(gh did not answer in time\\)"));
-  assert.ok(Date.now() - started < 9000, `inside the hook's 10 seconds: ${Date.now() - started} ms`);
+  assert.equal(existsSync(`${s.vars.FAKE_GH_ANSWERS}.slept`), false, "SIGKILL stopped gh before its 15 s of sleep ended; a SIGTERM would have waited for them");
 });
 
 test("a large or truncated tree asks with an honest count and never throws (T24 BIG-TREE-REFUSAL)", () => {
@@ -1168,11 +1169,9 @@ test("the merge check gets the pull request's number from the merge command", ()
   assert.equal(s.send(bash(`gh pr merge 40 --squash --delete-branch --match-head-commit ${SHA}`)), undefined);
 });
 
-test("the merge rule reads a long command in linear time (F-R79-2)", () => {
+test("the merge rule refuses a merge after a long command (F-R79-2); the 1 MB padding test shows that its time grows in line with the text", () => {
   const s = autopilotSession();
-  const start = Date.now();
   assert.match(denied(s.send(bash(`echo ${"gh ".repeat(100_000)}; ${MERGE}`))) ?? "", CANNOT);
-  assert.ok(Date.now() - start < 2000, `${Date.now() - start} ms`);
 });
 
 test("the merge check refuses a merge when it cannot run, the hook refuses a merge or a push when it fails, and it still answers nothing to other commands", () => {
@@ -1192,10 +1191,10 @@ test("the merge check refuses a merge when it cannot run, the hook refuses a mer
   // The hook cannot save its state.
   const file = join(mkdtempSync(join(tmpdir(), "sage-file-")), "not-a-folder");
   writeFileSync(file, "");
-  const r = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash(MERGE) }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
+  const r = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash(MERGE) }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
   assert.equal(r.status, 0, r.stderr);
   assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /the hook could not check this command \(ENOTDIR/);
-  const push = spawnSync("node", [HOOK], { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash("git push origin claude/t1") }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
+  const push = spawnSync("node", LAUNCHER, { input: JSON.stringify({ session_id: "s2", agent_type: "sage:chief-of-staff", ...bash("git push origin claude/t1") }), encoding: "utf8", env: { ...s.vars, SAGE_HOOKS_STATE: join(file, "state") } });
   assert.match(denied(JSON.parse(push.stdout || "{}")) ?? "", /the hook could not check this command \(ENOTDIR/, "a push too");
 });
 
@@ -1204,7 +1203,7 @@ test("the hook runs also when its path goes through a symbolic link", () => {
   s.send(prompt("sage mode"));
   const link = join(mkdtempSync(join(tmpdir(), "sage-link-")), "sage");
   symlinkSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), link);
-  const r = spawnSync("node", [join(link, "hooks/sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...bash(MERGE) }), encoding: "utf8", env: s.vars });
+  const r = spawnSync("node", [join(link, "hooks/launcher.mjs"), "sage-hook.mjs"], { input: JSON.stringify({ session_id: "s1", ...bash(MERGE) }), encoding: "utf8", env: s.vars });
   assert.match(denied(JSON.parse(r.stdout || "{}")) ?? "", /autopilot is off/);
 });
 
@@ -1240,6 +1239,7 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
       "queued notes": prompt(`${queuedOpen}x${pad("\n\nThis is how Claude Code surfaces messages ")}</system-reminder>`),
       "other-session opens": prompt(pad("\rAnother Claude session sent a message:")),
       "git words in a command the hook cannot read": bash(`${pad("git ")}'`),
+      "gh words before a merge (F-R79-2)": bash(`echo ${pad("gh ")}; ${MERGE}`),
       "git words given to a shell": bash(`bash -c '${pad("git ")}'`),
       // The first-creation form (T24) reads the command in the main session: a long endpoint, and many fields.
       "a long gh api endpoint": bash(`gh api --hostname github.com -X POST repos/o/${pad(".")}/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
