@@ -9,8 +9,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
-import { BLOCKS, RISKS, STATES, projectName, read, sageRoot, slug, storeDir } from "./sage.mjs";
+import { basename, join, resolve } from "node:path";
+import { BLOCKS, RISKS, STATES, projectName, projectRoot, read, sageRoot, slug, storeDir } from "./sage.mjs";
 
 const FOLDER = /^([a-z0-9-]+)-[0-9a-f]{6}$/;
 const CLOSED = ["merged", "concluded", "abandoned"];
@@ -96,6 +96,22 @@ function logbooks(root) {
   return books.sort((a, b) => a.key.localeCompare(b.key));
 }
 
+/** A name for matching: NFC, and Latin letters in lower case. */
+const fold = (s) => String(s).normalize("NFC").replace(/\p{Script=Latin}/gu, (c) => c.toLowerCase());
+
+/**
+ * The logbooks that a typed name can mean. An exact real name picks one. Else its slug matches a key, a logbook folder or
+ * a name. Returns the candidates and whether the one candidate is sure: a typed name with letters or digits that the
+ * slug drops (中文, Café) is never sure by its slug alone, so a fallback slug such as "project" never picks a project.
+ */
+function named(books, typed, want) {
+  const real = books.filter((b) => b.real && fold(b.real) === fold(typed));
+  if (real.length) return [real, real.length === 1];
+  const bySlug = books.filter((b) => [b.key, b.folder, b.name].includes(want));
+  const lossy = /(?![a-z0-9])[\p{L}\p{N}]/u.test(String(typed).toLowerCase());
+  return [bySlug, bySlug.length === 1 && !lossy];
+}
+
 /** The session's logbook: the one storeDir gives, else the one whose checkout.txt names the project, else the one with its name. */
 function sessionBook(books, project, env) {
   if (!project) return null;
@@ -148,7 +164,17 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const books = logbooks(root);
   const built = now.toISOString().slice(0, 16).replace("T", " ");
   if (!books.length) return `**sage board** · built ${built} UTC\n\nNo logbooks yet under ${root}. In a project folder, start sage mode and give the chief a task.`;
-  const known = books.map((b) => b.key).join(", ");
+  // A logbook's real name: the folder name of its checkout (checkout.txt), or of the session folder when that folder is
+  // the logbook's own project (its storeDir). Unknown otherwise. PR links come from the same folder: a folder that only
+  // shares the logbook's name gives none.
+  const own = project && books.find((b) => b.dir === storeDir(project, env));
+  for (const b of books) {
+    const home = b.checkout ?? (b === own ? projectRoot(resolve(project)) : null);
+    b.real = home ? basename(resolve(home)).normalize("NFC") : null;
+    b.repo = home ? repoOf(home) : null;
+  }
+  const label = (b) => (b.real && b.real !== b.key ? `${b.key} (${text(b.real, 40)})` : b.key);
+  const known = books.map(label).join(", ");
   let shown;
   let others = [];
   let title;
@@ -159,19 +185,17 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     if (mine) [shown, others, title] = [[mine], books.filter((b) => b !== mine), mine.key];
     else [shown, title] = [books, "all projects (this folder has no logbook)"];
   } else {
-    shown = books.filter((b) => b.key === want || b.folder === want);
+    let sure;
+    [shown, sure] = named(books, scope, want);
     if (!shown.length) return `No project named "${text(scope, 40)}". Known projects: ${known}.`;
-    title = shown.map((b) => b.key).join(", ");
+    if (!sure) return `Not sure which project "${text(scope, 40)}" is. Candidates: ${shown.map(label).join(", ")}. Type the key or the real name.`;
+    title = label(shown[0]);
   }
   const cap = want === "all" || want === "this" ? CAP.active : Infinity;
 
-  // PR links come from a logbook's checkout.txt, or from the session folder when that folder is the logbook's own project
-  // (its storeDir). A logbook that only shares the folder's name gets no links from the folder's remote.
-  const own = project && books.find((b) => b.dir === storeDir(project, env));
-  for (const b of books) b.repo = b.checkout ? repoOf(b.checkout) : b === own ? repoOf(project) : null;
   const pr = (b, t) => (!t.pr ? "no PR" : t.pr === "?" ? "PR ?" : b.repo ? `[#${t.pr}](${b.repo}/pull/${t.pr})` : `PR #${t.pr}`);
   const many = shown.length > 1;
-  const tag = (b) => (many ? `${b.key} ` : "");
+  const tag = (b) => (many ? `${label(b)} ` : "");
 
   // Needs you: open gates, then every verified pull request that is not merged. Autopilot is a per-session switch,
   // so the board cannot know that it will merge a small one: it says so, and still lists it.
@@ -203,11 +227,11 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const times = [...new Set(shown.filter((b) => last[b.folder]).map((b) => last[b.folder].at.slice(0, 16).replace("T", " ")))];
   const since = times.length === 1 ? `since ${times[0]} UTC` : times.length ? "since each project's last board" : "since the last board";
   section(`Merged ${since} (${fresh.length})`, fresh, CAP.merged);
-  if (firstFor.length) L.push(`- first board for ${firstFor.map((b) => b.key).join(", ")}: earlier merges not listed`);
+  if (firstFor.length) L.push(`- first board for ${firstFor.map(label).join(", ")}: earlier merges not listed`);
 
   // One section per project: its active tasks, the framed backlog as a count, and the next 3 framed tasks by id.
   for (const b of shown) {
-    L.push("", `**${b.key}**${b.repo ? ` · ${b.repo.replace("https://", "")}` : ""}`);
+    L.push("", `**${label(b)}**${b.repo ? ` · ${b.repo.replace("https://", "")}` : ""}`);
     if (b.error) {
       L.push(`- logbook cannot be read: ${b.error}`);
       continue;
@@ -215,14 +239,14 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     const active = b.tasks.filter((t) => !CLOSED.includes(t.state) && t.state !== "framed").sort((x, y) => n(x.id) - n(y.id));
     const framed = b.tasks.filter((t) => t.state === "framed").sort((x, y) => n(x.id) - n(y.id));
     for (const t of active.slice(0, cap)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
-    if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${b.key})`);
+    if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${label(b)})`);
     if (!active.length) L.push("- no active tasks");
     L.push(`- framed backlog: ${framed.length}${framed.length ? ` · next up (framed, in id order): ${framed.slice(0, CAP.next).map((t) => `${t.id} ${text(t.title, 30)}`).join("; ")}` : ""}`);
   }
   const elsewhere = others
     .map((b) => {
       const parts = [b.error ? "logbook cannot be read" : "", gates(b).length ? `${plural(gates(b).length, "gate")} waiting` : "", waiting(b).length ? `${plural(waiting(b).length, "PR")} waiting for your merge` : ""].filter(Boolean);
-      return parts.length ? `${b.key}: ${parts.join(", ")}` : null;
+      return parts.length ? `${label(b)}: ${parts.join(", ")}` : null;
     })
     .filter(Boolean);
   if (elsewhere.length) section("Other projects", elsewhere, elsewhere.length);

@@ -268,7 +268,7 @@ Start a message with `show board` to see the board in the chat. It is short Mark
 | --- | --- |
 | `show board` or `show board for this project` | The project of the session, with at most 8 active tasks, and one line for each other project with something waiting, for example "order-chaser: 1 gate waiting". |
 | `show board for all` or `show board for all projects` | Every project: what needs you and what runs at the top, then one short section per project, with at most 8 active tasks each ("and 3 more (show board for sage)"). |
-| `show board for sage-bot` | One project, with every active task. The name can be in any case, with `_`, `.` or a space for `-` (`sage_bot`). When two logbooks have the same name, the board shows each with its hash, for example `project-220ca5`, and takes that name. An unknown name lists the known projects. |
+| `show board for sage-bot` | One project, with every active task. Type its key or its real name (the name of its folder, in any script: `日本語`). The key can be in any case, with `_`, `.` or a space for `-` (`sage_bot`). When two logbooks have the same name, the board shows each with its hash, for example `project-220ca5`. Wherever a key shows, the real name follows it when the board knows it and it differs: `project-220ca5 (日本語)`. A name that can mean more than one project, or that the key keeps only in part (`中文` gives the key `project`), opens no board: the board lists the candidates. An unknown name lists the known projects. A trailing `?` also works: `show board?`. |
 
 The board has these parts, in this order:
 

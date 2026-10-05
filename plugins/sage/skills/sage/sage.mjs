@@ -90,7 +90,7 @@ const OPTIONS = {
   "gate add": ["question", "options", "recommend", "default"],
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
-  board: ["remember"],
+  board: ["remember", "name-hex"],
 };
 /** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
 const PR = /^\d+$/;
@@ -114,7 +114,7 @@ export function sageRoot(env = process.env) {
 }
 
 /** The main checkout of a project, also from inside one of its worktrees. */
-function projectRoot(path) {
+export function projectRoot(path) {
   try {
     const common = execFileSync("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     return dirname(common);
@@ -578,10 +578,13 @@ export function sage(argv, env = process.env) {
     return [...Object.keys(c).filter((k) => !models.includes(k)), ...models].map((k) => `${k}=${c[k]}`).join(" "); // the numbers, then the models
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
-  // The board reads every logbook and takes no lock. --remember no leaves board.json as it is.
+  // The board reads every logbook and takes no lock. --remember no leaves board.json as it is. --name-hex gives the scope
+  // as the hex of its UTF-8 bytes, so that the hook's command line holds no text that the owner typed.
   if (cmd === "board") {
-    if (pos.length > 1 || !["yes", "no", undefined].includes(opt.remember)) refuse("board takes one scope (this, all or a project's name) and --remember yes or no");
-    return board({ scope: pos[0], project, env, save: opt.remember !== "no" });
+    const hex = opt["name-hex"];
+    if (pos.length + (hex === undefined ? 0 : 1) > 1 || !["yes", "no", undefined].includes(opt.remember) || (hex !== undefined && !/^(?:[0-9a-f]{2})+$/.test(hex)))
+      refuse("board takes one scope (this, all or a project's name, or --name-hex with the name's UTF-8 bytes in hex) and --remember yes or no");
+    return board({ scope: hex === undefined ? pos[0] : Buffer.from(hex, "hex").toString("utf8"), project, env, save: opt.remember !== "no" });
   }
   const dir = storeDir(project, env);
   const repair = cmd === "logbook" && pos[0] === "repair";

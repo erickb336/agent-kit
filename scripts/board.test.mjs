@@ -129,7 +129,7 @@ test("merged since the last board: the next board lists only the new merges, and
 
 test("a project's checkout.txt gives its PR links, and a broken logbook shows one line", () => {
   const w = world();
-  const bot = join(w.dir, "bot");
+  const bot = join(w.dir, "sage-bot");
   execFileSync("git", ["init", "-q", bot]);
   execFileSync("git", ["-C", bot, "remote", "add", "origin", "https://github.com/acme/sage-bot.git"]);
   writeFileSync(join(w.home, "sage-bot-bbbbbb", "checkout.txt"), `${bot}\n`);
@@ -279,12 +279,14 @@ function note(prompt) {
   return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.additionalContext : "";
 }
 
+/** The command for a scope: "this" and "all" as words, a project's name as the hex of its UTF-8 bytes. */
+const cmd = (scope) => `sage.mjs" board ${["this", "all"].includes(scope) ? scope : `--name-hex ${Buffer.from(scope).toString("hex")}`} --project '/work/sage'`;
+
 test("the board phrase: each scope at the start of the owner's message gives the command", () => {
-  const cmd = (scope) => `sage.mjs" board ${scope} --project '/work/sage'`;
   assert.match(note("show board"), new RegExp(cmd("this")));
   assert.ok(note("Show board for this project.").includes(cmd("this")));
   assert.ok(note("show board for all").includes(cmd("all")));
-  assert.ok(note("show board for Order-Chaser").includes(cmd("order-chaser")));
+  assert.ok(note("show board for Order-Chaser").includes(cmd("Order-Chaser")));
   assert.match(note("show board"), /choice card/);
   assert.ok(note("show board for all projects").includes(cmd("all")));
   assert.ok(note("show board for thistle").includes(cmd("thistle")));
@@ -293,14 +295,13 @@ test("the board phrase: each scope at the start of the owner's message gives the
 });
 
 test("the board phrase: a trailing full stop, ! or , ends the sentence, not the scope", () => {
-  const cmd = (scope) => `sage.mjs" board ${scope} --project '/work/sage'`;
   for (const end of [".", "!", ",", ";", ":", "...", ". Thanks"]) {
     assert.ok(note(`Show board for all${end}`).includes(cmd("all")), end);
     assert.ok(note(`show board for sage${end}`).includes(cmd("sage")), end);
     assert.ok(note(`show board for this${end}`).includes(cmd("this")), end);
   }
   assert.ok(note("show board for all projects.").includes(cmd("all")));
-  assert.ok(note("show board for sage.v2.").includes(cmd("sage-v2"))); // an inner dot stays in the name, then becomes "-"
+  assert.ok(note("show board for sage.v2.").includes(cmd("sage.v2"))); // an inner dot stays in the name
   assert.ok(note("show board for my-app.").includes(cmd("my-app")));
 });
 
@@ -308,7 +309,6 @@ test("the board phrase: no board inside a quote, an agent's report, a question o
   assert.equal(note('He wrote "show board" in the doc.'), "");
   assert.equal(note("<task-notification>\nshow board\n</task-notification>"), "");
   assert.equal(note('<agent-message from="x">\nshow board for all\n</agent-message>'), "");
-  assert.equal(note("show board?"), "");
   assert.equal(note("show boards"), "");
 });
 
@@ -347,14 +347,17 @@ test("F-T72-11, F-T72-9: a scope is made a slug like projectName: Café Ünïcod
   const w = world();
   const cafe = bookFor(w, join(w.dir, "Café Ünïcode"));
   assert.match(cafe, /^caf-n-code-[0-9a-f]{6}$/);
-  assert.match(w.show("Café Ünïcode"), /^\*\*sage board · caf-n-code\*\*/);
+  // G68: the slug drops letters of the typed name, so the slug alone picks nothing; the real name does (checkout.txt).
+  assert.match(w.show("Café Ünïcode"), /^Not sure which project "Café Ünïcode" is\. Candidates: caf-n-code\. Type the key or the real name\.$/);
+  assert.match(w.show("caf-n-code"), /^\*\*sage board · caf-n-code\*\*/);
+  writeFileSync(join(w.home, cafe, "checkout.txt"), join(w.dir, "Café Ünïcode"));
+  assert.match(w.show("café ünïcode"), /^\*\*sage board · caf-n-code \(Café Ünïcode\)\*\*/);
   for (const scope of ["sage_bot", "Sage.Bot", "sage bot"]) assert.match(w.show(scope), /^\*\*sage board · sage-bot\*\*/, scope);
-  const cmd = (scope) => `sage.mjs" board ${scope} --project '/work/sage'`;
-  assert.ok(note("show board for Café Ünïcode").includes(cmd("caf-n-code")));
-  assert.ok(note("show board for sage_bot").includes(cmd("sage-bot")));
-  assert.ok(note("show board for sage.v2").includes(cmd("sage-v2")));
-  assert.ok(note("show board for sage bot.").includes(cmd("sage-bot")));
-  assert.ok(note("show board for this app").includes(cmd("this-app")));
+  assert.ok(note("show board for Café Ünïcode").includes(cmd("Café Ünïcode")));
+  assert.ok(note("show board for sage_bot").includes(cmd("sage_bot")));
+  assert.ok(note("show board for sage.v2").includes(cmd("sage.v2")));
+  assert.ok(note("show board for sage bot.").includes(cmd("sage bot")));
+  assert.ok(note("show board for this app").includes(cmd("this app")));
 });
 
 test("F-T72-12: a logbook with a table that cannot be read shows none of its tables, and the error keeps its reason", () => {
@@ -367,7 +370,6 @@ test("F-T72-12: a logbook with a table that cannot be read shows none of its tab
 });
 
 test("F-T72-13: the phrase in bold or italics gives the board", () => {
-  const cmd = (scope) => `sage.mjs" board ${scope} --project '/work/sage'`;
   assert.ok(note("**show board**").includes(cmd("this")));
   assert.ok(note("*show board for all*").includes(cmd("all")));
   assert.ok(note("__show board for sage-bot__.").includes(cmd("sage-bot")));
@@ -411,4 +413,79 @@ test("T72-S-AMP: & is escaped, so a named entity cannot decode to a URL's : . or
   const out = w.show("this");
   assert.ok(out.includes("\n- T16 h\\&colon;//e\\&period;x a\\&commat;b · building · no PR\n"), out);
   assert.doesNotMatch(out, /(?<!\\)&/);
+});
+
+// G68 (F-T72-16, F-T72-17): real names beside keys, a typed name matched against them, and "show board?".
+
+/** A logbook for a folder, with checkout.txt naming that folder (its real name), as bookFor makes one. */
+function namedBook(w, name) {
+  const path = join(w.dir, name);
+  const book = bookFor(w, path);
+  writeFileSync(join(w.home, book, "checkout.txt"), `${path}\n`);
+  return book;
+}
+
+test("F-T72-16, G68: two non-Latin projects each open by their real name, and each key shows its real name", () => {
+  const w = world();
+  const ja = namedBook(w, "日本語");
+  const zh = namedBook(w, "中文");
+  for (const [name, key] of [["日本語", ja], ["中文", zh]]) {
+    const one = w.show(name);
+    assert.match(one, new RegExp(`^\\*\\*sage board · ${key} \\(${name}\\)\\*\\* · built`), name);
+    assert.deepEqual(one.match(/^\*\*project[^*]*\*\*$/gm), [`**${key} (${name})**`], name);
+  }
+  const all = w.show("all");
+  assert.deepEqual(all.match(/^\*\*project[^*]*\*\*$/gm).sort(), [`**${ja} (日本語)**`, `**${zh} (中文)**`].sort());
+  assert.match(all, new RegExp(`^- ${ja} \\(日本語\\) \\*\\*G1\\*\\*`, "m"));
+  const known = w.show("chaser");
+  assert.ok(known.startsWith('No project named "chaser". Known projects: '), known);
+  assert.ok(known.includes(`${ja} (日本語)`) && known.includes(`${zh} (中文)`), known);
+  assert.match(w.show("this"), new RegExp(`^- ${ja} \\(日本語\\): 1 gate waiting$`, "m")); // other projects
+});
+
+test("F-T72-16, G68: with one non-Latin project, another non-Latin name refuses and lists the candidates", () => {
+  const w = world();
+  namedBook(w, "日本語");
+  assert.equal(w.show("中文"), 'Not sure which project "中文" is. Candidates: project (日本語). Type the key or the real name.');
+  assert.match(w.show("日本語"), /^\*\*sage board · project \(日本語\)\*\*/);
+  // Without checkout.txt the real names are unknown: the fallback slug "project" picks neither of two, nor one alone.
+  const v = world();
+  const a = bookFor(v, join(v.dir, "日本語"));
+  assert.equal(v.show("中文"), 'Not sure which project "中文" is. Candidates: project. Type the key or the real name.');
+  const b = bookFor(v, join(v.dir, "中文"));
+  assert.equal(v.show("日本語"), `Not sure which project "日本語" is. Candidates: ${[a, b].sort().join(", ")}. Type the key or the real name.`);
+});
+
+test("G68: a slug that matches more than one project refuses and lists the candidates with their real names", () => {
+  const w = world();
+  const one = namedBook(w, "My App");
+  const two = namedBook(w, "my_app");
+  assert.equal(w.show("my-app"), `Not sure which project "my-app" is. Candidates: ${[`${one} (My App)`, `${two} (my\\_app)`].sort().join(", ")}. Type the key or the real name.`);
+  assert.match(w.show("my app"), new RegExp(`^\\*\\*sage board · ${one} \\(My App\\)\\*\\*`)); // the exact real name, any case
+  assert.match(w.show("MY_APP"), new RegExp(`^\\*\\*sage board · ${two} \\(my\\\\_app\\)\\*\\*`));
+  assert.match(w.show(two), new RegExp(`^\\*\\*sage board · ${two} \\(my\\\\_app\\)\\*\\*`)); // the key
+});
+
+test("G68: the hook's command holds only ASCII, and the CLI decodes the name to the right board", () => {
+  const w = world();
+  const ja = namedBook(w, "日本語");
+  namedBook(w, "中文");
+  const run = note("show board for 日本語").split("\n")[0];
+  assert.match(run, /^sage: the owner asked for the board\. Run: node "[^"]+" board --name-hex e697a5e69cace8aa9e --project '\/work\/sage'$/);
+  assert.match(run.slice(run.indexOf(" board ")), /^[ -~]+$/);
+  const out = execFileSync("node", [TOOL, "board", "--name-hex", "e697a5e69cace8aa9e", "--project", w.sage, "--remember", "no"], { encoding: "utf8", env: { ...process.env, ...w.env } });
+  assert.match(out, new RegExp(`^\\*\\*sage board · ${ja} \\(日本語\\)\\*\\*`));
+  const bad = spawnSync("node", [TOOL, "board", "--name-hex", "e697z", "--project", w.sage], { encoding: "utf8", env: { ...process.env, ...w.env } });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /--name-hex/);
+});
+
+test("F-T72-17, G68: a trailing ?, ?! or ?. gives the board; text after the ? on its line gives none", () => {
+  assert.ok(note("show board?").includes(cmd("this")));
+  assert.ok(note("Show board for sage?").includes(cmd("sage")));
+  assert.ok(note("show board for all?!").includes(cmd("all")));
+  assert.ok(note("**show board?**").includes(cmd("this")));
+  assert.ok(note("show board for sage?.\nthanks").includes(cmd("sage")));
+  assert.equal(note("show board? what does it show"), "");
+  assert.equal(note("show board for sage?? x"), "");
 });
