@@ -61,11 +61,11 @@ test("show board: the session's project, and one line per other project with som
       "- first board for sage: earlier merges not listed",
       "",
       "**sage** · github.com/acme/sage",
+      "- T6 Sample\\: the config reader · reviewing · [#10](https://github.com/acme/sage/pull/10) · round 2",
+      "- T5 Sample\\: a hook change in progress · building · no PR",
       "- T2 Sample\\: the chat board · verified · [#7](https://github.com/acme/sage/pull/7)",
       "- T3 Sample\\: a docs fix · verified · [#8](https://github.com/acme/sage/pull/8) · round 1",
       "- T4 Sample\\: the large rebuild · pr-ready · [#9](https://github.com/acme/sage/pull/9)",
-      "- T5 Sample\\: a hook change in progress · building · no PR",
-      "- T6 Sample\\: the config reader · reviewing · [#10](https://github.com/acme/sage/pull/10) · round 2",
       "- framed backlog: 4 · next up (framed, in id order): T7 Sample\\: next task one; T8 Sample\\: next task two; T9 Sample\\: next task three",
       "",
       "**Other projects**",
@@ -130,12 +130,23 @@ test("merged since the last board: the next board lists only the new merges, and
   assert.match(out, /\*\*Merged since 2026-10-05 19:00 UTC \(1\)\*\*\n- T2 \[#7\]\(https:\/\/github\.com\/acme\/sage\/pull\/7\) Sample\\: the chat board\n\n/);
 });
 
-test("a project's checkout.txt gives its PR links, and a broken logbook shows one line", () => {
-  const w = world();
+/**
+ * A git checkout "sage-bot" with a GitHub remote, the fixture's sage-bot logbook moved to the folder that storeDir gives
+ * it, and checkout.txt naming the checkout, as the state tool writes it. Returns the checkout and the checkout.txt path.
+ */
+function botCheckout(w) {
   const bot = join(w.dir, "sage-bot");
   execFileSync("git", ["init", "-q", bot]);
   execFileSync("git", ["-C", bot, "remote", "add", "origin", "https://github.com/acme/sage-bot.git"]);
-  writeFileSync(join(w.home, "sage-bot-bbbbbb", "checkout.txt"), `${bot}\n`);
+  const book = join(w.home, basename(storeDir(bot, w.env)));
+  renameSync(join(w.home, "sage-bot-bbbbbb"), book);
+  writeFileSync(join(book, "checkout.txt"), `${bot}\n`);
+  return { bot, file: join(book, "checkout.txt") };
+}
+
+test("a project's checkout.txt gives its PR links, and a broken logbook shows one line", () => {
+  const w = world();
+  const { bot } = botCheckout(w);
   rmSync(join(w.home, "order-chaser-cccccc", "runs.tsv"));
   const out = w.show("all");
   assert.match(out, /\*\*sage-bot\*\* · github\.com\/acme\/sage-bot/);
@@ -249,7 +260,7 @@ test("the all-projects board shows at most 8 active tasks per project, then a co
   const w = world();
   for (let i = 20; i < 25; i++) add(w, w.book, "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
   const all = w.show("all");
-  assert.match(all, /\n- T6 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 [^\n]*\n- and 2 more \(show board for sage\)\n- framed backlog: 4/);
+  assert.match(all, /\n- T4 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 [^\n]*\n- and 2 more \(show board for sage\)\n- framed backlog: 4/);
   assert.doesNotMatch(all, /T23 Sample/);
 });
 
@@ -257,7 +268,7 @@ test("the default board shows at most 8 active tasks with the phrase for the res
   const w = world();
   for (let i = 20; i < 27; i++) add(w, w.book, "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
   const out = w.show("this");
-  assert.match(out, /\*\*sage\*\* · github\.com\/acme\/sage\n- T2 [^\n]*\n- T3 [^\n]*\n- T4 [^\n]*\n- T5 [^\n]*\n- T6 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 Sample\\: busy 22 · building · no PR\n- and 4 more \(show board for sage\)\n- framed backlog: 4/);
+  assert.match(out, /\*\*sage\*\* · github\.com\/acme\/sage\n- T6 [^\n]*\n- T5 [^\n]*\n- T2 [^\n]*\n- T3 [^\n]*\n- T4 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 Sample\\: busy 22 · building · no PR\n- and 4 more \(show board for sage\)\n- framed backlog: 4/);
   assert.doesNotMatch(out, /T23 Sample/);
   const named = w.show("sage");
   assert.match(named, /- T22 [^\n]*\n- T23 [^\n]*\n- T24 [^\n]*\n- T25 [^\n]*\n- T26 Sample\\: busy 26 · building · no PR\n- framed backlog: 4/);
@@ -548,11 +559,7 @@ function timedBoard(w) {
 
 test("R452: a FIFO, a link to /dev/zero, a folder or a 1 MB checkout.txt gives the board in under 1 s CPU, that logbook without a checkout", () => {
   const w = world();
-  const bot = join(w.dir, "sage-bot");
-  execFileSync("git", ["init", "-q", bot]);
-  execFileSync("git", ["-C", bot, "remote", "add", "origin", "https://github.com/acme/sage-bot.git"]);
-  const file = join(w.home, "sage-bot-bbbbbb", "checkout.txt");
-  writeFileSync(file, `${bot}\n`);
+  const { bot, file } = botCheckout(w);
   assert.match(timedBoard(w).out, /^\*\*sage-bot\*\* · github\.com\/acme\/sage-bot$/m); // a regular checkout.txt names the checkout
   for (const [kind, make] of [
     ["fifo", () => execFileSync("mkfifo", [file])],
@@ -729,4 +736,69 @@ test("T72-C5-EMPTYTASK: a gate with no task prints no ()", () => {
 test("T72-C5-STATECMD: the board's command in the hook's note is the state tool's unquoted spelling", () => {
   const run = note("show board").split("\n")[0];
   assert.equal(run, `sage: the owner asked for the board. Run: node ${TOOL} board this --project '/work/sage'`);
+});
+
+// The board follow-ups (T137, T135, T139).
+
+test("T137, G78: the default board lists the tasks with a PR in review first, then by the latest change, then by id", () => {
+  const w = world();
+  const dir = join(w.home, w.book);
+  const table = (name, head, rows) => writeFileSync(join(dir, `${name}.tsv`), [head, ...rows].map((r) => r.join("\t")).join("\n") + "\n");
+  const task = (id, state, pr = "") => [id, `Sample: task ${id}`, "small", "", "build", state, id.toLowerCase(), pr, "0", ""];
+  table("tasks", ["id", "title", "size", "risk", "route", "state", "branch", "pr", "round", "keys"], [
+    ...["T1", "T2", "T3"].map((id) => task(id, "verifying")), // old tasks without a PR
+    ...["T4", "T5", "T6", "T7", "T8"].map((id) => task(id, "building")),
+    task("T9", "reviewing", "21"),
+    task("T10", "reviewing", "22"),
+  ]);
+  const run = (id, t, started, ended = "") => [id, t, "implementer", "0", "", t.toLowerCase(), "done", "", "", started, ended];
+  table("runs", ["id", "task", "role", "round", "candidate", "branch", "status", "tokens", "report", "started", "ended"], [
+    run("R1", "T4", "2026-10-05T08:00:00Z", "2026-10-05T09:00:00Z"), // ended counts
+    run("R2", "T5", "2026-10-05T11:00:00Z"),
+    run("R3", "T7", "2026-10-05T13:00:00Z"),
+    run("R4", "T10", "2026-10-05T12:00:00Z"),
+    run("R5", "T8", "not a time"), // ignored: T8 has no time
+  ]);
+  table("ledger", ["task", "pr", "sha", "kind", "cycle", "run", "at"], [["T9", "21", "a".repeat(40), "code-clean", "1", "", "2026-10-05T10:00:00Z"]]);
+  table("decisions", ["at", "task", "decision", "why"], [["2026-10-05T17:00:00Z", "T1", "x", "y"], ["2026-10-05T18:00:00Z", "T3", "x", "y"]]);
+  table("gates", ["id", "task", "question", "options", "recommendation", "default", "answer", "at"], [["G1", "T6", "q", "a|b", "a", "a", "a", "2026-10-05T07:00:00Z"]]);
+  const rows = (out) => out.split("**sage** · github.com/acme/sage\n")[1].split("\n- framed")[0];
+  assert.equal(
+    rows(w.show("this")),
+    [
+      "- T10 Sample\\: task T10 · reviewing · [#22](https://github.com/acme/sage/pull/22)",
+      "- T9 Sample\\: task T9 · reviewing · [#21](https://github.com/acme/sage/pull/21)",
+      "- T3 Sample\\: task T3 · verifying · no PR",
+      "- T1 Sample\\: task T1 · verifying · no PR",
+      "- T7 Sample\\: task T7 · building · no PR",
+      "- T5 Sample\\: task T5 · building · no PR",
+      "- T4 Sample\\: task T4 · building · no PR",
+      "- T6 Sample\\: task T6 · building · no PR",
+      "- and 2 more (show board for sage)",
+    ].join("\n"),
+  );
+  assert.match(rows(w.show("sage")), /- T6 [^\n]*\n- T2 [^\n]*\n- T8 [^\n]*$/); // the board of one project, in the same order: no time, by id
+});
+
+test("T139: a checkout.txt that names the folder of another logbook gives neither its name nor its PR links", () => {
+  const w = world();
+  add(w, "sage-bot-bbbbbb", "tasks", ["T3", "Sample: bot review", "small", "", "build", "reviewing", "b3", "3", "0", ""]);
+  writeFileSync(join(w.home, "sage-bot-bbbbbb", "checkout.txt"), `${w.sage}\n`); // the sage checkout: storeDir gives the sage logbook
+  const out = w.show("all");
+  assert.match(out, /^\*\*sage-bot\*\*\n- T3 Sample\\: bot review · reviewing · PR #3$/m);
+  assert.match(out, /^  Answer it in a session of sage-bot: this board does not know its folder\.$/m);
+  assert.doesNotMatch(out, /sage-bot \(sage\)|acme\/sage\/pull\/3\)/);
+  assert.match(w.show("sage"), /^\*\*sage\*\* · github\.com\/acme\/sage$/m); // the sage logbook keeps its own name and links
+});
+
+test("T135: --name-hex refuses upper-case hex and bytes that are not UTF-8, and decodes the lower-case form", () => {
+  const w = world();
+  const hex = (h) => spawnSync("node", [TOOL, "board", "--name-hex", h, "--project", w.sage, "--remember", "no"], { encoding: "utf8", env: { ...process.env, ...w.env } });
+  for (const bad of ["6F6B", "c328"]) {
+    const r = hex(bad);
+    assert.notEqual(r.status, 0, bad);
+    assert.match(r.stderr, /--name-hex/, bad);
+    assert.equal(r.stdout, "", bad);
+  }
+  assert.equal(hex("6f6b").stdout, 'No project named "ok". Known projects: order-chaser, sage, sage-bot.\n'); // the same bytes in lower case: "ok"
 });
