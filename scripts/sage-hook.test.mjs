@@ -737,9 +737,9 @@ test("T81 (gate G52): a config.json that is not valid JSON makes the autopilot n
   const merge = () => denied(s.send(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`)));
   writeFileSync(f, '{"cycles.large": 5,}'); // the trailing comma of T59 QA (R347)
   const note = context(s.send(prompt("autopilot on")));
-  assert.equal(note.split("\n").find((l) => l.startsWith("sage: autopilot")), `sage: autopilot is on, but no merge happens until the config is fixed: ${f} is not valid JSON. Fix it, or remove it for the defaults.`);
+  assert.equal(note.split("\n").find((l) => l.startsWith("sage: autopilot")), `sage: autopilot is on, but no merge happens until the config is fixed: ${f} is not valid JSON at line 1, column 20. Fix it, or remove it for the defaults: its other keys are lost too.`);
   assert.doesNotMatch(note, /clean cycle/, "the note gives no counts from defaults");
-  assert.equal(merge(), `sage: the merge check refuses: the merge check refuses every merge, because ${f} is not valid JSON. Fix it, or remove it for the defaults.`);
+  assert.equal(merge(), `sage: the merge check refuses: the merge check refuses every merge, because ${f} is not valid JSON at line 1, column 20. Fix it, or remove it for the defaults: its other keys are lost too.`);
   rmSync(f);
   assert.equal(merge(), undefined, "without config.json the defaults count: 1 clean cycle for a small task");
 });
@@ -751,7 +751,7 @@ test("F-T81: a config.json that is a link to a missing file makes the autopilot 
   const f = join(s.vars.SAGE_HOME, "config.json");
   symlinkSync(join(s.vars.SAGE_HOME, "nowhere.json"), f);
   const note = context(s.send(prompt("autopilot on")));
-  assert.equal(note.split("\n").find((l) => l.startsWith("sage: autopilot")), `sage: autopilot is on, but no merge happens until the config is fixed: ${f} is a link to a missing file. Fix it, or remove it for the defaults.`);
+  assert.equal(note.split("\n").find((l) => l.startsWith("sage: autopilot")), `sage: autopilot is on, but no merge happens until the config is fixed: ${f} is a link to a missing file. Fix it, or remove it for the defaults: its other keys are lost too.`);
 });
 
 test("F-T81-2: while config.json is broken, the agent cap refuses every new sage agent and names the file", () => {
@@ -760,9 +760,19 @@ test("F-T81-2: while config.json is broken, the agent cap refuses every new sage
   const f = join(s.vars.SAGE_HOME, "config.json");
   mkdirSync(s.vars.SAGE_HOME, { recursive: true });
   writeFileSync(f, '{"cap_total": 2,}');
-  assert.equal(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu1"))), `sage: the agent cap refuses every new agent while config.json is broken: ${f} is not valid JSON. Fix it, or remove it for the defaults.`);
+  assert.equal(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu1"))), `sage: the agent cap refuses every new agent while config.json is broken: ${f} is not valid JSON at line 1, column 17. Fix it, or remove it for the defaults: its other keys are lost too.`);
   rmSync(f);
   assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "tu2")), undefined, "without config.json the default cap counts");
+});
+
+test("F-T81-S1: while config.json is a link through a regular file, the hook refuses every new sage agent", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const f = join(s.vars.SAGE_HOME, "config.json");
+  mkdirSync(s.vars.SAGE_HOME, { recursive: true });
+  writeFileSync(join(s.vars.SAGE_HOME, "a-file"), "");
+  symlinkSync(join(s.vars.SAGE_HOME, "a-file", "config.json"), f);
+  assert.equal(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu1"))), `sage: the agent cap refuses every new agent while config.json is broken: ${f} is a link to a missing file. Fix it, or remove it for the defaults: its other keys are lost too.`);
 });
 
 test("F-T47-1: the autopilot note gives the clean cycles that the merge check asks, for a small, a large and a risky task", () => {

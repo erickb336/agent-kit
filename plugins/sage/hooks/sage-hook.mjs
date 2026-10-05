@@ -195,7 +195,7 @@ export function handle(input, state, slots) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
     if (missing.length) return deny(event, `the brief has no ${missing.join(", ")}. Every brief has all of ${BRIEF_FIELDS.join(", ")}, each at the start of a line. A tiny task may keep each field to one line.`);
     const caps = stateTool.config();
-    if (caps.broken) return deny(event, `the agent cap refuses every new agent while config.json is broken: ${caps.broken} Fix it, or remove it for the defaults.`); // F-T81-2: no default cap counts
+    if (caps.broken) return deny(event, `the agent cap refuses every new agent while config.json is broken: ${stateTool.configProblem(caps)}`); // F-T81-2: no default cap counts
     const project = input.cwd ? stateTool.projectName(input.cwd) : "other";
     const cap = caps[`cap.${project}`] ?? caps.max_agents;
     const r = slots.take(project, cap, caps.cap_total, input.tool_use_id ?? String(Date.now()));

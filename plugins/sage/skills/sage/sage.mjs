@@ -184,35 +184,42 @@ function readRegular(path) {
 }
 
 /**
- * config.json as an object, or {} when it is missing. It never waits. A file that is not valid JSON (also an empty one), is
- * not one JSON object, or cannot be read (not a regular file, a link to a missing file, no permission) refuses with its path (gate G52): a default
- * would ask fewer cycles than the owner meant, and a write would replace the owner's keys.
+ * config.json as an object, or {} when it is missing. It never waits. A file that is not valid JSON (also an empty one,
+ * or one that starts with a BOM), is not one JSON object, or cannot be read (not a regular file, a link to a missing file
+ * or a loop, no permission) refuses with its path (gate G52): a default would ask fewer cycles than the owner meant, and a
+ * write would replace the owner's keys. A JSON error gives its line and column.
  */
 function saved(env) {
-  const file = join(sageRoot(env), "config.json");
+  const root = sageRoot(env);
+  const file = join(root, "config.json");
   let text;
   try {
     text = readRegular(file);
   } catch (e) {
-    if (e.code === "ENOTDIR") return {}; // the sage root is not a folder: no config.json is there, and the merge check names the root
-    refuse(`${file} ${e instanceof Refusal ? "is not a regular file" : `cannot be read (${e.code ?? e.message})`}.`); // readRegular refuses only a file that is not regular
+    if (e.code !== "ENOTDIR") refuse(`${file} ${e instanceof Refusal ? "is not a regular file" : CANNOT[e.code] ?? `cannot be read (${e.code ?? e.message})`}.`); // readRegular refuses only a file that is not regular
+    if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) return {}; // the sage root is not a folder: no config.json is there, and the merge check names the root
   }
   if (text === undefined) {
-    if (lstatSync(file, { throwIfNoEntry: false })) refuse(`${file} is a link to a missing file.`); // F-T81-1: not a missing config.json, so no defaults
+    if (lstatSync(file, { throwIfNoEntry: false })) refuse(`${file} is a link to a missing file.`); // F-T81-1, F-T81-S1 (a link through a regular file): not a missing config.json, so no defaults
     return {};
   }
+  if (text.startsWith("\ufeff")) refuse(`${file} starts with a byte-order mark (BOM). Save it as plain UTF-8 without a BOM.`);
   let value;
   try {
     value = JSON.parse(text);
-  } catch {
-    refuse(`${file} is not valid JSON.`);
+  } catch (e) {
+    const at = Number(/at position (\d+)/.exec(e.message)?.[1] ?? text.length); // no position: the text ended too early
+    const lines = text.slice(0, at).split("\n");
+    refuse(`${file} is not valid JSON at line ${lines.length}, column ${lines.at(-1).length + 1}.`);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) refuse(`${file} is not valid JSON for sage: it must be one object of "key": value pairs.`);
   return value;
 }
 
+/** The plain words for an error code of a config.json that cannot be read. */
+const CANNOT = { EACCES: "is there, but sage cannot read it (permission)", EPERM: "is there, but sage cannot read it (permission)", ELOOP: "is a link loop" };
 /** The fix for a broken config.json. */
-const FIX = "Fix it, or remove it for the defaults.";
+const FIX = "Fix it, or remove it for the defaults: its other keys are lost too.";
 /** The keys that guard a merge: a value there with no valid form reads as "invalid", and refuses every merge (fail closed). */
 const GUARDS = (key) => key.startsWith("cycles.") || key === "autopilot.window";
 /** The form of a key that guards a merge, for the refusal. */

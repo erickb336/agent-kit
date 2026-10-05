@@ -712,7 +712,7 @@ test("S7: config and the merge check read only regular files and never throw or 
   const f = join(s.home, "config.json");
   execFileSync("mkfifo", [f]);
   const out = [s.no("config"), s.no("merge-check", "--sha", SHA)]; // a read that waited on the FIFO would hang until the 10 s timeout, and fail
-  assert.deepEqual(out, [`sage: ${f} is not a regular file. The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults.`, `sage: the merge check refuses every merge, because ${f} is not a regular file. Fix it, or remove it for the defaults.`], "T81: a config.json that cannot be read refuses like one that is not valid JSON");
+  assert.deepEqual(out, [`sage: ${f} is not a regular file. The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults: its other keys are lost too.`, `sage: the merge check refuses every merge, because ${f} is not a regular file. Fix it, or remove it for the defaults: its other keys are lost too.`], "T81: a config.json that cannot be read refuses like one that is not valid JSON");
   rmSync(f);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
@@ -1684,20 +1684,20 @@ test("T81 (gate G52): a config.json that is not valid JSON, or not one object, r
   s.ok("task", "add", "--title", "t", "--size", "small");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "a missing config.json gives the defaults");
-  const notJson = `${f} is not valid JSON.`;
+  const notJson = (at) => `${f} is not valid JSON at ${at}.`;
   const notObject = `${f} is not valid JSON for sage: it must be one object of "key": value pairs.`;
-  for (const [text, why] of [['{"cycles.large":5,}', notJson], ["", notJson], [" \n\t ", notJson], ["[]", notObject], ['"cycles.large=5"', notObject], ["null", notObject], ["3", notObject]]) {
+  for (const [text, why] of [['{"cycles.large":5,}', notJson("line 1, column 19")], ['{\n  "cycles.large": 5,\n}', notJson("line 3, column 1")], ["", notJson("line 1, column 1")], [" \n\t ", notJson("line 2, column 3")], ["[]", notObject], ['"cycles.large=5"', notObject], ["null", notObject], ["3", notObject]]) {
     writeFileSync(f, text);
     const was = `config.json ${JSON.stringify(text)}`;
-    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why} Fix it, or remove it for the defaults.`, was);
-    assert.equal(s.no("config"), `sage: ${why} The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults.`, was);
-    assert.equal(s.no("config", "max_rounds=4"), `sage: ${why} config writes nothing, so that no key in it is lost. Fix it, or remove it for the defaults.`, was);
+    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why} Fix it, or remove it for the defaults: its other keys are lost too.`, was);
+    assert.equal(s.no("config"), `sage: ${why} The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults: its other keys are lost too.`, was);
+    assert.equal(s.no("config", "max_rounds=4"), `sage: ${why} config writes nothing, so that no key in it is lost. Fix it, or remove it for the defaults: its other keys are lost too.`, was);
     assert.equal(readFileSync(f, "utf8"), text, `${was}: the refused write leaves the file as it was`);
   }
   writeFileSync(f, '{"max_rounds": 5}');
   chmodSync(f, 0o000);
-  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${f} cannot be read (EACCES). Fix it, or remove it for the defaults.`, "a file that a permission keeps shut");
-  assert.equal(s.no("config", "max_rounds=4"), `sage: ${f} cannot be read (EACCES). config writes nothing, so that no key in it is lost. Fix it, or remove it for the defaults.`);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${f} is there, but sage cannot read it (permission). Fix it, or remove it for the defaults: its other keys are lost too.`, "a file that a permission keeps shut");
+  assert.equal(s.no("config", "max_rounds=4"), `sage: ${f} is there, but sage cannot read it (permission). config writes nothing, so that no key in it is lost. Fix it, or remove it for the defaults: its other keys are lost too.`);
   chmodSync(f, 0o600);
   assert.equal(readFileSync(f, "utf8"), '{"max_rounds": 5}', "the refused write kept the key max_rounds");
   rmSync(f);
@@ -1711,8 +1711,8 @@ test("F-T81-1: a config.json that is a link to a missing file refuses every merg
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   symlinkSync(join(s.home, "nowhere.json"), f);
   const why = `${f} is a link to a missing file.`;
-  assert.equal(s.no("config"), `sage: ${why} The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults.`);
-  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why} Fix it, or remove it for the defaults.`);
+  assert.equal(s.no("config"), `sage: ${why} The merge check refuses every merge until it is fixed. Fix it, or remove it for the defaults: its other keys are lost too.`);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why} Fix it, or remove it for the defaults: its other keys are lost too.`);
   rmSync(f);
   assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "without the link, the defaults count");
 });
@@ -1725,7 +1725,7 @@ test("F-T81-2: while config.json is broken, run add and round refuse and name th
   s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "crash");
   s.ok("finding", "triage", "T1", "F-T1-1", "fix");
   writeFileSync(f, '{"cap_total": 2,}');
-  const why = `sage: ${f} is not valid JSON. Fix it, or remove it for the defaults.`;
+  const why = `sage: ${f} is not valid JSON at line 1, column 17. Fix it, or remove it for the defaults: its other keys are lost too.`;
   assert.equal(s.no("run", "add", "T1", "--role", "qa"), why, "no default model counts");
   assert.equal(s.no("round", "T1"), why, "no default max_rounds counts");
   assert.match(s.ok("task", "T1"), /^T1 reviewing/, "the task did not move");
@@ -1734,6 +1734,37 @@ test("F-T81-2: while config.json is broken, run add and round refuse and name th
   rmSync(f);
   assert.match(s.ok("run", "add", "T1", "--role", "qa"), /^R1 running · qa on T1/);
   assert.match(s.ok("round", "T1"), /^T1 repairing · round 1 of 3/);
+});
+
+test("F-T81-S1: a config.json that is a link through a regular file refuses merge-check, run add and round, and status still reads", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  writeFileSync(join(s.home, "a-file"), "");
+  symlinkSync(join(s.home, "a-file", "config.json"), f); // the open fails with ENOTDIR, as for a sage root that is a file
+  const why = `${f} is a link to a missing file. Fix it, or remove it for the defaults: its other keys are lost too.`;
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why}`, "no defaults: 1 clean cycle would let T1 merge");
+  toReviewing(s, "T1");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "high", "--summary", "crash");
+  s.ok("finding", "triage", "T1", "F-T1-1", "fix");
+  assert.equal(s.no("run", "add", "T1", "--role", "qa"), `sage: ${why}`);
+  assert.equal(s.no("round", "T1"), `sage: ${why}`);
+  assert.match(s.ok("status"), /^tasks   1 · reviewing 1$/m, "status still reads");
+  rmSync(f);
+  assert.match(s.ok("run", "add", "T1", "--role", "qa"), /^R1 running · qa on T1/, "without the link, the defaults count");
+});
+
+test("F-T81-Q1, Q3: a config.json with a BOM, or that is a link loop, refuses and says what is wrong in plain words", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  mkdirSync(s.home, { recursive: true });
+  writeFileSync(f, '\ufeff{"max_rounds": 4}');
+  const fix = "Fix it, or remove it for the defaults: its other keys are lost too.";
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${f} starts with a byte-order mark (BOM). Save it as plain UTF-8 without a BOM. ${fix}`);
+  rmSync(f);
+  symlinkSync(f, f);
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${f} is a link loop. ${fix}`);
 });
 
 test("F-QA1-NOEQ: a config argument without = says to write key=value", () => {
