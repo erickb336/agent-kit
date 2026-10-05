@@ -2089,4 +2089,68 @@ test("T45-SILENT-KEEP: a final move prints a kept line with the reason for a sha
   assert.deepEqual([existsSync(shared.path), existsSync(running.path), existsSync(open.path), r.branches().includes("master")], [true, true, true, true]);
 });
 
+test("T45-PRUNE: an owner's worktree on a disk that is not mounted keeps its entry in git after a tidy, so it works again when the disk comes back", () => {
+  const r = rig();
+  const owner = join(r.top, "volume", "owner");
+  r.git(r.main, "worktree", "add", "-q", owner, "-b", "owner");
+  writeFileSync(join(owner, "staged.txt"), "staged\n");
+  r.git(owner, "add", "staged.txt");
+  renameSync(join(r.top, "volume"), join(r.top, "unmounted")); // the disk goes away
+  const done = r.work("merged");
+  r.prs([]);
+  assert.equal(r.ok("worktrees"), [`${done.path} · ${done.branch} · T1 merged: removed`, keptBranch(done.branch, "T1 merged")].join("\n"));
+  renameSync(join(r.top, "unmounted"), join(r.top, "volume")); // the disk comes back
+  assert.deepEqual([r.git(owner, "rev-parse", "--abbrev-ref", "HEAD"), r.git(owner, "status", "--porcelain")], ["owner", "A  staged.txt"], "the entry and its staged index are still there");
+});
+
+test("T45-WT-REFS: a worktree that holds refs only it has, or a HEAD reflog commit on no branch or remote, is kept", () => {
+  const r = rig();
+  const kept = r.work("merged");
+  const commit = (at) => r.git(at, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "only here");
+  r.git(kept.path, "update-ref", "refs/worktree/keep", commit(kept.path));
+  r.git(kept.path, "update-ref", "refs/bisect/bad", commit(kept.path));
+  const reset = r.work("merged");
+  writeFileSync(join(reset.path, "lost.txt"), "lost\n");
+  r.git(reset.path, "add", ".");
+  r.git(reset.path, "commit", "-qm", "lost");
+  const lost = r.git(reset.path, "rev-parse", "HEAD");
+  r.git(reset.path, "reset", "-q", "--hard", "HEAD~1");
+  const clean = r.work("merged");
+  r.prs([]);
+  const lines = [
+    `${kept.path} · ${kept.branch} · T1 merged: kept: it holds refs only it has: refs/bisect/bad, refs/worktree/keep`,
+    `${reset.path} · ${reset.branch} · T2 merged: kept: its HEAD reflog has a commit on no branch or remote: ${lost.slice(0, 7)}`,
+    `${clean.path} · ${clean.branch} · T3 merged: removed`,
+  ];
+  assert.equal(r.ok("worktrees"), [...lines, keptBranch(clean.branch, "T3 merged")].join("\n"));
+  assert.deepEqual([existsSync(kept.path), existsSync(reset.path), existsSync(clean.path)], [true, true, false]);
+});
+
+test("T45-NEWLINE: a worktree path with a line end in it is read as one worktree, so another worktree is never taken for it", () => {
+  const r = rig();
+  const other = r.work("building");
+  const done = r.work("merged");
+  const odd = join(r.top, `odd\nworktree ${other.path}`);
+  mkdirSync(dirname(odd), { recursive: true });
+  r.git(r.main, "worktree", "move", done.path, odd);
+  r.prs([]);
+  assert.equal(r.ok("worktrees"), [`${odd} · ${done.branch} · T2 merged: removed`, keptBranch(done.branch, "T2 merged")].join("\n"));
+  assert.deepEqual([existsSync(other.path), existsSync(odd)], [true, false], "the building task's worktree stays");
+});
+
+test("T45-EXACT-KEEP: a task, a run or an open PR on a branch name that differs only in case or Unicode form keeps the worktree", () => {
+  const r = rig();
+  const [building, running, open] = [r.work("merged"), r.work("merged"), r.work("merged")];
+  const alias = (b) => b.toUpperCase().normalize("NFD");
+  const other = r.ok("task", "add", "--title", "alias", "--size", "small").split(" ")[0];
+  r.ok("task", other, "set", `branch=${alias(building.branch)}`);
+  r.ok("run", "add", other, "--role", "implementer", "--branch", alias(running.branch));
+  r.prs([{ number: 9, state: "OPEN", headRefName: alias(open.branch), headRefOid: open.head, isCrossRepository: false }]);
+  assert.equal(r.ok("worktrees"), [
+    `${building.path} · ${building.branch} · T1 merged: kept: ${other} still uses the branch (framed)`,
+    `${running.path} · ${running.branch} · T2 merged: kept: run R1 is running`,
+    `${open.path} · ${open.branch} · T3 merged: kept: PR 9 is open`,
+  ].join("\n"));
+});
+
 // Keep this test last: it reads every line that the tests above made the tool print.

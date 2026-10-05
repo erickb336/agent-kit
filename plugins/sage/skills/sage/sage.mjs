@@ -677,6 +677,19 @@ function onRemote(root, remote, sha) {
   });
 }
 
+/** Folds case and Unicode form: two names that a Mac file system can mix are equal. */
+const fold = (s) => (s ?? "").normalize("NFKC").toLowerCase();
+
+/**
+ * The first commit of a worktree's HEAD reflog that no local branch and no ref of the remote reaches, or "". git worktree
+ * remove deletes that reflog. One rev-list walks only the commits that the branches and the remote do not have.
+ */
+function lostReflog(path, remote) {
+  const seen = execFileSync("git", ["-C", path, "rev-list", "--walk-reflogs", "--ignore-missing", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const input = `${seen}--not\n--branches\n${remote.refs.map(([at]) => at).join("\n")}\n`;
+  return execFileSync("git", ["-C", path, "rev-list", "-n", "1", "--ignore-missing", "--stdin"], { encoding: "utf8", input, stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+
 /** What a kept branch line tells the owner: sage never deletes, moves or updates a ref, so the owner deletes a branch. */
 const KEPT_BRANCH = "kept (delete it yourself with git branch -d when you no longer need it)";
 
@@ -685,7 +698,8 @@ const KEPT_BRANCH = "kept (delete it yourself with git branch -d when you no lon
  * with the reason, then one line for each local branch of a finished task whose worktree is gone. Finished: every task
  * that owns the branch is merged, concluded or abandoned; a branch that no task owns is finished when its PR (same head,
  * same repository) is merged or closed. Never while its PR is open or a run of its task or branch runs. It removes only
- * a clean worktree with no file hidden from git status, whose last commit the remote itself has, whose ignored files are
+ * a clean worktree with no file hidden from git status and no ref or HEAD reflog commit that only it has, whose last
+ * commit the remote itself has, whose ignored files are
  * all in rebuildable folders and hold no nested repository, and only when GitHub gives the PR state: it fails closed. It
  * uses git worktree remove without --force and never touches the main checkout or a folder that is not a registered
  * worktree. It never deletes, moves or updates a ref: on a case- or normalization-insensitive file system, a ref name can
@@ -694,7 +708,8 @@ const KEPT_BRANCH = "kept (delete it yourself with git branch -d when you no lon
 function tidy(dir, root, env, { task: only, dry } = {}) {
   let trees;
   try {
-    trees = git(root, "worktree", "list", "--porcelain").split(/\n\n+/).map((block) => Object.fromEntries(block.split("\n").map((l) => [l.split(" ")[0], l.slice(l.indexOf(" ") + 1)])));
+    // -z: a path may hold a line end. Each attribute ends in NUL, and an empty one ends a worktree.
+    trees = git(root, "worktree", "list", "--porcelain", "-z").split("\0\0").filter(Boolean).map((block) => Object.fromEntries(block.split("\0").map((l) => [l.split(" ")[0], l.slice(l.indexOf(" ") + 1)])));
   } catch {
     return only ? [] : [`${root}: skipped: it is not a git checkout`];
   }
@@ -714,13 +729,18 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
     const ended = !own.length && (prs ?? []).find((p) => ["MERGED", "CLOSED"].includes(p.state) && p.headRefName === c.branch && p.headRefOid === c.head && p.isCrossRepository === false);
     if (!own.length && !ended) continue;
     const line = (verdict) => lines.push(`${c.path} · ${c.branch} · ${done ? `${done.id} ${done.state}` : `PR ${ended.number} ${ended.state.toLowerCase()}`}: ${verdict}`);
-    const building = tasks.find((t) => !DONE.includes(t.state) && t.branch === c.branch); // a branch that two tasks share is done when both are
-    const run = runs.find((r) => r.status === "running" && (r.branch === c.branch || own.some((t) => t.id === r.task)));
-    const open = (prs ?? []).find((p) => p.state === "OPEN" && (p.headRefName === c.branch || own.some((t) => t.pr && String(p.number) === t.pr)));
+    // The keep checks fold case and Unicode form, so a near name keeps the worktree, as a Mac file system would mix them.
+    const near = (b) => fold(b) === fold(c.branch);
+    const users = tasks.filter((t) => near(t.branch));
+    const building = users.find((t) => !DONE.includes(t.state)); // a branch that two tasks share is done when both are
+    const run = runs.find((r) => r.status === "running" && (near(r.branch) || users.some((t) => t.id === r.task)));
+    const open = (prs ?? []).find((p) => p.state === "OPEN" && (near(p.headRefName) || users.some((t) => t.pr && String(p.number) === t.pr)));
+    let lost;
     try {
       const ignored = ignoredPaths(c.path);
       const nested = ignored.map((p) => nestedRepo(c.path, p)).find((p) => p !== undefined);
       const hidden = git(c.path, "ls-files", "-v").split("\n").filter((l) => /^(S|[a-z]) /.test(l)).map((l) => l.slice(2));
+      const ownRefs = git(c.path, "for-each-ref", "--format=%(refname)", "refs/worktree/", "refs/bisect/"); // git worktree remove deletes them
       const reason =
         building ? `${building.id} still uses the branch (${building.state})`
         : run ? `run ${run.id} is running`
@@ -730,7 +750,9 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
         : nested !== undefined ? `a nested git repository: ${nested}`
         : ignored.some((p) => !rebuildable(p)) ? `ignored files that are not rebuildable: ${ignored.filter((p) => !rebuildable(p)).slice(0, 3).join(", ")}`
         : remote === null ? "the remote cannot be reached"
+        : ownRefs ? `it holds refs only it has: ${ownRefs.split("\n").slice(0, 3).join(", ")}`
         : !onRemote(root, remote, c.head) ? `its last commit ${c.head.slice(0, 7)} is not on the remote`
+        : (lost = lostReflog(c.path, remote)) ? `its HEAD reflog has a commit on no branch or remote: ${lost.slice(0, 7)}`
         : prs === null ? "GitHub cannot be reached, so its PR state is unknown"
         : "";
       if (reason || dry) {
@@ -743,11 +765,6 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
     } catch (e) {
       line(`kept: git refused: ${String(e.stderr || e.message).split("\n")[0].replace(/^(fatal|error): /, "")}`);
     }
-  }
-  if (!dry) {
-    try {
-      git(root, "worktree", "prune");
-    } catch {}
   }
   // The branches as git lists them, by exact name: a task's name that only a file system's folding finds gets no line.
   const checkedOut = new Set(live.filter((t) => !removed.has(t.worktree)).map((t) => t.branch?.slice(11)));
