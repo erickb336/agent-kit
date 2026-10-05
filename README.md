@@ -282,7 +282,7 @@ The board has these parts, in this order:
 2. **Running now:** each agent with its task, role and age.
 3. **Merged since the last board** of each project, with links. The sage folder keeps, for each logbook, the time of its last board, its highest task id and its tasks that were not closed then, in `board.json`. A closed task never changes, so this stays small however many tasks merged, and two boards at once lose no entry.
 4. **One section per project:** a line per active task (id, title, state, pull request link, round), at most 8 and then "and N more (show board for sage)" (a board for one named project shows all), the count of framed tasks, and the next 3 framed tasks by id. The active tasks come in this order:
-   1. The tasks in the reviewing or verifying state that have a pull request, so a pull request that waits for a review is never below the limit of 8.
+   1. The tasks in the reviewing or verifying state that have a pull request. They come before all the other tasks, so the limit of 8 hides a pull request that waits for a review only when 9 or more of them wait. Among them, the next two rules give the order.
    2. The other tasks by their latest change, the newest first. The latest change is the latest time in the logbook for that task: an agent run that started or ended, a gate, a verdict in the ledger or a decision.
    3. The tasks with no time, by id.
 
