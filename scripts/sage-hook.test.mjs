@@ -1313,26 +1313,28 @@ test("T94: the chief's text, the cap refusal and the state tool's skill spell th
   assert.equal(denied(s.send(spawnAgent("sage:qa", BRIEF, "tu2"))).split("raise the cap: ")[1], `node ${TOOL} config cap.other=2`);
 });
 
-test("T94-Q-SPACEPATH: with the plugin in a folder with a space, the chief text and the cap hint give a quoted command that works, and a note", () => {
+test("T94-Q-SPACEPATH: with the plugin in a folder with a space, the chief text and the cap hint give a note, then a quoted command that runs as pasted", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage space-")));
   cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "my plugins", "sage"), { recursive: true });
   const tool = join(dir, "my plugins", "sage", "skills", "sage", "sage.mjs");
-  const note = "(the plugin path has a space: when the sandbox is on, it needs a plugin path without spaces)";
+  const note = "The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces.";
   const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
   const send = (event) => {
     const r = spawnSync("node", [join(dir, "my plugins", "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout ? JSON.parse(r.stdout) : undefined;
   };
-  assert.ok(context(send(prompt("sage mode"))).includes(`The state tool: node "${tool}" <command> --project <path> ${note}.`), "the chief gets the quoted command and the note");
+  assert.ok(context(send(prompt("sage mode"))).includes(`${note} The state tool: node "${tool}" <command> --project <path>.`), "the chief gets the note, then the quoted command");
   mkdirSync(join(dir, "root"), { recursive: true });
   writeFileSync(join(dir, "root", "config.json"), `{"max_agents": 1}`);
   send(spawnAgent("sage:qa", BRIEF, "tu1"));
-  const hint = denied(send(spawnAgent("sage:qa", BRIEF, "tu2"))).split("raise the cap: ")[1];
-  assert.equal(hint, `node "${tool}" config cap.other=2 ${note}`);
-  const r = spawnSync("/bin/sh", ["-c", hint.slice(0, -note.length - 1)], { encoding: "utf8", env });
+  const reason = denied(send(spawnAgent("sage:qa", BRIEF, "tu2")));
+  assert.ok(reason.includes(`${note} Wait for one to finish`), "the note is its own sentence before the hint");
+  const hint = reason.split("raise the cap: ")[1];
+  assert.equal(hint, `node "${tool}" config cap.other=2`);
+  const r = spawnSync("/bin/sh", ["-c", hint], { encoding: "utf8", env });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(JSON.parse(readFileSync(join(dir, "root", "config.json"), "utf8"))["cap.other"], 2, "the quoted command runs in a shell and sets the cap");
+  assert.equal(JSON.parse(readFileSync(join(dir, "root", "config.json"), "utf8"))["cap.other"], 2, "the whole pasted hint runs in a shell and sets the cap");
 });
 
 test("T94: the hook keeps the mode and autopilot state under the sage root, never in the temp folder", () => {
