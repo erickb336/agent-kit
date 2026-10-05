@@ -453,7 +453,7 @@ const fold = (text) => text.normalize("NFKC").toLowerCase();
 const wordsOf = (text) =>
   text
     .replace(/['"\\]/g, "")
-    .replace(/\$\{(\w+)\}/g, "$$1")
+    .replace(/\$\{(\w+)\}/g, "$$$1")
     .split(/[\s;&|()<>`=:]+/)
     .filter(Boolean);
 /** The words of the text, folded, each as its path parts. */
@@ -525,10 +525,32 @@ function nearLogbook(text, roots, cwd) {
     plain.some(({ word, parts }) => parts.includes(".claude") && !worktree(word)) ||
     (leaves && (words.length > plain.length || namesTable(words))) ||
     resolved.some((p) => overlaps(p, roots[1])) ||
+    wordsOf(text).some((w) => linkOnPattern(w, cwd)) ||
     words.some(({ word }) => fromHome(word) && /[*?[{$]/.test(word.replace(/^\$home/, ""))) ||
     /(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(low) ||
     words.some(({ word }, k) => /^(?:cd|pushd)$/.test(word) && atHome(words[k + 1]?.word ?? "-"))
   );
+}
+/**
+ * Is a link on a pattern's path (T83-S-GLOBLINK)? The hook does not expand a pattern, so it cannot resolve the links
+ * that the pattern matches. A part before the first wildcard that is a link, or an entry of that folder that the first
+ * pattern part names and that is a link (also a dangling one), makes the word near.
+ */
+function linkOnPattern(word, cwd) {
+  const parts = word.replace(/^~(?=\/|$)/, process.env.HOME ?? "~").split("/");
+  const k = parts.findIndex((p) => GLOB.test(p));
+  if (k < 0) return false;
+  let dir = word.startsWith("/") ? "" : isAbsolute(cwd) ? cwd : resolve(cwd);
+  try {
+    for (const part of parts.slice(0, k).filter(Boolean)) {
+      dir = `${dir}/${part}`; // as the shell gives it to the system: ".." is not removed
+      if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) return true;
+    }
+    return readdirSync(dir || "/", { withFileTypes: true }).some((e) => e.isSymbolicLink() && names(fold(parts[k]), fold(e.name)));
+  } catch (e) {
+    if (["ENOENT", "ENOTDIR"].includes(e?.code)) return false; // no folder there: the pattern matches nothing
+    throw e; // the agent check refuses what it cannot read
+  }
 }
 /** Does a link command (ln, link) make a link whose target the hook cannot read, or whose target, read from the link's folder, overlaps the root? */
 function linksNear(text, root, cwd) {

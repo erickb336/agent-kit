@@ -1720,3 +1720,56 @@ test("S-DOTDOT: a file tool's path with .. after a link is resolved through the 
   assert.match(denied(s.send(write)) ?? "", /the chief never writes under the sage root/, "chief");
   assert.equal(denied(s.send({ ...tool("Write", { file_path: ".claude/worktrees/w1/l/../notes.md" }, { cwd: s.proj }), ...AGENT })), undefined, "next to the root");
 });
+
+// T83 round 3: the gaps of the re-check R411 (S-GLOBLINK, S-HOMEBRACE).
+/** Runs a command in a real shell, as the agent's Bash tool would after the hook allowed it. */
+const shell = (command, cwd) => spawnSync("/bin/sh", ["-c", command], { cwd, encoding: "utf8" });
+
+test("S-GLOBLINK: a pattern at or after a link on the path is near the logbook, so R411's forgery with allowed commands is refused (T83)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sage-"));
+  const s = project({ HOME: join(dir, "h"), SAGE_HOME: join(dir, "h", ".claude", "sage") });
+  mkdirSync(join(s.vars.SAGE_HOME, "proj-x"), { recursive: true });
+  writeFileSync(join(s.vars.SAGE_HOME, "proj-x", "ledger.tsv"), "");
+  mkdirSync(join(s.vars.HOME, "Library", "Caches"), { recursive: true });
+  writeFileSync(join(s.proj, "forge.tsv"), "FORGED\n");
+  // R411's steps: each link command passes the hook, and the shell makes the link.
+  for (const command of ["ln -s x/../.. up", "ln -s ~/Library/Caches x"]) {
+    assert.equal(denied(s.send(bash(command, s.proj, AGENT))), undefined, command);
+    assert.equal(shell(command.replace("~", s.vars.HOME), s.proj).status, 0, command);
+  }
+  // The pattern reaches the logbook file through the links.
+  writeFileSync(join(s.vars.SAGE_HOME, "proj-x", "ledger.tsv"), "real\n");
+  assert.equal(shell("cat [u]p/.cl*/s*/p*/ledger.tsv", s.proj).stdout, "real\n");
+  for (const command of ["cp forge.tsv [u]p/.cl*/s*/p*/ledger.tsv", "rm -rf [u]p/.cl*/s*/*", "ln [u]p/.cl*/s*/p*/ledger.tsv h2"]) assert.match(denied(s.send(bash(command, s.proj, AGENT))) ?? "", LOGBOOK_SHELL, command);
+  // A link that ln did not make (for one, from an archive), then a pattern on it.
+  symlinkSync(s.vars.SAGE_HOME, join(s.proj, "lk"));
+  for (const command of ["echo x >> [l]k/proj-x/ledger.tsv", "rm -rf [l]k/*"]) assert.match(denied(s.send(bash(command, s.proj, AGENT))) ?? "", LOGBOOK_SHELL, command);
+  // A link in the middle of the path, to a folder that does not hold the root, then a pattern.
+  mkdirSync(join(s.proj, "a"));
+  mkdirSync(join(dir, "d"));
+  symlinkSync(join(dir, "d"), join(s.proj, "a", "mid"));
+  symlinkSync(s.vars.HOME, join(dir, "d", "up"));
+  assert.match(denied(s.send(bash("cp forge.tsv a/mid/[u]p/.cl*/s*/p*/ledger.tsv", s.proj, AGENT))) ?? "", LOGBOOK_SHELL, "a pattern after a link in the middle");
+  // A dangling link that a pattern matches: cp through it makes a new file in the logbook.
+  mkdirSync(join(s.proj, "out"));
+  symlinkSync(join(s.vars.SAGE_HOME, "proj-x", "new.tsv"), join(s.proj, "out", "a"));
+  assert.match(denied(s.send(bash("cp forge.tsv out/*", s.proj, AGENT))) ?? "", LOGBOOK_SHELL, "a dangling link as the target");
+  assert.equal(readFileSync(join(s.vars.SAGE_HOME, "proj-x", "ledger.tsv"), "utf8"), "real\n");
+});
+
+test("S-GLOBLINK: the narrowed rule's ordinary forms pass in real folders with no links on the path (T83)", () => {
+  const s = project();
+  for (const d of ["dist", "out", "src", join("build", "x")]) mkdirSync(join(s.w1, d), { recursive: true });
+  for (const f of ["dist/a.js", "out/b.txt", "src/c.js", "build/x/y.o", "in.json"]) writeFileSync(join(s.w1, f), "{}");
+  for (const command of ["rm dist/*", "cp x out/*", "jq '.a = 1' in.json > config.json", "rm -rf build/*/*.o", "sed -i '' s/a/b/ src/*.js"]) assert.equal(denied(s.send(bash(command, s.w1, AGENT))), undefined, command);
+});
+
+test("S-HOMEBRACE: ${HOME} is the home folder, as $HOME is, so a cd to it then a write is refused (T83)", () => {
+  const s = project();
+  for (const home of ["${HOME}", "$HOME"]) {
+    for (const rest of ["tar -xf /tmp/a.tar", "cp -R /tmp/forge/. ."]) {
+      const command = `cd ${home} && ${rest}`;
+      assert.match(denied(s.send(bash(command, s.w1, AGENT))) ?? "", LOGBOOK_SHELL, command);
+    }
+  }
+});
