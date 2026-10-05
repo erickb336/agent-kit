@@ -228,13 +228,15 @@ const PUSH_FORM = 'git [-C <dir>] push [-u] [--follow-tags] [-o <option>] origin
 /** The word git, and then a later word: one linear scan from the first git (T34, T100-N5). */
 const gitThen = (text, word) => new RegExp(`\\b${word}\\b`, "i").test(/\bgit\b([\s\S]*)/i.exec(text)?.[1] ?? "");
 const pushText = (text) => gitThen(text, "push");
+/** A command line without quotes, backslashes and line joins: the text that the rules test when the reader cannot read the line (fail closed). */
+const bare = (text) => text.replace(/\\\n/g, "").replace(/['"\\]/g, "");
 const refuse = (why) => `${why} Push only with ${PUSH_FORM}.`;
 function pushProblem(command, cwd) {
   let commands;
   try {
     commands = shellCommands(command);
   } catch (e) {
-    return pushText(command) ? refuse(`the hook cannot read this command (${e.message}), so it refuses it. Close each quote, substitution and heredoc.`) : undefined;
+    return pushText(bare(command)) ? refuse(`the hook cannot read this command (${e.message}), so it refuses it. Close each quote, substitution and heredoc.`) : undefined;
   }
   let dir = cwd;
   for (const { cmd, words, bodies } of runnable(commands)) {
@@ -478,7 +480,8 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   try {
     runs = programsRun(command, cwd, path);
   } catch (e) {
-    const why = gitThen(command, "stash") ? NO_STASH : PROCESS_TEXT.test(command) ? NO_PROCESS(PROCESS_TEXT.exec(command)[0].replace(/^\W/, "")) : undefined;
+    const text = bare(command);
+    const why = gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
     return why && `${why} (The hook cannot read this command: ${e.message}.)`;
   }
   for (const { word, file, args } of runs) {
@@ -530,8 +533,8 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  * zsh, dash, ksh, fish) and its stdin heredoc when it has no script, the words of eval, PowerShell's -Command text,
  * the program of find -exec, and a program word with spaces that a wrapper such as watch gives to sh -c. The words
  * after a script (bash ./x.sh kill) are the script's arguments, not programs. Each $( ) or backtick is a command of its
- * own. It cannot see a program in a variable ($P), in text piped into a shell, or inside a script.
- * Throws when the shell reader cannot read the line (an open quote, substitution or heredoc).
+ * own, and so is each <( ) and >( ). It cannot see a program in a variable ($P), in text piped into a shell, or inside a script.
+ * Throws when the shell reader cannot read the line (see shellCommands), and for text nested more than 3 levels deep.
  */
 export function programsRun(command, cwd, path = process.env.PATH ?? "") {
   const found = [];
@@ -540,7 +543,10 @@ export function programsRun(command, cwd, path = process.env.PATH ?? "") {
 }
 
 function readPrograms(command, dir, path, depth, found) {
-  const inner = (text, at, here) => depth < 3 && readPrograms(text, at, here, depth + 1, found);
+  const inner = (text, at, here) => {
+    if (depth === 3) throw new Error("commands nested more than 3 levels deep");
+    readPrograms(text, at, here, depth + 1, found);
+  };
   for (const { words, bodies } of shellCommands(command)) {
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
     const own = words.find(set);
@@ -632,7 +638,7 @@ export function mergeIn(command) {
   try {
     commands = shellCommands(command);
   } catch (e) {
-    return mentionsMerge(command.replace(/\\\n/g, "").replace(/['"\\]/g, "")) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
+    return mentionsMerge(bare(command)) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
   }
   return mentionsMerge(codeText(commands)) || commands.some(expandedMerge) ? { problem: CANNOT } : undefined;
 }
@@ -706,8 +712,9 @@ const codeText = (commands) =>
  * The simple commands of a shell command line: { words, bodies, host, piped, pipeTo, grouped, writes }. The words lose their
  * quotes and redirections (2>/dev/null, >out, <in, with their targets); the bodies are the command's heredocs and
  * here-strings, which stay text. The patterns of a case arm ("top)") are not commands. A command substitution, $( ) or a backtick, gives
- * commands of its own, whose host is the command and word they land in (index -1: a heredoc). Throws when it cannot
- * read the line: an open quote, substitution or heredoc, or a ")" with no "(".
+ * commands of its own, whose host is the command and word they land in (index -1: a heredoc), and so does a process
+ * substitution, <( ) or >( ). Throws when it cannot read the line: an open quote, substitution, heredoc, "(" or case,
+ * or a ")" with no "(". The hook's rules then refuse a line that names what they guard (fail closed).
  */
 export function shellCommands(src) {
   const out = [];
@@ -721,7 +728,8 @@ function readCommands(src, i, close, out, host) {
   let word;
   let depth = 0;
   let target; // after a redirection: "drop" its target word, or "body" for the text of a here-string
-  const cases = []; // each open case: "pattern" before an arm's ")", "body" after it
+  const cases = []; // each open case: { depth } where it opens, and pattern: true before an arm's ")", false after it
+  const arm = () => (cases.at(-1)?.depth === depth ? cases.at(-1) : undefined); // the case whose arms are read at this depth
   const heredocs = [];
   const add = (text) => (word = (word ?? "") + text);
   const endWord = () => {
@@ -732,38 +740,38 @@ function readCommands(src, i, close, out, host) {
     const [first, , third] = cmd.words;
     if (first === "case" && cmd.words.length === 3 && third === "in") {
       endCommand();
-      cases.push("pattern");
-    } else if (first === "esac" && cmd.words.length === 1 && cases.length) cases.pop();
+      cases.push({ depth, pattern: true });
+    } else if (first === "esac" && cmd.words.length === 1 && arm()) cases.pop();
   };
   const endCommand = () => {
     endWord();
     if (target) throw new Error("a redirection with no target");
     cmd.grouped ||= depth > 0;
-    if ((cmd.words.length || cmd.heredoc) && cases.at(-1) !== "pattern") out.push(cmd);
+    if ((cmd.words.length || cmd.heredoc) && !arm()?.pattern) out.push(cmd);
     cmd = fresh();
   };
   const here = () => ({ cmd, index: cmd.words.length });
   while (i < src.length) {
     const c = src[i];
     const esac = word === "esac" && !cmd.words.length; // "esac)" closes a $( ), and "esac |" pipes the case on
-    if (cases.at(-1) === "pattern" && depth === 0 && "()|".includes(c) && !esac) { // a case arm: "(a|b)" or "a)"; its pattern runs nothing
-      if (c === ")") {
-        word = undefined;
-        cmd = fresh();
-        cases[cases.length - 1] = "body";
-      } else endWord();
+    if (arm()?.pattern && "()|".includes(c) && !esac) { // a case arm: "(a|b)" or "a)"; its pattern runs nothing
+      endWord();
+      if (cmd.words.length > 1) throw new Error("a case pattern of more than one word"); // a shell refuses it too
+      cmd = fresh();
+      if (c === ")") arm().pattern = false;
       i++;
       continue;
     }
-    if (cases.at(-1) === "body" && depth === 0 && c === ";" && ";&".includes(src[i + 1])) { // ;; ;& ;;& end an arm
+    if (arm()?.pattern === false && c === ";" && ";&".includes(src[i + 1])) { // ;; ;& ;;& end an arm
       endCommand();
-      cases[cases.length - 1] = "pattern";
+      arm().pattern = true;
       i += src.startsWith(";;&", i) ? 3 : 2;
       continue;
     }
     if (c === close && depth === 0) {
       if (heredocs.length) throw new Error("an open heredoc");
       endCommand();
+      if (cases.length) throw new Error("a case with no esac");
       return i + 1;
     }
     if (c === "\\") {
@@ -780,6 +788,9 @@ function readCommands(src, i, close, out, host) {
       i = r.i;
     } else if (c === "`" || (c === "$" && src[i + 1] === "(")) {
       i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, here());
+      add("$(…)");
+    } else if ((c === "<" || c === ">") && src[i + 1] === "(") { // a process substitution, <( ) or >( ): commands of its own
+      i = readCommands(src, i + 2, ")", out, here());
       add("$(…)");
     } else if (c === "#" && word === undefined) {
       while (i < src.length && src[i] !== "\n") i++;
@@ -816,7 +827,7 @@ function readCommands(src, i, close, out, host) {
       if (c === ")" && !depth) throw new Error('a ")" with no "("');
       endCommand();
       if (c === "(") depth++;
-      if (c === ")") depth--;
+      if (c === ")" && cases.at(-1)?.depth === depth--) throw new Error("a case with no esac");
       i += (c === "|" || c === "&") && src[i + 1] === c ? 2 : 1;
     } else {
       add(c);
@@ -826,6 +837,8 @@ function readCommands(src, i, close, out, host) {
   if (close) throw new Error(close === ")" ? "an open $(" : "an open backtick");
   if (heredocs.length) throw new Error("an open heredoc");
   endCommand();
+  if (depth) throw new Error('an open "("');
+  if (cases.length) throw new Error("a case with no esac");
   return i;
 }
 
