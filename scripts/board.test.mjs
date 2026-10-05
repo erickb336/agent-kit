@@ -383,12 +383,18 @@ test("F-T72-13: the phrase in bold or italics gives the board", () => {
 
 test("F-T72-14, G63: needs you lists every open gate: with 12 gates, 12 lines", () => {
   const w = world();
-  for (let i = 10; i < 21; i++) add(w, w.book, "gates", [`G${i}`, "T6", `Sample: question ${i}?`, "a,b", "a", "a", "", "2026-10-05T03:00:00Z"]);
+  for (let i = 10; i < 21; i++) add(w, w.book, "gates", [`G${i}`, "T6", `Sample: question ${i}?`, "a|b", "a", "a", "", "2026-10-05T03:00:00Z"]);
   const out = w.show("this");
   assert.match(out, /\*\*Needs you \(15\)\*\*/);
   assert.equal(out.match(/^- \*\*G\d+\*\* /gm).length, 12);
   assert.match(out, /- \*\*G20\*\* \(T6\) Sample\\: question 20\?/);
   assert.doesNotMatch(out, /and \d+ more\n\n\*\*Running/);
+});
+
+test("T72-Q-COMMASPLIT: gate options split only at |, so a comma inside an option keeps it whole (sage-bot G20)", () => {
+  const w = world();
+  add(w, w.book, "gates", ["G20", "T6", "Sample: keep it?", "Yes, keep as built|No, show apprentices team-vote questions only", "Yes", "Yes", "", "2026-10-05T03:00:00Z"]);
+  assert.ok(w.show("this").includes("Options: Yes, keep as built / No, show apprentices team-vote questions only. Recommended"), w.show("this"));
 });
 
 test("T85: board.json is keyed by logbook folder, so two logbooks with one name do not list their merges again", () => {

@@ -237,7 +237,7 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     b.tasks
       .filter((t) => WAITS.includes(t.state) && t.pr)
       .map((t) => ({ t, why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : "autopilot may merge it tonight" }));
-  const options = (g) => text(String(g.options ?? "").split(/[|,]/).map((o) => o.trim()).filter(Boolean).join(" / "), 80) || "none";
+  const options = (g) => text(String(g.options ?? "").split("|").map((o) => o.trim()).filter(Boolean).join(" / "), 80) || "none";
   const L = [`**sage board · ${title}** · built ${built} UTC`];
   const needs = shown.flatMap((b) => [
     ...gates(b).map((g) => `${tag(b)}**${g.id}** (${g.task}) ${text(g.question, 110)} Options: ${options(g)}. Recommended: ${text(g.recommendation, 60) || "none"}. Default: ${text(g.default, 40) || "none"}.`),

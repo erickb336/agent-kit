@@ -1,3 +1,3 @@
 id	task	question	options	recommendation	default	answer	at
-G1	T6	Sample: keep the old config key or drop it?	keep,drop	drop: nobody uses it	keep		2026-10-05T03:00:00Z
-G2	T2	Sample: an answered question	a,b	a	a	a	2026-10-04T03:00:00Z
+G1	T6	Sample: keep the old config key or drop it?	keep|drop	drop: nobody uses it	keep		2026-10-05T03:00:00Z
+G2	T2	Sample: an answered question	a|b	a	a	a	2026-10-04T03:00:00Z

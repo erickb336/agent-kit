@@ -1,2 +1,2 @@
 id	task	question	options	recommendation	default	answer	at
-G1	T2	Sample: which channel first?	discord,slack	discord	discord		2026-10-05T02:00:00Z
+G1	T2	Sample: which channel first?	discord|slack	discord	discord		2026-10-05T02:00:00Z
