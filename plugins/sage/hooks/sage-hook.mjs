@@ -450,9 +450,7 @@ function scopeProblem(tasks, now) {
   const risky = tasks.find((t) => t.risk);
   if (risky) return `${risky.id} has a risk flag (${risky.risk}): the owner merges this.`;
   const c = stateTool.config();
-  const night = stateTool.nightWindow(c, now);
-  if (night.problem) return `${night.problem}, so autopilot merges nothing: the owner merges this, or fixes it with sage config.`;
-  if (!night.inside) return `outside the night window ${c["autopilot.window"]} (${c["autopilot.tz"]}): it waits.`;
+  if (!stateTool.nightWindow(c, now)) return `outside the night window ${c["autopilot.window"]} (${c["autopilot.tz"]}): it waits.`;
 }
 
 /**
