@@ -1,12 +1,13 @@
 // The chat board on a sample fixture (made-up logbooks in scripts/fixtures/board/home), and the hook's board phrase.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { board } from "../plugins/sage/skills/sage/board.mjs";
+import { storeDir } from "../plugins/sage/skills/sage/sage.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/board/home", import.meta.url));
 const TOOL = fileURLToPath(new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url));
@@ -14,7 +15,10 @@ const HOOK = fileURLToPath(new URL("../plugins/sage/hooks/sage-hook.mjs", import
 const DAY = new Date("2026-10-05T19:00:00Z"); // 12:00 in Los Angeles: outside the night window
 const NIGHT = new Date("2026-10-05T06:00:00Z"); // 23:00 in Los Angeles
 
-/** A copy of the fixture as the sage home, and a session folder: "sage" is a git checkout with a GitHub remote. */
+/**
+ * A copy of the fixture as the sage home, and a session folder: "sage" is a git checkout with a GitHub remote, and the
+ * fixture's sage logbook is its own logbook (book: the folder name that storeDir gives it, as the state tool does).
+ */
 function world() {
   const dir = mkdtempSync(join(tmpdir(), "sage-board-"));
   const home = join(dir, "home");
@@ -26,8 +30,10 @@ function world() {
   const outside = join(dir, "elsewhere");
   mkdirSync(outside);
   const env = { SAGE_HOME: home };
+  const book = basename(storeDir(sage, env));
+  renameSync(join(home, "sage-aaaaaa"), join(home, book));
   const show = (scope, project = sage, now = DAY) => board({ scope, project, env, now });
-  return { dir, home, sage, outside, env, show };
+  return { dir, home, sage, outside, env, book, show };
 }
 
 test("show board: the session's project, and one line per other project with something waiting", () => {
@@ -115,7 +121,7 @@ test("merged since the last board: the next board lists only the new merges, and
   const w = world();
   w.show("this");
   assert.deepEqual(JSON.parse(readFileSync(join(w.home, "board.json"), "utf8")).merged, { sage: ["T1"] });
-  const tasks = join(w.home, "sage-aaaaaa", "tasks.tsv");
+  const tasks = join(w.home, w.book, "tasks.tsv");
   writeFileSync(tasks, readFileSync(tasks, "utf8").replace("\tverified\tt2\t", "\tmerged\tt2\t"));
   const out = w.show("this", w.sage, new Date("2026-10-05T20:00:00Z"));
   assert.match(out, /\*\*Merged since 2026-10-05 19:00 UTC \(1\)\*\*\n- T2 \[#7\]\(https:\/\/github\.com\/acme\/sage\/pull\/7\) Sample\\: the chat board\n\n/);
@@ -156,8 +162,8 @@ const ownLinksOnly = (out) => assert.doesNotMatch(out, /(?<!\\)\]\((?!https:\/\/
 
 test("agent-written text is escaped: no link, image, comment or HTML reaches the owner live", () => {
   const w = world();
-  add(w, "sage-aaaaaa", "gates", ["G3", "T6", "Approve? [Approve here](https://evil.example/approve) ![x](https://evil.example/x.png) <!-- hide -->", "[ok](https://evil.example/a)|no", "**yes** `rm -rf`", "<b>x</b>", "", "2026-10-05T03:00:00Z"]);
-  add(w, "sage-aaaaaa", "tasks", ["T12", "<img src=x onerror=alert(1)>\u200b ~~a~~ #|_\u202e", "small", "", "build", "building", "t12", "", "0", ""]);
+  add(w, w.book, "gates", ["G3", "T6", "Approve? [Approve here](https://evil.example/approve) ![x](https://evil.example/x.png) <!-- hide -->", "[ok](https://evil.example/a)|no", "**yes** `rm -rf`", "<b>x</b>", "", "2026-10-05T03:00:00Z"]);
+  add(w, w.book, "tasks", ["T12", "<img src=x onerror=alert(1)>\u200b ~~a~~ #|_\u202e", "small", "", "build", "building", "t12", "", "0", ""]);
   const out = w.show("this");
   assert.ok(
     out.includes(
@@ -172,8 +178,8 @@ test("agent-written text is escaped: no link, image, comment or HTML reaches the
 
 test("agent-written text gives no autolink: a bare URL, a www host, an email or an escaped link stays plain text", () => {
   const w = world();
-  add(w, "sage-aaaaaa", "gates", ["G5", "T6", "Go to https://evil.example/approve or www.evil.example now", "ftp://evil.example/f|owner@evil.example", "\\[x\\](https://evil.example/b)", "mailto:owner@evil.example", "", "2026-10-05T03:00:00Z"]);
-  add(w, "sage-aaaaaa", "tasks", ["T15", "a http://e.example WWW.e.example a@b.co", "small", "", "build", "building", "t15", "", "0", ""]);
+  add(w, w.book, "gates", ["G5", "T6", "Go to https://evil.example/approve or www.evil.example now", "ftp://evil.example/f|owner@evil.example", "\\[x\\](https://evil.example/b)", "mailto:owner@evil.example", "", "2026-10-05T03:00:00Z"]);
+  add(w, w.book, "tasks", ["T15", "a http://e.example WWW.e.example a@b.co", "small", "", "build", "building", "t15", "", "0", ""]);
   const out = w.show("this");
   assert.ok(
     out.includes(
@@ -189,10 +195,10 @@ test("agent-written text gives no autolink: a bare URL, a www host, an email or 
 
 test("an id-like cell is kept only in its format, else shown as ?: a hand-made PR cell gives no link to another host", () => {
   const w = world();
-  add(w, "sage-aaaaaa", "tasks", ["T13", "Sample: a forged PR cell", "small", "", "build", "verified", "t13", "7](https://evil.example/pr) [#7", "0", ""]);
-  add(w, "sage-aaaaaa", "tasks", ["T14```", "Sample: a forged id", "small", "input```", "build", "building```", "t14", "", "1```", ""]);
-  add(w, "sage-aaaaaa", "gates", ["G4```", "T6```", "Sample: a forged gate", "a|b", "a", "a", "", "2026-10-05T03:00:00Z"]);
-  add(w, "sage-aaaaaa", "runs", ["R4", "T5```", "implementer```", "0", "", "t5", "running", "", "", "2026-10-05T05:00:00Z", ""]);
+  add(w, w.book, "tasks", ["T13", "Sample: a forged PR cell", "small", "", "build", "verified", "t13", "7](https://evil.example/pr) [#7", "0", ""]);
+  add(w, w.book, "tasks", ["T14```", "Sample: a forged id", "small", "input```", "build", "building```", "t14", "", "1```", ""]);
+  add(w, w.book, "gates", ["G4```", "T6```", "Sample: a forged gate", "a|b", "a", "a", "", "2026-10-05T03:00:00Z"]);
+  add(w, w.book, "runs", ["R4", "T5```", "implementer```", "0", "", "t5", "running", "", "", "2026-10-05T05:00:00Z", ""]);
   const out = w.show("this");
   assert.ok(out.includes("\n- T13 PR ? waits for your merge (autopilot may merge it tonight): Sample\\: a forged PR cell\n"), out);
   assert.ok(out.includes("\n- ? Sample\\: a forged id · ? · no PR · round ?\n"), out);
@@ -230,11 +236,33 @@ test("a remote that only names github.com in its path gives no PR links", () => 
 
 test("the all-projects board shows at most 8 active tasks per project, then a count and the phrase for the rest", () => {
   const w = world();
-  for (let i = 20; i < 25; i++) add(w, "sage-aaaaaa", "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
+  for (let i = 20; i < 25; i++) add(w, w.book, "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
   const all = w.show("all");
   assert.match(all, /\n- T6 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 [^\n]*\n- and 2 more \(show board for sage\)\n- framed backlog: 4/);
   assert.doesNotMatch(all, /T23 Sample/);
-  assert.match(w.show("this"), /- T24 Sample\\: busy 24 · building · no PR\n- framed backlog/); // one project: every line
+});
+
+test("one project's board shows at most 8 active tasks too: with 12, 8 lines and and 4 more", () => {
+  const w = world();
+  for (let i = 20; i < 27; i++) add(w, w.book, "tasks", [`T${i}`, `Sample: busy ${i}`, "small", "", "build", "building", `t${i}`, "", "0", ""]);
+  const out = w.show("this");
+  assert.match(out, /\*\*sage\*\* · github\.com\/acme\/sage\n- T2 [^\n]*\n- T3 [^\n]*\n- T4 [^\n]*\n- T5 [^\n]*\n- T6 [^\n]*\n- T20 [^\n]*\n- T21 [^\n]*\n- T22 Sample\\: busy 22 · building · no PR\n- and 4 more\n- framed backlog: 4/);
+  assert.doesNotMatch(out, /T23 Sample/);
+  assert.match(w.show("sage"), /- T22 [^\n]*\n- and 4 more\n/);
+});
+
+test("a folder that only shares a logbook's name shows that board, but never PR links from its own remote", () => {
+  const w = world();
+  const twin = join(w.dir, "other", "sage");
+  mkdirSync(twin, { recursive: true });
+  execFileSync("git", ["init", "-q", twin]);
+  execFileSync("git", ["-C", twin, "remote", "add", "origin", "git@github.com:mallory/sage.git"]);
+  const out = w.show("this", twin);
+  assert.match(out, /^\*\*sage board · sage\*\*/);
+  assert.match(out, /\n- T2 PR #7 waits for your merge \(risk input\)/);
+  assert.match(out, /^\*\*sage\*\*$/m);
+  assert.doesNotMatch(out, /mallory|\]\(/);
+  assert.match(w.show("this"), /T2 \[#7\]\(https:\/\/github\.com\/acme\/sage\/pull\/7\)/); // the logbook's own folder keeps its links
 });
 
 /** The hook's note for one prompt, or "" when it gives none. */
@@ -257,6 +285,18 @@ test("the board phrase: each scope at the start of the owner's message gives the
   assert.ok(note("show board for thistle").includes(cmd("thistle")));
   assert.ok(note("show board for this-app").includes(cmd("this-app")));
   assert.ok(note("show board for this").includes(cmd("this")));
+});
+
+test("the board phrase: a trailing full stop, ! or , ends the sentence, not the scope", () => {
+  const cmd = (scope) => `sage.mjs" board ${scope} --project '/work/sage'`;
+  for (const end of [".", "!", ",", ";", ":", "...", ". Thanks"]) {
+    assert.ok(note(`Show board for all${end}`).includes(cmd("all")), end);
+    assert.ok(note(`show board for sage${end}`).includes(cmd("sage")), end);
+    assert.ok(note(`show board for this${end}`).includes(cmd("this")), end);
+  }
+  assert.ok(note("show board for all projects.").includes(cmd("all")));
+  assert.ok(note("show board for sage.v2.").includes(cmd("sage.v2"))); // an inner dot stays
+  assert.ok(note("show board for my-app.").includes(cmd("my-app")));
 });
 
 test("the board phrase: no board inside a quote, an agent's report, a question or a longer word", () => {

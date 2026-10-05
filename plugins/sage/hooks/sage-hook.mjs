@@ -49,8 +49,9 @@ const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
 // The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
 // "show board", "show board for this project", "show board for all (projects)", "show board for <project>": at the start of the
-// owner's own text only, like the mode phrases, so a quote or an agent's report shows no board.
-const BOARD = new RegExp(`${START}show${SP}+board(?:${SP}+for${SP}+(this${SP}+project|all${SP}+projects|[a-z0-9][a-z0-9_.-]{0,63}))?${END}`, "i");
+// owner's own text only, like the mode phrases, so a quote or an agent's report shows no board. A project name may hold
+// inner dots, but not end in one: "show board for all." ends a sentence.
+const BOARD = new RegExp(`${START}show${SP}+board(?:${SP}+for${SP}+(this${SP}+project|all${SP}+projects|[a-z0-9](?:[a-z0-9_.-]{0,62}[a-z0-9_-])?))?${END}`, "i");
 const AUTOPILOT = /\bauto[-\s]?pilots?\b/i;
 const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit(?:s|ting)?|exit(?:s|ed|ing)?)\b|\b(?:stop|disabl|paus|cancel|kill|halt|deactivat|abort|suspend)|\bauto[-\s]?pilots?\s*=\s*false\b/i;
 const broadOff = (text) => OFF_LINE.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));

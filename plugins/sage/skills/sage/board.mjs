@@ -149,9 +149,10 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     title = want;
   }
 
-  const mine = sessionBook(books, project, env);
-  const sessionRepo = project && mine ? repoOf(project) : null;
-  for (const b of books) b.repo = b.checkout ? repoOf(b.checkout) : b === mine ? sessionRepo : null;
+  // PR links come from a logbook's checkout.txt, or from the session folder when that folder is the logbook's own project
+  // (its storeDir). A logbook that only shares the folder's name gets no links from the folder's remote.
+  const own = project && books.find((b) => b.dir === storeDir(project, env));
+  for (const b of books) b.repo = b.checkout ? repoOf(b.checkout) : b === own ? repoOf(project) : null;
   const pr = (b, t) => (!t.pr ? "no PR" : t.pr === "?" ? "PR ?" : b.repo ? `[#${t.pr}](${b.repo}/pull/${t.pr})` : `PR #${t.pr}`);
   const many = shown.length > 1;
   const tag = (b) => (many ? `${b.key} ` : "");
@@ -196,9 +197,8 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     }
     const active = b.tasks.filter((t) => !CLOSED.includes(t.state) && t.state !== "framed").sort((x, y) => n(x.id) - n(y.id));
     const framed = b.tasks.filter((t) => t.state === "framed").sort((x, y) => n(x.id) - n(y.id));
-    const cap = many ? CAP.active : active.length;
-    for (const t of active.slice(0, cap)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
-    if (active.length > cap) L.push(`- and ${active.length - cap} more (show board for ${b.key})`);
+    for (const t of active.slice(0, CAP.active)) L.push(`- ${t.id} ${text(t.title, 40)} · ${t.state} · ${pr(b, t)}${t.round && t.round !== "0" ? ` · round ${t.round}` : ""}`);
+    if (active.length > CAP.active) L.push(`- and ${active.length - CAP.active} more${many ? ` (show board for ${b.key})` : ""}`);
     if (!active.length) L.push("- no active tasks");
     L.push(`- framed backlog: ${framed.length}${framed.length ? ` · next up (framed, in id order): ${framed.slice(0, CAP.next).map((t) => `${t.id} ${text(t.title, 30)}`).join("; ")}` : ""}`);
   }
