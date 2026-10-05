@@ -228,11 +228,11 @@ test("T42-HUGE-COUNT and F-T47-QA-1: a count has a limit, and a file count never
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 20 clean cycles/, "the merge check asks the owner's 20");
 
-  // A whole-number string reads as its number, with the same floor and limit rules; any other string gives the default.
+  // A numeric string reads as its number, with the same floor and limit rules; a count other than cycles with no number gives the default.
   writeFileSync(f, '{"cycles.small": "3", "cycles.large": "5", "cycles.risk": "1", "max_agents": "1", "cap_total": "2", "cap.sage": "1", "cap.ramen": "07"}');
-  assert.equal(s.ok("config"), "max_agents=1 cycles.small=3 cycles.large=5 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=2 cap.sage=1");
-  writeFileSync(f, '{"cycles.small": "3x", "cycles.large": "1", "max_agents": " 2", "cap_total": "1.5"}');
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=1 cycles.small=3 cycles.large=5 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=2 cap.sage=1 cap.ramen=7");
+  writeFileSync(f, '{"cycles.large": "1", "max_agents": "2x", "cap_total": "1.5"}');
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=1");
 });
 
 test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor, and a cycles count as a fraction or a padded string reads rounded up", () => {
@@ -255,13 +255,48 @@ test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor
   assert.equal(read('{"cycles.small": " 3"}'), all({ "cycles.small": 3 }));
   assert.equal(read('{"cycles.large": "03"}'), all({ "cycles.large": 3 }));
   assert.equal(read('{"cycles.risk": "2.1"}'), all({ "cycles.risk": 3 }));
-  // No number: the default. Below the floor: the floor.
-  assert.equal(read('{"cycles.small": "abc", "cycles.risk": " "}'), all());
+  // Below the floor: the floor.
   assert.equal(read('{"cycles.large": 1, "cycles.small": 0.2}'), all());
   s.ok("task", "add", "--title", "t", "--size", "small");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   writeFileSync(f, '{"cycles.small": 2.5}');
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles/, "the merge check asks the rounded-up count");
+});
+
+test("T54: one rule reads every count in config.json: cycles round up, other counts round down, and a cycles key with no number refuses every merge", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...o }).map(([k, v]) => `${k}=${v}`).join(" ");
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  const table = [
+    ['{"cycles.small": 2.5}', { "cycles.small": 3 }],
+    ['{"cycles.small": " 3"}', { "cycles.small": 3 }],
+    ['{"cycles.small": "03"}', { "cycles.small": 3 }],
+    ['{"max_agents": 2.5}', { max_agents: 2 }],
+    ['{"max_agents": " 2"}', { max_agents: 2 }],
+    ['{"max_agents": "-1"}', { max_agents: 1 }],
+    ['{"max_agents": "abc"}', { max_agents: 3 }],
+    ['{"cap_total": "0"}', { cap_total: 1 }],
+    ['{"arena": 1.5}', { arena: 1 }],
+    ['{"max_rounds": "07"}', { max_rounds: 7 }],
+  ];
+  for (const [text, want] of table) {
+    writeFileSync(f, text);
+    assert.equal(s.ok("config"), all(want), text);
+  }
+  writeFileSync(f, '{"cycles.small": " 3"}');
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles/, "the merge check asks the count that config prints");
+  // Fail closed: a cycles key with no number never reads as the lower default.
+  for (const bad of ['"Infinity"', "1e400", "[3]", "true", '"abc"', '" "', "null", '"1e400"']) {
+    writeFileSync(f, `{"cycles.small": ${bad}, "max_agents": 2}`);
+    assert.equal(s.ok("config"), all({ max_agents: 2, "cycles.small": "invalid" }), bad);
+    assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because cycles.small in ${f} is not a number. Set it with sage config cycles.small=<n> (a whole number from 1 to 10), or remove the key.`, bad);
+  }
+  writeFileSync(f, '{"cycles.risk": true}');
+  assert.match(s.no("merge-check", "--sha", SHA), /because cycles\.risk in .*(a whole number from 2 to 10)/, "the reason names the key and its floor");
+  s.ok("config", "cycles.risk=3");
+  assert.match(s.ok("merge-check", "--sha", SHA), /^T1 may merge: 1 clean cycle on this SHA$/, "sage config fixes it");
 });
 
 test("round names the roles to re-run on the repair's diff: the sources of the findings it fixes", () => {
@@ -676,19 +711,22 @@ test("S7: config and the merge check read only regular files and never throw, so
   assert.deepEqual([r.status, r.stderr], [1, `sage: the merge check cannot read ${file} (ENOTDIR), so it refuses every merge. Ask the user to fix ${file}.\n`], "F-R50-4: the root holds every logbook, so the advice never removes it");
 });
 
-test("F1: no config.json makes config() or the merge check throw: a value that is not a number or a string gives its default", async () => {
+test("F1: no config.json makes config() or the merge check throw: a count with no number gives its default, and a cycles key with none refuses every merge", async () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "large");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   const deep = `${"[".repeat(20000)}${"]".repeat(20000)}`; // String() of this overflows the stack
-  writeFileSync(join(s.home, "config.json"), `{"cycles.large": ${deep}, "max_agents": [5], "max_rounds": 4}`);
+  const f = join(s.home, "config.json");
+  writeFileSync(f, `{"cycles.large": ${deep}, "max_agents": [5], "max_rounds": 4}`);
   const { config, mergeCheck } = await import(LIB);
   const env = { SAGE_HOME: s.home };
-  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
-  const none = "9".repeat(40);
-  assert.deepEqual(mergeCheck(none, env), { ok: false, reason: `no verdicts recorded for ${none}. Record the reviews and QA with sage verdict first.` }, "the hook's call: no cycles given");
-  assert.equal(mergeCheck(SHA, env).ok, false);
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": "invalid", "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
+  const refused = { ok: false, reason: `the merge check refuses every merge, because cycles.large in ${f} is not a number. Set it with sage config cycles.large=<n> (a whole number from 2 to 10), or remove the key.` };
+  assert.deepEqual(mergeCheck("9".repeat(40), env), refused, "the hook's call: no cycles given");
+  assert.deepEqual(mergeCheck(SHA, env), refused);
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=invalid cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  writeFileSync(f, `{"cycles.small": 1, "max_agents": ${deep}}`);
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
   assert.match(s.no("merge-check", "--sha", SHA), /^sage: T1: 0 of 2 clean cycles on this SHA; never recorded: review-clean, security-clean, ux-clean, qa-pass\./);
 });
 

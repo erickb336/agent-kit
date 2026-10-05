@@ -125,11 +125,14 @@ export function storeDir(project, env = process.env) {
   return join(sageRoot(env), `${projectName(root)}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`);
 }
 
+/** A decimal number, also with spaces around it, a sign, leading zeros, a fraction or an exponent: "03", " 2", "-1", "2.5". */
+const NUMERIC = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?\s*$/i;
+
 /**
- * A config value in its stored form, or undefined when it has no number. A count is a whole number, or a string of one
- * ("3"); a cycles count is also any finite number or numeric string ("03", " 3", 2.5), rounded up. Below its floor a count
- * reads as the floor. Above its limit, a cycles count keeps its value (fewer would ease a merge) and any other count
- * reads as the limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
+ * A config value in its stored form, or undefined when it has no number. One rule reads every count: a finite number,
+ * or a numeric string. A cycles count rounds up, and any other count rounds down. Below its floor a count reads as the
+ * floor. Above its limit, a cycles count keeps its value (fewer would ease a merge) and any other count reads as the
+ * limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
  */
 function valid(key, value) {
   if (key === "arena_models") {
@@ -138,10 +141,9 @@ function valid(key, value) {
   }
   if (!(Object.hasOwn(COUNTS, key) || CAP.test(key))) return undefined;
   const cycles = key.startsWith("cycles.");
-  let n = typeof value === "string" && (cycles ? value.trim() : /^(0|[1-9][0-9]*)$/.test(value)) ? Number(value) : value;
-  if (cycles && Number.isFinite(n)) n = Math.ceil(n);
-  if (!Number.isInteger(n)) return undefined;
-  n = Math.max(n, floor(key));
+  let n = typeof value === "number" || (typeof value === "string" && NUMERIC.test(value)) ? Number(value) : NaN;
+  if (!Number.isFinite(n)) return undefined;
+  n = Math.max(cycles ? Math.ceil(n) : Math.floor(n), floor(key));
   return cycles ? n : Math.min(n, limit(key));
 }
 
@@ -188,16 +190,18 @@ function saved(env) {
 /**
  * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value (a count
  * as "3x", for one), or a config.json that is not a regular file, gives the default. A count reads as valid() gives it:
- * never below its floor, and never more agents or rounds, or fewer cycles, than written. A file of
+ * never below its floor, and never more agents or rounds, or fewer cycles, than written. A cycles key that is there but
+ * has no number (Infinity, [3], true, "abc") reads as "invalid", and the merge check refuses every merge. A file of
  * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
   let c = { ...DEFAULTS };
   try {
     const s = saved(env);
+    const written = Object.keys(s); // a broken legacy autopilot_cycles gives the default, as before
     if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles;
     const caps = Object.keys(s).filter((k) => CAP.test(k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
-    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]), ...caps]);
+    c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? (k.startsWith("cycles.") && written.includes(k) ? "invalid" : d)]), ...caps]);
   } catch {}
   return c;
 }
@@ -448,6 +452,8 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
     pr &&= String(pr); // the tasks table holds it as text
     const cfg = config(env); // once: the merge check may judge thousands of tasks
+    const broken = Object.keys(cfg).find((k) => cfg[k] === "invalid"); // fail closed: a default would ask fewer cycles than the owner meant
+    if (broken) return { ok: false, reason: `the merge check refuses every merge, because ${broken} in ${join(root, "config.json")} is not a number. Set it with sage config ${broken}=<n> (a whole number from ${floor(broken)} to 10), or remove the key.` };
     // A logbook may be a link to a folder: the writes go through it, so the merge check reads through it too. A link to nothing
     // holds no logbook, for the writes either; one that cannot be followed refuses.
     const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
