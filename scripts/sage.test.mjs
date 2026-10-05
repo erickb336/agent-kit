@@ -1897,6 +1897,77 @@ test("T45-SYMREF-DELETE: a branch that is a symbolic ref is kept, and the branch
   assert.deepEqual([r.git(r.main, "rev-parse", "refs/heads/main"), r.git(r.main, "symbolic-ref", "refs/heads/alias"), r.git(r.main, "reflog", "exists", "refs/heads/main")], [before, "refs/heads/main", ""]);
 });
 
+/** A finished task on branch b, with no worktree. */
+const finished = (r, b, state = "merged") => {
+  const id = r.ok("task", "add", "--title", "w", "--size", "small").split(" ")[0];
+  r.ok("task", id, "set", `branch=${b}`);
+  byHand(r.dir, "tasks", 0, id, (cells) => cells.with(5, state));
+  return id;
+};
+
+test("T45-CASE-ALIAS: a finished task whose branch differs from a real branch only in letter case or Unicode form never deletes that branch", () => {
+  const r = rig();
+  r.prs([]);
+  const [nfc, nfd] = ["café", "café"];
+  for (const b of ["feat", nfc]) {
+    r.git(r.main, "branch", b);
+    r.git(r.main, "push", "-q", "origin", b);
+  }
+  finished(r, "feat", "building"); // T1 builds on feat
+  // On a case- or normalization-insensitive file system, git cannot make the twin, and refs/heads/<twin> reads the real file.
+  const twins = [["Main", "main"], ["Feat", "feat"], [nfd, nfc]].map(([twin, of]) => {
+    try {
+      r.git(r.main, "branch", twin, of);
+    } catch {}
+    return twin;
+  });
+  const exact = (b) => r.git(r.main, "for-each-ref", "--format=%(refname)", `refs/heads/${b}`).split("\n").includes(`refs/heads/${b}`);
+  const ids = twins.map((b) => finished(r, b));
+  const before = r.refs();
+  const reasons = ["it is a default branch", "T1 still uses the branch feat (building)", `T1 still uses the branch ${nfc} (building)`];
+  // On a case-sensitive file system the twin is a real branch, and a near-duplicate of a protected one is kept too.
+  const kept = twins.map((b, i) => `branch ${b} · ${ids[i]} merged: kept: ${exact(b) ? reasons[i] : "no branch with exactly this name"}`);
+  assert.equal(r.ok("worktrees"), kept.join("\n"));
+  assert.equal(r.ok("worktrees"), kept.join("\n"), "a second run prints the same lines");
+  assert.equal(r.refs(), before, "no branch moved or went");
+  assert.equal(r.git(r.main, "reflog", "exists", "refs/heads/main"), "");
+});
+
+test("T45-CASE-ALIAS: on any file system, a real branch that differs from a protected one only in letter case is kept, and an exact-name finished branch is still removed", () => {
+  const r = rig();
+  r.git(r.main, "branch", "Master"); // a real branch: no master exists to alias it
+  r.git(r.main, "push", "-q", "origin", "Master");
+  const near = finished(r, "Master");
+  const done = r.work("merged", { tree: false });
+  const pr = r.work("merged", { tree: false });
+  r.prs([{ number: 7, state: "OPEN", headRefName: pr.branch.toUpperCase(), headRefOid: pr.head, isCrossRepository: false }]);
+  assert.equal(r.ok("worktrees"), [
+    `branch Master · ${near} merged: kept: it is a default branch`,
+    `branch ${done.branch} · ${done.id} merged: removed`,
+    `branch ${pr.branch} · ${pr.id} merged: kept: PR 7 is open`,
+  ].join("\n"));
+  assert.deepEqual(r.branches(), ["Master", "main", pr.branch].sort());
+
+  // Packed refs keep two names that differ only in case, on any file system, as a case-sensitive one does with loose refs.
+  r.git(r.main, "worktree", "add", "-q", join(r.top, "app-wip"), "-b", "wip"); // no task owns it
+  r.git(r.main, "branch", "feat");
+  finished(r, "feat", "building");
+  r.git(r.main, "push", "-q", "origin", "wip", "feat");
+  r.git(r.main, "pack-refs", "--all");
+  const packed = join(r.main, ".git", "packed-refs");
+  const head = r.git(r.main, "rev-parse", "main");
+  writeFileSync(packed, readFileSync(packed, "utf8").replace(/^#.*\n/, "") + `${head} refs/heads/WIP\n${head} refs/heads/FEAT\n`);
+  const [wip, feat] = [finished(r, "WIP"), finished(r, "FEAT")];
+  const before = r.refs();
+  assert.equal(r.ok("worktrees"), [
+    `branch Master · ${near} merged: kept: it is a default branch`,
+    `branch ${pr.branch} · ${pr.id} merged: kept: PR 7 is open`,
+    `branch WIP · ${wip} merged: kept: the worktree ${join(r.top, "app-wip")} uses wip`,
+    `branch FEAT · ${feat} merged: kept: T4 still uses the branch feat (building)`,
+  ].join("\n"));
+  assert.equal(r.refs(), before, "no branch moved or went");
+});
+
 test("T45-REMOTE-REFNAME: a remote that gives a name with ':' moves no local branch: the name is no refspec", () => {
   const r = rig();
   r.prs([]);

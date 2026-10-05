@@ -628,13 +628,16 @@ function nestedRepo(root, rel) {
   }
 }
 
-/** The branches that sage never deletes: main, master, the main checkout's, and the remote's default by its local and its remote HEAD. */
+/** A branch name as a case- and normalization-insensitive file system sees it: "Main" and "main" are one file there. */
+const fold = (name) => name.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+
+/** The folded branches that sage never deletes: main, master, the main checkout's, and the remote's default by its local and its remote HEAD. */
 function defaultBranches(root, main, remote) {
-  const out = new Set(["main", "master", main.branch?.slice(11), remote?.head]);
+  const out = ["main", "master", main.branch?.slice(11), remote?.head];
   try {
-    out.add(git(root, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").replace(/^origin\//, ""));
+    out.push(git(root, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").replace(/^origin\//, ""));
   } catch {}
-  return out;
+  return new Set(out.filter(Boolean).map(fold));
 }
 
 /** The refs of origin as the remote itself gives them, and its default branch, or null when the remote cannot be reached. */
@@ -687,7 +690,9 @@ function onRemote(root, remote, sha) {
  * status, whose last commit the remote itself has, whose ignored files are all in rebuildable folders and hold no nested
  * repository, and only when GitHub gives the PR state: it fails closed. It uses
  * git worktree remove without --force, deletes the branch only at that commit, and never touches the main checkout or a
- * folder that is not a registered worktree. With task, only that task's branch.
+ * folder that is not a registered worktree. It acts only on a branch whose exact name git lists: on a case- or
+ * normalization-insensitive file system, refs/heads/Main reads and deletes the file of main. It keeps a branch whose name
+ * differs from a default or in-use branch only in letter case or Unicode form. With task, only that task's branch.
  */
 function tidy(dir, root, env, { task: only, dry } = {}) {
   let trees;
@@ -697,6 +702,7 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
     return only ? [] : [`${root}: skipped: it is not a git checkout`];
   }
   const [main, ...others] = trees; // git lists the main checkout first
+  const exact = new Set(git(root, "for-each-ref", "--format=%(refname)", "refs/heads/").split("\n")); // the names as git keeps them
   const [tasks, runs] = [read(dir, "tasks"), read(dir, "runs")];
   const inWorktree = new Set(others.map((t) => t.branch)); // the main checkout's branch stays a candidate, so its task gets a kept line
   const seen = new Set();
@@ -723,9 +729,15 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
     if (!own.length && !ended) continue;
     const why = done ? `${done.id} ${done.state}` : `PR ${ended.number} ${ended.state.toLowerCase()}`;
     const line = (verdict) => lines.push(`${c.path ? `${c.path} · ${c.branch}` : `branch ${c.branch}`} · ${why}: ${verdict}`);
-    const building = own.find((t) => !DONE.includes(t.state)); // a branch that two tasks share is done when both are
-    const run = runs.find((r) => r.status === "running" && (r.branch === c.branch || own.some((t) => t.id === r.task)));
-    const open = (prs ?? []).find((p) => p.state === "OPEN" && (p.headRefName === c.branch || own.some((t) => t.pr && String(p.number) === t.pr)));
+    if (!exact.has(`refs/heads/${c.branch}`)) {
+      line("kept: no branch with exactly this name"); // so nothing below reads or deletes the branch that the file system finds
+      continue;
+    }
+    const near = (b) => typeof b === "string" && fold(b) === fold(c.branch); // the same branch, or a near-duplicate of it
+    const building = tasks.find((t) => !DONE.includes(t.state) && near(t.branch)); // a branch that two tasks share is done when both are
+    const run = runs.find((r) => r.status === "running" && (near(r.branch) || own.some((t) => t.id === r.task)));
+    const open = (prs ?? []).find((p) => p.state === "OPEN" && (near(p.headRefName) || own.some((t) => t.pr && String(p.number) === t.pr)));
+    const user = others.find((t) => t.worktree !== c.path && near(t.branch?.slice(11)));
     const symbolic = () => {
       try {
         return Boolean(git(root, "symbolic-ref", "-q", `refs/heads/${c.branch}`)); // git follows it: a delete would delete its target
@@ -739,9 +751,10 @@ function tidy(dir, root, env, { task: only, dry } = {}) {
       const hidden = c.path ? git(c.path, "ls-files", "-v").split("\n").filter((l) => /^(S|[a-z]) /.test(l)).map((l) => l.slice(2)) : [];
       const reason =
         symbolic() ? "the branch is a symbolic ref"
-        : building ? `${building.id} still uses the branch (${building.state})`
+        : building ? `${building.id} still uses the branch${building.branch === c.branch ? "" : ` ${building.branch}`} (${building.state})`
         : run ? `run ${run.id} is running`
-        : keep.has(c.branch) ? "it is a default branch"
+        : user ? `the worktree ${user.worktree} uses ${user.branch.slice(11)}`
+        : keep.has(fold(c.branch)) ? "it is a default branch"
         : open ? `PR ${open.number} is open`
         : c.path && git(c.path, "status", "--porcelain") ? "it has changes that are not committed"
         : hidden.length ? `files hidden from git status: ${hidden.slice(0, 3).join(", ")}`
