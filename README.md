@@ -231,6 +231,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
 | **Autopilot** | Verified pull requests merge by themselves after their clean cycles: 1 for a tiny or small task, 2 for a large task or a task with a risk flag. Off by default. A message of the owner that starts with "autopilot on" or "sage mode autopilot" turns it on. Your own text that mentions autopilot with an off word turns it off, also between two frames and in a message queued while Claude works. A queued message is yours only as a whole system reminder outside every other frame. It can stop autopilot, but it cannot start autopilot or sage mode: send an on again when Claude is idle. Inside an agent's report or a notice, only a line that starts with "autopilot off" or "sage mode off" turns it off. Text inside an agent's report, a notice or another session's message never turns it on. |
+| **Board** | The compact view of every project's logbook for the chat: what needs you, the agents running now, each active task, what merged since the last board and the next tasks. A message of the owner that starts with "show board" prints it. |
 | **The dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
 | **Seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
 
@@ -245,6 +246,7 @@ sage uses each word in one meaning only. The [dictionary](writing/dictionary.md)
 | `sage mode.` + a request, at the start of a message | The session becomes your chief of staff and starts the work. |
 | Your answer to a question, for example `no` | The chief applies your decision and goes on. |
 | `status` | Where each task is: running, waiting for you, verified. |
+| `show board`, `show board for all` or `show board for <project>`, at the start of a message | The board in the chat: see [The board](#the-board). |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
 | A message that starts with `autopilot on`, or with `sage mode` followed by `autopilot`: `sage mode autopilot`, `sage mode on, autopilot on` | Verified pull requests merge by themselves after their clean cycles. |
 | Your message that mentions autopilot with an off word, for example `autopilot off`, `stop autopilot` or `pause autopilot` | Verified pull requests wait for you again. |
@@ -257,6 +259,25 @@ To make every session in a folder start in sage mode, put this in the folder's `
 ```json
 { "agent": "sage:chief-of-staff" }
 ```
+
+## The board
+
+Start a message with `show board` to see the board in the chat. It is short Markdown that fits a phone screen, built from the logbooks on your Mac. It needs no server and no file.
+
+| Say | You see |
+| --- | --- |
+| `show board` or `show board for this project` | The project of the session, and one line for each other project with something waiting, for example "order-chaser: 1 gate waiting". |
+| `show board for all` | Every project: what needs you and what runs at the top, then one short section per project. |
+| `show board for sage-bot` | One project. The name can be in any case. An unknown name lists the known projects. |
+
+The board has these parts, in this order:
+
+1. **Needs you:** the open gates with the recommendation and the default, and the pull requests that wait for your merge (a large or risk-flagged task, or a small one outside the night window).
+2. **Running now:** each agent with its task, role and age.
+3. **Merged since the last board**, with links. The sage folder keeps the last board's list in `board.json`.
+4. **One section per project:** a line per active task (id, title, state, pull request link, round), the count of framed tasks, and the next 3 framed tasks by id.
+
+After the board, the chief asks each open gate as a choice card. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
 
 ## Principles
 

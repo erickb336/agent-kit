@@ -48,6 +48,9 @@ const OFF_LINE = new RegExp(`${LINE_START}(?:sage${SP}+mode|autopilot)${SP}+off\
 const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
 // The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
+// "show board", "show board for this project", "show board for all", "show board for <project>": at the start of the
+// owner's own text only, like the mode phrases, so a quote or an agent's report shows no board.
+const BOARD = new RegExp(`${START}show${SP}+board(?:${SP}+for${SP}+(this${SP}+project|all|[a-z0-9][a-z0-9_.-]{0,63}))?${END}`, "i");
 const AUTOPILOT = /\bauto[-\s]?pilots?\b/i;
 const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit(?:s|ting)?|exit(?:s|ed|ing)?)\b|\b(?:stop|disabl|paus|cancel|kill|halt|deactivat|abort|suspend)|\bauto[-\s]?pilots?\s*=\s*false\b/i;
 const broadOff = (text) => OFF_LINE.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));
@@ -147,6 +150,13 @@ function switchModes({ owner, text, outside, all }, state) {
   return notes;
 }
 
+/** The note for the board phrase: the command to run, and what to do with its output. */
+function boardText(word, cwd) {
+  const scope = !word || /^this/i.test(word) ? "this" : word.toLowerCase();
+  const project = cwd ? ` --project '${cwd.replaceAll("'", `'\\''`)}'` : "";
+  return `sage: the owner asked for the board. Run: node "${TOOL}" board ${scope}${project}\nPrint its output word for word as the start of your reply, with no comment before it. Then ask each open gate under "Needs you" as a choice card (AskUserQuestion): its options, with the recommendation first.`;
+}
+
 /** "1 sage agent is running", "3 sage agents are running". */
 const running = (n) => `${n} sage ${n === 1 ? "agent is" : "agents are"} running`;
 
@@ -156,7 +166,10 @@ export function handle(input, state, slots) {
   if (main && CHIEF.test(input.agent_type ?? "")) state.sage = true;
 
   if (event === "UserPromptSubmit") {
-    const notes = switchModes(promptOf(input), state);
+    const prompt = promptOf(input);
+    const notes = switchModes(prompt, state);
+    const asked = prompt.owner && BOARD.exec(prompt.text);
+    if (asked) notes.push(boardText(asked[1], input.cwd));
     if (state.sage && !state.given) {
       state.given = true;
       notes.unshift(chiefText());

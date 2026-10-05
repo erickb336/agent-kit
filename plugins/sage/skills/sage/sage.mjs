@@ -12,6 +12,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { homedir, hostname, uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { board } from "./board.mjs";
 
 /** The least route for each size. The chief may add blocks, never remove these. */
 export const SIZES = {
@@ -69,7 +70,7 @@ const TABLES = {
   gates: ["id", "task", "question", "options", "recommendation", "default", "answer", "at"],
   decisions: ["at", "task", "decision", "why"],
 };
-const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config"];
+const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "board"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
   "logbook repair": ["accept-loss"],
@@ -83,6 +84,7 @@ const OPTIONS = {
   "gate add": ["question", "options", "recommend", "default"],
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
+  board: ["remember"],
 };
 /** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
 const PR = /^\d+$/;
@@ -278,7 +280,7 @@ const rowsOf = ({ cols, lines }) =>
     const v = line.split("\t");
     return Object.fromEntries(cols.map((c, i) => [c, v[i] ?? ""]));
   });
-const read = (dir, table) => rowsOf(sheet(dir, table));
+export const read = (dir, table) => rowsOf(sheet(dir, table));
 
 /**
  * The integrity check of a logbook: every table (but skip, the ones that a repair starts again) is there, is a regular
@@ -543,6 +545,11 @@ export function sage(argv, env = process.env) {
     return Object.entries(c).map(([k, v]) => `${k}=${v}`).join(" ");
   }
   const project = resolve(opt.project ?? env.SAGE_PROJECT ?? process.cwd());
+  // The board reads every logbook and takes no lock. --remember no leaves board.json as it is.
+  if (cmd === "board") {
+    if (pos.length > 1 || !["yes", "no", undefined].includes(opt.remember)) refuse("board takes one scope (this, all or a project's name) and --remember yes or no");
+    return board({ scope: pos[0], project, env, save: opt.remember !== "no" });
+  }
   const dir = storeDir(project, env);
   const repair = cmd === "logbook" && pos[0] === "repair";
   const skip = repair ? [...new Set(list(opt["accept-loss"]))] : [];
