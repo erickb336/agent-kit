@@ -797,6 +797,19 @@ test("QA-4: an id never comes back while a row of the logbook still names it", (
   assert.match(s.ok("task", "add", "--title", "c", "--size", "small"), /^T3 framed/);
 });
 
+test("F-T46-MOVE-KEY: a moved finding's new key and new task never come back while the decision trail names them", () => {
+  const s = store();
+  const lose = (table, col, id) => byHand(s.dir, table, col, id, () => null);
+  s.ok("task", "add", "--title", "a", "--size", "small");
+  s.ok("finding", "add", "T1", "--source", "qa", "--severity", "low", "--summary", "first");
+  assert.match(s.ok("finding", "move", "T1", "F-T1-1", "--to", "follow"), /^F-T1-1 moved to T2 as F-T2-1 /);
+  lose("findings", 1, "F-T2-1"); // only the decision "F-T1-1 moved to T2 as F-T2-1: first" names it now
+  assert.equal(s.ok("finding", "add", "T2", "--source", "qa", "--severity", "low", "--summary", "second"), "F-T2-2 open · low · T2");
+  lose("findings", 1, "F-T2-2");
+  lose("tasks", 0, "T2"); // only the same decision names T2 now
+  assert.match(s.ok("task", "add", "--title", "c", "--size", "small"), /^T3 framed/);
+});
+
 test("QA-5: a refusal says what to do: finish the other writer or use another branch, and give the full SHA", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
