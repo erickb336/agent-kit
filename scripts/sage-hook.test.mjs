@@ -1638,3 +1638,85 @@ test("S-CHIEFCASE: the chief's shell writes to the logbook in another case or as
     assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `sage mode: ${command}`);
   }
 });
+
+// T83 round 2: the owner's narrow shell rule (T83-COST-GLOB), and the gaps of the re-check R401 (S-WTLINK, S-FOLD, S-DOTDOT).
+/** A project with one worktree (w1) and a book in the sage root (proj-x): the agent's cwd is the project or the worktree. */
+function project(env = {}) {
+  const s = session(env);
+  const proj = join(s.dir, "proj");
+  const w1 = join(proj, ".claude", "worktrees", "w1");
+  mkdirSync(join(w1, "forge", "proj-x"), { recursive: true });
+  writeFileSync(join(w1, "forge", "proj-x", "ledger.tsv"), "forged\n");
+  mkdirSync(join(s.vars.SAGE_HOME, "proj-x"), { recursive: true });
+  writeFileSync(join(s.vars.SAGE_HOME, "proj-x", "ledger.tsv"), "");
+  writeFileSync(join(w1, "t.txt"), s.vars.SAGE_HOME);
+  return { ...s, proj, w1 };
+}
+
+test("COST-GLOB: an agent's pattern or logbook-file name in a project passes; with .., ~, $, cd, pushd or an absolute path, or into the sage root, it is refused (T83)", () => {
+  const s = project();
+  const ordinary = ["rm dist/*", "cp x out/*", "jq '.a = 1' in.json > config.json", "rm -rf build/*/*.o", "sed -i '' s/a/b/ src/*.js"];
+  for (const cwd of [s.proj, s.w1]) for (const command of ordinary) assert.equal(denied(s.send(bash(command, cwd, AGENT))), undefined, `${cwd}: ${command}`);
+  symlinkSync(s.vars.SAGE_HOME, join(s.w1, "l"));
+  const toward = [
+    "rm ../dist/*",
+    "rm ~/dist/*",
+    "rm $OUT/*",
+    "rm `cat t.txt`/*",
+    "cd dist && rm *",
+    "pushd dist; rm *",
+    "rm /tmp/dist/*",
+    "jq . in.json > ../config.json",
+    "jq . in.json > ~/config.json",
+    "jq . in.json > $D/config.json",
+    "cd out && jq . in.json > config.json",
+    "jq . in.json > /tmp/config.json",
+    "cp x l/proj-x/*",
+    "jq . in.json > l/proj-x/config.json",
+    "cp -R forge/. l/",
+  ];
+  for (const command of toward) assert.match(denied(s.send(bash(command, s.w1, AGENT))) ?? "", LOGBOOK_SHELL, command);
+  for (const command of ["rm *", "jq . in.json > config.json"]) assert.match(denied(s.send(bash(command, join(s.vars.SAGE_HOME, "proj-x"), AGENT))) ?? "", LOGBOOK_SHELL, `in the sage root: ${command}`);
+  for (const command of ["rm -rf h*/proj-x", "cp -R proj/.claude/worktrees/w1/forge/. ."]) assert.match(denied(s.send(bash(command, s.dir, AGENT))) ?? "", LOGBOOK_SHELL, `in the folder that holds the sage root: ${command}`);
+});
+
+test("S-WTLINK: an agent's write through a link in its worktree into the sage root is refused, and so is the link (T83)", () => {
+  const s = project();
+  const wt = ".claude/worktrees/w1";
+  assert.match(denied(s.send(bash(`ln -s $(cat ${wt}/t.txt) ${wt}/l2`, s.proj, AGENT))) ?? "", LOGBOOK_SHELL, "ln -s to a path that the hook cannot read");
+  assert.match(denied(s.send(bash(`ln -s ${s.vars.SAGE_HOME} ${wt}/l2`, s.proj, AGENT))) ?? "", LOGBOOK_SHELL, "ln -s to the root");
+  assert.match(denied(s.send(bash(`ln -s ../../../../home ${wt}/l3`, s.proj, AGENT))) ?? "", LOGBOOK_SHELL, "ln -s to the root, relative to the link");
+  symlinkSync(s.vars.SAGE_HOME, join(s.w1, "l2")); // as a script that the agent ran could make it (T83-S-SCRIPT, the sandbox's job)
+  for (const command of [
+    `cp -R ${wt}/forge/. ${wt}/l2/proj-x/`,
+    `tar -C ${wt}/l2 -xf ${wt}/forge.tar`,
+    `rsync -a ${wt}/forge/ ${wt}/l2/`,
+    `rm -rf ${wt}/l2/proj-x`,
+  ]) assert.match(denied(s.send(bash(command, s.proj, AGENT))) ?? "", LOGBOOK_SHELL, command);
+  assert.equal(readFileSync(join(s.vars.SAGE_HOME, "proj-x", "ledger.tsv"), "utf8"), "");
+  for (const command of [`cp a ${wt}/out.txt`, `ln -s ../shared ${wt}/node_modules`, `cd ${wt} && npm test > /tmp/out.log 2>&1`]) assert.equal(denied(s.send(bash(command, s.proj, AGENT))), undefined, command);
+});
+
+test("S-FOLD: a long s (ſ) or the st ligature (ﬆ), which APFS folds to s and st, still names the sage root or a logbook file (T83)", () => {
+  const s = project({ SAGE_HOME: join(mkdtempSync(join(tmpdir(), "sage-")), "st-home") });
+  mkdirSync(s.vars.SAGE_HOME, { recursive: true });
+  const st = s.vars.SAGE_HOME.replace(/st-home$/, "ﬆ-home");
+  for (const command of [`printf x > ${st}/proj-x/new.md`, `printf x > ${st}/proj-x/ﬆatus.md`]) {
+    assert.match(denied(s.send(bash(command, s.w1, AGENT))) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `chief: ${command}`);
+  }
+  assert.match(denied(s.send(bash("printf x >> ~/.claude/ſage/p/ledger.tsv"))) ?? "", /the chief never writes, moves or removes a logbook file/, "chief: .claude/ſage");
+  s.send(prompt("sage mode"));
+  assert.match(denied(s.send(bash("echo x > ﬆanding.md"))) ?? "", /the chief never writes, moves or removes a logbook file/, "chief in sage mode: ﬆanding.md");
+});
+
+test("S-DOTDOT: a file tool's path with .. after a link is resolved through the link, so a Write into the sage root is refused (T83)", () => {
+  const base = mkdtempSync(join(tmpdir(), "sage-"));
+  const s = project({ SAGE_HOME: join(base, "sage") });
+  mkdirSync(join(base, "x"));
+  symlinkSync(join(base, "x"), join(s.w1, "l"));
+  const write = tool("Write", { file_path: ".claude/worktrees/w1/l/../sage/proj-x/ledger.tsv", content: "x" }, { cwd: s.proj });
+  assert.match(denied(s.send({ ...write, ...AGENT })) ?? "", /never writes under the sage root/, "agent");
+  assert.match(denied(s.send(write)) ?? "", /the chief never writes under the sage root/, "chief");
+  assert.equal(denied(s.send({ ...tool("Write", { file_path: ".claude/worktrees/w1/l/../notes.md" }, { cwd: s.proj }), ...AGENT })), undefined, "next to the root");
+});

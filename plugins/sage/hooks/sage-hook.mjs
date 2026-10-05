@@ -25,7 +25,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The state tool. When it cannot load, the hook still runs, and its merge check refuses every merge.
@@ -447,16 +447,17 @@ const TABLES = ["tasks.tsv", "runs.tsv", "findings.tsv", "gates.tsv", "ledger.ts
 const ROOT_VARS = /\b(?:SAGE_HOME|CLAUDE_CONFIG_DIR)\b/i;
 /** All the text of a tool call's input, one string per field. */
 const fields = (v) => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(fields) : []);
-/** The words of the text in lower case and NFC (APFS ignores case and normalization), each as its path parts. Quotes and backslashes are removed, so .cl''aude is .claude. */
-const partsOf = (text) =>
+/** Text as APFS compares names: it ignores case and Unicode form, and folds compatibility forms (ſ is s, ﬆ is st). */
+const fold = (text) => text.normalize("NFKC").toLowerCase();
+/** The words of a command's text, in their own case. Quotes and backslashes are removed, so .cl''aude is .claude. */
+const wordsOf = (text) =>
   text
     .replace(/['"\\]/g, "")
-    .normalize("NFC")
-    .toLowerCase()
-    .replace(/\$\{(\w+)\}/g, "$$$1")
+    .replace(/\$\{(\w+)\}/g, "$$1")
     .split(/[\s;&|()<>`=:]+/)
-    .filter(Boolean)
-    .map((word) => ({ word, parts: word.split("/") }));
+    .filter(Boolean);
+/** The words of the text, folded, each as its path parts. */
+const partsOf = (text) => wordsOf(fold(text)).map((word) => ({ word, parts: word.split("/") }));
 const GLOB = /[*?[{]/;
 /** Does a path part name name, also as a shell pattern (sag?, .cl*, [.]claude, {a,b})? */
 function names(part, name) {
@@ -476,40 +477,69 @@ function rootsOf(strict) {
   let raw;
   try {
     raw = stateTool.sageRoot(process.env);
-    return [raw.normalize("NFC").toLowerCase(), canonical(raw)];
+    return [fold(raw), canonical(raw)];
   } catch (e) {
     if (strict) throw e;
-    return raw ? [raw.normalize("NFC").toLowerCase()] : [];
+    return raw ? [fold(raw)] : [];
   }
 }
 /** Does the text name the sage root: its path or variables, or .claude then sage in one path, in any case or as a pattern? */
 function namesRoot(text, words, roots) {
-  const low = text.replace(/['"\\]/g, "").normalize("NFC").toLowerCase();
+  const low = fold(text.replace(/['"\\]/g, ""));
   return ROOT_VARS.test(text) || roots.some((r) => low.includes(r)) || words.some(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")));
 }
 /** Does the text name a logbook file, in any case or as a pattern? */
 const namesTable = (words) => words.some(({ parts }) => parts.some((p) => TABLES.some((t) => names(p, t))));
 /** A path into a project's worktrees (<project>/.claude/worktrees/<name>), where agents work: plain, with no "..", pattern or variable. */
 const worktree = (word) => /(?:^|\/)\.claude\/worktrees\/[\w-]/.test(word) && word.split(".claude").length === 2 && !/[*?[{$~]/.test(word) && !word.split("/").includes("..");
+/** A path from the cwd, as the shell gives it to the system: ".." is not removed here, so the system resolves it after a link. */
+const from = (cwd, path) => (isAbsolute(path) ? path : `${isAbsolute(cwd) ? cwd : resolve(cwd)}/${path}`); // throws on a cwd that is not text
+/** Does a canonical path overlap the canonical root: is it in the root, or the root in it? */
+const overlaps = (path, root) => [[path, root], [root, path]].some(([a, b]) => a === b || a.startsWith(b.endsWith(sep) ? b : b + sep));
+/** A shell word as a path: ~ is the home folder, and a pattern stands for the folder before its first wildcard. */
+function pathOf(word) {
+  const parts = word.replace(/^~(?=\/|$)/, process.env.HOME ?? "~").split("/");
+  const k = parts.findIndex((p) => GLOB.test(p));
+  return (k < 0 ? parts : parts.slice(0, k)).join("/") || (word.startsWith("/") ? "/" : ".");
+}
 /**
- * Is an agent's command near the logbook (deny by default)? It names the sage root or a logbook file; or .claude in any
- * case or as a pattern (not in a plain worktree path); or sage as a pattern; or the home folder (~, $HOME or its path)
- * with a variable or a pattern; or it changes to the home folder.
+ * Is an agent's command near the logbook (deny by default)? It names the sage root or a logbook file's folder; or
+ * .claude (not in a plain worktree path); or the home folder with a variable or a pattern; or it changes to the home
+ * folder. A word that, through the links on disk, is in the sage root or holds it is near too. A pattern or a logbook
+ * file's name is near only in a command that can leave the cwd: cd or pushd, "..", ~, $, a backtick, or an absolute path
+ * (the owner's decision T83-COST-GLOB, so that rm dist/* and jq ... > config.json pass in a project).
  */
-function nearLogbook(text, roots) {
+function nearLogbook(text, roots, cwd) {
   const words = partsOf(text);
-  const low = text.toLowerCase();
-  const home = (process.env.HOME ?? "").normalize("NFC").toLowerCase();
+  const plain = words.filter(({ word }) => !GLOB.test(word));
+  const low = fold(text);
+  const home = fold(process.env.HOME ?? "");
   const atHome = (w) => /^(?:~|\$home|-)\/?$/.test(w) || (home.length > 1 && (w === home || w === `${home}/`));
   const fromHome = (w) => HOME.test(w) || (home.length > 1 && (w === home || w.startsWith(`${home}/`)));
+  const leaves =
+    /[$`]/.test(text) ||
+    words.some(({ word, parts }) => /^(?:cd|pushd)$/.test(word) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(word) && !/^\/dev\/(?:null|stdout|stderr)$/.test(word)));
+  const resolved = [...new Set(wordsOf(text))].filter((w) => !/[$`]/.test(w)).map((w) => canonical(from(cwd, pathOf(w))));
   return (
-    namesRoot(text, words, roots) ||
-    namesTable(words) ||
-    words.some(({ word, parts }) => (parts.some((p) => names(p, ".claude")) && !worktree(word)) || parts.some((p) => GLOB.test(p) && names(p, "sage"))) ||
+    namesRoot(text, plain, roots) ||
+    plain.some(({ word, parts }) => parts.includes(".claude") && !worktree(word)) ||
+    (leaves && (words.length > plain.length || namesTable(words))) ||
+    resolved.some((p) => overlaps(p, roots[1])) ||
     words.some(({ word }) => fromHome(word) && /[*?[{$]/.test(word.replace(/^\$home/, ""))) ||
     /(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(low) ||
     words.some(({ word }, k) => /^(?:cd|pushd)$/.test(word) && atHome(words[k + 1]?.word ?? "-"))
   );
+}
+/** Does a link command (ln, link) make a link whose target the hook cannot read, or whose target, read from the link's folder, overlaps the root? */
+function linksNear(text, root, cwd) {
+  return shellCommands(text).some(({ words }) => {
+    const k = words.findIndex((w) => !/^\w+=/.test(w));
+    if (!/^(?:ln|link)$/.test(basename(words[k] ?? ""))) return false;
+    if (words.some((w) => w.includes("$"))) return true; // also $(…) and a backtick, which shellCommands gives as $(…)
+    const operands = words.slice(k + 1).filter((w) => !w.startsWith("-"));
+    const link = from(cwd, operands.at(-1) ?? ".");
+    return operands.some((w) => [link, dirname(link)].some((dir) => overlaps(canonical(from(dir, pathOf(w))), root)));
+  });
 }
 /** The commands that write, move, remove or link a file, also in PowerShell (case does not matter there). */
 const WRITE_NAMES = new Set(["tee", "cp", "mv", "rm", "rmdir", "ln", "link", "install", "touch", "dd", "truncate", "rsync", "sponge", "patch", "unlink", "shred", "tar", "unzip", "set-content", "out-file", "add-content", "copy-item", "move-item", "remove-item", "rename-item", "new-item", "ni", "sc", "ac", "del"]);
@@ -561,7 +591,7 @@ function stateToolOnly(command) {
 function underRoot(input) {
   const ti = input.tool_input ?? {};
   const root = canonical(stateTool.sageRoot(process.env));
-  const path = canonical(resolve(input.cwd ?? process.cwd(), String(ti.file_path ?? ti.notebook_path ?? "")));
+  const path = canonical(from(input.cwd ?? process.cwd(), String(ti.file_path ?? ti.notebook_path ?? "")));
   return path === root || path.startsWith(root + sep) ? `the sage root ${root} (${path})` : undefined;
 }
 /** Does a command tool's input write a logbook file? sage: in sage mode a logbook file's name counts too. */
@@ -623,7 +653,8 @@ function agentCheck(input, file) {
     return Object.hasOwn(READS, cmd ?? "") && READS[cmd](pos) ? undefined : `"${[cmd, ...pos.slice(0, 1)].join(" ")}" writes the logbook, or is not a read command of the state tool.`;
   }
   const text = fields(ti);
-  return nearLogbook(text.join("\n"), roots) && text.some(writes) ? "an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it." : undefined;
+  const cwd = input.cwd ?? process.cwd();
+  return text.some(writes) && (nearLogbook(text.join("\n"), roots, cwd) || text.some((t) => linksNear(t, roots[1], cwd))) ? "an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it." : undefined;
 }
 
 /**
@@ -631,20 +662,24 @@ function agentCheck(input, file) {
  * target is missing), in lower case and NFC, because APFS ignores both. On a volume that is case-sensitive, this can only
  * refuse more.
  */
-const canonical = (path) => real(path).normalize("NFC").toLowerCase();
+const canonical = (path) => fold(real(path));
 function real(path) {
   let rest = [];
-  for (let hops = 0; hops < 64; hops++) {
+  for (let hops = 0; ; ) {
     try {
-      return join(realpathSync.native(path), ...rest);
+      return join(realpathSync.native(path), ...rest); // the system resolves ".." after each link; only the missing rest is joined
     } catch {
-      const link = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink();
-      if (link) path = resolve(dirname(path), readlinkSync(path));
-      else if (dirname(path) === path) return join(path, ...rest);
+      let link = false;
+      try {
+        link = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink();
+      } catch {} // a name that is too long, or a file used as a folder: it does not exist
+      if (link) {
+        if (++hops > 64) throw new Error(`too many links in ${path}`);
+        path = from(dirname(path), readlinkSync(path));
+      } else if (dirname(path) === path) return join(path, ...rest);
       else [path, rest] = [dirname(path), [basename(path), ...rest]];
     }
   }
-  throw new Error(`too many links in ${path}`);
 }
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
