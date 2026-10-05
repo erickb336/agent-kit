@@ -1,17 +1,18 @@
 // The shell parser of the sage hook: mvdan/sh (BSD-3-Clause, see LICENSE-mvdan-sh) in parser.wasm, built from parse.go
 // by scripts/build-parser.mjs. Everything here is synchronous, because the hook's handle is: the module compiles on
-// the first call, once per process, and each call runs in the same instance.
+// the first call, once per process, and each call runs in a new instance (about 0.2 ms), so that a call that traps
+// (a panic in the parser) leaves nothing behind for the next one.
 import { readFileSync } from "node:fs";
 
 /** A longer line is refused unread. Claude Code asks the owner about any command line above 10,000 characters (T125 design). */
 export const MAX_LENGTH = 10_000;
 
-let wasm;
+let module;
 
-/** The parser's instance. TinyGo's WASI target imports five system calls; it gets no arguments and no files. */
+/** A new instance of the parser. TinyGo's WASI target imports five system calls; it gets no arguments and no files. */
 function instance() {
-  if (wasm) return wasm;
-  const module = new WebAssembly.Module(readFileSync(new URL("parser.wasm", import.meta.url)));
+  module ??= new WebAssembly.Module(readFileSync(new URL("parser.wasm", import.meta.url)));
+  let wasm;
   const view = () => new DataView(wasm.exports.memory.buffer);
   const zero = (...ptrs) => { for (const p of ptrs) view().setUint32(p, 0, true); return 0; };
   const wasi = {
@@ -40,7 +41,8 @@ export function parseCommands(src, { zsh = false } = {}) {
   if (src.length > MAX_LENGTH) throw new Error(`a command line of more than ${MAX_LENGTH} characters`);
   const { exports } = instance();
   const bytes = new TextEncoder().encode(src);
-  new Uint8Array(exports.memory.buffer, exports.alloc(bytes.length), bytes.length).set(bytes);
+  const at = exports.alloc(bytes.length); // first: it can grow the memory, which detaches the old buffer
+  new Uint8Array(exports.memory.buffer, at, bytes.length).set(bytes);
   const r = exports.parse(bytes.length, zsh ? 1 : 0);
   const result = JSON.parse(new TextDecoder().decode(new Uint8Array(exports.memory.buffer, Number(r >> 32n), Number(r & 0xffffffffn))));
   if (result.error) throw new Error(result.error);

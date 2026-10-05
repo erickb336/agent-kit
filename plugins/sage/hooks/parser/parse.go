@@ -54,13 +54,9 @@ type reader struct {
 // A zsh glob qualifier that runs code: *(e:'ps':), *(+f), *(#qe:…:). mvdan/sh reads it as plain text.
 var codeQualifier = regexp.MustCompile(`\([^)]*[e+]`)
 
-// Parse gives the command list of src, read as zsh when zsh is true, else as bash.
-func Parse(src string, zsh bool) (out []byte) {
-	defer func() {
-		if p := recover(); p != nil {
-			out = fail(fmt.Errorf("the parser failed: %v", p))
-		}
-	}()
+// Parse gives the command list of src, read as zsh when zsh is true, else as bash. TinyGo has no recover() on
+// WebAssembly: a panic stops the instance with a trap, and parser.mjs throws it.
+func Parse(src string, zsh bool) []byte {
 	lang := syntax.LangBash
 	if zsh {
 		lang = syntax.LangZsh
