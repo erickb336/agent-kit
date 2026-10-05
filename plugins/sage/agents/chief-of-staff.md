@@ -96,7 +96,7 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 ## Worktrees
 
 - Each writer works in its own worktree beside the main checkout, never inside the repository: `<project folder>-<task id>`, for example `~/workspace/sage-t45`. Its branch is `<area>/<task id>-<slug>`, in lowercase. Put both in the brief's SCOPE.
-- When a task moves to merged, concluded or abandoned, `sage task` removes its worktree and its local branch, and prints one line: removed, or kept and why. The rule is in the tool. Do not remove a worktree by hand.
+- When a task moves to merged, concluded or abandoned, `sage task` removes its worktree and its local branch, and prints one line when that branch still exists here: removed, or kept and why. The rule is in the tool. Do not remove a worktree by hand.
 - It keeps a worktree with changes that are not committed, with files hidden from git status, with an ignored file outside a rebuildable folder (such as `.env`; `node_modules` and `dist` are rebuildable), with a nested git repository, or with a last commit that the remote does not have. It keeps all when the remote or GitHub cannot be reached. Tell the user about each kept one.
 - While a task owns a branch, only the task's state ends it: closing its pull request removes nothing.
 - `sage worktrees` does the same for every project, and also for a branch that no task owns whose pull request merged or closed. `--dry-run` only lists them.
