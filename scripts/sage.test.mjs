@@ -1532,6 +1532,22 @@ test("QA-2: every line the tool prints says logbook, never store, and merge chec
   assert.deepEqual(said.filter((line) => /merge gate|[\0-\x09\x0b-\x1f\x7f-\x9f]/.test(line)), []);
 });
 
+test("T59: a broken legacy autopilot_cycles refuses merges like cycles.large, and a cycles count above 10 in config.json names the config", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  s.ok("task", "add", "--title", "large", "--size", "large");
+  s.ok("task", "add", "--title", "risk", "--size", "small", "--risk", "data");
+  for (const t of ["T1", "T2"]) for (const kind of ["checks-pass", "review-clean", "security-clean", "ux-clean", "qa-pass"]) s.ok("verdict", t, "--sha", SHA, "--kind", kind, "--cycle", "1");
+  writeFileSync(f, '{"autopilot_cycles": "x"}');
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because cycles.large in ${f} is not a number. Set it with sage config cycles.large=<n> (a whole number from 2 to 10), or remove the key.`, "T54-CR-1: the legacy key is cycles.large when cycles.large is absent");
+  writeFileSync(f, '{"cycles.large": 1e308}');
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 1e\+308 clean cycles on this SHA \(cycles\.large is 1e\+308 in config\.json; the config command takes 1 to 10\)\. Run the next cycle/, "T54-CR-2: the reason names the config");
+  assert.match(s.no("merge-check", "--sha", SHA), /T2: 1 of 2 clean cycles on this SHA\. Run/, "a task that does not use the key has no note");
+  writeFileSync(f, '{"cycles.risk": "11", "cycles.large": 10}');
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "10"), /T2: 1 of 11 clean cycles on this SHA \(cycles\.risk is 11 in config\.json; the config command takes 1 to 10\)\. Run/);
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 10 clean cycles on this SHA\. Run/, "a count within the limit has no note");
+});
+
 test("T42: the owner's floors (gate G18): cycles.large and cycles.risk never go below 2, whoever writes config.json; a legacy autopilot_cycles reads as cycles.large", () => {
   const s = store();
   const f = join(s.home, "config.json");
@@ -1549,7 +1565,7 @@ test("T42: the owner's floors (gate G18): cycles.large and cycles.risk never go 
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "1"), /T1: 1 of 2 clean cycles on this SHA/, "F-T42-3: --cycles only raises the task's own count");
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "3"), /T1: 1 of 3 clean cycles on this SHA/, "--cycles raises it");
 
-  for (const [text, want] of [['{"autopilot_cycles": 3}', 3], ['{"autopilot_cycles": 1}', 2], ['{"autopilot_cycles": 3, "cycles.large": 4}', 4], ['{"autopilot_cycles": "x"}', 2]]) {
+  for (const [text, want] of [['{"autopilot_cycles": 3}', 3], ['{"autopilot_cycles": 1}', 2], ['{"autopilot_cycles": 3, "cycles.large": 4}', 4], ['{"autopilot_cycles": "x"}', "invalid"], ['{"autopilot_cycles": "x", "cycles.large": 3}', 3]]) {
     writeFileSync(f, text);
     assert.equal(s.ok("config"), all(want, 2), `config.json ${text}`);
   }
