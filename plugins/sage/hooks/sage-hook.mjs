@@ -18,7 +18,7 @@
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, constants, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -866,10 +866,31 @@ export function strayBrowsers(ps) {
   }
   return found;
 }
-const PS = () => execFileSync("ps", ["-axo", "pid,ppid,lstart,command"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, LC_ALL: "C" } });
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-/** Stops the leftover test browsers. The defaults are the real ps, kill and clock; the tests give their own. */
-export function stopStrayBrowsers({ ps = PS, kill = (pid, signal) => process.kill(pid, signal), wait = pause, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
+/** The first program of this name on PATH, as a real path (so a link to /bin/ps is /bin/ps), or undefined. */
+function onPath(name) {
+  for (const dir of (process.env.PATH ?? "").split(":").filter(Boolean)) {
+    try {
+      accessSync(join(dir, name), constants.X_OK);
+      return realpathSync(join(dir, name));
+    } catch {
+      /* not in this folder */
+    }
+  }
+}
+/**
+ * Stops the leftover test browsers with ps and kill: the programs first on PATH, or the functions that a test gives.
+ * Under a test (node --test sets NODE_TEST_CONTEXT; the hook's own tests set SAGE_BROWSER_SWEEP=on), each program must be
+ * a fake in a temporary folder, or the sweep refuses: no test can read or signal the real process list (T88).
+ */
+export function stopStrayBrowsers({ ps, kill, wait = pause, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  const programs = [ps ? null : onPath("ps"), kill ? null : onPath("kill")];
+  if ((process.env.NODE_TEST_CONTEXT !== undefined || process.env.SAGE_BROWSER_SWEEP === "on") && programs.some((p) => p !== null && !TEMP_ROOTS.some((root) => p?.startsWith(`${root}/`)))) {
+    log("sage: sweep refused: tests must use a fake ps and a fake kill");
+    return;
+  }
+  ps ??= () => execFileSync(programs[0] ?? "ps", ["-axo", "pid,ppid,lstart,command"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 2 ** 20, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, LC_ALL: "C" } });
+  kill ??= (pid, signal) => execFileSync(programs[1] ?? "kill", ["-s", signal.replace(/^SIG/, ""), String(pid)], { timeout: 2000, stdio: "ignore" });
   const send = (b, signal) => {
     try {
       kill(b.pid, signal);

@@ -1366,19 +1366,20 @@ test("SIGKILL goes only to the same process: a new process with the old pid stay
 });
 
 test("Stop and SubagentStop start the sweep, other events do not, and a failed ps keeps the Stop answer (T68-F6)", async () => {
-  // A fake ps first on PATH. It lists one process that this test starts and owns as a leftover browser; the real ps
-  // never runs, so the hook can signal no other process.
+  // A fake ps and a fake kill first on PATH, in a temporary folder. The fake ps lists one process that this test starts and
+  // owns as a leftover browser; the fake kill only records. The real ps and kill never run, so no real process is read or signalled.
   const dir = mkdtempSync(join(tmpdir(), "sage-sweep-"));
   const victim = spawn("sleep", ["60"], { stdio: "ignore" });
-  const ended = new Promise((done) => victim.on("exit", (code, signal) => done(signal)));
   try {
     mkdirSync(join(dir, "bin"));
     const calls = join(dir, "calls");
+    const kills = join(dir, "kills");
     writeFileSync(
       join(dir, "bin/ps"),
       `#!/bin/sh\necho "$*" >> "${calls}"\n[ -e "${dir}/fail" ] && exit 1\necho '${psLine(victim.pid, 1, `${T68.CHROMIUM} --headless ${pwProfile("W1")}`)}'\n`,
       { mode: 0o755 },
     );
+    writeFileSync(join(dir, "bin/kill"), `#!/bin/sh\necho "$*" >> "${kills}"\n`, { mode: 0o755 });
     const s = session({ PATH: `${join(dir, "bin")}:${process.env.PATH}`, SAGE_BROWSER_SWEEP: "on" });
     const count = () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean).length : 0);
     const run = (event) => {
@@ -1398,14 +1399,67 @@ test("Stop and SubagentStop start the sweep, other events do not, and a failed p
     assert.equal(failed.out?.decision, "block");
     assert.equal(count(), 1, "SubagentStop starts the sweep");
     assert.equal(failed.err, "");
-    assert.equal(victim.exitCode ?? victim.signalCode, null, "the process still runs");
+    assert.equal(existsSync(kills), false);
 
+    // The fake ps still lists the browser after the grace, so the fake kill gets SIGTERM, then SIGKILL.
     rmSync(join(dir, "fail"));
     const stopped = run({ hook_event_name: "Stop" });
-    assert.ok(count() >= 2, "Stop starts the sweep");
+    assert.equal(count(), 3, "Stop starts the sweep: ps before and after the grace");
     assert.match(stopped.err, new RegExp(`sage: stopped a leftover test browser, pid ${victim.pid}, started Mon Oct  5 09:12:44 2026 \\(SIGTERM\\)`));
-    assert.equal(await ended, "SIGTERM");
+    assert.equal(readFileSync(kills, "utf8"), `-s TERM ${victim.pid}\n-s KILL ${victim.pid}\n`);
+    assert.equal(victim.exitCode ?? victim.signalCode, null, "the fake kill signals nothing: the process still runs");
   } finally {
     victim.kill();
+  }
+});
+
+test("under a test, the sweep refuses a ps or kill that is not a fake in a temporary folder, and reads and signals nothing (T88)", async () => {
+  const { stopStrayBrowsers } = await import(HOOK);
+  // The stand-in for the real ps: a fake that records its calls, in a folder that is not temporary (this repository).
+  // The test never puts the real ps on PATH, so even a broken guard reads no real process list.
+  const outside = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".sweep-test-"));
+  const temp = mkdtempSync(join(tmpdir(), "sage-sweep-"));
+  const calls = join(temp, "calls");
+  const PATH = process.env.PATH;
+  try {
+    for (const d of [outside, temp]) writeFileSync(join(d, "ps"), `#!/bin/sh\necho "$*" >> "${calls}"\necho '${psLine(4101, 1, `${T68.CHROMIUM} --headless ${pwProfile("R1")}`)}'\n`, { mode: 0o755 });
+    mkdirSync(join(temp, "link"));
+    symlinkSync(join(outside, "ps"), join(temp, "link/ps"));
+    const sweepWith = (bin) => {
+      process.env.PATH = `${bin}:${PATH}`;
+      const signals = [];
+      const logs = [];
+      stopStrayBrowsers({ kill: (pid, signal) => signals.push(`${pid} ${signal}`), wait: () => {}, log: (line) => logs.push(line) });
+      process.env.PATH = PATH;
+      return { signals, logs, ps: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean).length : 0 };
+    };
+    const refused = { signals: [], logs: ["sage: sweep refused: tests must use a fake ps and a fake kill"], ps: 0 };
+    assert.deepEqual(sweepWith(outside), refused, "a ps outside a temporary folder");
+    assert.deepEqual(sweepWith(join(temp, "link")), refused, "a link in a temporary folder to a ps outside one");
+    // A fake ps in a temporary folder: the sweep runs.
+    assert.deepEqual(sweepWith(temp), { signals: ["4101 SIGTERM", "4101 SIGKILL"], logs: ["sage: stopped a leftover test browser, pid 4101, started Mon Oct  5 09:12:44 2026 (SIGTERM)", "sage: stopped a leftover test browser, pid 4101, started Mon Oct  5 09:12:44 2026 (SIGKILL)"], ps: 2 });
+  } finally {
+    process.env.PATH = PATH;
+    rmSync(outside, { recursive: true, force: true });
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("npm run check fails a test that turns the sweep on without a fake ps, or signals or lists processes itself (T88)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sage-check-"));
+  const check = (name, text) => {
+    writeFileSync(join(dir, name), text);
+    return spawnSync("node", [fileURLToPath(new URL("check.mjs", import.meta.url)), join(dir, name)], { encoding: "utf8" }).stderr;
+  };
+  try {
+    const on = 'spawnSync("node", [hook], { env: { ...process.env, SAGE_BROWSER_SWEEP: "on" } });\n';
+    assert.match(check("bad.test.mjs", on), /bad\.test\.mjs: turns the browser sweep on without a fake ps and kill first on PATH/);
+    assert.doesNotMatch(check("good.test.mjs", `const PATH = \`\${join(dir, "bin")}:\${process.env.PATH}\`;\nconst env = { PATH: \`\${join(dir, "bin")}:\${process.env.PATH}\` };\n${on}`), /good\.test\.mjs/);
+    const signals = check("kill.test.mjs", ["process", "kill(4101);"].join("."));
+    assert.match(signals, /kill\.test\.mjs:1: signals a process with process\.kill/);
+    assert.match(check("ps.test.mjs", `execFileSync("${"ps"}", ["-ax"]);`), /ps\.test\.mjs:1: runs ps or kill/);
+    assert.doesNotMatch(check("self.test.mjs", ["process", "kill(process.pid);"].join(".")), /self\.test\.mjs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
