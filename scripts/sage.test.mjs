@@ -15,6 +15,8 @@ const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const BOOT = Date.now() - uptime() * 1000;
 /** A command that hangs is stopped after this, so that a test fails instead of waiting for ever. */
 const timeout = 10_000;
+/** The model keys that sage config prints by default, after the numbers. */
+const MODEL_DEFAULTS = "model.code-reviewer.tiny=fable model.code-reviewer.small=fable model.security-reviewer.tiny=fable model.security-reviewer.small=fable model.ux-reviewer.tiny=fable model.ux-reviewer.small=fable model.qa.tiny=fable model.qa.small=fable";
 /** Every line that the tool printed in this file's tests: the last test reads them. */
 const said = [];
 
@@ -221,16 +223,16 @@ test("T42-HUGE-COUNT and F-T47-QA-1: a count has a limit, and a file count never
 
   // A file value above the limit: cycles keep the owner's number (never an easier merge); agent counts and rounds read as the limit.
   writeFileSync(f, '{"cycles.small": 20, "cycles.risk": 11, "max_agents": 200, "max_rounds": 11, "arena": 51, "cap_total": 51, "cap.ramen": 51}');
-  assert.equal(s.ok("config"), "max_agents=50 cycles.small=20 cycles.large=2 cycles.risk=11 max_rounds=10 arena=50 arena_models=opus,sonnet,sonnet cap_total=50 cap.ramen=50");
+  assert.equal(s.ok("config"), "max_agents=50 cycles.small=20 cycles.large=2 cycles.risk=11 max_rounds=10 arena=50 arena_models=opus,sonnet,sonnet cap_total=50 cap.ramen=50" + " " + MODEL_DEFAULTS);
   s.ok("task", "add", "--title", "t", "--size", "small");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 20 clean cycles/, "the merge check asks the owner's 20");
 
   // A numeric string reads as its number, with the same floor and limit rules; a count other than cycles with no number gives the default.
   writeFileSync(f, '{"cycles.small": "3", "cycles.large": "5", "cycles.risk": "1", "max_agents": "1", "cap_total": "2", "cap.sage": "1", "cap.ramen": "07"}');
-  assert.equal(s.ok("config"), "max_agents=1 cycles.small=3 cycles.large=5 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=2 cap.sage=1 cap.ramen=7");
+  assert.equal(s.ok("config"), "max_agents=1 cycles.small=3 cycles.large=5 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=2 cap.sage=1 cap.ramen=7" + " " + MODEL_DEFAULTS);
   writeFileSync(f, '{"cycles.large": "1", "max_agents": "2x", "cap_total": "1.5"}');
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=1");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=1" + " " + MODEL_DEFAULTS);
 });
 
 test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor, and a cycles count as a fraction or a padded string reads rounded up", () => {
@@ -240,7 +242,7 @@ test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor
     writeFileSync(f, text);
     return s.ok("config");
   };
-  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...o }).map(([k, v]) => `${k}=${v}`).join(" ");
+  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...o }).map(([k, v]) => `${k}=${v}`).join(" ") + " " + MODEL_DEFAULTS;
   // Never more agents or rounds than the owner wrote: a count below 1 reads as 1, not as the higher default.
   assert.equal(read('{"max_agents": 0}'), all({ max_agents: 1 }));
   assert.equal(read('{"cap_total": 0}'), all({ cap_total: 1 }));
@@ -264,7 +266,7 @@ test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor
 test("T54: one rule reads every count in config.json: cycles round up, other counts round down, and a cycles key with no number refuses every merge", () => {
   const s = store();
   const f = join(s.home, "config.json");
-  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...o }).map(([k, v]) => `${k}=${v}`).join(" ");
+  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...o }).map(([k, v]) => `${k}=${v}`).join(" ") + " " + MODEL_DEFAULTS;
   s.ok("task", "add", "--title", "t", "--size", "small");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   const table = [
@@ -338,11 +340,11 @@ test("a tiny task needs only its checks once", () => {
 
 test("config, gates, standing orders and status", () => {
   const s = store();
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
-  assert.equal(s.ok("config", "max_agents=5", "arena_models=opus,opus,sonnet"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=12");
-  assert.match(s.no("config", "arena_models=gpt-5"), /arena_models as a list of opus, sonnet, haiku, inherit/);
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12" + " " + MODEL_DEFAULTS);
+  assert.equal(s.ok("config", "max_agents=5", "arena_models=opus,opus,sonnet"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=12" + " " + MODEL_DEFAULTS);
+  assert.match(s.no("config", "arena_models=gpt-5"), /arena_models as a list of opus, sonnet, haiku, fable, inherit/);
   assert.match(s.no("config", "colour=5"), /config takes max_agents, cycles.small, cycles.large, cycles.risk, max_rounds, arena and cap_total as key=number, cap\.<project>=number/);
-  assert.equal(s.ok("config", "cap.ramen-finder=5", "cap_total=20"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=20 cap.ramen-finder=5", "one project's cap and the total");
+  assert.equal(s.ok("config", "cap.ramen-finder=5", "cap_total=20"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=20 cap.ramen-finder=5" + " " + MODEL_DEFAULTS, "one project's cap and the total");
   assert.match(s.no("config", "cap.Ramen=5"), /config takes/, "a project's name is its slug");
   assert.match(s.no("config", "cap.ramen-finder=0"), /cap\.ramen-finder must be a whole number of 1 or more: with 0, no sage agent could start for that project/);
   s.ok("task", "add", "--title", "Export trips", "--size", "large");
@@ -542,7 +544,7 @@ test("config: every count is 1 or more, config.json is written whole, and a torn
   }
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "0"), /--cycles is a whole number from 1 to 10/);
   writeFileSync(f, '{"max_agents": "x", "max_rounds": 5, "arena_models": "gpt-5", "cap.sage": 0, "cap.ramen": 4}');
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.sage=1 cap.ramen=4", "each bad value gives its default, and a project cap below 1 reads as 1");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.sage=1 cap.ramen=4" + " " + MODEL_DEFAULTS, "each bad value gives its default, and a project cap below 1 reads as 1");
 
   // Two processes write config.json 200 times each, while this one reads it: every read sees a whole file.
   const writers = [1, 2].map(() => spawn("node", ["--input-type=module", "-e", `import { sage } from ${JSON.stringify(LIB)}; for (let i = 1; i <= 200; i++) sage(["config", "max_rounds=" + Math.ceil(i / 20)]);`], { env: { ...process.env, SAGE_HOME: s.home } }));
@@ -711,7 +713,7 @@ test("S7: config and the merge check read only regular files and never throw, so
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   execFileSync("mkfifo", [join(s.home, "config.json")]);
   const out = [s.ok("config"), s.ok("merge-check", "--sha", SHA)]; // a read that waited on the FIFO would hang until the 10 s timeout, and fail
-  assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12", "T1 may merge: 1 clean cycle on this SHA"]);
+  assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 " + MODEL_DEFAULTS, "T1 may merge: 1 clean cycle on this SHA"]);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
   assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${join(s.dir, "ledger.tsv")} is not a regular file. Ask the user to fix or remove it.`, "F-R50-1: a table that is not a regular file refuses, and does not hang");
@@ -730,13 +732,13 @@ test("F1: no config.json makes config() or the merge check throw: a count with n
   writeFileSync(f, `{"cycles.large": ${deep}, "max_agents": [5], "max_rounds": 4}`);
   const { config, mergeCheck } = await import(LIB);
   const env = { SAGE_HOME: s.home };
-  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": "invalid", "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
+  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": "invalid", "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...Object.fromEntries(MODEL_DEFAULTS.split(" ").map((kv) => kv.split("="))) }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
   const refused = { ok: false, reason: `the merge check refuses every merge, because cycles.large in ${f} is not a number. Set it with sage config cycles.large=<n> (a whole number from 2 to 10), or remove the key.` };
   assert.deepEqual(mergeCheck("9".repeat(40), env), refused, "the hook's call: no cycles given");
   assert.deepEqual(mergeCheck(SHA, env), refused);
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=invalid cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=invalid cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12" + " " + MODEL_DEFAULTS);
   writeFileSync(f, `{"cycles.small": 1, "max_agents": ${deep}}`);
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12" + " " + MODEL_DEFAULTS);
   assert.match(s.no("merge-check", "--sha", SHA), /^sage: T1: 0 of 2 clean cycles on this SHA; never recorded: review-clean, security-clean, ux-clean, qa-pass\./);
 });
 
@@ -809,7 +811,7 @@ test("F-R44-1: a link in the sage folder is read and written through, so its val
   const elsewhere = mkdtempSync(join(tmpdir(), "sage-dotfiles-"));
   writeFileSync(join(elsewhere, "config.json"), JSON.stringify({ "cycles.large": 3, max_agents: 5 }));
   symlinkSync(join(elsewhere, "config.json"), join(s.home, "config.json"));
-  assert.equal(s.ok("config"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12" + " " + MODEL_DEFAULTS);
   assert.equal(s.no("config", "max_rounds=4"), `sage: ${join(s.home, "config.json")} is a link, not a regular file, so config writes nothing. Replace it with a regular file.`);
   assert.deepEqual([lstatSync(join(s.home, "config.json")).isSymbolicLink(), JSON.parse(readFileSync(join(elsewhere, "config.json"), "utf8"))], [true, { "cycles.large": 3, max_agents: 5 }], "the link and its target are as they were");
 
@@ -977,11 +979,11 @@ test("unknown-columns: a logbook that a newer sage wrote refuses every write com
 
   writeFileSync(tasks, readFileSync(tasks, "utf8").replace("\tprogram\twaits\n", "\n")); // the same with a new column in runs.tsv, as T6 would add
   const runs = join(s.dir, "runs.tsv");
-  writeFileSync(runs, readFileSync(runs, "utf8").replace("\tended\n", "\tended\tsaved\n"));
+  writeFileSync(runs, readFileSync(runs, "utf8").replace("\tmodel\n", "\tmodel\tsaved\n"));
   assert.match(s.no("log", "-", "x", "--why", "y"), /runs\.tsv has columns that this version of sage does not know \(saved\)/);
 
   writeFileSync(join(s.home, "config.json"), JSON.stringify({ max_rounds: 4, max_programs: 2 })); // a newer version's setting stays too
-  assert.equal(s.ok("config", "arena=2"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=2 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config", "arena=2"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=2 arena_models=opus,sonnet,sonnet cap_total=12" + " " + MODEL_DEFAULTS);
   assert.deepEqual(JSON.parse(readFileSync(join(s.home, "config.json"), "utf8")), { max_rounds: 4, max_programs: 2, arena: 2 });
 });
 
@@ -1733,20 +1735,10 @@ test("T45: moving a task to merged, concluded or abandoned tidies its worktree i
   assert.equal(plain.ok("task", "T1", "set", "state=abandoned"), "T1 abandoned · small · round 0 · route build,code-review,qa");
 });
 
-test("QA-2: every line the tool prints says logbook, never store, and merge check, never merge gate, and holds no control character", () => {
-  const s = store();
-  assert.equal(s.ok("init"), `logbook ${s.dir}`);
-  assert.equal(s.ok("logbook"), s.dir);
-  assert.match(s.no("store"), /^sage: unknown command "store"\. Commands: init, logbook, standing, /);
-  assert.ok(said.length > 500, `${said.length} lines: run the whole file, so this test reads the lines of every test`);
-  assert.deepEqual(said.filter((line) => /\bstores?\b/i.test(line) && !line.startsWith('sage: unknown command "store"')), []);
-  assert.deepEqual(said.filter((line) => /merge gate|[\0-\x09\x0b-\x1f\x7f-\x9f]/.test(line)), []);
-});
-
 test("T42: the owner's floors (gate G18): cycles.large and cycles.risk never go below 2, whoever writes config.json; a legacy autopilot_cycles reads as cycles.large", () => {
   const s = store();
   const f = join(s.home, "config.json");
-  const all = (large, risk) => `max_agents=3 cycles.small=1 cycles.large=${large} cycles.risk=${risk} max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12`;
+  const all = (large, risk) => `max_agents=3 cycles.small=1 cycles.large=${large} cycles.risk=${risk} max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 ${MODEL_DEFAULTS}`;
   assert.equal(s.no("config", "cycles.large=1"), "sage: cycles.large must be a whole number of 2 or more: 1 is below the floor of 2, which only a code change lowers");
   assert.equal(s.no("config", "cycles.risk=1"), "sage: cycles.risk must be a whole number of 2 or more: 1 is below the floor of 2, which only a code change lowers");
   assert.equal(existsSync(f), false, "a refused change writes nothing");
@@ -2153,4 +2145,68 @@ test("T45-EXACT-KEEP: a task, a run or an open PR on a branch name that differs 
   ].join("\n"));
 });
 
+test("T40: each agent role gets its model by task size; run add prints it and records it; an old runs.tsv gets the column at its next write", () => {
+  const s = store();
+  const out = s.ok("config");
+  assert.ok(out.startsWith("max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 model."), out);
+  assert.equal(out.slice(out.indexOf(" model.") + 1), MODEL_DEFAULTS, "the model keys print after the numbers");
+  for (const size of ["tiny", "small", "large", "investigate"]) s.ok("task", "add", "--title", size, "--size", size);
+  const fable = (t) => (["T1", "T2"].includes(t) ? " · model fable" : "");
+  let r = 0;
+  for (const t of ["T1", "T2", "T3", "T4"]) {
+    for (const role of ["code-reviewer", "security-reviewer", "ux-reviewer", "qa"]) assert.equal(s.ok("run", "add", t, "--role", role), `R${++r} running · ${role} on ${t}${fable(t)}`);
+    assert.equal(s.ok("run", "add", t, "--role", "implementer", "--branch", `b/${t}`), `R${++r} running · implementer on ${t} · b/${t}`, "the implementer keeps its own model");
+  }
+  assert.deepEqual(rows(s.dir, "runs").map((x) => x.model), ["fable", "fable", "fable", "fable", "", "fable", "fable", "fable", "fable", "", "", "", "", "", "", "", "", "", "", ""]);
+
+  // One size, then the role; inherit clears a key, so the next level (or the agent's own model) counts.
+  assert.match(s.ok("config", "model.qa.small=sonnet", "model.qa=opus"), / model\.qa\.small=sonnet .*model\.qa=opus$/);
+  assert.equal(s.ok("run", "add", "T2", "--role", "qa"), "R21 running · qa on T2 · model sonnet");
+  assert.equal(s.ok("run", "add", "T3", "--role", "qa"), "R22 running · qa on T3 · model opus");
+  s.ok("config", "model.qa.small=inherit");
+  assert.equal(s.ok("run", "add", "T2", "--role", "qa"), "R23 running · qa on T2 · model opus");
+  s.ok("config", "model.qa=inherit");
+  assert.equal(s.ok("run", "add", "T2", "--role", "qa"), "R24 running · qa on T2");
+  assert.equal(JSON.parse(readFileSync(join(s.home, "config.json"), "utf8"))["model.qa.small"], "inherit");
+
+  // A bad value or key is refused with its reason, and changes nothing.
+  assert.equal(s.no("config", "model.qa.small=gpt-5"), `sage: model.qa.small is opus, sonnet, haiku, fable, or inherit for the agent's own model; not "gpt-5"`);
+  assert.equal(s.no("config", "model.qa.small="), `sage: model.qa.small is opus, sonnet, haiku, fable, or inherit for the agent's own model; not ""`);
+  for (const key of ["model.qa.huge", "model.chief.small", "model"]) assert.match(s.no("config", `${key}=opus`), /config takes .*model\.<role>\.<size>=<model>/);
+  writeFileSync(join(s.home, "config.json"), '{"model.code-reviewer.tiny": "gpt-5", "model.qa": 3, "model.pe": "haiku", "model.pe.huge": "opus"}');
+  const read = s.ok("config");
+  assert.match(read, / model\.code-reviewer\.tiny=fable /, "a bad value in config.json reads as the default");
+  assert.ok(read.endsWith(" model.qa.small=fable model.pe=haiku"), read);
+  assert.equal(s.ok("run", "add", "T3", "--role", "pe"), "R25 running · pe on T3 · model haiku");
+
+  // An arena candidate takes its place in arena_models.
+  s.ok("config", "arena_models=opus,fable");
+  assert.equal(s.ok("run", "add", "T3", "--role", "implementer", "--branch", "a/2", "--candidate", "2"), "R26 running · implementer on T3 · a/2 · candidate 2 · model fable");
+  assert.equal(s.ok("run", "add", "T3", "--role", "designer", "--branch", "a/1", "--candidate", "1"), "R27 running · designer on T3 · a/1 · candidate 1 · model opus");
+
+  // An older sage's runs.tsv, without the model column: it reads, and the next write adds the column and keeps every row.
+  const o = store();
+  o.ok("task", "add", "--title", "t", "--size", "small");
+  const file = join(o.dir, "runs.tsv");
+  writeFileSync(file, "id\ttask\trole\tround\tcandidate\tbranch\tstatus\ttokens\treport\tstarted\tended\nR1\tT1\timplementer\t0\t\tb/1\tdone\t900\t\t2026-10-01T00:00:00Z\t2026-10-01T01:00:00Z\n");
+  assert.match(o.ok("status"), /agents  1 runs · 0 running · about 1k tokens/);
+  assert.equal(o.ok("run", "add", "T1", "--role", "qa"), "R2 running · qa on T1 · model fable");
+  const [head, ...lines] = readFileSync(file, "utf8").trim().split("\n");
+  assert.equal(head, "id\ttask\trole\tround\tcandidate\tbranch\tstatus\ttokens\treport\tstarted\tended\tmodel");
+  assert.equal(lines[0], "R1\tT1\timplementer\t0\t\tb/1\tdone\t900\t\t2026-10-01T00:00:00Z\t2026-10-01T01:00:00Z\t");
+  assert.match(lines[1], /^R2\tT1\tqa\t0\t\t\trunning\t\t\t\S+\t\tfable$/);
+  assert.equal(o.ok("run", "done", "R1", "--status", "done"), "R1 done");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) o.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.match(o.ok("merge-check", "--sha", SHA), /may merge/);
+});
+
 // Keep this test last: it reads every line that the tests above made the tool print.
+test("QA-2: every line the tool prints says logbook, never store, and merge check, never merge gate, and holds no control character", () => {
+  const s = store();
+  assert.equal(s.ok("init"), `logbook ${s.dir}`);
+  assert.equal(s.ok("logbook"), s.dir);
+  assert.match(s.no("store"), /^sage: unknown command "store"\. Commands: init, logbook, standing, /);
+  assert.ok(said.length > 500, `${said.length} lines: run the whole file, so this test reads the lines of every test`);
+  assert.deepEqual(said.filter((line) => /\bstores?\b/i.test(line) && !line.startsWith('sage: unknown command "store"')), []);
+  assert.deepEqual(said.filter((line) => /merge gate|[\0-\x09\x0b-\x1f\x7f-\x9f]/.test(line)), []);
+});
