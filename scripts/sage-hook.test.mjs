@@ -1,9 +1,9 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -1293,6 +1293,584 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
   const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
+});
+
+// T100: two lessons sealed for agents. The hook only reads these commands; nothing here runs ps or kill.
+const AGENT = { agent_id: "a1", agent_type: "sage:implementer" };
+/** The hook's own PATH: node, then /usr/bin and /bin, so a bare ps resolves to the real one even when the run has a fake ps first on PATH. */
+const SYSTEM_PATH = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` };
+const STASHES = ["git stash", "git stash push -m wip", "git stash save wip", "git stash pop", "git stash apply stash@{0}", "git stash drop", "git stash clear", "git stash list", "git stash show -p", "git -C /x/repo stash", "git --git-dir=/x/repo/.git stash pop", "git --git-dir /x/repo/.git stash", "cd /x && git stash", "sh -c 'git stash'"];
+/** A folder in the temp folder with fakes: ps prints a start time in the past; kill, pgrep and pkill print nothing. */
+const FAKES = (() => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-fakes-")));
+  writeFileSync(join(dir, "ps"), "#!/bin/sh\necho 'Sat Jan  1 00:00:00 2000'\n");
+  for (const name of ["kill", "pgrep", "pkill"]) writeFileSync(join(dir, name), "#!/bin/sh\nexit 0\n");
+  for (const name of ["ps", "kill", "pgrep", "pkill"]) chmodSync(join(dir, name), 0o755);
+  symlinkSync("/bin/ps", join(dir, "real-ps")); // links in the temp folder to the real ps
+  mkdirSync(join(dir, "links"));
+  symlinkSync("/bin/ps", join(dir, "links", "ps"));
+  return dir;
+})();
+
+test("an agent never runs git stash in any form; the chief may, and git status and git log pass", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  for (const command of STASHES) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /never runs git stash.*standing order 16.*git worktree add --detach <scratch> <sha>.*git show <sha>:<path>/, command);
+    assert.equal(s.send(bash(command)), undefined, `the chief: ${command}`);
+    assert.equal(s.send(bash(command, FEATURE, { agent_type: "sage:chief-of-staff" })), undefined, `the chief as an agent type: ${command}`);
+  }
+  for (const command of ["git status", "git log --oneline -5", "git show HEAD:README.md", "git worktree add --detach /tmp/x HEAD", 'git commit -m "no stash here"', "echo git stash"]) {
+    assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+  }
+  for (const name of ["Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+    assert.match(denied(s.send(tool(name, { command: "git stash" }, { cwd: FEATURE, ...AGENT }))) ?? "", /never runs git stash/, name);
+  }
+});
+
+test("an agent never lists or signals the real processes: ps, pgrep, kill and pkill pass only as fakes in the temp folder", () => {
+  const s = session(SYSTEM_PATH);
+  s.send(prompt("sage mode"));
+  const real = ["ps -U me", "pgrep -fl node", "pkill -f node", "kill 12345", "/bin/ps -ax", "/bin/kill -9 1", "/usr/bin/pgrep node", "/usr/bin/pkill node", "killall node", "lsof -i :8080", "top -l 1", "sudo kill 1", "xargs kill", `${FAKES}/real-ps`, `PATH=${FAKES}/links:$PATH ps`, `bash -c "ps -ax"`, "find . -name x -exec kill {} ;", `PATH=${FAKES}:$PATH kill 1`];
+  for (const command of real) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /never reads or signals the real process list \(standing order 14\).*fake ps.*Sat Jan  1 00:00:00 2000/, command);
+    assert.equal(s.send(bash(command)), undefined, `the chief: ${command}`);
+  }
+  const fakes = [`PATH=${FAKES}:$PATH ps -o lstart= -p 1`, `export PATH=${FAKES}:$PATH; ps -ax`, `PATH=${FAKES}:$PATH pgrep -fl node`, `PATH=${FAKES}:$PATH pkill -f node`, `${FAKES}/ps -ax`, `${FAKES}/kill 1`, `PATH=${FAKES}:$PATH env kill 1`, `cd ${FAKES} && ./pkill node`];
+  for (const command of fakes) assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+  assert.match(denied(s.send(tool("Monitor", { command: "ps -ax", description: "d" }, { cwd: FEATURE, ...AGENT }))) ?? "", /standing order 14/);
+  assert.match(denied(s.send(tool("PowerShell", { command: "Get-Process" }, { cwd: FEATURE, ...AGENT }))) ?? "", /standing order 14/);
+  assert.match(denied(s.send(tool("mcp__terminal__run_in_terminal", { command: "pgrep node" }, { cwd: FEATURE, ...AGENT }))) ?? "", /standing order 14/);
+  assert.equal(s.send(bash("npm test", FEATURE, AGENT)), undefined, "other commands pass");
+});
+
+test("a process program is refused after a shell keyword, inside a shell's -c text and after a wrapper option with a value (R446)", () => {
+  const s = session(SYSTEM_PATH);
+  s.send(prompt("sage mode"));
+  const hidden = [
+    "while pgrep -f vite >/dev/null; do sleep 1; done",
+    "if pgrep -f vite; then echo up; fi",
+    "for p in 1 2; do kill $p; done",
+    "until ! lsof -i :5173; do sleep 1; done",
+    "! ps",
+    "{ ps; }",
+    "if true; then :; elif ps; then :; else kill 1; fi",
+    "while true; do pgrep -fl vite; sleep 1; done",
+    "function f { ps; }",
+    "sh -c ps",
+    'bash -c "lsof"',
+    "eval ps",
+    "sudo -u root ps",
+    "xargs -I {} kill {}",
+    "env -u X ps",
+    "timeout -s TERM 60 pkill node",
+    "nice -n 5 top -l 1",
+    ...(existsSync("/bin/PS") ? ["PS -ax"] : []), // a file system that ignores case, as on macOS, runs /bin/ps for PS
+  ];
+  for (const command of hidden) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /standing order 14.*To stop your own server or background job, use TaskStop, or run it as a background task\./, command);
+  }
+  for (const command of ["kill %1", "kill $!"]) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /standing order 14/, command);
+  const pass = [
+    "timeout -s KILL 60 npm test",
+    "timeout --signal KILL 60 npm test",
+    'rg "kill -9" src',
+    "rg kill src",
+    'grep -rn "ps aux" .',
+    "git log --grep=stash",
+    "git log -S stash",
+    "npm test",
+    "timeout 600 npm test",
+    "git commit -m \"$(cat <<'EOF'\nfix the top bar\nno ps here\nEOF\n)\"",
+    `PATH=${FAKES}:$PATH npm test`,
+    "for f in ps kill; do echo $f; done",
+    `while true; do PATH=${FAKES}:$PATH ps -ax; sleep 1; done`,
+    "sh scripts/build.sh",
+  ];
+  for (const command of pass) assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+});
+
+test("the rule holds for any subagent in sage mode and for a sage agent, not for other agents outside sage mode", () => {
+  const s = session(SYSTEM_PATH);
+  assert.match(denied(s.send(bash("git stash", FEATURE, AGENT))) ?? "", /git stash/, "a sage agent, also outside sage mode");
+  assert.equal(s.send(bash("git stash", FEATURE, { agent_id: "e1", agent_type: "Explore" })), undefined, "another agent outside sage mode");
+  s.send(prompt("sage mode"));
+  assert.match(denied(s.send(bash("ps -ax", FEATURE, { agent_id: "e1", agent_type: "Explore" }))) ?? "", /standing order 14/, "any subagent in sage mode");
+});
+
+// T100 cycle 1 (R454): more process programs, redirections, case arms and script arguments, read in the hook's own
+// process. agentProblem and programsRun only read the command line; nothing here runs ps or kill.
+const AGENT_PATH = SYSTEM_PATH.PATH;
+const refusal = async (command, cwd = FEATURE) => (await import("../plugins/sage/hooks/sage-hook.mjs")).agentProblem(command, cwd, AGENT_PATH);
+
+test("R454-N1: fuser, pidof, htop and kill-port or fkill through npx, npm exec, pnpm dlx and bunx are process programs", async () => {
+  const refused = ["fuser -k 3000/tcp", "pidof node", "htop", "npx kill-port 3000", "npx -y kill-port@2 3000", "npx -p kill-port kill-port 3000", "npx fkill node", "npm exec -- kill-port 3000", "npm exec fkill node", "pnpm dlx kill-port 3000", "bunx fkill :3000", "sudo fuser 3000/tcp"];
+  for (const command of refused) assert.match((await refusal(command)) ?? "", /standing order 14/, command);
+  const pass = ["npx prettier --check .", "npx -y tsc --noEmit", "npm exec -- eslint .", "pnpm dlx create-vite app", "bunx vitest run", "npm test", "npm run build"];
+  for (const command of pass) assert.equal(await refusal(command), undefined, command);
+});
+
+test("R454-N2: a redirection before or against the program does not hide it, and is not read as the program", async () => {
+  const refused = ["ps>/tmp/out", "2>/dev/null ps -ax", ">/dev/null kill 1", "ps</dev/null", "&>/dev/null pgrep node", "{fd}>/dev/null lsof -i :3000", "kill 1 2>&1", "ps 2>&1 | head", 'bash <<< "kill 1"'];
+  for (const command of refused) assert.match((await refusal(command)) ?? "", /standing order 14/, command);
+  const pass = ["npm test 2>&1 | tail -20", "echo ps > notes.txt", "node build.mjs >/tmp/ps 2>&1", "cat < ps", "git log >/tmp/kill"];
+  for (const command of pass) assert.equal(await refusal(command), undefined, command);
+});
+
+test("R454-N6: a script's arguments and a case pattern are not programs; a shell's -c text and stdin still are", async () => {
+  const pass = ["bash ./x.sh kill", "sh scripts/run.sh ps top", "bash -c 'echo $0' kill", "case $1 in\n top) echo top;;\n ps|kill) echo other;;\nesac", "case x in (top) :;; esac", "bash x.sh <<EOF\nps\nEOF", 'x=$(case $1 in top) echo t;; esac); echo "$x"'];
+  for (const command of pass) assert.equal(await refusal(command), undefined, JSON.stringify(command));
+  const refused = ["case $1 in\n a) ps;;\nesac", "case x in (a) kill 1;; esac", "case x in a) :;& b) top;;& esac", "case x in a) :;; esac | top", "x=$(case a in a) :;; esac); top", 'bash -lc "ps"', "bash -c ps x", "bash <<EOF\nps\nEOF", "bash -s <<EOF\nkill 1\nEOF", "eval kill 1", "pwsh -Command Get-Process"];
+  for (const command of refused) assert.match((await refusal(command)) ?? "", /standing order 14/, JSON.stringify(command));
+});
+
+test("R454-N5: 1 MB of git words that the hook cannot read takes under 200 ms of CPU time, and still refuses a stash", async () => {
+  const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
+  const MB = "git ".repeat(1 << 18); // 1 MB
+  /** CPU time, not wall time (a busy Mac makes the process wait for a core): the fastest of 3 calls. */
+  const cpu = (command) => {
+    let ms = Infinity;
+    let out;
+    for (let i = 0; i < 3; i++) {
+      const t = process.cpuUsage();
+      out = handle(bash(command, FEATURE, AGENT), { sage: true, given: true }, slots);
+      const { user, system } = process.cpuUsage(t);
+      ms = Math.min(ms, (user + system) / 1000);
+    }
+    return { ms, reason: denied(out) };
+  };
+  for (const command of [`echo '${MB}`, `${MB}'`, `echo '${MB}stash`]) {
+    const { ms, reason } = cpu(command);
+    assert.ok(ms < 200, `${ms.toFixed(1)} ms of CPU for ${JSON.stringify(command.slice(0, 20))}…`);
+    assert.equal(/never runs git stash/.test(reason ?? ""), command.endsWith("stash"), "only the text with a stash word is refused");
+  }
+});
+
+test("programsRun: each program a command line runs, with its resolved file, its arguments and its folder", async () => {
+  const { programsRun } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const runs = (command, cwd = FEATURE) => programsRun(command, cwd, AGENT_PATH).map(({ word, file, args, dir }) => [word, file, args.join(" "), dir]);
+  const node = realpathSync(process.execPath);
+  const [cd, ...rest] = runs("cd /tmp && 2>/dev/null sudo -u root env X=1 node sage.mjs status --project . >out");
+  assert.deepEqual([cd[0], ...cd.slice(2)], ["cd", "/tmp", FEATURE]); // cd is a builtin, and also a file on macOS
+  assert.deepEqual(rest, [["node", node, "sage.mjs status --project .", "/tmp"]]);
+  assert.deepEqual(runs("timeout -s KILL 60 npx -y kill-port@2 3000 | head -1"), [
+    ["kill-port@2", undefined, "3000", FEATURE],
+    ["head", realpathSync("/usr/bin/head"), "-1", FEATURE],
+  ]);
+  assert.deepEqual(runs(`kill 1; xargs kill; PATH=${FAKES}:$PATH ps -ax`), [
+    ["kill", undefined, "1", FEATURE],
+    ["kill", realpathSync("/bin/kill"), "", FEATURE],
+    ["ps", join(FAKES, "ps"), "-ax", FEATURE],
+  ]);
+  assert.deepEqual(runs("if true; then bash -c 'git stash' x; fi"), [
+    ["true", realpathSync("/usr/bin/true"), "", FEATURE],
+    ["bash", realpathSync("/bin/bash"), "-c git stash x", FEATURE],
+    ["git", realpathSync("/usr/bin/git"), "stash", FEATURE],
+  ]);
+  assert.deepEqual(runs("find . -name '*.log' -exec rm {} ';'"), [
+    ["find", realpathSync("/usr/bin/find"), ". -name *.log -exec rm {} ;", FEATURE],
+    ["rm", realpathSync("/bin/rm"), "{}", FEATURE],
+  ]);
+  assert.deepEqual(runs("for f in ps kill; do echo $(cat $f); done"), [
+    ["cat", realpathSync("/bin/cat"), "$f", FEATURE],
+    ["echo", realpathSync("/bin/echo"), "$(…)", FEATURE],
+  ]);
+  assert.throws(() => programsRun("echo 'open", FEATURE, AGENT_PATH), /an open quote/);
+});
+
+// T100 cycle 2 (R466): a case inside a subshell, process substitution, and lines the reader cannot read (fail closed).
+test("R466-CASESUB: the arms of a case inside a subshell or a group are commands; the push and merge rules and the agent rule read them", () => {
+  const s = session(SYSTEM_PATH);
+  s.send(prompt("sage mode"));
+  for (const command of ["(case x in (*) git push origin main;; esac)", "( case x in a) git push origin main;; esac )", "x=$( (case y in (*) git push origin main;; esac) )", "(case x in (a) (case y in (b) git push origin main;; esac);; esac)"]) {
+    assert.match(denied(s.send(bash(command))) ?? "", TO_MAIN, command);
+  }
+  assert.match(denied(s.send(bash("(case x in (*) gh pr merge 1 --admin;; esac)"))) ?? "", CANNOT);
+  for (const command of ["(case x in (a) ps -ax;; esac)", "{ case x in (a) ps;; esac; }", "(case x in (a) (case y in (b) kill 1;; esac);; esac)"]) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", /standing order 14/, command);
+  }
+  assert.equal(s.send(bash("(case x in (top) echo top;; esac)", FEATURE, AGENT)), undefined, "a pattern is still not a program");
+});
+
+test("R466-PROCSUB: a process substitution is read as commands of its own, not as a redirection", async () => {
+  const s = session(SYSTEM_PATH);
+  s.send(prompt("sage mode"));
+  assert.equal(s.send(bash("comm <(git branch) <(git branch -r); git push origin t100-x")), undefined);
+  assert.match(denied(s.send(bash("diff <(git push origin main) x"))) ?? "", TO_MAIN);
+  assert.equal(await refusal("diff <(sort a) <(sort b) | grep kill"), undefined);
+  for (const command of ["diff <(ps) x", "tee >(kill 1) < f", "cat <(echo $(ps))"]) assert.match((await refusal(command)) ?? "", /standing order 14/, command);
+});
+
+test("R466-FAILCLOSED: a line the reader cannot read, or text nested past 3 levels, is refused when it names what a rule guards", async () => {
+  const s = session(SYSTEM_PATH);
+  s.send(prompt("sage mode"));
+  const unreadable = ["(case x in a) %", "( %", "case x in a) %", "x=$(case x in a) %)", "(case x in a) % )", "case x in (% x) :;; esac"];
+  for (const command of unreadable) {
+    assert.match(denied(s.send(bash(command.replace("%", "git push origin main")))) ?? "", /cannot read this command/, command);
+    assert.match(denied(s.send(bash(command.replace("%", "gh pr merge 1")))) ?? "", /cannot read the command/, command);
+    assert.match((await refusal(command.replace("%", "ps"))) ?? "", /standing order 14.*cannot read this command/, command);
+    assert.equal(await refusal(command.replace("%", "ls")), undefined, `names nothing that a rule guards: ${command}`);
+  }
+  assert.match((await refusal("bash -c \"bash -c \\\"bash -c 'bash -c ps'\\\"\"")) ?? "", /standing order 14.*nested more than 3 levels/);
+  assert.doesNotMatch((await refusal("bash -c \"bash -c \\\"bash -c 'ps'\\\"\"")) ?? "", /cannot read/, "3 levels are read");
+  assert.match((await refusal("bash -c \"bash -c \\\"bash -c 'ps'\\\"\"")) ?? "", /standing order 14/, "3 levels are read");
+  assert.equal(await refusal("bash -c \"bash -c \\\"bash -c 'bash -c ls'\\\"\""), undefined);
+});
+
+// Every command of main's push and merge tests (10ff03f) and each R446, R454 and R466 shape, with its process program
+// also replaced by "git push origin main" and "gh pr merge 1 --admin", that main's reader denies for the main session.
+// Recorded once by running main's hook; the new reader must deny each one too.
+const MAIN_DENIES = [
+  "! git push origin main",
+  "$'\\x67h' pr merge 41 --admin",
+  "$(echo gh) pr merge 41 --squash --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "$(printf 'g%s' h) pr merge 41 --admin",
+  "( echo 'gh pr merge 41' ) | sh",
+  "(cd w && git push origin main)",
+  "/opt/homebrew/bin/gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "/opt/homebrew/bin/gh api -X POST repos/acme/blank/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "/usr/bin/git push origin main",
+  "A=1 env B=2 command /usr/local/bin/gh api -X POST repos/acme/blank/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "G=gh; $G pr merge 41 --squash",
+  "GH_HOST=github.com gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "GH_HOST=github.com gh api -X POST repos/acme/blank/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "GH_REPO=other/repo gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "GH_TOKEN=x gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "GIT_TRACE=1 git push origin +x",
+  "GIT_TRACE=1 git push origin main",
+  "N=41; gh api -X PUT repos/o/r/pulls/$N/merge -f merge_method=squash",
+  "X=1 ${G} pr merge 41",
+  "`printf gh` pr merge 41",
+  "awk 'BEGIN{system(\"gh pr merge 41 --squash\")}'",
+  "bash -c 'git push origin main'",
+  "bash -c \"$(echo 'gh pr merge 41')\"",
+  "bash -c \"gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\"",
+  "bash -e -c 'git push -f origin feat'",
+  "bash -lc 'git push origin main'",
+  "bash <<'EOF'\ngit push origin main\nEOF",
+  "caffeinate git push origin main",
+  "cat > x.sh <<'EOF'\ngh pr merge 41\nEOF\nbash x.sh",
+  "cd /x && gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "cd /x && git -C /x -c push.default=current push origin main",
+  "cd w && git push origin main 2>&1 | tail -5",
+  "command -p git push origin main",
+  "command gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "command gh api -X POST repos/acme/blank/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "curl -X PUT -H \"Authorization: Bearer x\" https://api.github.com/repos/o/r/pulls/41/merge",
+  "curl -X PUT https://api.github.com/repos/o/r/pulls/$N/merge",
+  "echo 'gh pr merge 41' > x.sh; bash x.sh",
+  "echo 'gh pr merge 41' | head | sh",
+  "echo 'gh pr merge 41' | sh",
+  "echo \"$(gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678)\"",
+  "echo \"gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "echo git push origin main | sh",
+  "env -C w git push origin main",
+  "env -S 'gh pr merge 41 --squash'",
+  "env -i git push origin main",
+  "env -u X git push -f origin feat",
+  "env -u X git push origin main",
+  "env GH_HOST=github.com gh api -X POST repos/acme/blank/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "env gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "env gh api -X POST repos/acme/blank/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "eval git push origin HEAD:main",
+  "find . -maxdepth 0 -exec sh -c 'gh pr merge 41' ';'",
+  "for i in 1; do\necho 'gh pr merge 41'\ndone | sh",
+  "for r in origin up; do git push $r main; done",
+  "g'h' pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "gh alias set --shell m 'gh pr merge 41 --squash'; gh m",
+  "gh api --hostname ghe.example.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X PATCH repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/../r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref='refs/heads/main' -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=main -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -F sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=111111111111",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111 && echo ok",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111 --hostname github.com",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111 --include",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111 -f force=true",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111 -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111 >/dev/null",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111; echo ok",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111\necho ok",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=3333333333333333333333333333333333333333",
+  "gh api --hostname github.com -X POST repos/o/r/git/refs -f ref=refs/heads/master -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com -X POST repos/{owner}/{repo}/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname github.com repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --hostname=github.com -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --method=POST --hostname github.com repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api --method=PUT /repos/o/r/pulls/41/merge",
+  "gh api -X POST repos/o/r/git/refs -f ref=refs/heads/main -f sha=1111111111111111111111111111111111111111",
+  "gh api -X POST repos/o/r/merges -f base=main -f head=t4",
+  "gh api -X PUT repos/o/r/pulls/$(echo 41)/merge",
+  "gh api -X PUT repos/o/r/pulls/41/merge -f sha=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+  "gh api repos/o/r/git/refs -f sha=1111111111111111111111111111111111111111 -f ref=refs/heads/main --method POST --hostname github.com",
+  "gh pr $(echo merge) 41",
+  "gh pr merge --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "gh pr merge 40 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "gh pr merge 41 --delete-branch --match-head-commit=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 --squash",
+  "gh pr merge 41 --squash --delete-branch ",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit A1B2C3D4E5F60718293A4B5C6D7E8F9012345678",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 && echo done",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 --admin",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 --match-head-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 --match-head-commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\ngh pr merge 42",
+  "gh pr merge 41 --squash --delete-branch --match-head-commit=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "gh pr merge 41 --squash --delete-branch",
+  "gh pr merge 41 --squash --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "gh pr merge https://github.com/o/r/pull/41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "git --namespace=x push origin main",
+  "git --no-pager push origin main",
+  "git -C /x push -f",
+  "git -C w push --force-with-lease origin x",
+  "git -C ~/proj push origin 1111111111111111111111111111111111111111:refs/heads/main",
+  "git -c alias.m='!gh pr merge 41 --squash' m",
+  "git -c core.sshCommand=\"ssh -i k\" push origin main",
+  "git -c remote.origin.push=HEAD:main push",
+  "git config remote.origin.push HEAD:main; git push",
+  "git ls-files | xargs grep -n \"gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\"",
+  "git ls-files | xargs sh -c 'gh pr merge 41'",
+  "git push --all origin",
+  "git push --branches origin",
+  "git push --delete origin main",
+  "git push --forc origin x",
+  "git push --force origin claude/t1",
+  "git push --force-with-lease=feat:abc origin feat",
+  "git push --mirror",
+  "git push --prune origin 'refs/heads/*:refs/heads/*'",
+  "git push --repo=origin feat/x",
+  "git push --set-upstream origin HEAD",
+  "git push --tags origin",
+  "git push -fu origin claude/t1",
+  "git push -u origin HEAD",
+  "git push -u origin main",
+  "git push -u origin master",
+  "git push -uf origin x",
+  "git push \"--force\" origin x",
+  "git push origin $BR",
+  "git push origin '*:*'",
+  "git push origin '+x'",
+  "git push origin 'feat",
+  "git push origin 'main'",
+  "git push origin 'refs/heads/*:refs/heads/*'",
+  "git push origin +claude/t1",
+  "git push origin +main:main",
+  "git push origin -- main",
+  "git push origin --delete main",
+  "git push origin 1111111111111111111111111111111111111111:refs/heads/main",
+  "git push origin :main",
+  "git push origin @",
+  "git push origin @:main",
+  "git push origin HEAD",
+  "git push origin HEAD:Main",
+  "git push origin HEAD:claude/main-fix",
+  "git push origin HEAD:heads/main",
+  "git push origin HEAD:main",
+  "git push origin HEAD:refs/heads/feat/x HEAD:refs/heads/main",
+  "git push origin HEAD:refs/heads/main",
+  "git push origin \"$(echo main)\"",
+  "git push origin \"+HEAD:main\"",
+  "git push origin \"x:main\"",
+  "git push origin `git branch --show-current`",
+  "git push origin feat -f",
+  "git push origin feat/x:feat/x",
+  "git push origin ma\\in",
+  "git push origin main --dry-run",
+  "git push origin main 2>&1",
+  "git push origin main 2>/dev/null || true",
+  "git push origin main >/dev/null",
+  "git push origin main",
+  "git push origin main&& echo ok",
+  "git push origin main&>/dev/null",
+  "git push origin main;",
+  "git push origin main>/dev/null",
+  "git push origin x:refs/heads/master",
+  "git push origin",
+  "git push upstream feat",
+  "git push",
+  "grep -rn 'gh pr merge 41' plugins | sort -o x.sh; bash x.sh",
+  "if git push origin main; then echo ok; fi",
+  "lua -e 'os.execute(\"gh pr merge 41\")'",
+  "nice git push origin main",
+  "node -e \"require('child_process').execSync('gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678')\"",
+  "osascript -e 'do shell script \"gh pr merge 41\"'",
+  "parallel ::: 'gh pr merge 41'",
+  "php -r 'system(\"gh pr merge 41\");'",
+  "printf -v G gh; $G pr merge 41",
+  "python3 - <<'EOF'\nimport subprocess\nsubprocess.run([\"gh\", \"pr\", \"merge\", \"41\"])\nEOF",
+  "sh -c \"eval git push origin main\"",
+  "sh <(echo 'gh pr merge 41')",
+  "sh <<'EOF'\ngh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\nEOF",
+  "ssh host 'gh pr merge 41'",
+  "sudo gh pr merge 41 --squash --delete-branch --match-head-commit a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "sudo git push --force origin feat",
+  "sudo git push origin main",
+  "time git push origin main",
+  "timeout 120 git push origin main",
+  "timeout 60 git push --force origin x",
+  "until git push origin main; do sleep 1; done",
+  "watch -n 1 'gh pr merge 41 --squash'",
+  "while ! git push origin main; do sleep 2; done",
+  "xargs git push origin < /dev/null main",
+  "xargs git push origin <<< main",
+  "{ echo 'gh pr merge 41'; } | sh",
+  "{ git push origin main; }",
+  "while git push origin main -f vite >/dev/null; do sleep 1; done",
+  "while gh pr merge 1 --admin -f vite >/dev/null; do sleep 1; done",
+  "if git push origin main -f vite; then echo up; fi",
+  "if gh pr merge 1 --admin -f vite; then echo up; fi",
+  "for p in 1 2; do git push origin main $p; done",
+  "for p in 1 2; do gh pr merge 1 --admin $p; done",
+  "until ! git push origin main -i :5173; do sleep 1; done",
+  "until ! gh pr merge 1 --admin -i :5173; do sleep 1; done",
+  "! gh pr merge 1 --admin",
+  "{ gh pr merge 1 --admin; }",
+  "if true; then :; elif git push origin main; then :; else kill 1; fi",
+  "if true; then :; elif gh pr merge 1 --admin; then :; else kill 1; fi",
+  "while true; do git push origin main -fl vite; sleep 1; done",
+  "while true; do gh pr merge 1 --admin -fl vite; sleep 1; done",
+  "function f { git push origin main; }",
+  "function f { gh pr merge 1 --admin; }",
+  "sh -c git push origin main",
+  "sh -c gh pr merge 1 --admin",
+  "bash -c \"git push origin main\"",
+  "bash -c \"gh pr merge 1 --admin\"",
+  "eval git push origin main",
+  "eval gh pr merge 1 --admin",
+  "sudo -u root git push origin main",
+  "sudo -u root gh pr merge 1 --admin",
+  "xargs -I {} git push origin main {}",
+  "xargs -I {} gh pr merge 1 --admin {}",
+  "env -u X gh pr merge 1 --admin",
+  "timeout -s TERM 60 git push origin main node",
+  "timeout -s TERM 60 gh pr merge 1 --admin node",
+  "nice -n 5 git push origin main -l 1",
+  "nice -n 5 gh pr merge 1 --admin -l 1",
+  "watch \"git push origin main -ax\"",
+  "watch \"gh pr merge 1 --admin -ax\"",
+  "find . -name x -exec git push origin main {} ;",
+  "find . -name x -exec gh pr merge 1 --admin {} ;",
+  "git push origin main -k 3000/tcp",
+  "gh pr merge 1 --admin -k 3000/tcp",
+  "git push origin main node",
+  "gh pr merge 1 --admin node",
+  "npx git push origin main-port 3000",
+  "npx gh pr merge 1 --admin-port 3000",
+  "npm exec -- git push origin main-port 3000",
+  "npm exec -- gh pr merge 1 --admin-port 3000",
+  "pnpm dlx git push origin main-port 3000",
+  "pnpm dlx gh pr merge 1 --admin-port 3000",
+  "git push origin main>/tmp/out",
+  "gh pr merge 1 --admin>/tmp/out",
+  "2>/dev/null git push origin main -ax",
+  "2>/dev/null gh pr merge 1 --admin -ax",
+  ">/dev/null git push origin main 1",
+  ">/dev/null gh pr merge 1 --admin 1",
+  "git push origin main</dev/null",
+  "gh pr merge 1 --admin</dev/null",
+  "&>/dev/null git push origin main node",
+  "&>/dev/null gh pr merge 1 --admin node",
+  "{fd}>/dev/null git push origin main -i :3000",
+  "{fd}>/dev/null gh pr merge 1 --admin -i :3000",
+  "git push origin main 1 2>&1",
+  "gh pr merge 1 --admin 1 2>&1",
+  "git push origin main 2>&1 | head",
+  "gh pr merge 1 --admin 2>&1 | head",
+  "bash <<< \"git push origin main 1\"",
+  "bash <<< \"gh pr merge 1 --admin 1\"",
+  "bash ./x.sh git push origin main",
+  "bash ./x.sh gh pr merge 1 --admin",
+  "bash -c 'echo $0' git push origin main",
+  "bash -c 'echo $0' gh pr merge 1 --admin",
+  "case $1 in\n git push origin main) echo top;;\n ps|kill) echo other;;\nesac",
+  "case $1 in\n gh pr merge 1 --admin) echo top;;\n ps|kill) echo other;;\nesac",
+  "case x in (git push origin main) :;; esac",
+  "case x in (gh pr merge 1 --admin) :;; esac",
+  "bash x.sh <<EOF\ngit push origin main\nEOF",
+  "bash x.sh <<EOF\ngh pr merge 1 --admin\nEOF",
+  "x=$(case $1 in git push origin main) echo t;; esac); echo \"$x\"",
+  "x=$(case $1 in gh pr merge 1 --admin) echo t;; esac); echo \"$x\"",
+  "case $1 in\n a) git push origin main;;\nesac",
+  "case $1 in\n a) gh pr merge 1 --admin;;\nesac",
+  "case x in (a) git push origin main 1;; esac",
+  "case x in (a) gh pr merge 1 --admin 1;; esac",
+  "case x in a) :;& b) git push origin main;;& esac",
+  "case x in a) :;& b) gh pr merge 1 --admin;;& esac",
+  "case x in a) :;; esac | git push origin main",
+  "case x in a) :;; esac | gh pr merge 1 --admin",
+  "x=$(case a in a) :;; esac); git push origin main",
+  "x=$(case a in a) :;; esac); gh pr merge 1 --admin",
+  "bash -lc \"git push origin main\"",
+  "bash -lc \"gh pr merge 1 --admin\"",
+  "bash -c git push origin main x",
+  "bash -c gh pr merge 1 --admin x",
+  "bash <<EOF\ngit push origin main\nEOF",
+  "bash <<EOF\ngh pr merge 1 --admin\nEOF",
+  "bash -s <<EOF\ngit push origin main 1\nEOF",
+  "bash -s <<EOF\ngh pr merge 1 --admin 1\nEOF",
+  "eval git push origin main 1",
+  "eval gh pr merge 1 --admin 1",
+  "echo gh pr merge 1 --admin | sh",
+  "$(echo git push origin main)",
+  "$(echo gh pr merge 1 --admin)",
+  "P=gh pr merge 1 --admin; $P",
+  "(case x in (*) git push origin main;; esac)",
+  "(case x in (*) gh pr merge 1 --admin;; esac)",
+  "(case x in (a) git push origin main -ax;; esac)",
+  "(case x in (a) gh pr merge 1 --admin -ax;; esac)",
+  "( case x in a) git push origin main;; esac )",
+  "( case x in a) gh pr merge 1 --admin;; esac )",
+  "{ case x in (a) git push origin main;; esac; }",
+  "{ case x in (a) gh pr merge 1 --admin;; esac; }",
+  "x=$( (case y in (*) git push origin main;; esac) )",
+  "x=$( (case y in (*) gh pr merge 1 --admin;; esac) )",
+  "(case x in (a) (case y in (b) git push origin main;; esac);; esac)",
+  "(case x in (a) (case y in (b) gh pr merge 1 --admin;; esac);; esac)",
+  "comm <(git branch) <(git branch -r); git push origin main",
+  "comm <(git branch) <(git branch -r); gh pr merge 1 --admin",
+  "diff <(git push origin main) x",
+  "diff <(gh pr merge 1 --admin) x",
+  "tee >(git push origin main) < f",
+  "tee >(gh pr merge 1 --admin) < f",
+  "bash -c \"bash -c \\\"bash -c 'bash -c git push origin main'\\\"\"",
+  "bash -c \"bash -c \\\"bash -c 'bash -c gh pr merge 1 --admin'\\\"\"",
+  "bash -c \"bash -c \\\"bash -c 'git push origin main'\\\"\"",
+  "bash -c \"bash -c \\\"bash -c 'gh pr merge 1 --admin'\\\"\"",
+  "timeout 1.5 git push origin main",
+  "timeout 1.5 gh pr merge 1 --admin",
+  "find . -exec sudo git push origin main {} ;",
+  "find . -exec sudo gh pr merge 1 --admin {} ;",
+  "(cd /tmp && git push origin main)",
+  "(cd /tmp && gh pr merge 1 --admin)",
+  "npm x git push origin main-port 3000",
+  "npm x gh pr merge 1 --admin-port 3000",
+  "command -v git push origin main",
+  "command -v gh pr merge 1 --admin",
+  "(case x in a) git push origin main",
+  "(case x in a) gh pr merge 1 --admin",
+  "( git push origin main",
+  "( gh pr merge 1 --admin",
+  "case x in a) git push origin main",
+  "case x in a) gh pr merge 1 --admin",
+  "x=$(case x in a) git push origin main)",
+  "x=$(case x in a) gh pr merge 1 --admin)",
+  "(case x in a) git push origin main )",
+  "(case x in a) gh pr merge 1 --admin )",
+  "echo 'git push origin main",
+  "echo 'gh pr merge 1 --admin",
+];
+
+test("R466-REGRESSION: no command that main's reader denies for the main session is allowed now", async () => {
+  const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
+  const allowed = MAIN_DENIES.filter((command) => !denied(handle(bash(command), { sage: true, autopilot: false }, slots)));
+  assert.deepEqual(allowed, []);
 });
 
 // T94: sandbox part 2. The sandbox runs the state tool outside it only for its unquoted absolute spelling, and refuses

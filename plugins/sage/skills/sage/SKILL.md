@@ -46,6 +46,11 @@ Each option takes a value: `--name value`, or `--name=value` for a value that st
 - A new commit is a new SHA. Its verdicts start again from cycle 1.
 - Every task with verdicts on a SHA counts, also an abandoned one. When two tasks share a pull request, record each verdict under both. To leave an old task's verdicts behind, push a new commit.
 
+## What the hook refuses an agent
+
+- `git stash` in any form, also with `-C` or `--git-dir`: every worktree shares one stash list. Use `git worktree add --detach <scratch> <sha>` or `git show <sha>:<path>`.
+- A program that lists or signals processes (`ps`, `pgrep`, `pkill`, `kill`, `killall`, `lsof`, `top`), unless it resolves to a fake in the temp folder. Put a fake `ps` first on PATH that prints a start time in the past, and run a fake `kill` by its path. The chief is not limited.
+
 ## How an investigation ends
 
 - An investigate task has no build block, so it ends at `concluded`, not at verified. Its last states are reviewing → verifying → concluded.

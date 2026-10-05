@@ -15,11 +15,13 @@
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
+//   - An agent (a sage agent, or any subagent in sage mode; never the chief) never runs git stash, and never runs a
+//     program that lists or signals processes unless that program is a fake in the temp folder (agentProblem).
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
 // or a push.
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -186,6 +188,11 @@ export function handle(input, state, slots) {
   }
   if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
   if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
+  const agent = (ours || (!main && state.sage)) && !CHIEF.test(input.agent_type ?? "");
+  if (event === "PreToolUse" && agent && SHELL_TOOLS.test(input.tool_name ?? "")) {
+    const why = agentProblem([].concat(input.tool_input?.command ?? []).join(" "), input.cwd ?? process.cwd());
+    if (why) return deny(event, why);
+  }
   if (event !== "PreToolUse" || !state.sage) return undefined;
 
   const tool = input.tool_name ?? "";
@@ -224,15 +231,18 @@ export function handle(input, state, slots) {
  * Undefined when the command line has no push, or only pushes in that form; else the reason for the refusal.
  */
 const PUSH_FORM = 'git [-C <dir>] push [-u] [--follow-tags] [-o <option>] origin <branch>, as a command of its own, with the literal name of the task\'s branch: not main or master, HEAD, @, a pattern, a variable, or a refspec with ":" or "+". To delete a branch: git push --delete origin <branch>';
-/** The word git, and then the word push. The first git is enough, so the test reads the text once (T34). */
-const pushText = (text) => /\bpush\b/i.test(/\bgit\b([\s\S]*)/i.exec(text)?.[1] ?? "");
+/** The word git, and then a later word: one linear scan from the first git (T34, T100-N5). */
+const gitThen = (text, word) => new RegExp(`\\b${word}\\b`, "i").test(/\bgit\b([\s\S]*)/i.exec(text)?.[1] ?? "");
+const pushText = (text) => gitThen(text, "push");
+/** A command line without quotes, backslashes and line joins: the text that the rules test when the reader cannot read the line (fail closed). */
+const bare = (text) => text.replace(/\\\n/g, "").replace(/['"\\]/g, "");
 const refuse = (why) => `${why} Push only with ${PUSH_FORM}.`;
 function pushProblem(command, cwd) {
   let commands;
   try {
     commands = shellCommands(command);
   } catch (e) {
-    return pushText(command) ? refuse(`the hook cannot read this command (${e.message}), so it refuses it. Close each quote, substitution and heredoc.`) : undefined;
+    return pushText(bare(command)) ? refuse(`the hook cannot read this command (${e.message}), so it refuses it. Close each quote, substitution and heredoc.`) : undefined;
   }
   let dir = cwd;
   for (const { cmd, words, bodies } of runnable(commands)) {
@@ -449,6 +459,173 @@ function gitGate(event, command, state, cwd, main) {
 }
 
 /**
+ * Two lessons that came back, held for agents in every tool that runs a command line. An agent never runs git stash
+ * in any form: every worktree of a repo shares one stash list, so another agent's pop can take it (standing order 16).
+ * An agent never lists or signals the real processes (standing order 14): a process program passes only when its
+ * word resolves, through PATH and links, to a file in the temp folder. A bare kill is the shell's builtin, so it never
+ * passes. programsRun finds the programs. A process.kill inside a script is not visible here.
+ * Undefined when the command line passes; else the reason for the refusal.
+ */
+const SHELL_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.+)$/;
+const NO_STASH = "an agent never runs git stash: every worktree of a repo shares one stash list, so another agent can pop or drop your work (standing order 16). To test old code, use git worktree add --detach <scratch> <sha>, or git show <sha>:<path> into your scratch folder.";
+/** The process programs: unix names as the shell matches them (case-sensitive), PowerShell names in any case. */
+const UNIX_PROCESS = "ps|pgrep|pkill|kill|killall|lsof|top|htop|fuser|pidof|kill-port|fkill";
+const POWERSHELL_PROCESS = "get-process|stop-process|gps|spps";
+/** A program name, without the version that npx and its kind take after "@" (kill-port@2). */
+const isProcess = (name = "") => {
+  const bare = name.replace(/(?<=.)@.*$/, "");
+  return new RegExp(`^(?:${UNIX_PROCESS})$`).test(bare) || new RegExp(`^(?:${POWERSHELL_PROCESS})$`, "i").test(bare);
+};
+const NO_PROCESS = (word) => `an agent never reads or signals the real process list (standing order 14), so ${quoted(word)} is refused. Put a fake ps first on PATH, in the temp folder or your scratch folder, that prints a start time in the past (for example "Sat Jan  1 00:00:00 2000"), and run a fake kill by its path: a bare kill is the shell's builtin. Use literal paths: the hook does not expand variables. To stop your own server or background job, use TaskStop, or run it as a background task.`;
+const TEMP = [...new Set([tmpdir(), "/tmp", process.env.TMPDIR].filter(Boolean).map((d) => { try { return realpathSync.native(d); } catch { return resolve(d); } }))];
+const inTemp = (file) => !!file && TEMP.some((t) => file.startsWith(`${t}/`));
+const PROCESS_TEXT = new RegExp(`(?:^|[\\s;&|(\`'"/<>])(?:${UNIX_PROCESS}|${POWERSHELL_PROCESS})(?=$|[\\s;&|)\`'"<>])`, "im");
+
+export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
+  let runs;
+  try {
+    runs = programsRun(command, cwd, path);
+  } catch (e) {
+    const text = bare(command);
+    const why = gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
+    return why && `${why} (The hook cannot read this command: ${e.message}.)`;
+  }
+  for (const { word, file, args } of runs) {
+    const name = word.split("/").pop();
+    if (name === "git" && /^stash$/i.test(subcommand(args, 0))) return NO_STASH;
+    if ((isProcess(name) || isProcess(file?.split("/").pop())) && !inTemp(file)) return NO_PROCESS(word);
+  }
+  return undefined;
+}
+
+/**
+ * Programs that run a later word as a program, each with its options that take a value (that value is not the program).
+ * A key of two words is a program and its subcommand. The ones after "|" leave a bare kill the shell's builtin.
+ */
+const PACKAGE_RUNNER = /^-(?:p|c|-package|-call)$/;
+const WRAPPER = new Map([
+  ["sudo", /^-(?:[ugpCDrtUTRh]|-(?:user|group|prompt|close-from|chdir|role|type|other-user|command-timeout|host))$/],
+  ["doas", /^-[uC]$/],
+  ["env", /^-(?:[uCP]|-(?:unset|chdir))$/],
+  ["nice", /^-(?:n|-adjustment)$/],
+  ["timeout", /^-(?:[sk]|-(?:signal|kill-after))$/],
+  ["gtimeout", /^-(?:[sk]|-(?:signal|kill-after))$/],
+  ["xargs", /^-(?:[IJLnPsEdaRS]|-(?:replace|max-lines|max-args|max-procs|max-chars|eof|delimiter|arg-file))$/],
+  ["exec", /^-a$/],
+  ["stdbuf", /^-(?:[ioe]|-(?:input|output|error))$/],
+  ["caffeinate", /^-[tw]$/],
+  ["watch", /^-(?:n|-interval)$/],
+  ...["npx", "bunx", "npm exec", "pnpm dlx"].map((name) => [name, PACKAGE_RUNNER]),
+  ...["nohup", "command", "builtin", "time", "noglob", "nocorrect"].map((name) => [name, undefined]),
+]);
+const SAME_SHELL = /^(?:command|builtin|time|noglob|nocorrect)$/;
+/** Shell keywords before a command: the command after them runs in the same shell. After for, select or case come words, not a program. */
+const KEYWORD = /^(?:!|\{|\}|if|then|elif|else|fi|while|until|do|done|esac|coproc)$/;
+const LIST = /^(?:for|select|case)$/;
+const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
+
+/**
+ * The programs that a command line runs, for the hook's rules on agents (agentProblem) and on the state tool (T83).
+ * Each is { word, file, args, dir }, in the order of the command line:
+ *   - word: the program as written, after shell keywords (if, while, do, !, {), assignments (X=1), redirections
+ *     (2>/dev/null, >out) and wrappers with their options (sudo, env, timeout, xargs, nice, npx, npm exec, pnpm dlx,
+ *     bunx and others in WRAPPER). After for, select and case come words, not a program; a case pattern is not one.
+ *   - file: the real file that runs, found through PATH (a PATH=… before it, or an earlier export PATH=…) and links,
+ *     from dir. Undefined for a bare kill (the shell's builtin, unless a wrapper such as sudo or xargs runs it), for a
+ *     word with a variable, ~ or a substitution, and for a program that is not found.
+ *   - args: the words after the program, without their quotes and redirections.
+ *   - dir: the folder it runs in, after an earlier "cd <dir>" of the same line.
+ * It also reads the text that other programs run as commands, up to 3 levels deep: the -c text of a shell (sh, bash,
+ * zsh, dash, ksh, fish) and its stdin heredoc when it has no script, the words of eval, PowerShell's -Command text,
+ * the program of find -exec, and a program word with spaces that a wrapper such as watch gives to sh -c. The words
+ * after a script (bash ./x.sh kill) are the script's arguments, not programs. Each $( ) or backtick is a command of its
+ * own, and so is each <( ) and >( ). It cannot see a program in a variable ($P), in text piped into a shell, or inside a script.
+ * Throws when the shell reader cannot read the line (see shellCommands), and for text nested more than 3 levels deep.
+ */
+export function programsRun(command, cwd, path = process.env.PATH ?? "") {
+  const found = [];
+  readPrograms(command, cwd, path, 0, found);
+  return found;
+}
+
+function readPrograms(command, dir, path, depth, found) {
+  const inner = (text, at, here) => {
+    if (depth === 3) throw new Error("commands nested more than 3 levels deep");
+    readPrograms(text, at, here, depth + 1, found);
+  };
+  for (const { words, bodies } of shellCommands(command)) {
+    const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
+    const own = words.find(set);
+    if (["export", undefined].includes(words.find((w) => !set(w))) && own) path = set(own); // export PATH=… or PATH=… alone
+    const here = own ? set(own) : path;
+    let viaExec = false;
+    let takesValue; // the options of the last wrapper that take a value
+    for (let k = 0; k < words.length; k++) {
+      const w = words[k];
+      const name = w.split("/").pop();
+      if (takesValue?.test(w)) k++;
+      if (/^\w+=/.test(w) || w.startsWith("-") || /^\d+[smhd]?$/.test(w) || KEYWORD.test(w)) continue;
+      if (LIST.test(w)) break;
+      if (w === "function" && ++k) continue; // function <name> { … }: the name is not a program
+      const wrapper = [`${name} ${words[k + 1]}`, name].find((key) => WRAPPER.has(key));
+      if (wrapper) {
+        if (wrapper !== name) k++;
+        viaExec ||= !SAME_SHELL.test(name);
+        takesValue = WRAPPER.get(wrapper);
+        continue;
+      }
+      if (/\s/.test(w)) { // watch "ps -ax" runs its text with sh -c
+        inner(w, dir, here);
+        break;
+      }
+      const args = words.slice(k + 1);
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir });
+      for (const text of commandText(name, args, bodies)) inner(text, dir, here);
+      const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
+      if (exec >= 0 && args[exec + 1]) {
+        const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
+        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir });
+      }
+      break;
+    }
+    if (words[0] === "cd" && words.length === 2) dir = resolve(dir, words[1]); // for the commands after it
+  }
+}
+
+/** The text that a shell, eval or PowerShell runs as commands: -c text, eval's words, or stdin when there is no script. */
+function commandText(name, args, bodies) {
+  if (name === "eval") return [args.join(" ")];
+  if (/^(?:pwsh|powershell)(?:\.exe)?$/i.test(name)) {
+    const c = args.findIndex((a) => /^-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?$/i.test(a));
+    return c >= 0 ? [args.slice(c + 1).join(" ")] : [];
+  }
+  if (!SHELLS.test(name)) return [];
+  let k = 0;
+  let text = false;
+  let stdin = false;
+  for (; /^[-+]./.test(args[k] ?? "") && args[k] !== "--"; k++) {
+    if (/^-[a-zA-Z]*c/.test(args[k]) || args[k] === "--command") text = true;
+    if (/^-[a-zA-Z]*s/.test(args[k])) stdin = true;
+    if (/^[-+][a-zA-Z]*[oO]$|^--(?:rcfile|init-file)$/.test(args[k])) k++; // an option with a value: -o pipefail
+  }
+  if (args[k] === "--") k++;
+  if (text) return args[k] === undefined ? [] : [args[k]]; // the words after it are $0, $1, …
+  return stdin || args[k] === undefined ? bodies : []; // with a script, the words and stdin are the script's
+}
+
+/** The real file that a program word runs, through PATH and links; undefined when it has a variable or is not found. */
+function program(word, dir, path) {
+  for (const file of word.includes("/") ? [word] : path.split(":").map((d) => `${d || "."}/${word}`)) {
+    if (/[$`~]/.test(file)) return undefined; // the shell would expand it, so the hook cannot tell which file runs
+    try {
+      const real = realpathSync.native(resolve(dir, file)); // native: the name on disk, so "PS" on macOS is ps
+      if (statSync(real).isFile() && statSync(real).mode & 0o111) return real;
+    } catch {}
+  }
+  return undefined;
+}
+
+/**
  * Text that names a merge: the word gh and the word merge in any order (so also "$G pr merge" or "gh pr $(echo merge)"),
  * a merge path of the REST API, or a GraphQL merge mutation. Each test is one linear scan.
  */
@@ -467,7 +644,7 @@ export function mergeIn(command) {
   try {
     commands = shellCommands(command);
   } catch (e) {
-    return mentionsMerge(command.replace(/\\\n/g, "").replace(/['"\\]/g, "")) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
+    return mentionsMerge(bare(command)) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
   }
   return mentionsMerge(codeText(commands)) || commands.some(expandedMerge) ? { problem: CANNOT } : undefined;
 }
@@ -547,9 +724,11 @@ const codeText = (commands) =>
 
 /**
  * The simple commands of a shell command line: { words, bodies, host, piped, pipeTo, grouped, writes }. The words lose their
- * quotes; the bodies are the command's heredocs, which stay text. A command substitution, $( ) or a backtick, gives
- * commands of its own, whose host is the command and word they land in (index -1: a heredoc). Throws when it cannot
- * read the line: an open quote, substitution or heredoc, or a ")" with no "(".
+ * quotes and redirections (2>/dev/null, >out, <in, with their targets); the bodies are the command's heredocs and
+ * here-strings, which stay text. The patterns of a case arm ("top)") are not commands. A command substitution, $( ) or a backtick, gives
+ * commands of its own, whose host is the command and word they land in (index -1: a heredoc), and so does a process
+ * substitution, <( ) or >( ). Throws when it cannot read the line: an open quote, substitution, heredoc, "(" or case,
+ * or a ")" with no "(". The hook's rules then refuse a line that names what they guard (fail closed).
  */
 export function shellCommands(src) {
   const out = [];
@@ -562,24 +741,51 @@ function readCommands(src, i, close, out, host) {
   let cmd = fresh();
   let word;
   let depth = 0;
+  let target; // after a redirection: "drop" its target word, or "body" for the text of a here-string
+  const cases = []; // each open case: { depth } where it opens, and pattern: true before an arm's ")", false after it
+  const arm = () => (cases.at(-1)?.depth === depth ? cases.at(-1) : undefined); // the case whose arms are read at this depth
   const heredocs = [];
   const add = (text) => (word = (word ?? "") + text);
   const endWord = () => {
-    if (word !== undefined) cmd.words.push(word);
-    word = undefined;
+    if (word === undefined) return;
+    if (target === "body") cmd.bodies.push(word);
+    else if (!target) cmd.words.push(word);
+    word = target = undefined;
+    const [first, , third] = cmd.words;
+    if (first === "case" && cmd.words.length === 3 && third === "in") {
+      endCommand();
+      cases.push({ depth, pattern: true });
+    } else if (first === "esac" && cmd.words.length === 1 && arm()) cases.pop();
   };
   const endCommand = () => {
     endWord();
+    if (target) throw new Error("a redirection with no target");
     cmd.grouped ||= depth > 0;
-    if (cmd.words.length || cmd.heredoc) out.push(cmd);
+    if ((cmd.words.length || cmd.heredoc) && !arm()?.pattern) out.push(cmd);
     cmd = fresh();
   };
   const here = () => ({ cmd, index: cmd.words.length });
   while (i < src.length) {
     const c = src[i];
+    const esac = word === "esac" && !cmd.words.length; // "esac)" closes a $( ), and "esac |" pipes the case on
+    if (arm()?.pattern && "()|".includes(c) && !esac) { // a case arm: "(a|b)" or "a)"; its pattern runs nothing
+      endWord();
+      if (cmd.words.length > 1) throw new Error("a case pattern of more than one word"); // a shell refuses it too
+      cmd = fresh();
+      if (c === ")") arm().pattern = false;
+      i++;
+      continue;
+    }
+    if (arm()?.pattern === false && c === ";" && ";&".includes(src[i + 1])) { // ;; ;& ;;& end an arm
+      endCommand();
+      arm().pattern = true;
+      i += src.startsWith(";;&", i) ? 3 : 2;
+      continue;
+    }
     if (c === close && depth === 0) {
       if (heredocs.length) throw new Error("an open heredoc");
       endCommand();
+      if (cases.length) throw new Error("a case with no esac");
       return i + 1;
     }
     if (c === "\\") {
@@ -597,10 +803,14 @@ function readCommands(src, i, close, out, host) {
     } else if (c === "`" || (c === "$" && src[i + 1] === "(")) {
       i = readCommands(src, i + (c === "`" ? 1 : 2), c === "`" ? "`" : ")", out, here());
       add("$(…)");
+    } else if ((c === "<" || c === ">") && src[i + 1] === "(") { // a process substitution, <( ) or >( ): commands of its own
+      i = readCommands(src, i + 2, ")", out, here());
+      add("$(…)");
     } else if (c === "#" && word === undefined) {
       while (i < src.length && src[i] !== "\n") i++;
     } else if (src.startsWith("<<<", i)) {
-      add("<<<");
+      endWord();
+      target = "body";
       i += 3;
     } else if (src.startsWith("<<", i)) {
       endWord();
@@ -612,11 +822,15 @@ function readCommands(src, i, close, out, host) {
     } else if (c === " " || c === "\t") {
       endWord();
       i++;
-    } else if (c === ">" || (c === "&" && src[i + 1] === ">")) {
-      cmd.writes = true; // a redirection: ">", ">>", "&>", and ">&2" or "2>&1", whose "&" ends nothing
-      const n = src[i + 1] === "&" ? 2 : 1;
-      add(src.slice(i, i + n));
-      i += n;
+    } else if (c === ">" || c === "<" || (c === "&" && src[i + 1] === ">")) {
+      // A redirection: >, >>, >|, >&, &>, &>>, <, <>, <&, with the number or {name} of its file descriptor before it.
+      // It and its target are not words, so ps>out and 2>/dev/null ps run ps.
+      if (/^(?:\d+|\{\w+\})$/.test(word ?? "")) word = undefined;
+      endWord();
+      const op = /^(?:&>>?|>>|>\||>&|<>|<&|>|<)/.exec(src.slice(i, i + 3))[0];
+      cmd.writes ||= op.includes(">");
+      target = "drop";
+      i += op.length;
     } else if (c === "|" && src[i + 1] !== "|") {
       const from = cmd;
       from.piped = true;
@@ -627,7 +841,7 @@ function readCommands(src, i, close, out, host) {
       if (c === ")" && !depth) throw new Error('a ")" with no "("');
       endCommand();
       if (c === "(") depth++;
-      if (c === ")") depth--;
+      if (c === ")" && cases.at(-1)?.depth === depth--) throw new Error("a case with no esac");
       i += (c === "|" || c === "&") && src[i + 1] === c ? 2 : 1;
     } else {
       add(c);
@@ -637,6 +851,8 @@ function readCommands(src, i, close, out, host) {
   if (close) throw new Error(close === ")" ? "an open $(" : "an open backtick");
   if (heredocs.length) throw new Error("an open heredoc");
   endCommand();
+  if (depth) throw new Error('an open "("');
+  if (cases.length) throw new Error("a case with no esac");
   return i;
 }
 
