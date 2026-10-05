@@ -34,10 +34,12 @@ A part marked "coming with programs" describes programs, a feature that is appro
 | **cycle** | One full set of fresh reviews and QA on one head commit; a new commit starts again from cycle 1. | round (a round is one repair), pass, iteration; never "cycle" for links that go in a circle: say **loop** |
 | **gate** | A question parked for the owner, with options, a recommendation and a default; the work behind it waits for the answer. Coming with programs: the owner approves a program's breakdown through a gate. | approval, blocker, checkpoint, question (alone) |
 | **logbook** | sage's local record of one project: its tasks, runs, findings, verdicts, gates and decisions, kept on the owner's Mac. | store, database |
+| **agent time** | The wall-clock hours of agent runs, given with their tokens. The default for every time figure: give it with its basis and a range. | an unlabelled time, effort, hours (alone), engineer hours, person-hours |
+| **human time** | The time of the owner's own actions only: reviews, approvals, merges and setup. Give it with its basis and a range. | an unlabelled time, effort, hours (alone), person-hours |
 
 ## Phrases
 
-These are not new words. They are fixed phrases inside the lines above, so that the list stays at 16 words.
+These are not new words. They are fixed phrases inside the lines above, so that the list stays at 18 words.
 
 - **breakdown** (coming with programs): the content of a program that the owner approves (goal, done condition, tasks, "waits for" links, pilot, cost, questions). In the program line.
 - **waits for** (coming with programs): the link from a task to a task or a pull request that must merge first. In the task line. A circle of such links is a **loop**, and sage refuses it.

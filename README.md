@@ -229,6 +229,8 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Cycle** | One full set of fresh reviews and QA on one head commit; a new commit starts again from cycle 1. |
 | **Gate** | A question parked for the owner, with options, a recommendation and a default; the work behind it waits for the answer. Coming with programs: the owner approves a program's breakdown through a gate. |
 | **Logbook** | sage's local record of one project: its tasks, runs, findings, verdicts, gates and decisions, kept on the owner's Mac. |
+| **Agent time** | The wall-clock hours of agent runs, given with their tokens. The default for every time figure: give it with its basis and a range. |
+| **Human time** | The time of the owner's own actions only: reviews, approvals, merges and setup. Give it with its basis and a range. |
 | **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. A message that starts with "sage mode off" turns it off. |
 | **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review to a task that changes code: every size except investigate. |
 | **Ledger** | The record of all verdicts, by commit. The merge check reads it. |
