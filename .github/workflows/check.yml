@@ -29,6 +29,12 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/tinygo.tar.gz" https://github.com/tinygo-org/tinygo/releases/download/v0.42.0/tinygo0.42.0.linux-amd64.tar.gz
           echo "b87688fa2e19cee7d813cad7fd7dadb71dff3198e47125aba66ba4af5e490438  $RUNNER_TEMP/tinygo.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/tinygo.tar.gz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/tinygo/bin" >> "$GITHUB_PATH"
-      - run: npm run check
-      - run: npm test
+      - name: npm run check (rebuilds parser.wasm with TinyGo and compares its sha256)
+        run: PATH="$RUNNER_TEMP/tinygo/bin:$PATH" npm run check
+      # The tests run npm run check in copies of the repository for its other checks. The rebuild is the step above's
+      # job, so TinyGo is not on PATH here, and CI=false keeps the check's local rule (recorded sha256 only): 15
+      # parallel rebuilds would slow the CPU-time tests.
+      - name: npm test
+        run: npm test
+        env:
+          CI: "false"
