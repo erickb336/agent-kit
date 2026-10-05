@@ -1243,12 +1243,14 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
   const small = cases(KB100);
   const big = cases(10 * KB100); // 1000 KB, about 1 MB
   // 10 times the text takes about 10 times as long on a linear path, and about 100 times on a quadratic one. The bound
-  // allows 30 times, and 20 ms more for a garbage collection. The hook's own budget is 10 s.
+  // allows 30 times, and 20 ms more for a garbage collection. A slow linear path also fails: 1000 KB may take at most
+  // 2 s of CPU time (about 60 ms today), well inside the hook's own budget of 10 s.
+  const bound = (t) => Math.min(30 * t + 20, 2000);
   const times = big.map(([name, input, stop], i) => {
     const t = timed(small[i][1], stop); // the fastest of 3
-    return { name, small: t, big: timed(input, stop, 30 * t + 20) };
+    return { name, small: t, big: timed(input, stop, bound(t)) };
   });
   if (process.env.SAGE_HOOK_TIMES) console.log(times.map((t) => `${t.name}: ${t.small.toFixed(1)} ms → ${t.big.toFixed(1)} ms`).join("\n"));
-  const slow = times.filter((t) => t.big > 30 * t.small + 20).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
+  const slow = times.filter((t) => t.big > bound(t.small)).map((t) => `${t.name}: ${t.small.toFixed(1)} ms for 100 KB, ${t.big.toFixed(1)} ms for 1000 KB`);
   assert.deepEqual(slow, [], "the time of each call grows in line with its text");
 });
