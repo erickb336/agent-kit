@@ -210,6 +210,29 @@ test("the merge check needs no open findings, checks-pass, and the route's verdi
   assert.match(c.no("merge-check", "--sha", SHA), /T1: 1 of 3 clean cycles/, "the config sets each count; a risk flag takes the larger one");
 });
 
+test("T42-HUGE-COUNT and T42-STRING-COUNT: a count has a limit, and config.json takes a count only as a number", () => {
+  const s = store();
+  const f = join(s.home, "config.json");
+  for (const [key, limit] of Object.entries({ "cycles.small": 10, "cycles.large": 10, "cycles.risk": 10, max_rounds: 10, max_agents: 50, arena: 50, cap_total: 50, "cap.sage": 50 })) {
+    assert.equal(s.no("config", `${key}=${limit + 1}`), `sage: ${key} must be ${limit} or less: ${limit + 1} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
+  }
+  assert.match(s.no("config", "cycles.small=99999999999999999999"), /cycles\.small must be 10 or less/);
+  assert.equal(existsSync(f), false, "a refused change writes nothing");
+  assert.match(s.ok("config", "cycles.small=10", "max_agents=50"), /max_agents=50 cycles\.small=10 /, "the limit itself is a valid count");
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "11"), /--cycles is a whole number from 1 to 10/);
+
+  // A file value above the limit reads as the limit: never fewer cycles than the owner wrote, and never a default below it.
+  writeFileSync(f, '{"cycles.small": 99999999999999999999, "cycles.risk": 11, "max_agents": 1000, "cap.ramen": 51}');
+  assert.equal(s.ok("config"), "max_agents=50 cycles.small=10 cycles.large=2 cycles.risk=10 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.ramen=50");
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+  assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 10 clean cycles/, "a huge file value asks the limit, so it never locks out every merge");
+
+  // A string is a bad value: it gives the default, as the config row of SKILL.md says, and each floor is its default.
+  writeFileSync(f, '{"cycles.small": "3", "cycles.large": "5", "cycles.risk": "1", "max_agents": "7", "cap.ramen": "4"}');
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+});
+
 test("round names the roles to re-run on the repair's diff: the sources of the findings it fixes", () => {
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
@@ -442,12 +465,12 @@ test("config: every count is 1 or more, config.json is written whole, and a torn
     writeFileSync(f, text);
     assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 2 clean cycles/, `config.json ${JSON.stringify(text)} keeps the default of 2 cycles`);
   }
-  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "0"), /--cycles is a whole number of 1 or more/);
+  assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "0"), /--cycles is a whole number from 1 to 10/);
   writeFileSync(f, '{"max_agents": "x", "max_rounds": 5, "arena_models": "gpt-5", "cap.sage": 0, "cap.ramen": 4}');
   assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.ramen=4", "each bad value gives its default, and a bad project cap is left out");
 
   // Two processes write config.json 200 times each, while this one reads it: every read sees a whole file.
-  const writers = [1, 2].map(() => spawn("node", ["--input-type=module", "-e", `import { sage } from ${JSON.stringify(LIB)}; for (let i = 1; i <= 200; i++) sage(["config", "max_rounds=" + i]);`], { env: { ...process.env, SAGE_HOME: s.home } }));
+  const writers = [1, 2].map(() => spawn("node", ["--input-type=module", "-e", `import { sage } from ${JSON.stringify(LIB)}; for (let i = 1; i <= 200; i++) sage(["config", "max_rounds=" + Math.ceil(i / 20)]);`], { env: { ...process.env, SAGE_HOME: s.home } }));
   const exits = Promise.all(writers.map((w) => once(w, "exit")));
   let running = true;
   exits.then(() => (running = false));
@@ -464,7 +487,7 @@ test("config: every count is 1 or more, config.json is written whole, and a torn
   }
   assert.deepEqual(await exits, [[0, null], [0, null]]);
   assert.equal(torn, 0, `${torn} of ${reads} reads saw half a file`);
-  assert.equal(JSON.parse(readFileSync(f, "utf8")).max_rounds, 200);
+  assert.equal(JSON.parse(readFileSync(f, "utf8")).max_rounds, 10, "the last write wins");
 });
 
 test("an investigation ends at concluded, after a clean evidence review recorded without a SHA; a build route cannot", () => {

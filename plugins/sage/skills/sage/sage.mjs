@@ -53,6 +53,9 @@ export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "
 /** The owner's floors (gate G18): a large or risk-flagged task needs at least 2 clean cycles. Only a code change lowers them; every other count is 1 or more. */
 const FLOOR = { "cycles.large": 2, "cycles.risk": 2 };
 const floor = (key) => FLOOR[key] ?? 1;
+/** The limits that keep a typo from blocking every merge or starting too many agents: 10 for cycles and rounds, 50 for agent counts. */
+const LIMIT = { "cycles.small": 10, "cycles.large": 10, "cycles.risk": 10, max_rounds: 10 };
+const limit = (key) => LIMIT[key] ?? 50;
 const COUNTS = { max_agents: "no sage agent could start", "cycles.small": "a tiny or small task would merge with no review", "cycles.large": "a large task would merge with no review", "cycles.risk": "a task with a risk flag would merge with no review", max_rounds: "no repair round could start", arena: "an arena would have no candidates", cap_total: "no sage agent could start" };
 /** One project's own agent cap, cap.<project>, with the project's name as projectName gives it. Without one, max_agents is the project's cap. */
 const CAP = /^cap\.[a-z0-9][a-z0-9-]*$/;
@@ -122,15 +125,20 @@ export function storeDir(project, env = process.env) {
   return join(sageRoot(env), `${projectName(root)}-${createHash("sha1").update(root).digest("hex").slice(0, 6)}`);
 }
 
-/** A config value in its stored form, or undefined when it is not valid: a count below its floor is not valid. Only a number or a string can be valid. */
+/**
+ * A config value in its stored form, or undefined when it is not valid. A count is valid only as a whole number at or
+ * above its floor (a string is not valid), and one above its limit reads as the limit: fewer would ease a merge.
+ */
 function valid(key, value) {
-  if (typeof value !== "number" && typeof value !== "string") return undefined;
   if (key === "arena_models") {
-    const models = list(String(value));
+    const models = typeof value === "string" ? list(value) : [];
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
   }
-  return (Object.hasOwn(COUNTS, key) || CAP.test(key)) && /^[1-9]\d*$/.test(String(value)) && Number(value) >= floor(key) ? Number(value) : undefined;
+  return (Object.hasOwn(COUNTS, key) || CAP.test(key)) && Number.isInteger(value) && value >= floor(key) ? Math.min(value, limit(key)) : undefined;
 }
+
+/** A count typed on the command line, or undefined when it is not a whole number from its floor to its limit. */
+const typed = (key, text) => (/^[1-9]\d*$/.test(text) && Number(text) <= limit(key) ? valid(key, Number(text)) : undefined);
 
 /** The refusal for a path that holds something other than a regular file: a folder, a FIFO or a device. */
 const notRegular = (path) => new Refusal(`${path} is not a regular file. Ask the user to fix or remove it.`);
@@ -170,8 +178,9 @@ function saved(env) {
 }
 
 /**
- * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value, a count
- * below its floor, or a config.json that is not a regular file, gives the default (each floor is its default). A file of
+ * The settings for all projects. The hooks call this, so it never throws or waits: a missing, torn or bad value (a count
+ * as a string, for one), a count below its floor, or a config.json that is not a regular file, gives the default (each
+ * floor is its default). A count above its limit reads as the limit. A file of
  * an older sage holds autopilot_cycles for cycles.large: it counts when cycles.large is absent, never below the floor.
  */
 export function config(env = process.env) {
@@ -179,14 +188,14 @@ export function config(env = process.env) {
   try {
     const s = saved(env);
     if (!Object.hasOwn(s, "cycles.large") && Object.hasOwn(s, "autopilot_cycles")) s["cycles.large"] = s.autopilot_cycles;
-    const caps = Object.entries(s).filter(([k, v]) => CAP.test(k) && valid(k, v) !== undefined);
+    const caps = Object.keys(s).filter((k) => CAP.test(k)).map((k) => [k, valid(k, s[k])]).filter(([, v]) => v !== undefined);
     c = Object.fromEntries([...Object.entries(DEFAULTS).map(([k, d]) => [k, valid(k, s[k]) ?? d]), ...caps]);
   } catch {}
   return c;
 }
 
 /** The clean cycles that a task needs before its merge: cycles.small for every task, cycles.large for a large one, and cycles.risk for any task with a risk flag (the largest count wins). */
-function cyclesFor(task, c) {
+export function cyclesFor(task, c) {
   return Math.max(c["cycles.small"], task.size === "large" ? c["cycles.large"] : 0, task.risk ? c["cycles.risk"] : 0);
 }
 
@@ -479,7 +488,7 @@ export function sage(argv, env = process.env) {
   if (!COMMANDS.includes(cmd)) refuse(`unknown command "${cmd ?? ""}". Commands: ${COMMANDS.join(", ")}`);
   const { pos, opt } = parse(cmd, rest);
   if (cmd === "merge-check") {
-    const cycles = opt.cycles === undefined ? undefined : (valid("cycles.small", opt.cycles) ?? refuse("--cycles is a whole number of 1 or more")); // the chief's explicit count: it only raises a task's own count
+    const cycles = opt.cycles === undefined ? undefined : (typed("cycles.small", opt.cycles) ?? refuse("--cycles is a whole number from 1 to 10")); // the chief's explicit count: it only raises a task's own count
     if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
     const r = mergeCheck(opt.sha ?? refuse("merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
@@ -488,8 +497,10 @@ export function sage(argv, env = process.env) {
     const set = {};
     for (const kv of pos) {
       const [k, v = ""] = kv.split("=");
-      if ((Object.hasOwn(COUNTS, k) || CAP.test(k)) && valid(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
-      set[k] = valid(k, v) ?? refuse(`config takes ${KEYS}, and arena_models as a list of ${MODELS.join(", ")}`);
+      const count = Object.hasOwn(COUNTS, k) || CAP.test(k);
+      if (count && /^[1-9]\d*$/.test(v) && Number(v) > limit(k)) refuse(`${k} must be ${limit(k)} or less: ${v} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
+      if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
+      set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, and arena_models as a list of ${MODELS.join(", ")}`);
     }
     if (pos.length) {
       const file = join(sageRoot(env), "config.json");
