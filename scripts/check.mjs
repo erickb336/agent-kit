@@ -143,6 +143,16 @@ try {
 const core = readFileSync(join(ROOT, "instructions/core.md"), "utf8");
 if (Buffer.byteLength(core) > 8 * 1024) problems.push(`instructions/core.md: ${Buffer.byteLength(core)} bytes; keep it under 8 KiB (it loads into every session, so each byte costs context there)`);
 
+// Test browsers are Playwright's bundled Chromium: never the owner's Google Chrome app (T68). A line that must name it
+// (a fake process list, this check) ends with "// chrome-ok: <reason>".
+const INSTALLED_CHROME = /channel\s*:\s*["'`]chrome["'`]|\/Applications\/Google Chrome( for Testing)?\.app/; // chrome-ok: the pattern itself
+const walk = (dir) => readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "node_modules" ? [] : walk(join(dir, e.name))) : [join(dir, e.name)]));
+for (const f of [...walk("scripts"), ...walk("plugins")].filter((f) => /\.(m?js|cjs|ts|json|sh|md|html)$/.test(f))) {
+  readFileSync(join(ROOT, f), "utf8").split("\n").forEach((line, i) => {
+    if (INSTALLED_CHROME.test(line) && !/\/\/ chrome-ok: \S/.test(line)) problems.push(`${f}:${i + 1}: launches the installed Google Chrome; use Playwright's bundled Chromium (chromium.launch() with no channel), or end the line with "// chrome-ok: <reason>"`);
+  });
+}
+
 // The build reads the dictionary too, so a problem in it comes twice: report it once.
 if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }
 console.log("✓ all checks pass");
