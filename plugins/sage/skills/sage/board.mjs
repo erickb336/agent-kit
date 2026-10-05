@@ -31,11 +31,11 @@ const clean = (table, row) => {
 };
 
 /**
- * One line of free text: no line breaks or hidden characters, at most max characters, Markdown and HTML escaped.
+ * One line of free text: no line breaks or hidden characters, at most max characters (all when no max), Markdown and HTML escaped.
  * ":", "." and "@" are escaped too, so that GFM makes no autolink of a bare URL, a www host or an email, and "&", so that
  * no entity (&colon;) decodes to one.
  */
-function text(s, max) {
+function text(s, max = Infinity) {
   const chars = [...String(s ?? "").replace(/\s+/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim()];
   const line = chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
   return line.replace(/[\\`*_[\]()<>!#|~:.@&]/g, "\\$&");
@@ -141,6 +141,26 @@ function sessionBooks(books, project, env) {
 }
 
 /**
+ * The folder where `gate answer --project <folder>` writes to this logbook: the session's project for its own logbook,
+ * else the checkout that checkout.txt names, when storeDir gives this logbook from it. Else null: a folder with a control
+ * character in its path is never named, as it cannot go into a command.
+ */
+function answerPath(b, project, env) {
+  for (const p of [project, b.checkout]) {
+    try {
+      if (p && !/\p{Cc}/u.test(p) && storeDir(p, env) === b.dir) return projectRoot(resolve(p));
+    } catch {}
+  }
+  return null;
+}
+/** Each logbook with an open gate, by its key, and the folder where its answers go (null when none is known). */
+export function answerPaths({ project, env = process.env } = {}) {
+  return logbooks(sageRoot(env))
+    .filter((b) => b.gates.some((g) => !g.answer))
+    .map((b) => ({ key: b.key, path: answerPath(b, project, env) }));
+}
+
+/**
  * The last boards: board.json as { <logbook folder>: { at, top, open } }, or {} when it is not a regular file under 64 KB
  * in that shape (the next board rewrites it). top is the highest task number then, and open the tasks not closed then.
  * A closed task never changes state, so a task merged now is new when it is above top or was open: the entry stays small
@@ -237,10 +257,21 @@ export function board({ scope = "this", project, env = process.env, now = new Da
     b.tasks
       .filter((t) => WAITS.includes(t.state) && t.pr)
       .map((t) => ({ t, why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : "autopilot may merge it tonight" }));
-  const options = (g) => text(String(g.options ?? "").split("|").map((o) => o.trim()).filter(Boolean).join(" / "), 80) || "none";
+  // A gate shows in full, never cut, with its project's key also on a board of one project, and each option on its own
+  // line: the owner answers only a question that the board showed whole, and the chief records it in that gate's logbook.
+  // The options come last: a line after a list item would join that item's text.
+  const gateLine = (b, g) => {
+    const options = String(g.options ?? "").split("|").map((o) => o.trim()).filter(Boolean);
+    return [
+      `${label(b)} **${g.id}**${g.task ? ` · ${g.task}` : ""} · ${text(g.question)}`,
+      `  Recommended: ${text(g.recommendation) || "none"}. Default: ${text(g.default) || "none"}.`,
+      ...(answerPath(b, project, env) ? [] : [`  Answer it in a session of ${label(b)}: this board does not know its folder.`]),
+      ...(options.length ? options.map((o, i) => `  ${i + 1}. ${text(o)}`) : ["  Options: none."]),
+    ].join("\n");
+  };
   const L = [`**sage board · ${title}** · built ${built} UTC`];
   const needs = shown.flatMap((b) => [
-    ...gates(b).map((g) => `${tag(b)}**${g.id}** (${g.task}) ${text(g.question, 110)} Options: ${options(g)}. Recommended: ${text(g.recommendation, 60) || "none"}. Default: ${text(g.default, 40) || "none"}.`),
+    ...gates(b).map((g) => gateLine(b, g)),
     ...waiting(b).map(({ t, why }) => `${tag(b)}${t.id} ${pr(b, t)} waits for your merge (${why}): ${text(t.title, 50)}`),
   ]);
   const section = (head, rows, cap) => {

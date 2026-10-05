@@ -1,6 +1,6 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1919,6 +1919,27 @@ test("T94-Q-SPACEPATH: with the plugin in a folder with a space, the chief text 
   const r = spawnSync("/bin/sh", ["-c", hint], { encoding: "utf8", env });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(readFileSync(join(dir, "root", "config.json"), "utf8"))["cap.other"], 2, "the whole pasted hint runs in a shell and sets the cap");
+});
+
+test("T72-C5-STATECMD: with the plugin in a folder with a space, the board note gives the note, then a quoted board and gate answer command that run as pasted", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage space-")));
+  cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "my plugins", "sage"), { recursive: true });
+  const tool = join(dir, "my plugins", "sage", "skills", "sage", "sage.mjs");
+  const env = { ...process.env, HOME: join(dir, "home"), SAGE_HOME: join(dir, "root"), SAGE_HOOKS_STATE: undefined };
+  const project = join(dir, "app");
+  execFileSync("git", ["init", "-q", project]);
+  for (const args of [["init"], ["task", "add", "--title", "t", "--size", "tiny"], ["gate", "add", "T1", "--question", "q?", "--options", "yes|no", "--recommend", "yes"]])
+    execFileSync("node", [tool, ...args, "--project", project], { env });
+  const r = spawnSync("node", [join(dir, "my plugins", "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", cwd: project, ...prompt("show board") }), encoding: "utf8", env });
+  assert.equal(r.status, 0, r.stderr);
+  const lines = context(JSON.parse(r.stdout)).split("\n");
+  const board = `node "${tool}" board this --project '${project}'`;
+  assert.equal(lines[0], `sage: the owner asked for the board. The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. Run: ${board}`);
+  const answer = lines.find((l) => l.startsWith("- app: ")).slice("- app: ".length);
+  assert.equal(answer, `node "${tool}" gate answer <G> "<option>" --project '${project}'`);
+  const sh = (command) => spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", env });
+  assert.match(sh(board).stdout, /\n- app \*\*G1\*\* · T1 · q\?\n/);
+  assert.equal(sh(answer.replace("<G>", "G1").replace("<option>", "no")).stdout, "G1 answered · no\n");
 });
 
 test("T94: the hook keeps the mode and autopilot state under the sage root, never in the temp folder", () => {

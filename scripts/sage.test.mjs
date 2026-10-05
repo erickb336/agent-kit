@@ -1347,6 +1347,18 @@ test("F-R65-3: no control character reaches the terminal: a cell keeps none, a p
   assert.deepEqual([r.status, r.stderr], [1, `sage: no logbook for the project ${dirname(project)}/x\\x0drm -rf ~ #. Its path has control characters, so no command is printed to paste. Rename the folder, or run sage init from inside it.\n`]);
 });
 
+test("T72-S5-OPTIONS: gate answer takes only one of the gate's options, in any case, and keeps it as the gate spells it", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("gate", "add", "T1", "--question", "Ship it?", "--options", "yes|No access / later", "--recommend", "yes");
+  const before = snapshot(s.dir);
+  assert.equal(s.no("gate", "answer", "G1", "maybe"), 'sage: G1\'s answer is one of its options: "yes", "No access / later". Nothing changed.');
+  assert.equal(s.no("gate", "answer", "G1", "No access"), 'sage: G1\'s answer is one of its options: "yes", "No access / later". Nothing changed.');
+  assert.deepEqual(snapshot(s.dir), before, "no file changed");
+  assert.equal(s.ok("gate", "answer", "G1", " no ACCESS / later "), "G1 answered · No access / later");
+  assert.equal(rows(s.dir, "gates")[0].answer, "No access / later");
+});
+
 test("F-R64-2: a table that is a link to nothing refuses a write before any change", () => {
   // probe P4: decisions.tsv is a link to nothing, and gate answer writes gates.tsv, then decisions.tsv.
   const s = store();

@@ -276,12 +276,12 @@ Start a message with `show board` to see the board in the chat. It is short Mark
 
 The board has these parts, in this order:
 
-1. **Needs you:** every open gate, with their options, the recommendation and the default, and every verified pull request that is not merged, with the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off).
+1. **Needs you:** every open gate in full, never cut: its project's key, its question, the recommendation, the default and a numbered list of its options, and every verified pull request that is not merged, with the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off).
 2. **Running now:** each agent with its task, role and age.
 3. **Merged since the last board** of each project, with links. The sage folder keeps, for each logbook, the time of its last board, its highest task id and its tasks that were not closed then, in `board.json`. A closed task never changes, so this stays small however many tasks merged, and two boards at once lose no entry.
 4. **One section per project:** a line per active task (id, title, state, pull request link, round), at most 8 and then "and N more (show board for sage)" (a board for one named project shows all), the count of framed tasks, and the next 3 framed tasks by id. The pull request links come from the project's own folder: a folder that only has the same name gives no links.
 
-Agents write the gate and task text, so the board escapes it: a link, an image, HTML, a bare web address, a www name or an email in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the gate's options. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
+Agents write the gate and task text, so the board escapes it: a link, an image, HTML, a bare web address, a www name or an email in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the whole gate. It records your answer in the logbook of the gate's own project, so an answer never goes to another project's gate with the same id, and it takes only one of the gate's options. When the board does not know a project's folder (a project other than the session's, with no `checkout.txt`), the gate says "Answer it in a session of" that project. The text is readable without the cards. Any provider's chat can run the command itself: `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
 
 ## Principles
 

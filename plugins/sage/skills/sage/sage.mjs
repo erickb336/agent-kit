@@ -871,7 +871,11 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       }
       if (sub === "answer") {
         const g = gates.find((x) => x.id === id) ?? missing(`gate ${id}`, gates.map((x) => x.id));
-        g.answer = need(more.join(" "), "the answer");
+        // Only one of the gate's own options, in any case and with spaces around it: an answer meant for another gate,
+        // or one that the owner never saw, is refused. The answer kept is the option as the gate spells it.
+        const typed = need(more.join(" "), "the answer").trim().toLowerCase();
+        const options = g.options.split("|").map((o) => o.trim()).filter(Boolean);
+        g.answer = options.find((o) => o.toLowerCase() === typed) ?? refuse(`${g.id}'s answer is one of its options: ${options.map((o) => JSON.stringify(o)).join(", ")}. Nothing changed.`);
         write(dir, "gates", gates);
         write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: g.task, decision: `${g.question} → ${g.answer}`, why: "the user's answer" }]);
         return `${g.id} answered · ${g.answer}`;
