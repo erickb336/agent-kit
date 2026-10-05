@@ -1397,3 +1397,84 @@ test("the rule holds for any subagent in sage mode and for a sage agent, not for
   s.send(prompt("sage mode"));
   assert.match(denied(s.send(bash("ps -ax", FEATURE, { agent_id: "e1", agent_type: "Explore" }))) ?? "", /standing order 14/, "any subagent in sage mode");
 });
+
+// T100 cycle 1 (R454): more process programs, redirections, case arms and script arguments, read in the hook's own
+// process. agentProblem and programsRun only read the command line; nothing here runs ps or kill.
+const AGENT_PATH = SYSTEM_PATH.PATH;
+const refusal = async (command, cwd = FEATURE) => (await import("../plugins/sage/hooks/sage-hook.mjs")).agentProblem(command, cwd, AGENT_PATH);
+
+test("R454-N1: fuser, pidof, htop and kill-port or fkill through npx, npm exec, pnpm dlx and bunx are process programs", async () => {
+  const refused = ["fuser -k 3000/tcp", "pidof node", "htop", "npx kill-port 3000", "npx -y kill-port@2 3000", "npx -p kill-port kill-port 3000", "npx fkill node", "npm exec -- kill-port 3000", "npm exec fkill node", "pnpm dlx kill-port 3000", "bunx fkill :3000", "sudo fuser 3000/tcp"];
+  for (const command of refused) assert.match((await refusal(command)) ?? "", /standing order 14/, command);
+  const pass = ["npx prettier --check .", "npx -y tsc --noEmit", "npm exec -- eslint .", "pnpm dlx create-vite app", "bunx vitest run", "npm test", "npm run build"];
+  for (const command of pass) assert.equal(await refusal(command), undefined, command);
+});
+
+test("R454-N2: a redirection before or against the program does not hide it, and is not read as the program", async () => {
+  const refused = ["ps>/tmp/out", "2>/dev/null ps -ax", ">/dev/null kill 1", "ps</dev/null", "&>/dev/null pgrep node", "{fd}>/dev/null lsof -i :3000", "kill 1 2>&1", "ps 2>&1 | head", 'bash <<< "kill 1"'];
+  for (const command of refused) assert.match((await refusal(command)) ?? "", /standing order 14/, command);
+  const pass = ["npm test 2>&1 | tail -20", "echo ps > notes.txt", "node build.mjs >/tmp/ps 2>&1", "cat < ps", "git log >/tmp/kill"];
+  for (const command of pass) assert.equal(await refusal(command), undefined, command);
+});
+
+test("R454-N6: a script's arguments and a case pattern are not programs; a shell's -c text and stdin still are", async () => {
+  const pass = ["bash ./x.sh kill", "sh scripts/run.sh ps top", "bash -c 'echo $0' kill", "case $1 in\n top) echo top;;\n ps|kill) echo other;;\nesac", "case x in (top) :;; esac", "bash x.sh <<EOF\nps\nEOF", 'x=$(case $1 in top) echo t;; esac); echo "$x"'];
+  for (const command of pass) assert.equal(await refusal(command), undefined, JSON.stringify(command));
+  const refused = ["case $1 in\n a) ps;;\nesac", "case x in (a) kill 1;; esac", "case x in a) :;& b) top;;& esac", "case x in a) :;; esac | top", "x=$(case a in a) :;; esac); top", 'bash -lc "ps"', "bash -c ps x", "bash <<EOF\nps\nEOF", "bash -s <<EOF\nkill 1\nEOF", "eval kill 1", "pwsh -Command Get-Process"];
+  for (const command of refused) assert.match((await refusal(command)) ?? "", /standing order 14/, JSON.stringify(command));
+});
+
+test("R454-N5: 1 MB of git words that the hook cannot read takes under 200 ms of CPU time, and still refuses a stash", async () => {
+  const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
+  const MB = "git ".repeat(1 << 18); // 1 MB
+  /** CPU time, not wall time (a busy Mac makes the process wait for a core): the fastest of 3 calls. */
+  const cpu = (command) => {
+    let ms = Infinity;
+    let out;
+    for (let i = 0; i < 3; i++) {
+      const t = process.cpuUsage();
+      out = handle(bash(command, FEATURE, AGENT), { sage: true, given: true }, slots);
+      const { user, system } = process.cpuUsage(t);
+      ms = Math.min(ms, (user + system) / 1000);
+    }
+    return { ms, reason: denied(out) };
+  };
+  for (const command of [`echo '${MB}`, `${MB}'`, `echo '${MB}stash`]) {
+    const { ms, reason } = cpu(command);
+    assert.ok(ms < 200, `${ms.toFixed(1)} ms of CPU for ${JSON.stringify(command.slice(0, 20))}…`);
+    assert.equal(/never runs git stash/.test(reason ?? ""), command.endsWith("stash"), "only the text with a stash word is refused");
+  }
+});
+
+test("programsRun: each program a command line runs, with its resolved file, its arguments and its folder", async () => {
+  const { programsRun } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const runs = (command, cwd = FEATURE) => programsRun(command, cwd, AGENT_PATH).map(({ word, file, args, dir }) => [word, file, args.join(" "), dir]);
+  const node = realpathSync(process.execPath);
+  const [cd, ...rest] = runs("cd /tmp && 2>/dev/null sudo -u root env X=1 node sage.mjs status --project . >out");
+  assert.deepEqual([cd[0], ...cd.slice(2)], ["cd", "/tmp", FEATURE]); // cd is a builtin, and also a file on macOS
+  assert.deepEqual(rest, [["node", node, "sage.mjs status --project .", "/tmp"]]);
+  assert.deepEqual(runs("timeout -s KILL 60 npx -y kill-port@2 3000 | head -1"), [
+    ["kill-port@2", undefined, "3000", FEATURE],
+    ["head", realpathSync("/usr/bin/head"), "-1", FEATURE],
+  ]);
+  assert.deepEqual(runs(`kill 1; xargs kill; PATH=${FAKES}:$PATH ps -ax`), [
+    ["kill", undefined, "1", FEATURE],
+    ["kill", realpathSync("/bin/kill"), "", FEATURE],
+    ["ps", join(FAKES, "ps"), "-ax", FEATURE],
+  ]);
+  assert.deepEqual(runs("if true; then bash -c 'git stash' x; fi"), [
+    ["true", realpathSync("/usr/bin/true"), "", FEATURE],
+    ["bash", realpathSync("/bin/bash"), "-c git stash x", FEATURE],
+    ["git", realpathSync("/usr/bin/git"), "stash", FEATURE],
+  ]);
+  assert.deepEqual(runs("find . -name '*.log' -exec rm {} ';'"), [
+    ["find", realpathSync("/usr/bin/find"), ". -name *.log -exec rm {} ;", FEATURE],
+    ["rm", realpathSync("/bin/rm"), "{}", FEATURE],
+  ]);
+  assert.deepEqual(runs("for f in ps kill; do echo $(cat $f); done"), [
+    ["cat", realpathSync("/bin/cat"), "$f", FEATURE],
+    ["echo", realpathSync("/bin/echo"), "$(…)", FEATURE],
+  ]);
+  assert.throws(() => programsRun("echo 'open", FEATURE, AGENT_PATH), /an open quote/);
+});
