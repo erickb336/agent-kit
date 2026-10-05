@@ -74,7 +74,7 @@ const TABLES = {
 };
 /** The columns that a later version added: an older table without them reads with them empty, and its next write adds them. */
 const ADDED = { runs: ["model"] };
-const COMMANDS = ["init", "logbook", "standing", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config"];
+const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
   "logbook repair": ["accept-loss"],
@@ -110,15 +110,47 @@ export function sageRoot(env = process.env) {
   return env.SAGE_HOME ?? join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sage");
 }
 
-/** The main checkout of a project, also from inside one of its worktrees. */
+/**
+ * git with neutral options: no fsmonitor, no hooks and no system config of the project's machine, only local, https or
+ * ssh transports, and never a prompt. Every git call of the state tool goes through it, because the tool also runs
+ * outside the sandbox, on a folder that an agent may have written.
+ */
+export function git(args, env = process.env) {
+  const neutral = { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_ALLOW_PROTOCOL: "file:https:ssh", GIT_TERMINAL_PROMPT: "0" };
+  return execFileSync("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8", env: neutral, stdio: ["ignore", "pipe", "ignore"] });
+}
+
+/**
+ * The main checkout of a project, also from inside one of its linked worktrees. git's answer counts only when it points
+ * back to the folder: the main checkout holds its git folder, or the git folder is a linked worktree of that main
+ * checkout and names this folder as its worktree. Else (a planted .git/commondir or .git file, for example) the folder
+ * is a project of its own, so no folder can borrow another project's logbook.
+ */
 function projectRoot(path) {
   try {
-    const common = execFileSync("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return dirname(common);
+    const [common, gitDir, top] = git(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir", "--show-toplevel"]).trim().split("\n");
+    const [realCommon, realGit, realTop] = [common, gitDir, top].map((p) => realpathSync(p));
+    const main = realGit === realCommon && dirname(realCommon) === realTop;
+    const linked = dirname(realGit) === join(realCommon, "worktrees") && realpathSync(readFileSync(join(realGit, "gitdir"), "utf8").trim()) === join(realTop, ".git");
+    return main || linked ? dirname(common) : resolve(path);
   } catch {
     return resolve(path);
   }
 }
+
+/** The folder of the task copies (default ~/sage-worktrees; $SAGE_WORKTREES overrides it). It is outside the sage root, so agents may write in it. */
+export const worktreeRoot = (env = process.env) => env.SAGE_WORKTREES ?? join(homedir(), "sage-worktrees");
+/** The folder where agents save a task's pages (research, designs, findings): <worktree root>/<project>/pages/<task>. */
+const pagesDir = (project, task, env) => join(worktreeRoot(env), projectName(project), "pages", task);
+
+/**
+ * A branch that a task or a writer run may name: letters, digits and . _ / -, as today's branches (claude/t94,
+ * tool/t83-agent-state-writes). Not main, master or HEAD, not under refs/, not starting with - or a /, and none of the
+ * forms that git refuses or reads otherwise: .., //, /., a final / or ., or .lock. @{, ~, ^, :, spaces and control
+ * characters are outside the letters. The one pattern for every branch check: task set, run add and the PR script.
+ */
+export const BRANCH = /^(?![-./])(?!refs\/)(?!(?:main|master|HEAD)$)(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|[/.]$))[A-Za-z0-9._/-]+$/;
+const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(name)} is not a task branch: use letters, digits and . _ / - (for example claude/t12 or tool/t12-short-name), not main, master, HEAD or refs/..., and not a name that starts with - or holds .., @{ or a space.`));
 
 /** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
 export function projectName(path) {
@@ -582,20 +614,20 @@ export function sage(argv, env = process.env) {
     refuse(`no logbook for the project ${printed}. ${printed === project ? `Run: sage init --project ${shell(project)}` : "Its path has control characters, so no command is printed to paste. Rename the folder, or run sage init from inside it."}`);
   }
   // A read takes no lock: every file is replaced whole, so it sees the store before or after a change, never half of one.
-  if ((cmd === "logbook" && !repair) || cmd === "status" || (cmd === "standing" && pos[0] !== "add")) return act(cmd, pos, opt, dir, env);
+  if ((cmd === "logbook" && !repair) || cmd === "status" || (cmd === "standing" && pos[0] !== "add") || (cmd === "pages" && pos[1] !== "record")) return act(cmd, pos, opt, dir, env, [], project);
   if (cmd === "init") {
     mkdirSync(join(dir, "briefs"), { recursive: true });
     mkdirSync(join(dir, "reports"), { recursive: true });
   }
   return withLock(dir, () => {
     ready(dir, skip);
-    const out = act(cmd, pos, opt, dir, env, skip);
+    const out = act(cmd, pos, opt, dir, env, skip, project);
     status(dir, true);
     return out;
   });
 }
 
-function act(cmd, pos, opt, dir, env, skip) {
+function act(cmd, pos, opt, dir, env, skip, project) {
   const [sub, id, ...more] = pos;
   switch (cmd) {
     case "init":
@@ -676,7 +708,8 @@ function act(cmd, pos, opt, dir, env, skip) {
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
           } else if (k === "pr") setPr(task, v);
-          else if (["branch", "title"].includes(k)) task[k] = v;
+          else if (k === "branch") task.branch = v && branchOf(v); // branch= clears it
+          else if (k === "title") task.title = v;
           else refuse(`task set takes state=, branch=, pr= or title=`);
         }
         write(dir, "tasks", tasks);
@@ -711,7 +744,7 @@ function act(cmd, pos, opt, dir, env, skip) {
       if (sub === "add") {
         const { task } = taskOf(dir, need(id, "the task id"));
         const role = need(opt.role, "--role");
-        const branch = opt.branch ?? "";
+        const branch = opt.branch === undefined ? "" : branchOf(opt.branch);
         if (WRITERS.includes(role)) {
           if (!branch) refuse(`a ${role} run needs --branch`);
           const other = runs.find((r) => r.branch === branch && r.status === "running" && WRITERS.includes(r.role));
@@ -821,6 +854,18 @@ function act(cmd, pos, opt, dir, env, skip) {
     }
     case "status":
       return status(dir);
+    case "pages": {
+      // pages <T> prints the task's pages folder. pages <T> record <file> logs a page in it, with its sha256.
+      const folder = pagesDir(project, taskOf(dir, need(sub, "the task id")).task.id, env);
+      if (id === undefined) return folder;
+      if (id !== "record" || more.length !== 1) refuse(`pages takes <task>, or <task> record <file>`);
+      const real = (p) => (existsSync(p) ? realpathSync(p) : refuse(`${p} does not exist. Save the page in ${folder} first.`));
+      const file = real(resolve(more[0]));
+      if (!file.startsWith(`${real(folder)}/`) || !statSync(file).isFile()) refuse(`${file} is not a file in ${folder}. Save the page there first.`);
+      const sha = createHash("sha256").update(readFileSync(file)).digest("hex");
+      write(dir, "decisions", [...read(dir, "decisions"), { at: now(), task: sub, decision: `page ${file} sha256 ${sha}`, why: "the chief recorded a page" }]);
+      return `page ${file} · sha256 ${sha}`;
+    }
   }
 }
 
