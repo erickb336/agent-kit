@@ -187,7 +187,7 @@ function readRegular(path) {
  * config.json as an object, or {} when it is missing. It never waits. A file that is not valid JSON (also an empty one,
  * or one that starts with a BOM), is not one JSON object, or cannot be read (not a regular file, a link to a missing file
  * or a loop, no permission) refuses with its path (gate G52): a default would ask fewer cycles than the owner meant, and a
- * write would replace the owner's keys. A JSON error gives its line and column.
+ * write would replace the owner's keys. A JSON error gives its line and column, or no position when sage cannot find it.
  */
 function saved(env) {
   const root = sageRoot(env);
@@ -208,12 +208,92 @@ function saved(env) {
   try {
     value = JSON.parse(text);
   } catch (e) {
-    const at = Number(/at position (\d+)/.exec(e.message)?.[1] ?? text.length); // no position: the text ended too early
+    const at = jsonError(text); // V8 names no position for many errors (F-T81-C1), so sage finds it
     const lines = text.slice(0, at).split("\n");
-    refuse(`${file} is not valid JSON at line ${lines.length}, column ${lines.at(-1).length + 1}.`);
+    refuse(`${file} is not valid JSON${at === undefined ? "" : ` at line ${lines.length}, column ${lines.at(-1).length + 1}`}.`);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) refuse(`${file} is not valid JSON for sage: it must be one object of "key": value pairs.`);
   return value;
+}
+
+/**
+ * The offset of the first character that no JSON text can have there, or the length of a text that ends too early. It is
+ * undefined when it finds no error, or when the nesting is too deep to walk: then the message gives no position rather
+ * than a wrong one.
+ */
+function jsonError(t) {
+  let i = 0;
+  const fail = () => {
+    throw i;
+  };
+  const ws = () => {
+    while (i < t.length && " \t\n\r".includes(t[i])) i++;
+  };
+  const digits = () => {
+    if (!/[0-9]/.test(t[i] ?? "")) fail();
+    while (/[0-9]/.test(t[i] ?? "")) i++;
+  };
+  const string = () => {
+    for (i++; t[i] !== '"'; i++) {
+      if (i >= t.length || t[i] < " ") fail();
+      if (t[i] !== "\\") continue;
+      i++;
+      if (t[i] === "u") {
+        for (const _ of "1234") if (!/[0-9a-fA-F]/.test(t[++i] ?? "")) fail();
+      } else if (i >= t.length || !'"\\/bfnrt'.includes(t[i])) fail();
+    }
+    i++;
+  };
+  const value = () => {
+    ws();
+    const c = t[i];
+    if (c === "{" || c === "[") {
+      const close = c === "{" ? "}" : "]";
+      i++;
+      ws();
+      if (t[i] === close) return i++;
+      for (;;) {
+        if (c === "{") {
+          ws();
+          if (t[i] !== '"') fail();
+          string();
+          ws();
+          if (t[i] !== ":") fail();
+          i++;
+        }
+        value();
+        ws();
+        if (t[i] === close) return i++;
+        if (t[i] !== ",") fail();
+        i++;
+      }
+    }
+    if (c === '"') return string();
+    const word = ["true", "false", "null"].find((w) => w[0] === c);
+    if (word) {
+      for (const ch of word) {
+        if (t[i] !== ch) fail();
+        i++;
+      }
+      return;
+    }
+    if (t[i] === "-") i++;
+    if (t[i] === "0") i++;
+    else digits();
+    if (t[i] === ".") i++, digits();
+    if (t[i] === "e" || t[i] === "E") {
+      i++;
+      if (t[i] === "+" || t[i] === "-") i++;
+      digits();
+    }
+  };
+  try {
+    value();
+    ws();
+    if (i < t.length) fail();
+  } catch (e) {
+    return typeof e === "number" ? e : undefined;
+  }
 }
 
 /** The plain words for an error code of a config.json that cannot be read. */

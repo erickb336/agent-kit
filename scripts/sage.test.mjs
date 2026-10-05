@@ -1686,7 +1686,15 @@ test("T81 (gate G52): a config.json that is not valid JSON, or not one object, r
   assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "a missing config.json gives the defaults");
   const notJson = (at) => `${f} is not valid JSON at ${at}.`;
   const notObject = `${f} is not valid JSON for sage: it must be one object of "key": value pairs.`;
-  for (const [text, why] of [['{"cycles.large":5,}', notJson("line 1, column 19")], ['{\n  "cycles.large": 5,\n}', notJson("line 3, column 1")], ["", notJson("line 1, column 1")], [" \n\t ", notJson("line 2, column 3")], ["[]", notObject], ['"cycles.large=5"', notObject], ["null", notObject], ["3", notObject]]) {
+  // F-T81-C1: V8 names no position for these, and the message must still point at the true place, or at none.
+  const noPosition = [
+    ['{\n  "cycles.large": 5,\n  "cycles.small": ,\n  "cycles.medium": 3,\n  "max_rounds": 4,\n  "cap_total": 6\n}\n', notJson("line 3, column 19")],
+    ["[1,]", notJson("line 1, column 4")],
+    ['{\n  "cycles.large": 5,\n  "nested": [1, }\n}', notJson("line 3, column 17")],
+    ['{"autopilot.window": yes}', notJson("line 1, column 22")],
+    ["[".repeat(1e6), `${f} is not valid JSON.`], // too deep for sage to walk: no position rather than a wrong one
+  ];
+  for (const [text, why] of [['{"cycles.large":5,}', notJson("line 1, column 19")], ['{\n  "cycles.large": 5,\n}', notJson("line 3, column 1")], ["", notJson("line 1, column 1")], [" \n\t ", notJson("line 2, column 3")], ...noPosition, ["[]", notObject], ['"cycles.large=5"', notObject], ["null", notObject], ["3", notObject]]) {
     writeFileSync(f, text);
     const was = `config.json ${JSON.stringify(text)}`;
     assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${why} Fix it, or remove it for the defaults: its other keys are lost too.`, was);
