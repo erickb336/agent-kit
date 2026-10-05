@@ -685,17 +685,18 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   s.send(prompt("autopilot on"));
   s.send(prompt("sage mode"));
   assert.match(merge(), /autopilot is off, so the user merges/, "autopilot on before sage mode does not count");
-  assert.match(context(s.send(prompt("autopilot on"))), /autopilot is on\. A pull request merges on its head SHA after 1 clean cycle for a tiny or small task, 2 for a large task and 2 for a task with a risk flag; a large task with a risk flag needs the larger count\./);
+  assert.match(context(s.send(prompt("autopilot on"))), /autopilot is on\. A pull request whose tasks are all tiny or small, without a risk flag, merges on its head SHA after 1 clean cycle, inside the night window 22:00-07:00 \(America\/Los_Angeles\)\. The owner merges a large task or a task with a risk flag\./);
   s.send(prompt("autopilot off"));
   s.sage("config", "cycles.small=2", "cycles.large=3");
-  assert.match(context(s.send(prompt("autopilot on"))), /after 2 clean cycles for a tiny or small task, 3 for a large task and 2 for a task with a risk flag/, "the note reads the counts from the config");
+  assert.match(context(s.send(prompt("autopilot on"))), /after 2 clean cycles, inside the night window/, "the note reads the count from the config");
   s.sage("config", "cycles.small=1", "cycles.large=2");
   s.send(prompt("autopilot off"));
-  assert.match(context(s.send(prompt("autopilot on"))), /after 1 clean cycle for/);
+  assert.match(context(s.send(prompt("autopilot on"))), /after 1 clean cycle,/);
   assert.match(merge(""), /add --match-head-commit/);
   assert.match(merge(), /^sage: the merge check refuses: no verdicts recorded/);
 
   s.sage("init");
+  s.sage("config", "autopilot.window=00:00-24:00"); // all day, so that the real clock never refuses
   s.sage("task", "add", "--title", "t", "--size", "small");
   for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T1", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "41");
   assert.equal(merge(), undefined, "2 clean cycles on the SHA");
@@ -704,12 +705,12 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   assert.match(merge(), /autopilot is off/, "the kill switch");
 });
 
-test("F-T47-1: the autopilot note gives the clean cycles that the merge check asks, for a small, a large and a risky task", () => {
+test("F-T47-1: the autopilot note gives the clean cycles that the merge check asks for a small task", () => {
   const s = session();
   s.send(prompt("sage mode"));
   s.sage("init");
   s.sage("config", "cycles.small=3", "cycles.risk=4");
-  assert.match(context(s.send(prompt("autopilot on"))), /after 3 clean cycles for a tiny or small task, 3 for a large task and 4 for a task with a risk flag;/);
+  assert.match(context(s.send(prompt("autopilot on"))), /after 3 clean cycles, inside the night window/);
   const asks = {};
   for (const [n, args] of [["1", ["--size", "small"]], ["2", ["--size", "large"]], ["3", ["--size", "small", "--risk", "auth"]]]) {
     s.sage("task", "add", "--title", "t", ...args);
@@ -718,6 +719,68 @@ test("F-T47-1: the autopilot note gives the clean cycles that the merge check as
     asks[args.join(" ")] = spawnSync("node", [TOOL, "merge-check", "--sha", sha, "--project", s.dir], { encoding: "utf8", env: s.vars }).stderr.match(/\d of (\d+) clean cycles/)?.[1];
   }
   assert.deepEqual(asks, { "--size small": "3", "--size large": "3", "--size small --risk auth": "4" }, "the merge check asks the counts that the note gives");
+});
+
+/** The hook's answer to the chief's merge of PR pr at sha, at the time now, with the hook in this process (an injected clock). */
+const { handle } = await import(HOOK);
+function mergeAt(s, now, pr = "41", sha = SHA, extra = {}) {
+  const before = process.env.SAGE_HOME;
+  process.env.SAGE_HOME = s.vars.SAGE_HOME;
+  try {
+    return denied(handle(bash(`gh pr merge ${pr} --squash --delete-branch --match-head-commit ${sha}`, FEATURE, extra), { sage: true, autopilot: true }, {}, now)) ?? "merges";
+  } finally {
+    if (before === undefined) delete process.env.SAGE_HOME;
+    else process.env.SAGE_HOME = before;
+  }
+}
+/** A logbook task with 2 clean cycles of every kind on sha, in PR pr. */
+function verified(s, pr, sha, ...args) {
+  const id = s.sage("task", "add", "--title", "t", ...args).split(" ")[0];
+  for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "security-clean", "ux-clean", "qa-pass"]) s.sage("verdict", id, "--sha", sha, "--kind", kind, "--cycle", cycle, "--pr", pr);
+  return id;
+}
+// Los Angeles is at UTC-7 in October 2026.
+const LA = (day, hour, minute = 0) => Date.UTC(2026, 9, day, hour + 7, minute);
+
+test("T56: autopilot merges only tiny or small tasks without a risk flag, inside the night window (gate G20)", () => {
+  const s = session();
+  s.sage("init");
+  verified(s, "41", SHA, "--size", "small");
+  verified(s, "42", "2".repeat(40), "--size", "large");
+  verified(s, "43", "3".repeat(40), "--size", "small", "--risk", "auth");
+  verified(s, "44", "4".repeat(40), "--size", "tiny");
+  verified(s, "44", "4".repeat(40), "--size", "small", "--risk", "data");
+  for (const [pr, sha] of [["41", SHA], ["42", "2".repeat(40)], ["43", "3".repeat(40)], ["44", "4".repeat(40)]]) {
+    assert.match(spawnSync("node", [TOOL, "merge-check", "--sha", sha, "--pr", pr], { encoding: "utf8", env: s.vars }).stdout, /may merge/, `PR ${pr} passes the merge check, so only the scope refuses it`);
+  }
+  assert.equal(mergeAt(s, LA(4, 23, 30)), "merges", "small, no risk flag, at 23:30");
+  assert.equal(mergeAt(s, LA(4, 2)), "merges", "at 02:00: the window wraps midnight");
+  assert.equal(mergeAt(s, LA(4, 22)), "merges", "at 22:00, its start");
+  assert.equal(mergeAt(s, LA(4, 7)), "sage: outside the night window 22:00-07:00 (America/Los_Angeles): it waits.", "at 07:00, its end");
+  assert.equal(mergeAt(s, LA(4, 12)), "sage: outside the night window 22:00-07:00 (America/Los_Angeles): it waits.");
+  assert.equal(mergeAt(s, LA(4, 23), "42", "2".repeat(40)), "sage: T2 is large: the owner merges this.");
+  assert.equal(mergeAt(s, LA(4, 23), "43", "3".repeat(40)), "sage: T3 has a risk flag (auth): the owner merges this.");
+  assert.equal(mergeAt(s, LA(4, 23), "44", "4".repeat(40)), "sage: T5 has a risk flag (data): the owner merges this.", "one risky task of two");
+  assert.equal(mergeAt(s, LA(4, 23), "41", SHA, { agent_id: "a1" }), "sage: an agent never merges. Report the pull request as ready.");
+
+  s.sage("config", "autopilot.window=01:00-05:00", "autopilot.tz=UTC");
+  assert.equal(mergeAt(s, Date.UTC(2026, 9, 4, 3)), "merges", "a window that does not wrap, in another time zone");
+  assert.equal(mergeAt(s, Date.UTC(2026, 9, 4, 23, 30)), "sage: outside the night window 01:00-05:00 (UTC): it waits.");
+});
+
+test("T56: a bad night window fails closed: the config refuses it, and one in config.json refuses every autopilot merge", () => {
+  const s = session();
+  s.sage("init");
+  verified(s, "41", SHA, "--size", "small");
+  for (const bad of ["autopilot.window=late", "autopilot.window=22:00-22:00", "autopilot.window=25:00-07:00", "autopilot.tz=Mars/Base"]) {
+    const r = spawnSync("node", [TOOL, "config", bad], { encoding: "utf8", env: s.vars });
+    assert.match(r.stderr, /is not a (window such as 22:00-07:00|time zone such as America\/Los_Angeles)/, bad);
+  }
+  mkdirSync(s.vars.SAGE_HOME, { recursive: true });
+  writeFileSync(join(s.vars.SAGE_HOME, "config.json"), JSON.stringify({ "autopilot.window": "nights" }));
+  assert.equal(mergeAt(s, LA(4, 23)), 'sage: autopilot.window "nights" is not a window such as 22:00-07:00, so autopilot merges nothing: the owner merges this, or fixes it with sage config.');
+  writeFileSync(join(s.vars.SAGE_HOME, "config.json"), JSON.stringify({ "autopilot.tz": 7 }));
+  assert.equal(mergeAt(s, LA(4, 23)), 'sage: autopilot.tz "7" is not a time zone such as America/Los_Angeles, so autopilot merges nothing: the owner merges this, or fixes it with sage config.');
 });
 
 test("the autopilot note comes only when autopilot goes from on to off, so never outside sage mode", () => {
@@ -1030,6 +1093,7 @@ function autopilotSession(env) {
   s.send(prompt("sage mode"));
   s.send(prompt("autopilot on"));
   s.sage("init");
+  s.sage("config", "autopilot.window=00:00-24:00"); // all day, so that the real clock never refuses
   s.sage("task", "add", "--title", "t", "--size", "small");
   for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T1", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "41");
   return s;

@@ -48,7 +48,7 @@ const NEXT = {
   concluded: [],
   abandoned: [],
 };
-export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 };
+export const DEFAULTS = { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00", "autopilot.tz": "America/Los_Angeles" };
 /** The counts in the config, and what a 0 would do. Each count is a whole number of 1 or more. */
 /** The owner's floors (gate G18): a large or risk-flagged task needs at least 2 clean cycles. Only a code change lowers them; every other count is 1 or more. */
 const FLOOR = { "cycles.large": 2, "cycles.risk": 2 };
@@ -132,6 +132,7 @@ export function storeDir(project, env = process.env) {
  * reads as the limit. So a count never starts more agents or rounds, or asks fewer cycles, than written.
  */
 function valid(key, value) {
+  if (key === "autopilot.window" || key === "autopilot.tz") return value === undefined ? undefined : String(value); // a bad one stays, so that nightWindow refuses (fail closed)
   if (key === "arena_models") {
     const models = typeof value === "string" ? list(value) : [];
     return models.length && models.every((m) => MODELS.includes(m)) ? models.join(",") : undefined;
@@ -205,6 +206,27 @@ export function config(env = process.env) {
 /** The clean cycles that a task needs before its merge: cycles.small for every task, cycles.large for a large one, and cycles.risk for any task with a risk flag (the largest count wins). */
 export function cyclesFor(task, c) {
   return Math.max(c["cycles.small"], task.size === "large" ? c["cycles.large"] : 0, task.risk ? c["cycles.risk"] : 0);
+}
+
+/**
+ * The night window of autopilot (gate G20): { inside } for the time now, or { problem } when autopilot.window is not
+ * "HH:MM-HH:MM" (24:00 only as its end, start and end not equal) or autopilot.tz is not an IANA time zone. A window
+ * whose start is after its end wraps midnight.
+ */
+export function nightWindow(c, now = Date.now()) {
+  const [window, tz] = [c["autopilot.window"], c["autopilot.tz"]];
+  const m = /^(\d\d):([0-5]\d)-(\d\d):([0-5]\d)$/.exec(window);
+  const [start, end] = m ? [m[1] * 60 + +m[2], m[3] * 60 + +m[4]] : [];
+  if (!m || start >= 1440 || end > 1440 || start === end) return { problem: `autopilot.window ${JSON.stringify(window)} is not a window such as 22:00-07:00` };
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", hourCycle: "h23" }).formatToParts(now);
+  } catch {
+    return { problem: `autopilot.tz ${JSON.stringify(tz)} is not a time zone such as America/Los_Angeles` };
+  }
+  const at = (type) => Number(parts.find((p) => p.type === type).value);
+  const minute = at("hour") * 60 + at("minute");
+  return { inside: start < end ? start <= minute && minute < end : minute >= start || minute < end };
 }
 
 /** The file that a write to file replaces: file, or the target of its link. Something there that is not a regular file refuses. */
@@ -464,15 +486,16 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const own = rows.filter((r) => r.task === id);
         const task = tasks.find((t) => t.id === id);
-        return { dir, id, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired) };
+        return { dir, id, size: task?.size, risk: task?.risk, ofPr: ofPr.includes(id), own: own.length, ...judge(dir, tasks, findings, id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired) };
       });
     });
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
     if (pr && !each.some((r) => r.ofPr)) return { ok: false, reason: `no task of PR ${pr} has verdicts on ${sha.slice(0, 7)}: only ${each.map((r) => `${r.dir} ${r.id}`).join(", ")} ${each.length === 1 ? "has" : "have"}. Record PR ${pr}'s verdicts under its own task (sage verdict <T> --sha <sha> --pr ${pr}), or set its PR: sage task <T> set pr=${pr}.` };
-    if (each.length === 1) return { ok: each[0].ok, reason: each[0].reason };
+    const tasks = each.map(({ id, size, risk }) => ({ id, size, risk })); // for the hook's autopilot scope
+    if (each.length === 1) return { ok: each[0].ok, reason: each[0].reason, tasks };
     const all = `${each.length} tasks have verdicts on ${sha.slice(0, 7)}${pr ? ` or belong to PR ${pr}` : ""}, and each must pass`;
     const bad = each.filter((r) => !r.ok);
-    if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${r.dir} ${r.reason}`).join("; ")}` };
+    if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${r.dir} ${r.reason}`).join("; ")}`, tasks };
     const out = bad.some((r) => r.own) ? ", or push a new commit and record its verdicts under the live tasks only" : ""; // a new commit leaves behind only verdicts
     return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass${out}.` };
   } catch (e) {
@@ -520,7 +543,9 @@ export function sage(argv, env = process.env) {
       const count = Object.hasOwn(COUNTS, k) || CAP.test(k);
       if (count && /^[1-9]\d*$/.test(v) && Number(v) > limit(k)) refuse(`${k} must be ${limit(k)} or less: ${v} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
       if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
-      set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, and arena_models as a list of ${MODELS.join(", ")}`);
+      set[k] = (count ? typed(k, v) : valid(k, v)) ?? refuse(`config takes ${KEYS}, arena_models as a list of ${MODELS.join(", ")}, and autopilot.window and autopilot.tz`);
+      const night = k.startsWith("autopilot.") && nightWindow({ ...config(env), ...set }).problem;
+      if (night) refuse(night);
     }
     if (pos.length) {
       const file = join(sageRoot(env), "config.json");

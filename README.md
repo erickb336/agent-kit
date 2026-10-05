@@ -158,7 +158,7 @@ Each task gets the least route for its size. The chief can add steps, never remo
 </picture>
 </a>
 
-A **cycle** is one full set of fresh reviews and QA on one commit. A task is **verified** after 1 clean cycle. With autopilot on, it **merges** after its clean cycles on the same commit: 1 for a tiny or small task, 2 for a large task or any task with a risk flag.
+A **cycle** is one full set of fresh reviews and QA on one commit. A task is **verified** after 1 clean cycle. With autopilot on, a tiny or small task without a risk flag **merges** after 1 clean cycle on the same commit, at night only (22:00 to 07:00, Los Angeles time, by default). You merge a large task or a task with a risk flag.
 
 ### Rules held in code
 

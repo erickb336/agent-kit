@@ -223,16 +223,16 @@ test("T42-HUGE-COUNT and F-T47-QA-1: a count has a limit, and a file count never
 
   // A file value above the limit: cycles keep the owner's number (never an easier merge); agent counts and rounds read as the limit.
   writeFileSync(f, '{"cycles.small": 20, "cycles.risk": 11, "max_agents": 200, "max_rounds": 11, "arena": 51, "cap_total": 51, "cap.ramen": 51}');
-  assert.equal(s.ok("config"), "max_agents=50 cycles.small=20 cycles.large=2 cycles.risk=11 max_rounds=10 arena=50 arena_models=opus,sonnet,sonnet cap_total=50 cap.ramen=50");
+  assert.equal(s.ok("config"), "max_agents=50 cycles.small=20 cycles.large=2 cycles.risk=11 max_rounds=10 arena=50 arena_models=opus,sonnet,sonnet cap_total=50 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles cap.ramen=50");
   s.ok("task", "add", "--title", "t", "--size", "small");
   for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
   assert.match(s.no("merge-check", "--sha", SHA), /T1: 1 of 20 clean cycles/, "the merge check asks the owner's 20");
 
   // A whole-number string reads as its number, with the same floor and limit rules; any other string gives the default.
   writeFileSync(f, '{"cycles.small": "3", "cycles.large": "5", "cycles.risk": "1", "max_agents": "1", "cap_total": "2", "cap.sage": "1", "cap.ramen": "07"}');
-  assert.equal(s.ok("config"), "max_agents=1 cycles.small=3 cycles.large=5 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=2 cap.sage=1");
+  assert.equal(s.ok("config"), "max_agents=1 cycles.small=3 cycles.large=5 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=2 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles cap.sage=1");
   writeFileSync(f, '{"cycles.small": "3x", "cycles.large": "1", "max_agents": " 2", "cap_total": "1.5"}');
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles");
 });
 
 test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor, and a cycles count as a fraction or a padded string reads rounded up", () => {
@@ -242,7 +242,7 @@ test("F-T52-1 and F-T47-CR-FRAC: a file count below its floor reads as the floor
     writeFileSync(f, text);
     return s.ok("config");
   };
-  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, ...o }).map(([k, v]) => `${k}=${v}`).join(" ");
+  const all = (o = {}) => Object.entries({ max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 3, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00", "autopilot.tz": "America/Los_Angeles", ...o }).map(([k, v]) => `${k}=${v}`).join(" ");
   // Never more agents or rounds than the owner wrote: a count below 1 reads as 1, not as the higher default.
   assert.equal(read('{"max_agents": 0}'), all({ max_agents: 1 }));
   assert.equal(read('{"cap_total": 0}'), all({ cap_total: 1 }));
@@ -305,11 +305,11 @@ test("a tiny task needs only its checks once", () => {
 
 test("config, gates, standing orders and status", () => {
   const s = store();
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
-  assert.equal(s.ok("config", "max_agents=5", "arena_models=opus,opus,sonnet"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles");
+  assert.equal(s.ok("config", "max_agents=5", "arena_models=opus,opus,sonnet"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles");
   assert.match(s.no("config", "arena_models=gpt-5"), /arena_models as a list of opus, sonnet, haiku, inherit/);
   assert.match(s.no("config", "colour=5"), /config takes max_agents, cycles.small, cycles.large, cycles.risk, max_rounds, arena and cap_total as key=number, cap\.<project>=number/);
-  assert.equal(s.ok("config", "cap.ramen-finder=5", "cap_total=20"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=20 cap.ramen-finder=5", "one project's cap and the total");
+  assert.equal(s.ok("config", "cap.ramen-finder=5", "cap_total=20"), "max_agents=5 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,opus,sonnet cap_total=20 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles cap.ramen-finder=5", "one project's cap and the total");
   assert.match(s.no("config", "cap.Ramen=5"), /config takes/, "a project's name is its slug");
   assert.match(s.no("config", "cap.ramen-finder=0"), /cap\.ramen-finder must be a whole number of 1 or more: with 0, no sage agent could start for that project/);
   s.ok("task", "add", "--title", "Export trips", "--size", "large");
@@ -498,7 +498,7 @@ test("config: every count is 1 or more, config.json is written whole, and a torn
   }
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "0"), /--cycles is a whole number from 1 to 10/);
   writeFileSync(f, '{"max_agents": "x", "max_rounds": 5, "arena_models": "gpt-5", "cap.sage": 0, "cap.ramen": 4}');
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 cap.sage=1 cap.ramen=4", "each bad value gives its default, and a project cap below 1 reads as 1");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=5 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles cap.sage=1 cap.ramen=4", "each bad value gives its default, and a project cap below 1 reads as 1");
 
   // Two processes write config.json 200 times each, while this one reads it: every read sees a whole file.
   const writers = [1, 2].map(() => spawn("node", ["--input-type=module", "-e", `import { sage } from ${JSON.stringify(LIB)}; for (let i = 1; i <= 200; i++) sage(["config", "max_rounds=" + Math.ceil(i / 20)]);`], { env: { ...process.env, SAGE_HOME: s.home } }));
@@ -665,7 +665,7 @@ test("S7: config and the merge check read only regular files and never throw, so
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   execFileSync("mkfifo", [join(s.home, "config.json")]);
   const [out, ms] = timed(() => [s.ok("config"), s.ok("merge-check", "--sha", SHA)]);
-  assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12", "T1 may merge: 1 clean cycle on this SHA"]);
+  assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles", "T1 may merge: 1 clean cycle on this SHA"]);
   assert.ok(ms < 3000, `${ms} ms`);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
@@ -684,11 +684,11 @@ test("F1: no config.json makes config() or the merge check throw: a value that i
   writeFileSync(join(s.home, "config.json"), `{"cycles.large": ${deep}, "max_agents": [5], "max_rounds": 4}`);
   const { config, mergeCheck } = await import(LIB);
   const env = { SAGE_HOME: s.home };
-  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12 }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
+  assert.deepEqual(config(env), { max_agents: 3, "cycles.small": 1, "cycles.large": 2, "cycles.risk": 2, max_rounds: 4, arena: 3, arena_models: "opus,sonnet,sonnet", cap_total: 12, "autopilot.window": "22:00-07:00", "autopilot.tz": "America/Los_Angeles" }, "T42-ALIAS-DEAD: no autopilot_cycles alias");
   const none = "9".repeat(40);
   assert.deepEqual(mergeCheck(none, env), { ok: false, reason: `no verdicts recorded for ${none}. Record the reviews and QA with sage verdict first.` }, "the hook's call: no cycles given");
   assert.equal(mergeCheck(SHA, env).ok, false);
-  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles");
   assert.match(s.no("merge-check", "--sha", SHA), /^sage: T1: 0 of 2 clean cycles on this SHA; never recorded: review-clean, security-clean, ux-clean, qa-pass\./);
 });
 
@@ -761,7 +761,7 @@ test("F-R44-1: a link in the sage folder is read and written through, so its val
   const elsewhere = mkdtempSync(join(tmpdir(), "sage-dotfiles-"));
   writeFileSync(join(elsewhere, "config.json"), JSON.stringify({ "cycles.large": 3, max_agents: 5 }));
   symlinkSync(join(elsewhere, "config.json"), join(s.home, "config.json"));
-  assert.equal(s.ok("config"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config"), "max_agents=5 cycles.small=1 cycles.large=3 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles");
   assert.equal(s.no("config", "max_rounds=4"), `sage: ${join(s.home, "config.json")} is a link, not a regular file, so config writes nothing. Replace it with a regular file.`);
   assert.deepEqual([lstatSync(join(s.home, "config.json")).isSymbolicLink(), JSON.parse(readFileSync(join(elsewhere, "config.json"), "utf8"))], [true, { "cycles.large": 3, max_agents: 5 }], "the link and its target are as they were");
 
@@ -933,7 +933,7 @@ test("unknown-columns: a logbook that a newer sage wrote refuses every write com
   assert.match(s.no("log", "-", "x", "--why", "y"), /runs\.tsv has columns that this version of sage does not know \(saved\)/);
 
   writeFileSync(join(s.home, "config.json"), JSON.stringify({ max_rounds: 4, max_programs: 2 })); // a newer version's setting stays too
-  assert.equal(s.ok("config", "arena=2"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=2 arena_models=opus,sonnet,sonnet cap_total=12");
+  assert.equal(s.ok("config", "arena=2"), "max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=4 arena=2 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles");
   assert.deepEqual(JSON.parse(readFileSync(join(s.home, "config.json"), "utf8")), { max_rounds: 4, max_programs: 2, arena: 2 });
 });
 
@@ -1471,7 +1471,7 @@ test("QA-2: every line the tool prints says logbook, never store, and merge chec
 test("T42: the owner's floors (gate G18): cycles.large and cycles.risk never go below 2, whoever writes config.json; a legacy autopilot_cycles reads as cycles.large", () => {
   const s = store();
   const f = join(s.home, "config.json");
-  const all = (large, risk) => `max_agents=3 cycles.small=1 cycles.large=${large} cycles.risk=${risk} max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12`;
+  const all = (large, risk) => `max_agents=3 cycles.small=1 cycles.large=${large} cycles.risk=${risk} max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 autopilot.window=22:00-07:00 autopilot.tz=America/Los_Angeles`;
   assert.equal(s.no("config", "cycles.large=1"), "sage: cycles.large must be a whole number of 2 or more: 1 is below the floor of 2, which only a code change lowers");
   assert.equal(s.no("config", "cycles.risk=1"), "sage: cycles.risk must be a whole number of 2 or more: 1 is below the floor of 2, which only a code change lowers");
   assert.equal(existsSync(f), false, "a refused change writes nothing");
