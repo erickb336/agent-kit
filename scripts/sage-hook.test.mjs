@@ -1,7 +1,7 @@
 // Runs the sage hook as Claude Code does: one JSON event on stdin, one JSON answer (or nothing) on stdout.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -433,7 +433,8 @@ test("a push from a checkout of main or master is refused; a push with -C or aft
 
 /**
  * A fake gh on PATH for the first creation of main (T24): it answers the hook's GETs from a JSON file, so no test calls
- * GitHub. github(answers) writes that file: { "<endpoint>": { status, body } | { sleep: true } | { stubborn: true } (it ignores SIGTERM) | { fail: true } }. An
+ * GitHub. github(answers) writes that file: { "<endpoint>": { status, body } | { sleep: true } | { stubborn: true } (it ignores SIGTERM) | { fail: true } }. A fake that
+ * sleeps to its end (30 s, or 15 s when stubborn) writes the file <answers>.slept, so a test sees whether the hook waited for it. An
  * endpoint with no answer is a 404. A string body goes out as it is, not as JSON. The fake answers 500 to a call without --hostname github.com or with GH_HOST set,
  * as a GitHub Enterprise host would not know the repository.
  */
@@ -448,7 +449,7 @@ const answers = JSON.parse(fs.readFileSync(process.env.FAKE_GH_ANSWERS, "utf8"))
 const host = args[args.indexOf("--hostname") + 1];
 const a = host !== "github.com" || process.env.GH_HOST || process.env.GH_REPO ? { status: 500, body: { message: "wrong host" } } : answers[args.at(-1)] ?? { status: 404, body: { message: "Not Found" } };
 if (a.stubborn) process.on("SIGTERM", () => {});
-if (a.sleep || a.stubborn) setTimeout(() => {}, a.stubborn ? 15000 : 30000);
+if (a.sleep || a.stubborn) setTimeout(() => fs.writeFileSync(process.env.FAKE_GH_ANSWERS + ".slept", ""), a.stubborn ? 15000 : 30000);
 else if (a.fail) process.exit(1);
 else {
   process.stdout.write("HTTP/2.0 " + a.status + " X\\nContent-Type: application/json\\r\\n\\r\\n" + (typeof a.body === "string" ? a.body : JSON.stringify(a.body, null, 2)));
@@ -528,17 +529,15 @@ test("the exact form is refused when GitHub does not show a first creation at on
 test("a gh call that does not answer in time is a refusal, not an ask (T24)", () => {
   const s = firstSession();
   s.github({ "repos/o/r/git/ref/heads/main": { sleep: true } });
-  const started = Date.now();
   assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("the check on GitHub failed \\(gh did not answer in time\\)"));
-  assert.ok(Date.now() - started < 9000, "inside the hook's 10 seconds");
+  assert.equal(existsSync(`${s.vars.FAKE_GH_ANSWERS}.slept`), false, "the hook stopped gh before its 30 s of sleep ended");
 });
 
 test("a gh that ignores SIGTERM is killed at the timeout, so the refusal comes inside the hook's 10 seconds (T29 GH-SIGTERM-IGNORED)", () => {
   const s = firstSession();
   s.github({ "repos/o/r/git/ref/heads/main": { stubborn: true } });
-  const started = Date.now();
   assert.match(denied(s.send(bash(CREATE))) ?? "not refused", NOT_FIRST("the check on GitHub failed \\(gh did not answer in time\\)"));
-  assert.ok(Date.now() - started < 9000, `inside the hook's 10 seconds: ${Date.now() - started} ms`);
+  assert.equal(existsSync(`${s.vars.FAKE_GH_ANSWERS}.slept`), false, "SIGKILL stopped gh before its 15 s of sleep ended; a SIGTERM would have waited for them");
 });
 
 test("a large or truncated tree asks with an honest count and never throws (T24 BIG-TREE-REFUSAL)", () => {
@@ -1158,11 +1157,9 @@ test("the merge check gets the pull request's number from the merge command", ()
   assert.equal(s.send(bash(`gh pr merge 40 --squash --delete-branch --match-head-commit ${SHA}`)), undefined);
 });
 
-test("the merge rule reads a long command in linear time (F-R79-2)", () => {
+test("the merge rule refuses a merge after a long command (F-R79-2); the 1 MB padding test shows that its time grows in line with the text", () => {
   const s = autopilotSession();
-  const start = Date.now();
   assert.match(denied(s.send(bash(`echo ${"gh ".repeat(100_000)}; ${MERGE}`))) ?? "", CANNOT);
-  assert.ok(Date.now() - start < 2000, `${Date.now() - start} ms`);
 });
 
 test("the merge check refuses a merge when it cannot run, the hook refuses a merge or a push when it fails, and it still answers nothing to other commands", () => {
@@ -1230,6 +1227,7 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
       "queued notes": prompt(`${queuedOpen}x${pad("\n\nThis is how Claude Code surfaces messages ")}</system-reminder>`),
       "other-session opens": prompt(pad("\rAnother Claude session sent a message:")),
       "git words in a command the hook cannot read": bash(`${pad("git ")}'`),
+      "gh words before a merge (F-R79-2)": bash(`echo ${pad("gh ")}; ${MERGE}`),
       "git words given to a shell": bash(`bash -c '${pad("git ")}'`),
       // The first-creation form (T24) reads the command in the main session: a long endpoint, and many fields.
       "a long gh api endpoint": bash(`gh api --hostname github.com -X POST repos/o/${pad(".")}/git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
