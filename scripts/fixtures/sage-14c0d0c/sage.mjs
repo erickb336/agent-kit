@@ -8,7 +8,7 @@
 // run two versions of this tool, so a command refuses to change a logbook that a newer version wrote (ready).
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,11 +76,10 @@ const TABLES = {
 };
 /** The columns that a later version added: an older table without them reads with them empty, and its next write adds them. */
 const ADDED = { runs: ["model"] };
-const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "projects", "board"];
+const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "board"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
   "logbook repair": ["accept-loss"],
-  "projects rebuild": ["accept-listing"],
   "task add": ["title", "size", "risk", "add", "why"],
   "run add": ["role", "branch", "candidate"],
   "run done": ["status", "tokens", "report"],
@@ -94,13 +93,8 @@ const OPTIONS = {
   "merge-check": ["sha", "pr", "cycles"],
   board: ["remember", "name-hex"],
 };
-/**
- * A pull request's number: digits with no leading zero, so that "#5", "05" or a link never hides a task from merge-check
- * --pr. The PR script reads the logbook's PR cell with this same rule.
- */
-export const PR = /^[1-9][0-9]*$/;
-/** The canonical number of a PR in an older row: "040" is PR 40. */
-const prNumber = (pr) => (/^\d+$/.test(pr ?? "") ? String(BigInt(pr)) : pr);
+/** A pull request's number: only digits, so that "#5" or a link never hides a task from merge-check --pr. */
+const PR = /^\d+$/;
 const STANDING = `# Standing orders
 
 Every brief carries these lines word for word. Add a line when you notice that you repeat an instruction.
@@ -185,8 +179,6 @@ const PAGE_MAX = 16 * 1024 * 1024;
  * characters are outside the letters. The one pattern for every branch check in this tool: task set and run add.
  */
 export const BRANCH = /^(?![-./])(?!(?:refs|heads|remotes|origin)\/)(?!(?:main|master|HEAD)$)(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|[/.]$))[A-Za-z0-9._/-]+$/i;
-/** Does a branch belong to a task: a BRANCH of the form [<prefix>/]<task>[-<words>]? task set and the PR script check this one rule. */
-export const ofTask = (task, name) => BRANCH.test(name) && new RegExp(`^(?:[A-Za-z0-9_-]+/)?${task}(?:-[A-Za-z0-9._-]+)?$`, "i").test(name);
 const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(name)} is not a task branch: use letters, digits and . _ / - (for example claude/t12 or tool/t12-short-name), not main, master or HEAD in any case, not under refs/, heads/, remotes/ or origin/, and not a name that starts with - or holds .., @{ or a space.`));
 
 /** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
@@ -322,29 +314,6 @@ function put(file, text) {
   const real = target(file);
   writeFileSync(`${real}.${process.pid}`, text);
   renameSync(`${real}.${process.pid}`, real);
-}
-
-/**
- * Writes a whole file of the sage folder and never follows a link (sec15d), also one that replaces file after a check
- * (F-T42-2): the text goes to a new temp file (wx: never through a planted link), and a rename onto the path itself
- * replaces whatever is there, a link too. put() would rename onto the link's target.
- */
-function swap(file, text) {
-  const temp = `${file}.${randomUUID()}`;
-  const was = lstatSync(file, { throwIfNoEntry: false });
-  const fd = openSync(temp, "wx");
-  try {
-    try {
-      if (was?.isFile()) fchmodSync(fd, was.mode & 0o7777); // config.json stays 600 when the owner made it so
-      writeFileSync(fd, text);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(temp, file);
-  } catch (e) {
-    rmSync(temp, { force: true }); // a failed write or rename leaves no temp file
-    throw e;
-  }
 }
 
 /**
@@ -520,26 +489,12 @@ function move(task, to) {
   task.state = to;
 }
 
-/**
- * Gives a task its pull request, or clears it with "". An investigation changes no code, so it may only clear one. A
- * change gives its decision row (S1), which the caller writes before the task: a task that was ever on a PR stays in
- * that PR's merge check (prHistory), so a cleared or changed pr= cannot take its verdicts out of the merge.
- */
-function setPr(task, pr, why) {
+/** Gives a task its pull request, or clears it with "". An investigation changes no code, so it may only clear one. */
+function setPr(task, pr) {
   if (pr && !builds(task)) refuse(`${task.id} is an investigation: it changes no code, so it has no pull request. A build is its own task: sage task add --size tiny, small or large, then give that task the PR.`);
-  if (pr && !PR.test(pr)) refuse(`${JSON.stringify(pr)} is not a pull request number. Give only its digits, with no leading zero, for example pr=5 or --pr 5.`);
-  const was = task.pr;
+  if (pr && !PR.test(pr)) refuse(`${JSON.stringify(pr)} is not a pull request number. Give only its digits, for example pr=5 or --pr 5.`);
   task.pr = pr;
-  // An investigation never has commits on a PR, so the PR that an old logbook gave it leaves no trace when it is cleared.
-  return was === pr || !builds(task) ? [] : [{ at: now(), task: task.id, decision: `PR ${was || "none"} → ${pr || "none"}`, why }];
 }
-/** The ids of the tasks that are or ever were on PR pr: by the tasks' pr, the decision rows of setPr, and their verdicts on a commit of the PR. */
-const prHistory = (pr, tasks, decisions, ledger) =>
-  new Set([
-    ...tasks.filter((t) => prNumber(t.pr) === pr).map((t) => t.id),
-    ...decisions.filter((d) => /^PR (\S+) → (\S+)$/.exec(d.decision)?.slice(1).map(prNumber).includes(pr)).map((d) => d.task),
-    ...ledger.filter((r) => prNumber(r.pr) === pr && r.sha).map((r) => r.task),
-  ]);
 
 /** Why sha cannot name a commit in the ledger, or "". A short SHA could match another commit with the same prefix. Case does not matter. */
 const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(sha)} is not a full commit SHA: a short one can match another commit. Give all 40 characters: git rev-parse <branch>.`);
@@ -547,13 +502,14 @@ const notFull = (sha) => (/^[0-9a-f]{40}$/i.test(sha) ? "" : `${JSON.stringify(s
 /**
  * Does one task have the clean cycles its route needs on one SHA? tasks and findings are its logbook's tables, read once
  * by the caller; rows are only that task's ledger rows for the SHA. A task without rows is in the merge check only through
- * its PR history (prHistory).
+ * its PR number.
  */
-function judge(dir, task, findings, id, rows, cycles, repaired, cfg, pr) {
+function judge(dir, task, findings, id, rows, cycles, repaired, cfg) {
   if (!task) return { ok: false, reason: `${id} is in ${join(dir, "ledger.tsv")} but not in its tasks.tsv: ${repaired ? `tasks.tsv was started again without rows (see decisions.tsv), so the verdicts of ${id} are on a lost task. Push a new commit, and record its verdicts under a task that the logbook has.` : `a stray or damaged logbook. If no project uses it, ask the user to remove ${dir}.`}` };
   const who = task.state === "abandoned" ? `${task.id} (abandoned)` : task.id; // it still counts: the merge check fails closed
-  if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: clear its PR (sage task ${task.id} set pr=).` };
-  if (!rows.length) return { ok: false, reason: `${who} ${prNumber(task.pr) === pr ? "is" : "was"} a task of PR ${pr} but has no verdicts on this SHA. Every task that was ever on PR ${pr} counts for its merge, also after its pr= changed (see decisions.tsv): record its verdicts on this SHA, or the user merges.` };
+  const clear = `clear its PR (sage task ${task.id} set pr=)`;
+  if (!rows.length && !builds(task)) return { ok: false, reason: `${who} is an investigation, so it has no pull request, but it has PR ${task.pr}: ${clear}.` };
+  if (!rows.length) return { ok: false, reason: `${who} is a task of PR ${task.pr} but has no verdicts on this SHA. Record them, or, if it is no longer part of PR ${task.pr}, ${clear}.` };
   const open = findings.filter((f) => f.task === task.id && f.status === "open");
   if (open.length) return { ok: false, reason: `${who} has open findings: ${open.map((f) => f.key).join(", ")}. Triage and close them first.` };
   const bad = rows.find((r) => NOT_CLEAN.includes(r.kind));
@@ -574,137 +530,49 @@ function judge(dir, task, findings, id, rows, cycles, repaired, cfg, pr) {
 const group = (rows) => rows.reduce((m, r) => (m.has(r.task) ? m.get(r.task).push(r) : m.set(r.task, [r]), m), new Map());
 
 /**
- * The folders of the sage root, also links to folders: the writes go through a link, so the merge check reads through
- * it too. A link to nothing holds no logbook, for the writes either; one that cannot be followed refuses.
- */
-const folders = (root) => (existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : []);
-
-const PROJECTS = ["logbook", "at", "how"];
-/** The deliberate command that lists the logbook folders of the root again, for the owner to check. */
-const REBUILD = "sage projects rebuild --accept-listing yes";
-/** The folders of the root that hold a logbook's tasks or verdicts: what a migration or a rebuild lists. */
-const logbooks = (root) => folders(root).filter((dir) => ["tasks.tsv", "ledger.tsv"].some((f) => lstatSync(join(dir, f), { throwIfNoEntry: false }))).map((dir) => basename(dir));
-
-/**
- * Writes the known project list. The marker projects.made goes first: once the list was made, a list that goes missing
- * refuses (known) and is never listed again by itself, so a removed list cannot take in a folder planted after it.
- */
-function enlist(root, rows) {
-  const made = join(root, "projects.made");
-  if (!lstatSync(made, { throwIfNoEntry: false })) swap(made, `${now()}\n`);
-  swap(join(root, "projects.tsv"), [PROJECTS.join("\t"), ...rows.map((r) => PROJECTS.map((c) => cell(r[c])).join("\t"))].join("\n") + "\n");
-}
-
-/**
- * The known project list: the names of the logbook folders that init made, from projects.tsv in the sage root. Only
- * init adds a line, so a folder that appears there by any other way cannot lend its verdicts to a merge (T77 round 3).
- * The first command of this version finds no list and no marker (enlist) and lists today's logbooks once (how:
- * migration). After that, a missing list refuses, and only the owner's rebuild lists the folders again. The list must be
- * a regular file, not a link, with its header line; anything else refuses. It never removes a line. With add (init),
- * make runs under the root's lock after the list passed and before add joins it, so a refusal here changes nothing.
- * With readOnly, it takes no lock and writes nothing: a missing list gives undefined.
- */
-function known(root, add, make, readOnly) {
-  const file = join(root, "projects.tsv");
-  const names = () => {
-    let text;
-    try {
-      text = readRegular(file, { link: false });
-    } catch (e) {
-      if (e instanceof Refusal) refuse(`${file}, the known project list, is not a regular file. Ask the user to remove it, then to run ${REBUILD}, which lists the logbook folders that are there now.`);
-      throw e;
-    }
-    if (text === undefined) return undefined;
-    const [head, ...lines] = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
-    if (!PROJECTS.every((c) => head?.split("\t").includes(c))) refuse(`the header of ${file}, the known project list, is damaged: its first line must be the column names ${PROJECTS.join(", ")}, separated by tabs. Ask the user to fix that line, or to run ${REBUILD}, which lists the logbook folders that are there now. Each line after the header names one logbook folder that init made.`);
-    return rowsOf({ cols: head.split("\t"), lines });
-  };
-  if (!add && !statSync(root, { throwIfNoEntry: false })?.isDirectory()) return new Set(); // no root, no logbook
-  const list = !add && names(); // one read: no gap between a look and the read
-  if (list) return new Set(list.map((r) => r.logbook));
-  if (readOnly) return undefined;
-  if (add) mkdirSync(root, { recursive: true });
-  return withLock(root, () => {
-    const was = names();
-    if (!was && lstatSync(join(root, "projects.made"), { throwIfNoEntry: false }))
-      refuse(`${file}, the known project list, is missing, but sage made it before (${join(root, "projects.made")}). Every merge and every init refuses until it is back, because a list made again without the user could take in a forged logbook. Ask the user to restore it from a copy, or to run ${REBUILD} and check each folder that it prints.`);
-    const rows = was ?? logbooks(root).filter((name) => name !== add).map((logbook) => ({ at: now(), logbook, how: "migration" }));
-    make?.();
-    const more = add && !rows.some((r) => r.logbook === add);
-    if (more) rows.push({ at: now(), logbook: add, how: "init" });
-    if (!was || more) enlist(root, rows);
-    return new Set(rows.map((r) => r.logbook));
-  });
-}
-
-/** The owner's rebuild of the known project list: each logbook folder of the root now, printed so that the owner checks each one. */
-function rebuild(root) {
-  mkdirSync(root, { recursive: true });
-  return withLock(root, () => {
-    const names = logbooks(root);
-    const file = join(root, "projects.tsv");
-    try {
-      enlist(root, names.map((logbook) => ({ at: now(), logbook, how: "rebuild" })));
-    } catch (e) {
-      if (lstatSync(file, { throwIfNoEntry: false })?.isDirectory()) refuse(`${file} is a folder, so the rebuild wrote nothing. Ask the user to remove it, then run the command again.`);
-      throw e;
-    }
-    return [
-      `${file}, the known project list, now names the ${names.length} logbook folder${names.length === 1 ? "" : "s"} of ${root}:`,
-      ...names.map((n) => `  ${visible(n)}`),
-      "Show this listing to the user. A folder that no project of the user's uses may be forged: ask the user to remove it, then run the rebuild again.",
-    ].join("\n");
-  });
-}
-
-/**
  * The judgment of the merge check: may this head SHA merge? Every task that has verdicts on the full SHA, in every
  * project's logbook, must pass on its own rows, also an abandoned one, so no other logbook or task can lend its verdicts.
  * With pr, the tasks of that pull request in those logbooks must pass too, and there must be one. Each task wants the
  * clean cycles of its size and risk (cyclesFor), or cycles when it is given and higher: cycles only raises. The hook calls this, so it
- * never throws: what it cannot read refuses the merge. With readOnly (the board), it takes no lock and writes nothing, so
- * it refuses when the known project list is missing instead of making it.
+ * never throws: what it cannot read refuses the merge.
  */
-export function mergeCheck(sha, env = process.env, { cycles, pr, readOnly } = {}) {
+export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
   const root = sageRoot(env);
   try {
     if (notFull(sha)) return { ok: false, reason: notFull(sha) };
     sha = String(sha).toLowerCase(); // the ledger holds SHAs as git prints them
-    pr &&= prNumber(String(pr)); // the tasks table holds it as text; "040" is PR 40
+    pr &&= String(pr); // the tasks table holds it as text
     const cfg = config(env); // once: the merge check may judge thousands of tasks
     const broken = Object.keys(cfg).find((k) => cfg[k] === "invalid"); // fail closed: a default would ask fewer cycles than the owner meant
     if (broken) return { ok: false, reason: `the merge check refuses every merge, because ${broken} in ${join(root, "config.json")} is not a number. Set it with sage config ${broken}=<n> (a whole number from ${floor(broken)} to 10), or remove the key.` };
-    const [listed, strangers] = [known(root, undefined, undefined, readOnly), []];
-    if (!listed) return { ok: false, reason: `the known project list is missing. This read-only check does not make it: sage merge-check --sha <sha> makes ${join(root, "projects.tsv")} or says how to get it back.` };
-    const each = folders(root).flatMap((dir) => {
+    // A logbook may be a link to a folder: the writes go through it, so the merge check reads through it too. A link to nothing
+    // holds no logbook, for the writes either; one that cannot be followed refuses.
+    const dirs = existsSync(root) ? readdirSync(root).map((name) => join(root, name)).filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory()).sort() : [];
+    const each = dirs.flatMap((dir) => {
       // A folder with tasks.tsv, also a link, is a logbook, and it must pass the integrity check. A folder without it is
       // none: init has not finished it, or it lost its tasks. Its verdicts name tasks that it does not have, so they refuse.
       const book = lstatSync(join(dir, "tasks.tsv"), { throwIfNoEntry: false }) && check(dir);
       if (!book && !readRegular(join(dir, "ledger.tsv"))?.trim()) return [];
-      const ledger = rowsOf(book ? book.ledger : sheet(dir, "ledger"));
-      const rows = ledger.filter((r) => r.sha === sha);
+      const rows = rowsOf(book ? book.ledger : sheet(dir, "ledger")).filter((r) => r.sha === sha);
       if (!rows.length) return [];
-      if (!listed.has(basename(dir))) return strangers.push(dir), [];
-      const [tasks, findings, decisions] = book ? [rowsOf(book.tasks), rowsOf(book.findings), rowsOf(book.decisions)] : [[], [], []];
-      const repaired = decisions.some((d) => d.decision.startsWith("tasks.tsv started again without rows"));
-      const ofPr = pr ? prHistory(pr, tasks, decisions, ledger) : new Set();
+      const [tasks, findings] = book ? [rowsOf(book.tasks), rowsOf(book.findings)] : [[], []];
+      const repaired = book && rowsOf(book.decisions).some((d) => d.decision.startsWith("tasks.tsv started again without rows"));
+      const ofPr = new Set(pr ? tasks.filter((t) => t.pr === pr).map((t) => t.id) : []);
       // Each table is grouped by task once, so thousands of tasks on one SHA take linear time, not the square of it.
       const [byId, ownOf, findingsOf] = [new Map(tasks.map((t) => [t.id, t])), group(rows), group(findings)];
       return [...new Set([...rows.map((r) => r.task), ...ofPr])].map((id) => {
         const [own, task] = [ownOf.get(id) ?? [], byId.get(id)];
-        return { dir, id, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg, pr) };
+        return { dir, id, ofPr: ofPr.has(id), own: own.length, ...judge(dir, task, findingsOf.get(id) ?? [], id, own, task ? Math.max(cycles ?? 0, cyclesFor(task, cfg)) : cycles, repaired, cfg) };
       });
     });
-    const one = strangers.length === 1;
-    if (strangers.length) return { ok: false, reason: `${strangers.map(visible).join(" and ")} ${one ? "has" : "have"} verdicts on ${sha.slice(0, 7)} but ${one ? "is" : "are"} not in the known project list (${join(root, "projects.tsv")}), so the merge check refuses: a logbook that init did not make may be forged. init adds only a project's own logbook folder, so it does not help here. If ${one ? "it is" : "one is"} a project's logbook under another name (a renamed folder or a link), ask the user to give the folder back its own name, or to run ${REBUILD} and check each folder that it prints. If no project uses ${one ? "it" : "one"}, ask the user to remove it.` };
     if (!each.length) return { ok: false, reason: `no verdicts recorded for ${sha}. Record the reviews and QA with sage verdict first.` };
-    if (pr && !each.some((r) => r.ofPr)) return { ok: false, reason: `no task of PR ${pr} has verdicts on ${sha.slice(0, 7)}: only ${each.map((r) => `${visible(r.dir)} ${r.id}`).join(", ")} ${each.length === 1 ? "has" : "have"}. Record PR ${pr}'s verdicts under its own task (sage verdict <T> --sha <sha> --pr ${pr}), or set its PR: sage task <T> set pr=${pr}.` };
+    if (pr && !each.some((r) => r.ofPr)) return { ok: false, reason: `no task of PR ${pr} has verdicts on ${sha.slice(0, 7)}: only ${each.map((r) => `${r.dir} ${r.id}`).join(", ")} ${each.length === 1 ? "has" : "have"}. Record PR ${pr}'s verdicts under its own task (sage verdict <T> --sha <sha> --pr ${pr}), or set its PR: sage task <T> set pr=${pr}.` };
     if (each.length === 1) return { ok: each[0].ok, reason: each[0].reason };
     const all = `${each.length} tasks have verdicts on ${sha.slice(0, 7)}${pr ? ` or belong to PR ${pr}` : ""}, and each must pass`;
     const bad = each.filter((r) => !r.ok);
-    if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${visible(r.dir)} ${r.reason}`).join("; ")}` };
+    if (!bad.length) return { ok: true, reason: `${all}: ${each.map((r) => `${r.dir} ${r.reason}`).join("; ")}` };
     const out = bad.some((r) => r.own) ? ", or push a new commit and record its verdicts under the live tasks only" : ""; // a new commit leaves behind only verdicts
-    return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${visible(r.dir)} ${r.reason}`).join(" ")} To merge, make each one pass${out}.` };
+    return { ok: false, reason: `${all}; ${bad.length} fail${bad.length === 1 ? "s" : ""}. ${bad.map((r) => `${r.dir} ${r.reason}`).join(" ")} To merge, make each one pass${out}.` };
   } catch (e) {
     if (e instanceof Refusal) return { ok: false, reason: `the merge check refuses every merge, because ${e.message}` }; // it names the file and what to do
     const [at, why] = [e?.path, e?.code ?? e?.message ?? e];
@@ -737,20 +605,16 @@ export function sage(argv, env = process.env) {
   const [cmd, ...rest] = argv;
   if (!COMMANDS.includes(cmd)) refuse(`unknown command "${cmd ?? ""}". Commands: ${COMMANDS.join(", ")}`);
   const { pos, opt } = parse(cmd, rest);
-  const root = sageRoot(env);
-  if (statSync(root, { throwIfNoEntry: false })?.isDirectory() && ["projects.tsv", "projects.made"].every((f) => !lstatSync(join(root, f), { throwIfNoEntry: false }))) known(root); // the first command of this version lists today's logbooks
-  if (cmd === "projects") return pos.join(" ") === "rebuild" && opt["accept-listing"] === "yes" ? rebuild(root) : refuse(`projects takes only: ${REBUILD.slice(5)}. It lists each logbook folder that is in ${root} now as a known project, so that its verdicts count in the merge check. Run it only when the user asks for it, and show the user the folders that it prints.`);
   if (cmd === "merge-check") {
     const cycles = opt.cycles === undefined ? undefined : (typed("cycles.small", opt.cycles) ?? refuse("--cycles is a whole number from 1 to 10")); // the chief's explicit count: it only raises a task's own count
-    if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, with no leading zero, for example --pr 5");
+    if (opt.pr !== undefined && !PR.test(opt.pr)) refuse("--pr is the pull request's number, for example --pr 5");
     const r = mergeCheck(opt.sha ?? refuse("merge-check needs --sha with the full 40-character SHA of the head commit: git rev-parse <branch>"), env, { cycles, pr: opt.pr });
     return r.ok ? r.reason : refuse(r.reason);
   }
   if (cmd === "config") {
     const set = {};
     for (const kv of pos) {
-      const [k, v = "", ...more] = kv.split("=");
-      if (more.length) refuse(`${JSON.stringify(k)} has more than one "=": write key=value`);
+      const [k, v = ""] = kv.split("=");
       const count = Object.hasOwn(COUNTS, k) || CAP.test(k);
       if (count && /^[1-9]\d*$/.test(v) && Number(v) > limit(k)) refuse(`${k} must be ${limit(k)} or less: ${v} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
       if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);
@@ -762,7 +626,17 @@ export function sage(argv, env = process.env) {
       mkdirSync(sageRoot(env), { recursive: true });
       const st = lstatSync(file, { throwIfNoEntry: false });
       if (st && !st.isFile()) refuse(`${file} is ${st.isSymbolicLink() ? "a link" : st.isDirectory() ? "a folder" : st.isFIFO() ? "a named pipe" : st.isSocket() ? "a socket" : "a device"}, not a regular file, so config writes nothing. Replace it with a regular file.`);
-      swap(file, JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n"); // a key of a newer version stays
+      // A write never follows a link (sec15d), also one that replaces config.json after the check above (F-T42-2): the new
+      // text goes to a new temp file in the sage folder (wx: never through a planted link), and a rename onto the path itself
+      // replaces whatever is there, a link too. put() would rename onto the link's target.
+      const temp = `${file}.${randomUUID()}`;
+      writeFileSync(temp, JSON.stringify({ ...saved(env), ...set }, null, 2) + "\n", { flag: "wx" }); // a key of a newer version stays
+      try {
+        renameSync(temp, file);
+      } catch (e) {
+        rmSync(temp, { force: true });
+        throw e;
+      }
     }
     const c = { ...config(env), ...set };
     const models = Object.keys(c).filter((k) => MODEL.test(k));
@@ -788,22 +662,16 @@ export function sage(argv, env = process.env) {
   }
   // A read takes no lock: every file is replaced whole, so it sees the store before or after a change, never half of one.
   if ((cmd === "logbook" && !repair) || cmd === "status" || (cmd === "standing" && pos[0] !== "add") || (cmd === "pages" && pos[1] !== "record")) return act(cmd, pos, opt, dir, env, [], project);
-  const run = () =>
-    withLock(dir, () => {
-      ready(dir, skip);
-      const out = act(cmd, pos, opt, dir, env, skip, project);
-      status(dir, true);
-      return out;
-    });
-  if (cmd !== "init") return run();
-  // init takes the root's lock and checks the known project list first, so a refusal there makes no logbook.
-  let out;
-  known(root, basename(dir), () => {
+  if (cmd === "init") {
     mkdirSync(join(dir, "briefs"), { recursive: true });
     mkdirSync(join(dir, "reports"), { recursive: true });
-    out = run();
+  }
+  return withLock(dir, () => {
+    ready(dir, skip);
+    const out = act(cmd, pos, opt, dir, env, skip, project);
+    status(dir, true);
+    return out;
   });
-  return out;
 }
 
 function act(cmd, pos, opt, dir, env, skip, project) {
@@ -868,7 +736,6 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       }
       const { tasks, task } = taskOf(dir, need(sub, "the task id")); // task <T> [set key=value ...]
       if (id === "set") {
-        const decided = [];
         for (const kv of more) {
           const [k, v] = [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)];
           if (k === "state") {
@@ -889,12 +756,11 @@ function act(cmd, pos, opt, dir, env, skip, project) {
               const r = judge(dir, task, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
-          } else if (k === "pr") decided.push(...setPr(task, v, "task set"));
-          else if (k === "branch") task.branch = v && (ofTask(task.id, branchOf(v)) ? v : refuse(`${JSON.stringify(v)} is not a branch of ${task.id}: use [<prefix>/]${task.id.toLowerCase()}[-<words>], for example sage task ${task.id} set branch=claude/${task.id.toLowerCase()}`)); // branch= clears it
+          } else if (k === "pr") setPr(task, v);
+          else if (k === "branch") task.branch = v && branchOf(v); // branch= clears it
           else if (k === "title") task.title = v;
           else refuse(`task set takes state=, branch=, pr= or title=`);
         }
-        if (decided.length) write(dir, "decisions", [...read(dir, "decisions"), ...decided]);
         write(dir, "tasks", tasks);
       }
       return `${task.id} ${task.state} · ${task.size} · round ${task.round} · route ${task.route}${task.branch ? ` · ${task.branch}` : ""}${task.pr ? ` · PR ${task.pr}` : ""}`;
@@ -1009,8 +875,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       if (!builds(task) && opt.sha) refuse(`${task.id} has no build block, so its verdicts name no commit: leave out --sha`);
       if (opt.sha && notFull(opt.sha)) refuse(notFull(opt.sha));
       const sha = opt.sha?.toLowerCase() ?? ""; // as git prints it
-      const decided = opt.pr ? setPr(task, opt.pr, "verdict --pr") : [];
-      if (decided.length) write(dir, "decisions", [...read(dir, "decisions"), ...decided]);
+      if (opt.pr) setPr(task, opt.pr);
       write(dir, "tasks", tasks);
       write(dir, "ledger", [...read(dir, "ledger"), { task: task.id, pr: task.pr, sha, kind, cycle: opt.cycle ?? "1", run: opt.run ?? "", at: now() }]);
       const open = NOT_CLEAN.includes(kind) ? [] : findings.filter((f) => f.triage === "fix");
@@ -1090,6 +955,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
  * the lock, so they never wait for it.
  */
 const LOCK_WAIT_MS = 3000;
+const BOOT = Date.now() - uptime() * 1000;
 const START = Date.now() - process.uptime() * 1000;
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -1151,28 +1017,9 @@ function probeFor(dir) {
   return { alive: (pid) => map[pid] !== null, started: (pid) => map[pid] ?? NaN };
 }
 
-/**
- * This machine's boot time (ms), or null when the system does not tell it: in the macOS sandbox, uptime() throws EPERM.
- * It is read only when a command takes the lock, so that no other command depends on it.
- */
-function bootTime() {
-  try {
-    return Date.now() - uptime() * 1000;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one.
- * When either boot time is unknown, the boot rule says nothing: a holder on another host is never gone, and on this host
- * only the pid and its start time decide.
- */
-function gone(h, boot, checkStart, probe) {
-  const here = h.host === hostname();
-  if (!Number.isFinite(h.boot) || !Number.isFinite(boot)) {
-    if (!here) return false; // without both boot times, only the host name says that the holder is on this machine
-  } else if (Math.abs(h.boot - boot) > 60_000) return here; // another machine may still hold it
+/** True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one. */
+function gone(h, checkStart, probe) {
+  if (Math.abs(h.boot - BOOT) > 60_000) return h.host === hostname(); // another machine may still hold it
   if (!probe.alive(h.pid)) return true;
   return checkStart && probe.started(h.pid) > h.start + 2000; // the pid now names a process that started after the holder
 }
@@ -1191,13 +1038,11 @@ function clear(folder, file) {
 /** Runs fn while this process holds the store's lock. Refuses, with nothing changed, when the store stays busy. */
 export function withLock(dir, fn) {
   const probe = probeFor(dir);
-  const boot = bootTime();
   const lock = join(dir, ".lock");
   const token = randomUUID();
   const tmp = `${lock}.${token}`;
   mkdirSync(tmp);
-  // An unknown boot time has no key: an older sage reads boot: null as 0, an earlier boot, and would clear a live lock.
-  writeFileSync(join(tmp, `${token}.json`), JSON.stringify({ pid: process.pid, host: hostname(), ...(boot === null ? {} : { boot }), start: START, at: Date.now() }));
+  writeFileSync(join(tmp, `${token}.json`), JSON.stringify({ pid: process.pid, host: hostname(), boot: BOOT, start: START, at: Date.now() }));
   const t0 = Date.now();
   for (let checked = ""; ; ) {
     try {
@@ -1213,7 +1058,7 @@ export function withLock(dir, fn) {
     const waited = Date.now() - t0;
     const checkStart = h && waited > 500 && checked !== h.file; // ps once per holder, and only for a slow one
     if (checkStart) checked = h.file;
-    if (h && gone(h, boot, checkStart, probe) && clear(lock, h.file)) continue; // if clear fails, another waiter was first
+    if (h && gone(h, checkStart, probe) && clear(lock, h.file)) continue; // if clear fails, another waiter was first
     if (waited >= LOCK_WAIT_MS) {
       rmSync(tmp, { recursive: true, force: true });
       const who = h ? `pid ${cell(h.pid)} on ${cell(h.host)} has held ${lock}${Number.isFinite(h.at) ? ` for ${((Date.now() - h.at) / 1000).toFixed(1)} s` : ""}` : `${lock} has no valid owner file`;
@@ -1225,7 +1070,7 @@ export function withLock(dir, fn) {
     // The temp folder of a waiter that was killed stays behind. Remove it by the lock's rules: owner surely gone, by name.
     for (const name of readdirSync(dir).filter((n) => new RegExp(`^\\.lock\\.${UUID}$`).test(n))) {
       const h = holder(join(dir, name));
-      if (h && gone(h, boot, false, probe)) clear(join(dir, name), h.file);
+      if (h && gone(h, false, probe)) clear(join(dir, name), h.file);
     }
     return fn();
   } finally {

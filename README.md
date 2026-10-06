@@ -5,52 +5,54 @@
 </picture>
 </a>
 
+**sage is a Claude Code plugin that turns any session into your chief of staff.** Start a message with "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
+
 <p align="center">
   <a href="https://github.com/erickb336/sage/actions/workflows/check.yml"><img alt="checks" src="https://github.com/erickb336/sage/actions/workflows/check.yml/badge.svg"></a>
-  <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-E5600B">
-  <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-21160F">
+  <a href="LICENSE"><img alt="licence" src="https://img.shields.io/github/license/erickb336/sage"></a>
 </p>
 
-**sage is a Claude Code plugin that turns any session into your chief of staff.** Start a message with "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
+**Contents:** [Quick start](#quick-start) · [Learn sage in 5 minutes](#learn-sage-in-5-minutes) · [Why "sage"?](#why-sage) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say](#what-to-say) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
 
 It also gives every session 25 short working principles at the moment they apply.
 
 > **Built on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by [Lauren Tan (poteto)](https://github.com/poteto).** sage follows pstack's principles by itself, every week, and sage mode takes its ideas from poteto mode. The name is a nod to Sage Mode in *Naruto*. See [Credits](#credits).
 
-**Contents:** [Why "sage"?](#why-sage) · [Quick start](#quick-start) · [Learn sage in 5 minutes](#learn-sage-in-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say](#what-to-say) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
-
-## Why "sage"?
-
-In *Naruto*, a sage stays still to gather natural energy. In Sage Mode, the sage sees and senses more than in normal combat.
-
-sage mode works the same way:
-
-- **The chief of staff stays still.** It never edits a file. It frames the work, writes the briefs and keeps the record.
-- **It gathers natural energy.** Here, that energy is the team's work: specialists work in parallel, each in its own git worktree.
-- **It sees the whole.** It groups related work, puts tasks that share code in order, and gives a mistake that repeats a lasting fix.
-
-The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
-
-And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing of a hooded toad that meditates while its team works.
-
 ## Quick start
 
 **1. Install** (in a Claude Code terminal):
 
-```
+```text
 /plugin marketplace add erickb336/sage
+```
+
+```text
 /plugin install sage@sage
 ```
 
-In the desktop app, run `claude plugin marketplace add erickb336/sage` and then `claude plugin install sage@sage` in a terminal. The `/plugin` dialog opens only in a terminal.
+In the desktop app, run these two commands in a terminal instead. The `/plugin` dialog opens only in a terminal.
 
-**To update sage**, run `claude plugin update sage@sage`. The update applies to every running session at its next event: each hook event runs the newest installed sage. This holds for sessions that started on this version of sage or a later one. A new hook event or matcher needs a restart, and so do the instructions that a session already read (its skills and agent texts).
+```sh
+claude plugin marketplace add erickb336/sage
+```
+
+```sh
+claude plugin install sage@sage
+```
+
+**To update sage**, run this command in a terminal:
+
+```sh
+claude plugin update sage@sage
+```
+
+The update applies to every running session at its next event: each hook event runs the newest installed sage. This holds for sessions that started on this version of sage or a later one. A new hook event or matcher needs a restart, and so do the instructions that a session already read (its skills and agent texts).
 
 **2. Start a new session** in a project folder, or in a folder of projects such as `~/workspace`.
 
 **3. Switch it on:** start a message with "sage mode", then say what you want.
 
-```
+```text
 sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 ```
 
@@ -99,6 +101,22 @@ This is one session, step by step. It is an illustration with sample data.
 </picture>
 </a>
 
+## Why "sage"?
+
+In *Naruto*, a sage stays still to gather natural energy. In Sage Mode, the sage sees and senses more than in normal combat.
+
+sage mode works the same way:
+
+- **The chief of staff stays still.** It never edits a file. It frames the work, writes the briefs and keeps the record.
+- **It gathers natural energy.** Here, that energy is the team's work: specialists work in parallel, each in its own git worktree.
+- **It sees the whole.** It groups related work, puts tasks that share code in order, and gives a mistake that repeats a lasting fix.
+
+The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
+
+And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing of a hooded toad that meditates while its team works.
+
+The alternatives: a plain Claude Code session, where you guide each step and read the code yourself, or another plugin that runs a team of agents.
+
 ## How it works
 
 <a href="docs/assets/loop-light.svg">
@@ -120,7 +138,7 @@ There are two loops:
 </picture>
 </a>
 
-The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work.
+The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work. Two more folders hold the rest: the hook keeps the mode, autopilot and the agent slots in `~/.claude/sage/.hooks/`, and agents save their pages (research, designs) in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook (the chief makes the folder and prints its path).
 
 ### The team
 
@@ -170,10 +188,19 @@ A rule written only in a prompt fades over a long session. So sage keeps its imp
 | Every brief has all its fields; every report has its evidence. | A vague brief fails quietly. A claim without evidence is not a result. |
 | At most 3 sage agents run at once for a project (`max_agents`; `config cap.<project>=n` sets one project's own cap), and at most 12 across all projects (`cap_total`). A slot frees as soon as its agent ends, fails or is stopped. | Cost and focus. Several sessions share the total. |
 | One writer per branch. Nobody force-pushes or pushes to main. A push is only `git push [-u] origin <branch>`, with the branch's own name. | Parallel writers conflict. Work reaches main only through a pull request. |
+| An agent never runs `git stash`, in any form. To test old code, it uses `git worktree add --detach <scratch> <sha>` or `git show <sha>:<path>`. | Every worktree of a repo shares one stash list, so another agent can pop or drop the work. |
+| An agent never lists or signals the real processes (`ps`, `pgrep`, `pkill`, `kill`, `killall`, `lsof`, `top`, `htop`, `fuser`, `pidof`, and `kill-port` or `fkill` through `npx`, `npm exec`, `pnpm dlx` or `bunx`). Such a program passes only as a fake in the temp folder, found through PATH and links. A bare `kill` is the shell's builtin, so it never passes. The hook finds the program after shell keywords (`while`, `if`, `do`, `!`, `{`), redirections (`2>/dev/null ps`), wrappers and their options, inside a shell's `-c` text or stdin, and in the arms of a `case`. The arguments of a script (`bash ./x.sh kill`) and a `case` pattern are not programs. To stop its own server or background job, an agent uses TaskStop, or runs it as a background task. | An agent that reads or signals the real process list can stop your own programs. A `process.kill` inside a script is not visible to the hook. |
+| A task's branch, and the branch of a writer run, is a plain task branch such as `claude/t12`: letters, digits and `. _ / -`. It is never main, master or HEAD in any case, and never a name under `refs/`, `heads/`, `remotes/` or `origin/`. | Git reads those names as main or as another ref, so a writer could reach main without a pull request. |
+| Agents save their pages (research, designs, findings pages) in the task's pages folder, outside the logbook. The chief makes the folder with the state tool (only you can open it) and prints its path, and logs each page in it with its sha256. The state tool logs only a regular file of at most 16 MiB inside that folder, with no control character in its name. | A sandboxed agent cannot write the logbook, and the sha256 shows later that the page did not change. |
 | Every finding is triaged: fix, dismiss with a reason, or ask you. | No finding is dropped. |
 | A repair round needs a medium or high finding; at most 3 rounds. | Loops must end. A low finding alone isn't worth a round. |
 | A repair round re-checks only the repair's diff, with the roles that found the problems. A new medium or low finding goes to a follow-up task; a high one blocks. | A round that re-reviews the whole branch finds new scope, not the fix. |
 | A merge needs the exact checked commit, with its clean cycles in the ledger. | A new commit is not checked until it is reviewed again. |
+| Only the chief writes the logbook. An agent runs only the state tool's read commands (`status`, `merge-check`, `logbook`, `standing`, `config` with no `key=value`), as one plain command, from Bash or any other tool that runs a command. A command that names `sage.mjs` or `sage-pr.mjs` (in any case, also in quotes) may run only plain readers: `cat`, `grep`, `rg`, `head`, `tail`, `wc`, `ls`, `diff`, `shasum`, `jq`, `awk` and `sed` without `-i`, and `git show`, `log`, `diff`, `status`, `blame`, `grep`, `ls-files`, `add` or `commit`. Any other program in it is refused and named: `node`, `python`, a shell, `eval`, `echo`, `env` or `xargs` with it, whatever their options, also behind a shell keyword such as `for`, `while`, `if`, `{` or `!`. The one exception is the plain read command above. The hook does not look for the script among a program's options. It never runs the PR script, never writes under the sage root with its own tools (in any case or Unicode form, also through a link), never runs a shell write near the logbook (the sage root, `SAGE_HOME` or `CLAUDE_CONFIG_DIR`, `.claude`, a variable by the home folder, or a path that leads into the sage root through a link or `..`), and never runs outside the sandbox. A `SAGE_HOME=<folder>` or `CLAUDE_CONFIG_DIR=<folder>` in the command, with a plain path outside the sage root (a scratch folder for tests), passes. A `$SAGE_HOME` or `$CLAUDE_CONFIG_DIR` in a write is always refused, whatever assignments come before it: write to the scratch path itself. A pattern or a logbook file's name in a project passes (`rm dist/*`, `jq ... > config.json`); with `cd`, `..`, `~`, `$` or an absolute path in the command, it is refused. The hook does not expand variables, so the `?` of `$?` is a pattern character: after a redirect to a file, show the exit code with `|| echo FAIL` or `; echo done`, not with `echo exit=$?`. A refusal names the word that caused it, in the command's own capitals, and the plain way where one exists. When the hook cannot check an agent's call, it refuses it. A pattern with a link on its path (a link before the first wildcard, or a link that the first pattern part names, also a dangling one) is refused everywhere. The hook stops agents' mistakes and the common forgery forms. Deliberate shell forgery (scripts, variables, links made at run time) is the sandbox's job (tasks T94–T99); merges stay paused until the sandbox switch (T99) merges. | An agent that records its own verdicts could make an unreviewed commit pass the merge check. |
+| Only sage.mjs changes the logbook. The chief's file tools never write under the sage root, in any mode. Its shell never writes with the sage root's path, `.claude/sage`, a `$SAGE_HOME` or `$CLAUDE_CONFIG_DIR`, or an assignment of them to anything but a plain folder outside the sage root, in any case or as a pattern. The refusal names the word. In sage mode, its shell also never writes a logbook file by its name (`tasks.tsv`, `ledger.tsv`, `config.json` and the others). Out of sage mode, a project's own `config.json` stays free. The state tool, `node <path>/sage.mjs ...` as a command of its own, passes. Your own `!` commands stay free. | A size or risk changed by hand leaves no record, and lowers the clean cycles that a merge needs. |
+| Every task that was ever on a pull request counts for its merge. A pull request's number has no leading zero, so it has one spelling. A change of a task's `pr=` writes a decision row, and the task stays in the merge check until you merge. | A large task's pull request cannot be framed again as a small one to need fewer reviews. |
+| The PR script, `sage-pr.mjs import\|create\|view\|merge <task>`, imports a task's commit for review, pushes the reviewed commit and opens, shows or merges its pull request. It takes exactly those two words. `import` copies the agent's bundle into the logbook's mirror (with fsck, so each object's hash is checked) and writes a review copy that agents cannot write: `review/<task>-<sha>/` in the logbook folder holds the commit's files, and `review/<task>-<sha>.diff` its change from main. The reviewers read only this copy, because git in the agent's own clone does not check the hashes, so an agent can make it show harmless text at the right SHA. `create` and `merge` refuse a commit whose review copy is not older than its first verdict: run `import`, and review again. It reads the branch and the reviewed commit only from the logbook, and the commit only from the bundle file that the agent wrote: a link, a second hard link, a file over 10 MiB or a file that is not a git bundle refuses, and so does a bundle whose tip is not the reviewed commit, the base branch, a branch of another task and a commit that is already on main. It refuses a project folder that is not the logbook's own checkout (`checkout.txt`) or that is in the worktree root, an origin that is not exactly `https://github.com/<owner>/<name>`, `ssh://git@github.com/<owner>/<name>` or `git@github.com:<owner>/<name>` (with an optional `.git`; a user or token, a port, a `#`, a `?`, another host or an upper-case host refuses), and a `SAGE_REPO` that is not the origin's repository. A `mirror.git` in the logbook that is not a bare repository (a file, a link, an empty or other folder) refuses: remove it, and the next call makes a new mirror. When GitHub lists 100 or more pull requests of the branch into main (forks' pull requests with the same branch name count too), it refuses, because the task's own can be missing from the list. It pushes fast-forward only and never a tag, opens a pull request only when the repository itself has none open from the branch into main (GitHub allows one), and records its number in the logbook (it replaces a closed one, or a number that GitHub does not have). It refuses a task with a merged pull request of its branch, also when the logbook has no PR number ("already merged as PR #n: nothing to create"), because after a squash merge the commit is not on main. It merges only that pull request, only when the task is verified or pr-ready (else it names `sage task <T> set state=verified`) and GitHub has the reviewed commit (else it names `sage-pr create`), only after the merge check, with `--match-head-commit`. Then it reads the pull request again: a merge queue that leaves it open is no success, and an error after GitHub merged (such as a branch deletion that gets 403) is still a merge. A pull request that is already merged gives "already merged" and exit 0 only when GitHub merged the reviewed commit; a merge of another commit refuses ("pull request #n merged <sha>, not the reviewed head <sha>: ask the user"). No message prints the origin, `SAGE_REPO`, a URL's user and password (also with punctuation), an `Authorization` header (also quoted or as key=value) or the value of a gh token variable. git and gh get only an allow-list of the environment's variables (no `GIT_CONFIG_*`, `GIT_SSH_COMMAND`, `GH_HOST` or proxy), no global git config, and a folder that agents cannot write; the script refuses to run with `NODE_OPTIONS` set. The whole call holds the logbook's lock, so two calls on one project never share the mirror. Exit 1 is a refusal of the script's own checks (or git's own answer that the mirror or the bundle is not one), and exit 2 a failed git or gh call (also a lock or disk error, or a call on the bundle that takes over 120 s) or a logbook that stays busy: run it again. A folder that the script cannot remove gives a warning, not another exit code. Exit 3 means that the merge happened but the mirror refresh failed: run merge again later, and it says "already merged" and refreshes the mirror. It is built but not in the route yet: agents still push, and the chief still runs `gh pr merge`. | In the coming sandbox, agents never push or call gh. One small script with a closed grammar is easier to check than every form of `git push` and `gh`. |
+| Only a logbook that `sage init` made can approve or block a merge. `init` adds the logbook's folder to the known project list, `projects.tsv` in the sage folder. A folder outside that list that has verdicts on the commit refuses the merge and is named. `init` adds only a project's own folder, so for a renamed folder or a link: give the folder back its name, run `sage projects rebuild --accept-listing yes`, or remove the folder. The first sage command of this version lists the logbooks that are there already, once, and writes `projects.made`. After that, a missing `projects.tsv` is never listed again by itself: every merge and every `init` refuses until you restore it or run the rebuild. The rebuild lists each logbook folder that is there now and prints them: check each one, and remove a folder that no project uses. A `projects.tsv` that is a link, a folder or has no header line refuses every merge and every `init`, and names the rebuild. | A folder that something else made in the sage folder could otherwise lend forged verdicts to a merge. |
 
 **The limits of the hook.** The hook catches mistakes and the normal habits of an agent, such as a quoted branch name or a short ref like `heads/main`. It does three things:
 
@@ -203,6 +230,16 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 3. The arena judge scores each one, picks a base, and grafts the best parts of the others into it.
 4. The final version goes through reviews and QA like any build. The candidates never merge.
 
+## What's new
+
+- **A guide for project READMEs.** The `readme-guide` skill, built from `writing/readme.md`, gives the order of sections, what the first screen must answer, rules for diagrams and commands, examples of great READMEs, and a checklist. The hook gives it when an agent is about to write or change a README.
+- **The board runs the merge check.** A verified pull request "waits for your merge" only when its branch is at the reviewed head (the head that `sage-pr merge` merges) and the merge check passes on it; else the board says what is missing, such as a clean cycle or an open finding. The board takes no lock and writes no logbook.
+- **The PR script imports before the reviews.** `sage-pr import <task>` copies the agent's bundle into the logbook and writes a review copy (`review/<task>-<sha>/` and `review/<task>-<sha>.diff`) that agents cannot change. `create` and `merge` refuse a commit whose review copy is not older than its first verdict.
+- **A bundle is at most 10 MiB, and a slow bundle stops.** Each git call on the bundle stops after 120 s with exit 2, so a bundle that expands to gigabytes cannot hold the logbook's lock.
+- **A passing git failure is no refusal.** Only git's own answer that the mirror or the bundle is not one refuses; any other git failure is exit 2: run the call again.
+
+Older changes are in the [git log](https://github.com/erickb336/sage/commits/main).
+
 ## Concepts
 
 <!-- The word table comes from writing/dictionary.md: edit it there, then run npm run build. -->
@@ -225,12 +262,15 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 | **Cycle** | One full set of fresh reviews and QA on one head commit; a new commit starts again from cycle 1. |
 | **Gate** | A question parked for the owner, with options, a recommendation and a default; the work behind it waits for the answer. Coming with programs: the owner approves a program's breakdown through a gate. |
 | **Logbook** | sage's local record of one project: its tasks, runs, findings, verdicts, gates and decisions, kept on the owner's Mac. |
+| **Agent time** | The wall-clock hours of agent runs, given with their tokens. The default for every time figure: give it with its basis and a range. |
+| **Human time** | The time of the owner's own actions only: reviews, approvals, merges and setup. Give it with its basis and a range. |
 | **Sage mode** | The mode in which a session is your chief of staff. A message that starts with "sage mode" turns it on. A message that starts with "sage mode off" turns it off. |
 | **Risk flag** | auth, data, schema, money, secrets or input. Each one adds the security review to a task that changes code: every size except investigate. |
 | **Ledger** | The record of all verdicts, by commit. The merge check reads it. |
 | **Standing orders** | Short rules for a project that every brief carries word for word. |
 | **Arena** | N candidates for one design, scored and combined by a judge. |
 | **Autopilot** | Verified pull requests merge by themselves after their clean cycles: 1 for a tiny or small task, 2 for a large task or a task with a risk flag. Off by default. A message of the owner that starts with "autopilot on" or "sage mode autopilot" turns it on. Your own text that mentions autopilot with an off word turns it off, also between two frames and in a message queued while Claude works. A queued message is yours only as a whole system reminder outside every other frame. It can stop autopilot, but it cannot start autopilot or sage mode: send an on again when Claude is idle. Inside an agent's report or a notice, only a line that starts with "autopilot off" or "sage mode off" turns it off. Text inside an agent's report, a notice or another session's message never turns it on. |
+| **Board** | The compact view of every project's logbook for the chat: what needs you, the agents running now, each active task, what merged since the last board and the next tasks. A message of the owner that starts with "show board" prints it. |
 | **The dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
 | **Seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
 
@@ -245,10 +285,12 @@ sage uses each word in one meaning only. The [dictionary](writing/dictionary.md)
 | `sage mode.` + a request, at the start of a message | The session becomes your chief of staff and starts the work. |
 | Your answer to a question, for example `no` | The chief applies your decision and goes on. |
 | `status` | Where each task is: running, waiting for you, verified. |
+| `show board`, `show board for all` or `show board for <project>`, at the start of a message | The board in the chat: see [The board](#the-board). |
 | `arena` or `arena 4` | The next design goes to N candidates and a judge. |
 | A message that starts with `autopilot on`, or with `sage mode` followed by `autopilot`: `sage mode autopilot`, `sage mode on, autopilot on` | Verified pull requests merge by themselves after their clean cycles. |
 | Your message that mentions autopilot with an off word, for example `autopilot off`, `stop autopilot` or `pause autopilot` | Verified pull requests wait for you again. |
 | `sage mode off` at the start of a message | A normal session again. |
+| `/sage:sage-help` + a question, for example `/sage:sage-help how do I see the board?` (the short form `/sage-help` also works) | A short answer, a prompt that you can send, and the link to the file that holds the details. It starts no work. With no question, it asks what you need. A question that mentions autopilot with an off word turns autopilot off, as any of your messages does. |
 
 Only your own text switches a mode on, or sage mode off. Claude Code does not tell the hook who wrote a prompt, so the hook reads the frames that Claude Code puts around text that you did not type: an agent's report, a task notification, a message from another session and a system reminder. Text inside them never switches a mode on, also when it quotes you. When Claude Code joins your message to one of them, your part counts. When Claude Code queues your message while it works, it counts as yours only as a whole system reminder outside every other frame: the same shape inside an agent's report counts as the report. A message that you send while Claude works can stop autopilot, but it cannot start autopilot or sage mode, or end sage mode: an agent can write the same shape, and the hook cannot tell the two apart. Send it again when Claude is idle. When the hook cannot read the frames, for example a frame that does not close, nothing in that prompt switches a mode on. Inside a frame, only a line that starts with "autopilot off" or "sage mode off" switches autopilot off, because the frames themselves have off words such as "not". A "sage mode off" that you did not write switches only autopilot off. In your message, only its start switches a mode: "sage mode" (or "sage mode on"), "sage mode off" and "autopilot on". A mention in the middle of a sentence switches nothing, so you can talk about them freely. Put a full stop, a comma, a colon or a line break after "sage mode" or "autopilot on": "autopilot on?" and "autopilot on main" switch nothing. A "?" on the line of "sage mode off" keeps sage mode on, but autopilot goes off. Autopilot off works anywhere in your own text, also between two frames: any message that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, because a missed "off" lets merges go on. Off wins over on: "autopilot on, don't stop until done" leaves autopilot off. "turn on autopilot" and "enable autopilot" switch nothing.
 
@@ -257,6 +299,36 @@ To make every session in a folder start in sage mode, put this in the folder's `
 ```json
 { "agent": "sage:chief-of-staff" }
 ```
+
+## The board
+
+Start a message with `show board` to see the board in the chat. It is short Markdown that fits a phone screen, built from the logbooks on your Mac. It needs no server and no file.
+
+| Say | You see |
+| --- | --- |
+| `show board` or `show board for this project` | The project of the session, with at most 8 active tasks (the tasks with a pull request in review first), and one line for each other project with something waiting, for example "order-chaser: 1 gate waiting". When two logbooks without a checkout have the name of the session folder, the board lists the candidates. A session folder with a control character in its path, such as a line break, gets the board for all projects. |
+| `show board for all` or `show board for all projects` | Every project: what needs you and what runs at the top, then one short section per project, with at most 8 active tasks each ("and 3 more (show board for sage)"). |
+| `show board for sage-bot` | One project, with every active task. Type its key or its real name (the name of its folder, in any script: `日本語`). The key can be in any case, with `_`, `.` or a space for `-` (`sage_bot`). When two logbooks have the same name, the board shows each with its hash, for example `project-220ca5`. Wherever a key shows, the real name follows it when the board knows it and it differs: `project-220ca5 (日本語)`. A name that can mean more than one project, or that the key keeps only in part (`中文` gives the key `project`), opens no board: the board lists the candidates. An unknown name lists the known projects. A trailing `?` also works: `show board?`. |
+
+The board has these parts, in this order:
+
+1. **Needs you:** every open gate in full, never cut: its project's key, its question, the recommendation, the default and a numbered list of its options, and every verified pull request that is not merged. A pull request "waits for your merge" only when the task's branch in the project's folder, local and at origin, is at its reviewed head (the last SHA of its verdicts, which `sage-pr merge` merges), and the merge check passes on that head. The line gives the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off). It ends with "as of the last fetch": the board does not ask GitHub, so a push from another machine shows only after a `git fetch`. Else the line says "cannot merge yet" and what is missing, for example "T2: 1 of 2 clean cycles on this SHA", "T3 has open findings: F-T3-1", "branch t2 is not at the reviewed head 1a2b3c4" or "head unknown". The board never says "waits for your merge" when it cannot run the check.
+2. **Running now:** each agent with its task, role and age.
+3. **Merged since the last board** of each project, with links. The sage folder keeps, for each logbook, the time of its last board, its highest task id and its tasks that were not closed then, in `board.json`. A closed task never changes, so this stays small however many tasks merged, and two boards at once lose no entry.
+4. **One section per project:** a line per active task (id, title, state, pull request link, round), at most 8 and then "and N more (show board for sage)" (a board for one named project shows all), the count of framed tasks, and the next 3 framed tasks by id. The active tasks come in this order:
+   1. The tasks in the reviewing or verifying state that have a pull request. They come before all the other tasks, so the limit of 8 hides a pull request that waits for a review only when 9 or more of them wait. Among them, the next two rules give the order.
+   2. The other tasks by their latest change, the newest first. The latest change is the latest time in the logbook for that task: an agent run that started or ended, a gate, a verdict in the ledger or a decision.
+   3. The tasks with no time, by id.
+
+   The real name and the pull request links come from the project's own folder: the folder whose logbook this is. A folder that only has the same name gives neither, and so does a `checkout.txt` that names the folder of another logbook. Then the board shows the key and no links, as for a logbook with no `checkout.txt`.
+
+Before a gate gets to the board, the state tool checks it. `gate add` refuses a gate with:
+
+- a `--recommend` or a `--default` that is not one of the options, by its text or its number;
+- two options that look the same, for example `Keep|keep`, also with other width or hidden characters;
+- an option that starts with `other:`, because that marks an answer in your own words.
+
+Agents write the gate and task text, so the board escapes it: a link, an image, HTML, a bare web address, a www name or an email in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the whole gate. It records your answer in the logbook of the gate's own project, so an answer never goes to another project's gate with the same id. It records a listed option by its number, so no text that an agent wrote goes into a command. When you answer in your own words, it records them too, marked as your own answer (`other: …`). Your words go into the command as the hex of their UTF-8 bytes (`gate answer <G> --other-hex <hex>`), so no text of yours can run as a command. `sage init` and `task add` write each project's folder to `checkout.txt` in its logbook. When the board does not know a project's folder (a logbook with no `sage init` or `task add` since this version), the gate says "Answer it in a session of" that project. The text is readable without the cards. Outside Claude Code, you (or any chat that can run a command) can print the board from a clone of the sage repository with `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
 
 ## Principles
 
@@ -270,6 +342,7 @@ Agents seldom load a skill by themselves, so a **hook** gives the principle at t
 | The request asks for a refactor or a cleanup | subtract-before-you-add, laziness-protocol, migrate-callers-then-delete-legacy-apis |
 | The agent is about to change a test file | test-behavior-not-implementation |
 | The agent is about to write a document | contextualize-and-write-for-the-reader |
+| The agent is about to write or change a README | readme-guide (not a principle: the README guide) |
 | The agent is about to commit | sequence-verifiable-units |
 | A check fails | fix-root-causes |
 | Two changes in a row do not make the same check pass | attack-the-premise |
@@ -341,9 +414,23 @@ With Remote Control, you can follow, steer and start Claude Code sessions from t
 
 In the desktop app, also turn on **Settings → Claude Code → Connect new sessions to Remote Control**. Before the first `server`, do three things once, in the macOS Terminal app:
 
-1. Run `claude auth login`. A `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` does not work for Remote Control. If your `~/.zshrc` sets it, run step 3 as `env -u CLAUDE_CODE_OAUTH_TOKEN claude remote-control`.
-2. Run `claude` in the server's folder, and answer Yes to the trust question.
-3. Run `claude remote-control` in the same folder, answer `y` to "Enable Remote Control?", then press Ctrl+C.
+1. Log in. A `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` does not work for Remote Control.
+
+   ```sh
+   claude auth login
+   ```
+
+2. In the server's folder, start Claude Code, and answer Yes to the trust question.
+
+   ```sh
+   claude
+   ```
+
+3. In the same folder, run this command, answer `y` to "Enable Remote Control?", then press Ctrl+C. If your `~/.zshrc` sets `CLAUDE_CODE_OAUTH_TOKEN`, put `env -u CLAUDE_CODE_OAUTH_TOKEN` before it.
+
+   ```sh
+   claude remote-control
+   ```
 
 While the server runs, your claude.ai account can start sessions on your computer, and they can reach everything in the folder.
 
@@ -351,7 +438,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 **What does it cost?** It uses your Claude plan's usage limits, or API credits. Every agent is a separate run. In [the first dry run](docs/runs/dry-run-1.html), a small bug fix with a security risk took 15 agent runs, about $2.60 at API prices, before the fixes that came from that run. I don't have numbers from real projects yet.
 
-**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. It switches on only when a message starts with "autopilot on", or with "sage mode" followed by "autopilot", for example "sage mode autopilot" or "sage mode on, autopilot on". Any message of yours that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, also when the message turns it on. In an agent's report or a notification, only a line that starts with "autopilot off" does. Text inside an agent's report, a task notification or another session's message never switches it on, and when the hook cannot read a prompt's frames, nothing in that prompt switches it on. When Claude Code joins your message to one of them, or queues your message as a whole system reminder outside them, your part counts. The hook lets a merge through only as the one merge command on its own: it refuses a merge through the GitHub API, a variable, a script or another program, and any command that names a merge outside the text of a harmless command, such as a commit message or a pull request body. The chief's instructions say that a deploy or deleting data always needs you, also on autopilot; that rule is not yet held in code.
+**Is it safe to let it work alone?** Each agent works in its own git worktree. Nothing reaches main except through a pull request, and the hook blocks force-pushes. Autopilot is off until you turn it on. It switches on only when a message starts with "autopilot on", or with "sage mode" followed by "autopilot", for example "sage mode autopilot" or "sage mode on, autopilot on". Any message of yours that mentions autopilot together with an off word, such as off, stop, pause, disable or cancel, in any form, switches it off, also when the message turns it on. In an agent's report or a notification, only a line that starts with "autopilot off" does. Text inside an agent's report, a task notification or another session's message never switches it on, and when the hook cannot read a prompt's frames, nothing in that prompt switches it on. When Claude Code joins your message to one of them, or queues your message as a whole system reminder outside them, your part counts. The hook lets a merge through only as the one merge command on its own: it refuses a merge through the GitHub API, a variable, a script or another program, and any command that names a merge outside the text of a harmless command, such as a commit message or a pull request body. The chief's instructions say that a deploy, deleting data, and closing a pull request that is not sage's always need you, also on autopilot; that rule is not yet held in code.
 
 **Which projects fit?** A project with tests and a GitHub remote. Without tests, QA can only check by running the app. Without a remote, the work stops at a verified branch.
 
@@ -364,11 +451,12 @@ While the server runs, your claude.ai account can start sessions on your compute
 | Path | What it is |
 | --- | --- |
 | `plugins/sage/agents/` | Sage mode's team. |
-| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, the state tool `sage`, and `report`. |
+| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard and the README guide (generated), `remote-control`, `sage-help`, the state tool `sage`, and `report`. |
 | `plugins/sage/hooks/` | `hooks.json`: the principle hooks. `claude.json`: the sage mode hook. |
 | `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
+| `writing/readme.md` | The README guide: how to write a project README, with examples and a checklist. |
 | `preferences/`, `instructions/core.md` | How I work with agents, and the always-on file made from it. |
 | `docs/` | The design, the dry run reports, and the README's graphics. |
 | `scripts/graphics.mjs` | Draws the graphics in this README, the toad sage too, in light and dark. |
@@ -376,7 +464,25 @@ While the server runs, your claude.ai account can start sessions on your compute
 **Change it:**
 
 1. Edit a source: `principles/`, `writing/`, `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
-2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`.
+2. After a change to a graphic, draw the graphics again:
+
+   ```sh
+   npm run graphics
+   ```
+
+3. Build, then run the checks and the tests. CI runs the check and the tests.
+
+   ```sh
+   npm run build
+   ```
+
+   ```sh
+   npm run check
+   ```
+
+   ```sh
+   npm test
+   ```
 
 ## Credits
 
