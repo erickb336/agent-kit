@@ -701,7 +701,8 @@ function mergeForm(command) {
   const words = text.split(/[ \t]+/);
   if (words.slice(0, 3).join(" ") !== "gh pr merge" || /[^\w \t=-]/.test(text)) return undefined;
   const [, , , pr, ...flags] = words;
-  if (!/^\d+$/.test(pr ?? "")) return { problem: `name the pull request by its number: ${MERGE_FORM}.` };
+  // The state tool's one PR-number rule. When the state tool cannot load, the merge check refuses every merge anyway.
+  if (stateTool.PR && !stateTool.PR.test(pr ?? "")) return { problem: `name the pull request by its number (digits, no leading zero): ${MERGE_FORM}.` };
   const shas = [];
   const modes = new Set();
   for (let k = 0; k < flags.length; k++) {
