@@ -55,3 +55,35 @@ test("owner prompt bounds forwarded text and preserves unrelated metadata outsid
   const extra = { ...options, metadata: { ...metadata, instructions: "private", cwd: "/unrelated" } };
   assert.deepEqual(ownerPrompt(input, extra), { kind: "owner-prompt", session: root, turn, text: "sage mode" });
 });
+
+
+const startup = { hook_event_name: "SessionStart", session_id: root, source: "startup", cwd: input.cwd,
+  transcript_path: input.transcript_path, model: input.model, permission_mode: input.permission_mode };
+
+test("fresh runtime recognizes only the captured initial root creation", async () => {
+  const { freshRuntime } = await load();
+  assert.deepEqual(freshRuntime(startup, { metadata }), { kind: "fresh-runtime", session: root, version: "0.160.0" });
+  for (const source of ["resume", "fork", "clear", "compact", "", null]) {
+    assert.equal(freshRuntime({ ...startup, source }, { metadata }), null);
+  }
+});
+
+test("fresh runtime refuses unknown frames and child or mismatched metadata", async () => {
+  const { freshRuntime } = await load();
+  for (const bad of [null, {}, { ...startup, agent_id: child }, { ...startup, turn_id: turn },
+    { ...startup, source: undefined }, { ...startup, session_id: "invalid" }, { ...startup, cwd: "relative" }]) {
+    assert.equal(freshRuntime(bad, { metadata }), null);
+  }
+  for (const bad of [null, {}, { ...metadata, id: child }, { ...metadata, session_id: child },
+    { ...metadata, cli_version: "0.160.1" }, { ...metadata, parent_thread_id: null }, { ...metadata, agent_path: null }]) {
+    assert.equal(freshRuntime(startup, { metadata: bad }), null);
+  }
+});
+
+test("fresh runtime does not turn saved metadata or a prompt into runtime evidence", async () => {
+  const { freshRuntime } = await load();
+  assert.equal(freshRuntime(input, { metadata }), null);
+  assert.equal(freshRuntime(metadata, { metadata }), null);
+  assert.equal(freshRuntime(startup), null);
+  assert.equal(freshRuntime({ ...startup, source: "resume" }, { metadata }), null);
+});
