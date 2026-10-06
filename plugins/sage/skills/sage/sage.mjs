@@ -749,7 +749,8 @@ export function sage(argv, env = process.env) {
   if (cmd === "config") {
     const set = {};
     for (const kv of pos) {
-      const [k, v = ""] = kv.split("=");
+      const [k, v = "", ...more] = kv.split("=");
+      if (more.length) refuse(`${JSON.stringify(k)} has more than one "=": write key=value`);
       const count = Object.hasOwn(COUNTS, k) || CAP.test(k);
       if (count && /^[1-9]\d*$/.test(v) && Number(v) > limit(k)) refuse(`${k} must be ${limit(k)} or less: ${v} is above the limit, which keeps a typo from blocking every merge or starting too many agents`);
       if (count && typed(k, v) === undefined) refuse(`${k} must be a whole number of ${floor(k)} or more${/^0+$/.test(v) ? `: with 0, ${COUNTS[k] ?? "no sage agent could start for that project"}` : /^[1-9]\d*$/.test(v) ? `: ${v} is below the floor of ${floor(k)}, which only a code change lowers` : `, not ${JSON.stringify(v)}`}`);

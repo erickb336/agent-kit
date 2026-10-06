@@ -1101,6 +1101,14 @@ test("QA-3: a bad count gives the reason for its value, and a SHA in capitals na
   assert.deepEqual([s.ok("merge-check", "--sha", SHA.toUpperCase()), s.ok("merge-check", "--sha", SHA)], Array(2).fill("T1 may merge: 1 clean cycle on this SHA"));
 });
 
+test("config refuses a key=value with a second =, and sets nothing (F-T56-EQ)", () => {
+  const s = store();
+  assert.equal(s.no("config", "cycles.large=3=4"), 'sage: "cycles.large" has more than one "=": write key=value');
+  assert.equal(s.no("config", "max_agents=5", "arena_models=opus=sonnet"), 'sage: "arena_models" has more than one "=": write key=value');
+  assert.match(s.ok("config"), /^max_agents=3 cycles\.small=1 cycles\.large=2 /, "a refused command sets none of its keys");
+  assert.match(s.ok("config", "cycles.large=3"), /^max_agents=3 cycles\.small=1 cycles\.large=3 /);
+});
+
 test("QA-4: an id never comes back while a row of the logbook still names it", () => {
   const s = store();
   const lose = (table, col, id) => byHand(s.dir, table, col, id, () => null);

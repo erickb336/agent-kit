@@ -719,9 +719,33 @@ test("a merge needs autopilot on, the checked head SHA, and its clean cycles in 
   s.sage("task", "add", "--title", "t", "--size", "small");
   for (const cycle of ["1", "2"]) for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.sage("verdict", "T1", "--sha", SHA, "--kind", kind, "--cycle", cycle, "--pr", "41");
   assert.equal(merge(), undefined, "2 clean cycles on the SHA");
+  for (const agent_type of ["sage:implementer", "sage:chief-of-staff", ""]) {
+    const own = s.send(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`, FEATURE, { agent_id: "a1", agent_type }));
+    assert.equal(denied(own), "sage: an agent never merges. Report the pull request as ready.", `the same ready merge from an agent (${agent_type || "no type"})`);
+  }
   assert.equal(merge(`--match-head-commit=${SHA}`), undefined);
   assert.match(context(s.send(prompt("autopilot off"))), /autopilot is off/);
   assert.match(merge(), /autopilot is off/, "the kill switch");
+});
+
+test("the merge rule and the push rule hold for every tool that runs a command: Monitor, PowerShell and the terminal tool (T56)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const exact = `gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`;
+  const notForm = "gh pr merge 41 --squash --delete-branch";
+  const force = "git push --force origin claude/t1";
+  const viaBash = { notForm: denied(s.send(bash(notForm))), exact: denied(s.send(bash(exact))), force: denied(s.send(bash(force))) };
+  assert.match(viaBash.notForm, /add --match-head-commit/);
+  assert.match(viaBash.exact, /^sage: autopilot is off, so the user merges/);
+  assert.match(viaBash.force, FORCE);
+  for (const name of ["Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+    const run = (command, extra = {}) => denied(s.send(tool(name, { command, description: "d" }, { cwd: FEATURE, ...extra })));
+    assert.equal(run(notForm), viaBash.notForm, `${name}: a merge that is not the form`);
+    assert.equal(run(exact), viaBash.exact, `${name}: the chief's exact merge with autopilot off`);
+    assert.equal(run(exact, AGENT), "sage: an agent never merges. Report the pull request as ready.", `${name}: an agent's exact merge`);
+    assert.equal(run(force), viaBash.force, `${name}: a force-push`);
+    assert.equal(run("echo hi"), undefined, `${name}: a harmless command`);
+  }
 });
 
 test("T54-1: the autopilot note says that a cycles key with no number blocks every merge, and never prints NaN", () => {

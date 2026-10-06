@@ -9,9 +9,10 @@
 //   - In sage mode it holds the rules that prompts alone did not hold in Orchestrator (docs/design/sage-mode.html,
 //     "Rules"): the chief never edits files, every brief has all its fields, at most cap.<project> (default
 //     max_agents) sage agents run at once for a project and cap_total across all projects, nobody force-pushes or pushes to main, and a merge needs autopilot on, the checked head SHA and the clean
-//     cycles that the ledger records for it (the merge check). The merge rule and the push rule are allow-lists: a
+//     cycles that the ledger records for it (the merge check), and an agent never merges. The merge rule and the push rule are allow-lists: a
 //     command that names a merge or runs a push is refused unless it is exactly the merge form or the push form, or the
-//     merge text stands only in a harmless command's text. One case asks the user instead of a refusal: the chief's
+//     merge text stands only in a harmless command's text. Both rules apply to every command tool (SHELL_TOOLS: Bash,
+//     Monitor, PowerShell, mcp__terminal__*), not only Bash. One case asks the user instead of a refusal: the chief's
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
@@ -274,7 +275,7 @@ export function handle(input, state, slots) {
       return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
     }
   }
-  if (tool === "Bash") return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
+  if (SHELL_TOOLS.test(tool)) return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
   return undefined;
 }
 
@@ -833,6 +834,7 @@ function gitGate(event, command, state, cwd, main) {
   const merge = mergeIn(command);
   if (!merge) return undefined;
   if (merge.problem) return deny(event, merge.problem);
+  if (!main) return deny(event, "an agent never merges. Report the pull request as ready.");
   if (!state.autopilot) return deny(event, 'autopilot is off, so the user merges. Report the pull request as ready. The user turns it on with a message that starts with "autopilot on".');
   let verdict;
   try {
