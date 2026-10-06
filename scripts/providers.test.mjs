@@ -169,3 +169,18 @@ test("a mismatched core pin fails the build before replacing plugin files", (t) 
   assert.match(result.stderr, /sage-codex must pin sage-core 0.1.0/);
   assert.equal(readFileSync(output, "utf8"), before);
 });
+
+test("check rejects a hook change made only in the generated Claude plugin", (t) => {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-stale-hook-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
+  const hook = join(dir, "plugins/sage/hooks/sage-hook.mjs");
+  writeFileSync(hook, `${readFileSync(hook, "utf8")}\n// A change in the old source path.\n`);
+  const checked = spawnSync(process.execPath, [join(dir, "scripts/check.mjs")], { encoding: "utf8" });
+  assert.equal(checked.status, 1);
+  assert.match(checked.stderr, /plugins\/sage\/hooks\/sage-hook\.mjs: out of date/);
+  const built = spawnSync(process.execPath, [join(dir, "scripts/build.mjs")], { encoding: "utf8" });
+  assert.equal(built.status, 0, built.stderr);
+  const current = spawnSync(process.execPath, [join(dir, "scripts/check.mjs")], { encoding: "utf8" });
+  assert.equal(current.status, 0, current.stderr);
+});

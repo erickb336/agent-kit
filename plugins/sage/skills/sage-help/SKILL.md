@@ -62,7 +62,7 @@ Install the plugin, then start a new session: a session that is already open doe
 
 **Read:** the README, section "What to say".
 
-sage mode makes the session the user's chief of staff. Autopilot lets verified pull requests merge without the user. Autopilot is off until the user turns it on. Each one switches on only at the start of the user's own message: "sage mode" (then a full stop, a comma, a colon or a line break) and "sage mode off" for the mode, and "autopilot on" for autopilot, which needs sage mode on. An off word with autopilot works anywhere in the user's message. The other forms and the exact rules are in [What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say): link that table, and do not copy it.
+sage mode makes the session the user's chief of staff. Autopilot lets verified pull requests merge without the user. Autopilot is off until the user turns it on. Each one switches on only at the start of the user's own message: "sage mode" (then a full stop, a comma, a colon, a line break or more words, but no "?" on its line) and "sage mode off" for the mode, and "autopilot on" (then a full stop, a comma, a colon or a line break) for autopilot, which needs sage mode on. An off word with autopilot works anywhere in the user's message. The other forms and the exact rules are in [What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say): link that table, and do not copy it.
 
 ## Show the board
 
