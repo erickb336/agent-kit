@@ -4,14 +4,16 @@
 // arguments are a closed grammar: exactly `create|view|merge <task id>`, and everything else refuses. The branch and the
 // reviewed head come only from the logbook, which only the chief writes: the branch from tasks.tsv, the head from the
 // task's latest ledger row. git runs only in the script's own mirror (<logbook>/mirror.git), with sage's neutral options,
-// and gh only in an empty temp folder; both through execFile with argument arrays, never a shell. No message prints a
+// and gh only in an empty folder; both through execFile with argument arrays, never a shell. The script writes, reads and
+// runs nothing in a folder that an agent can write (its worktree, the temp folder), except that it reads the bundle once
+// without a link: its own files are in a new folder in the logbook folder. git and gh get only the allow-listed variables
+// of the chief's environment (KEEP), and the script refuses NODE_OPTIONS, which it cannot undo. No message prints a
 // URL's user or password, an Authorization header, a gh token's value, the origin or SAGE_REPO, nor the argument list of
 // a failed git call. Exit codes: 0 done (also "already merged", when GitHub merged the reviewed head), 1 refused (the
 // script's own checks), 2 failed (git or gh failed), 3 merged but the mirror refresh failed (run merge again later).
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync, writeSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { git, mergeCheck, ofTask, projectRoot, read, sage, storeDir, worktreeRoot } from "./sage.mjs";
 
@@ -24,8 +26,38 @@ const TASK = /^T[1-9][0-9]{0,5}$/;
 const GITHUB = /^(?:https:\/\/(?:[^/@\s]+@)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
 const REPO = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 
-/** The variables that hold a gh token: their values never print. */
-const TOKENS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+/** The variables that hold a gh token: their values never print. Read once at the start, before the environment is cleaned. */
+const SECRETS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"].map((v) => process.env[v]).filter(Boolean);
+
+/**
+ * The only variables of the chief's environment that the script, git and gh keep. Every other one drops, because it can
+ * change where git pushes or what git and gh run: GIT_CONFIG_COUNT/KEY/VALUE, GIT_CONFIG_PARAMETERS, GIT_SSH_COMMAND,
+ * GIT_DIR, GH_HOST, GH_REPO, HTTPS_PROXY, GH_ENTERPRISE_TOKEN, and others.
+ * - PATH: finds git, gh and ssh.
+ * - HOME: gh's login (~/.config/gh) and ssh's keys and known hosts.
+ * - LANG, LC_*: the language and the character set of the messages.
+ * - GH_TOKEN, GITHUB_TOKEN: gh's login when the chief gives it as a variable (gh reads them for github.com only).
+ * - GH_CONFIG_DIR: gh's login folder when the chief moved it.
+ * - SSH_AUTH_SOCK: the ssh agent, for an ssh origin.
+ * - SAGE_* and CLAUDE_CONFIG_DIR: the state tool's own variables (the logbook, the worktree root); git and gh ignore them.
+ */
+const KEEP = /^(?:PATH|HOME|LANG|LC_[A-Z]+|GH_TOKEN|GITHUB_TOKEN|GH_CONFIG_DIR|SSH_AUTH_SOCK|SAGE_[A-Z_]+|CLAUDE_CONFIG_DIR)$/;
+/**
+ * git's settings over every config file: no credential helper from a config file (an empty value clears the list), and
+ * for github.com the helper that gh's own login gives (`gh auth setup-git` writes the same).
+ */
+const SETTINGS = [
+  ["credential.helper", ""],
+  ["credential.https://github.com.helper", "!gh auth git-credential"],
+];
+/**
+ * The script's environment: the KEEP variables of env, no system or global git config (the global config can redirect
+ * a push or run a helper), and SETTINGS. The variables of SETTINGS replace any of the chief's.
+ */
+export function clean(env) {
+  const settings = SETTINGS.flatMap(([key, value], i) => [[`GIT_CONFIG_KEY_${i}`, key], [`GIT_CONFIG_VALUE_${i}`, value]]);
+  return { ...Object.fromEntries(Object.entries(env).filter(([k]) => KEEP.test(k))), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: String(SETTINGS.length), ...Object.fromEntries(settings) };
+}
 /**
  * Removes credentials from text that the script does not write, such as gh's error messages (messages never print the
  * origin or SAGE_REPO): the value of each token variable as ***; the rest of an Authorization line as ***; and the user and
@@ -33,9 +65,7 @@ const TOKENS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTER
  * the scp form user:pass@host:path.
  */
 const redact = (text) =>
-  TOKENS.map((v) => process.env[v])
-    .filter(Boolean)
-    .reduce((t, value) => t.split(value).join("***"), String(text))
+  SECRETS.reduce((t, value) => t.split(value).join("***"), String(text))
     .replace(/(authorization\s*:).*/gi, "$1 ***")
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s"'<>()]*@|[^\s"'<>()]*@(?=[^\s"'<>()@]*[:/])/gi, (_, scheme = "") => `${scheme}***@`);
 class Refusal extends Error {}
@@ -105,7 +135,7 @@ function mirrorOf(dir, url, env) {
   const st = lstatSync(mirror, { throwIfNoEntry: false });
   if (st && !st.isDirectory()) no(`${mirror} is not a folder: ask the user to remove it`);
   if (!st) run(["init", "-q", "--bare", mirror], env);
-  inMirror(mirror, ["fetch", "-q", "--no-tags", "--", url, `+refs/heads/${BASE}:refs/heads/${BASE}`], env);
+  inMirror(mirror, ["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, `+refs/heads/${BASE}:refs/heads/${BASE}`], env);
   return mirror;
 }
 
@@ -121,15 +151,18 @@ function ancestor(mirror, a, b, env) {
 }
 
 /**
- * Copies the bundle into the temp folder: it opens once, without following a link, checks the open file (a plain file
- * with one link, at most BUNDLE_MAX bytes, that starts with a bundle's first line) and copies from it, so a change of
- * the path after the check reaches nothing. The first line keeps out a file that git reads otherwise, such as "gitdir: <repository>".
+ * Copies the bundle into the script's folder: it opens once, without following a link, checks the open file (a plain
+ * file with one link, at most BUNDLE_MAX bytes, that starts with a bundle's first line) and copies from it, so a change
+ * of the path after the check reaches nothing. The first line keeps out a file that git reads otherwise, such as
+ * "gitdir: <repository>". The bundle's folder must be a folder in the worktree root `root`, not a link to another place.
  */
-export function copyBundle(path, temp, branch) {
+export function copyBundle(path, temp, branch, root) {
   const make = `git bundle create ${path} ${BASE}..${branch}`;
   const remake = `: remove it, then write it with ${make}`;
   let fd;
   try {
+    const parent = realpathSync(dirname(path));
+    if (parent !== join(realpathSync(root), basename(dirname(path)))) no(`the bundle's folder ${dirname(path)} is a link to ${parent}, not a folder in the worktree root: remove the link, then write the bundle with ${make}`);
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
     if (e.code === "ELOOP") no(`the bundle ${path} is a link, not a plain file${remake}`);
@@ -143,7 +176,7 @@ export function copyBundle(path, temp, branch) {
     if (st.nlink !== 1) no(`the bundle ${path} has ${st.nlink} links, not 1${remake}`);
     if (st.size > BUNDLE_MAX) no(`the bundle ${path} is over ${BUNDLE_MAX} bytes: the bundle is too big, ask the user`);
     const copy = join(temp, "task.bundle");
-    const out = openSync(copy, "wx", 0o600);
+    const out = openSync(copy, "wx", 0o600); // O_CREAT|O_EXCL: never through a link or into an old file
     try {
       const buf = Buffer.alloc(1024 * 1024);
       for (let n = 0, r; (r = readSync(fd, buf, 0, buf.length, null)) > 0; ) {
@@ -161,12 +194,15 @@ export function copyBundle(path, temp, branch) {
 }
 
 /**
- * gh in a new empty folder that is not a repository, so it reads no git config; with --repo, never a prompt. A failed gh
- * call (network, GitHub, login, a refused merge) is a failure, exit 2, not a refusal: the script did not refuse it.
+ * gh in a new empty folder in the script's folder, with --repo and never a prompt. GIT_DIR names no repository, and
+ * GIT_CEILING_DIRECTORIES stops a search above the script's folder, so the git calls of gh find no repository and read
+ * no repository's config. A failed gh call (network, GitHub, login, a refused merge) is a failure, exit 2, not a
+ * refusal: the script did not refuse it.
  */
 function gh(args, temp, env, next = "") {
   try {
-    return execFileSync("gh", args, { cwd: mkdtempSync(join(temp, "gh-")), encoding: "utf8", env: { ...env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" }, stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const repoless = { ...env, GIT_DIR: "/nonexistent", GIT_CEILING_DIRECTORIES: temp, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" };
+    return execFileSync("gh", args, { cwd: mkdtempSync(join(temp, "gh-")), encoding: "utf8", env: repoless, stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch (e) {
     throw new Error(`gh ${args.slice(0, 2).join(" ")} failed: ${String(e.stderr || e.message).trim()}${next}`);
   }
@@ -202,11 +238,11 @@ function create({ project, dir, t, branch, head, url, repo }, temp, env) {
     if (p.ofBranch && p.state === "MERGED" && sameHead(p, t.pr, head)) no(`already merged as PR #${t.pr}: nothing to create. Mark the task merged: sage task ${t.id} set state=merged`);
   }
   const path = join(worktreeRoot(env), basename(dir), `${t.id}.bundle`);
-  const bundle = copyBundle(path, temp, branch);
+  const bundle = copyBundle(path, temp, branch, worktreeRoot(env));
   const mirror = mirrorOf(dir, url, env);
   const ref = `refs/sage/${t.id}`;
   try {
-    inMirror(mirror, ["-c", "transfer.fsckObjects=true", "fetch", "-q", "--no-tags", "--", bundle, `+refs/heads/${branch}:${ref}`], env);
+    inMirror(mirror, ["-c", "transfer.fsckObjects=true", "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", bundle, `+refs/heads/${branch}:${ref}`], env);
   } catch {
     no(`the bundle is not a git bundle of the branch ${branch} that fits main (git bundle create <file> main..${branch})`);
   }
@@ -228,7 +264,7 @@ function create({ project, dir, t, branch, head, url, repo }, temp, env) {
   if (kept) [out, number] = [`${pushed}; pull request #${kept.number} ${kept.url} is open`, String(kept.number)];
   else {
     const body = join(temp, "body.md");
-    writeFileSync(body, `${t.id}: ${t.title}\n\nReviewed head: ${head}\n`);
+    writeFileSync(body, `${t.id}: ${t.title}\n\nReviewed head: ${head}\n`, { flag: "wx", mode: 0o600 });
     const made = gh(["pr", "create", `--repo=${repo}`, `--base=${BASE}`, `--head=${branch}`, `--title=${t.id}: ${t.title}`, `--body-file=${body}`], temp, env);
     out = `${pushed}; opened ${made}`;
     number = /\/pull\/([1-9][0-9]*)$/.exec(made)?.[1];
@@ -271,21 +307,37 @@ function merge({ dir, t, branch, head, url, repo }, temp, env) {
   return refresh(`merged ${branch} at ${short(head)}${out ? `: ${out}` : ""}`);
 }
 
-/** Runs one call. A refusal throws, with its reason. */
+/**
+ * Runs one call. A refusal throws, with its reason. The script's own folder is new in the logbook folder, which agents
+ * cannot write, and git and gh use it as their temp folder too; it goes at the end (rmSync removes a link, not its target).
+ */
 export function sagePr(argv, env = process.env) {
   const { verb, task } = parse(argv);
   const rec = record(task, verb, env);
-  const temp = mkdtempSync(join(tmpdir(), "sage-pr-"));
+  const temp = mkdtempSync(join(rec.dir, ".sage-pr-"));
+  const tools = { ...env, TMPDIR: temp };
   try {
-    if (verb === "view") return gh(["pr", "view", `--repo=${rec.repo}`, "--json=number,state,headRefOid,url", "--", rec.branch], temp, env);
-    return verb === "create" ? create(rec, temp, env) : merge(rec, temp, env);
+    if (verb === "view") return gh(["pr", "view", `--repo=${rec.repo}`, "--json=number,state,headRefOid,url", "--", rec.branch], temp, tools);
+    return verb === "create" ? create(rec, temp, tools) : merge(rec, temp, tools);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
 }
 
+/**
+ * The script's whole process gets the clean environment, so that also the state tool's own git calls (which read
+ * process.env) see only it. NODE_OPTIONS ran its code before the script started, so the script can only refuse it.
+ */
+function start() {
+  if (process.env.NODE_OPTIONS !== undefined) no("NODE_OPTIONS is set, and it can run code inside the script. Run sage-pr without it: env -u NODE_OPTIONS node sage-pr.mjs <verb> <task>");
+  const env = clean(process.env);
+  for (const k of Object.keys(process.env)) if (!(k in env)) delete process.env[k];
+  Object.assign(process.env, env);
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
+    start();
     console.log(redact(sagePr(process.argv.slice(2))));
   } catch (e) {
     const code = e instanceof Refusal ? 1 : e instanceof Merged ? 3 : 2;

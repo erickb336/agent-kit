@@ -2,8 +2,8 @@
 // on PATH that records its arguments and its folder. HOME, GH_CONFIG_DIR, the sage root and the worktree root are temp
 // folders, and GH_TOKEN is a dummy, so no test reaches GitHub or reads the owner's token.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
@@ -14,23 +14,30 @@ const PR = fileURLToPath(new URL("../plugins/sage/skills/sage/sage-pr.mjs", impo
 const timeout = 20_000;
 
 /**
- * The fake gh: it records each call (arguments, folder, the folder's entries, token, config folder) and plays GitHub's
+ * The fake gh: it records each call (arguments, folder, the folder's entries, token, config folder, the names of its
+ * environment's variables, and the repository that git finds in its folder after a git status, as real gh's git calls
+ * would) and plays GitHub's
  * pull requests on the bare repository. A pull request in FAKE_GH_STATE may have base (default main), cross (from a fork)
  * and owner (its head repository's owner, default "owner"); its headRefOid is oid (set by merge), else the branch's tip in the
  * bare repository. view and merge take a number or a branch after --.
  * FAKE_GH_FAIL names a call (create, merge, ...) that fails like GitHub, with FAKE_GH_ERR on stderr; FAKE_GH_CREATE_OUT
- * replaces create's answer.
+ * replaces create's answer. The script gives gh only allow-listed variables, so the fake reads the test's environment
+ * (FAKE_GH_*) from fake.json next to it, which the pr helper writes before each call.
  */
 const FAKE_GH = `#!/usr/bin/env node
 const { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
-const env = process.env, args = process.argv.slice(2);
-appendFileSync(env.FAKE_GH_LOG, JSON.stringify({ args, cwd: process.cwd(), entries: readdirSync(process.cwd()), token: env.GH_TOKEN, config: env.GH_CONFIG_DIR }) + "\\n");
+const env = JSON.parse(readFileSync(__dirname + "/fake.json", "utf8")), args = process.argv.slice(2), got = process.env;
+const entries = readdirSync(process.cwd());
+let repo = "none";
+try { execFileSync("git", ["status", "--porcelain"], { stdio: "ignore" }); } catch {}
+try { repo = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch {}
+appendFileSync(env.FAKE_GH_LOG, JSON.stringify({ args, cwd: process.cwd(), entries, token: got.GH_TOKEN, config: got.GH_CONFIG_DIR, keys: Object.keys(got).sort(), repo }) + "\\n");
 const prs = existsSync(env.FAKE_GH_STATE) ? JSON.parse(readFileSync(env.FAKE_GH_STATE, "utf8")) : [];
 const save = () => writeFileSync(env.FAKE_GH_STATE, JSON.stringify(prs));
 const flag = (n) => args.find((a) => a.startsWith("--" + n + "="))?.slice(n.length + 3);
 const after = args[args.indexOf("--") + 1];
-const bare = (...a) => execFileSync("git", ["--git-dir", env.FAKE_GH_BARE, ...a], { encoding: "utf8" }).trim();
+const bare = (...a) => execFileSync("git", ["--git-dir", env.FAKE_GH_BARE, ...a], { encoding: "utf8", env }).trim();
 const url = (n) => "https://github.com/owner/repo/pull/" + n;
 const tip = (b) => { try { return bare("rev-parse", "--verify", "-q", "refs/heads/" + b); } catch { return ""; } };
 const json = (p) => { const all = { number: p.number, state: p.state, url: url(p.number), baseRefName: p.base ?? "main", headRefName: p.head, headRefOid: p.oid ?? tip(p.head), isCrossRepository: !!p.cross, headRepositoryOwner: { login: p.owner ?? "owner" } }; return Object.fromEntries(flag("json").split(",").filter((k) => k in all).map((k) => [k, all[k]])); };
@@ -86,7 +93,10 @@ function world() {
     assert.equal(r.status, 0, r.stderr);
     return r.stdout;
   };
-  const pr = (...a) => spawnSync("node", [PR, ...a], { encoding: "utf8", env, cwd: at("home"), timeout });
+  const pr = (...a) => {
+    writeFileSync(at("bin", "fake.json"), JSON.stringify(env));
+    return spawnSync("node", [PR, ...a], { encoding: "utf8", env, cwd: at("home"), timeout });
+  };
   git("init", "-q", "--bare", "-b", "main", at("remote.git"));
   git("init", "-q", "-b", "main", at("project"));
   writeFileSync(at("project", "a.txt"), "a\n");
@@ -669,4 +679,154 @@ test("the script starts git and gh only through execFile with an argument array,
   assert.deepEqual([...src.matchAll(/import \{([^}]*)\} from "node:child_process"/g)].map((m) => m[1].trim()), ["execFileSync"]);
   assert.doesNotMatch(src, /\bshell\s*:|\bexecSync\b|\bspawn(Sync)?\b|(?<![.\w])exec\(/);
   assert.deepEqual([...src.matchAll(/execFileSync\(("[^"]*")/g)].map((m) => m[1]), ['"gh"']); // git goes through sage.mjs git(), which is execFileSync too
+});
+
+/** A world with T1's head reviewed (checks only), not yet created. */
+function ready() {
+  const w = world();
+  const head = w.commit("b.txt");
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  return { w, head };
+}
+/** A script for git to run (fsmonitor, ssh, a hook) that only touches the marker file and fails. */
+function toucher(w, name) {
+  writeFileSync(w.at(`${name}.sh`), `#!/bin/sh\ntouch ${w.at(`${name}-RAN`)}\nexit 1\n`);
+  chmodSync(w.at(`${name}.sh`), 0o755);
+  return { script: w.at(`${name}.sh`), ran: () => existsSync(w.at(`${name}-RAN`)) };
+}
+
+test("T96-S11-BODYLINK: create writes nothing in the temp folder, so an agent's link there reaches no file", async () => {
+  const { w } = ready();
+  mkdirSync(w.at("agent-tmp"));
+  w.env.TMPDIR = w.at("agent-tmp"); // the temp folder, which agents can write
+  const victim = w.at("victim.txt");
+  writeFileSync(victim, "the owner's file\n");
+  // An agent that links body.md, in each new folder of the temp folder, to the owner's file (R615 E1).
+  const stop = w.at("stop");
+  const agent = spawn(process.execPath, ["-e", `const f = require("node:fs"), p = require("node:path"); const [tmp, target, stop] = process.argv.slice(1); const end = Date.now() + 30000; while (Date.now() < end && !f.existsSync(stop)) for (const n of f.readdirSync(tmp)) { try { f.symlinkSync(target, p.join(tmp, n, "body.md")); } catch {} }`, w.at("agent-tmp"), victim, stop], { stdio: "ignore" });
+  await new Promise((r) => setTimeout(r, 300));
+  let r;
+  try {
+    r = w.pr("create", "T1");
+  } finally {
+    writeFileSync(stop, "");
+    await new Promise((done) => agent.on("exit", done));
+  }
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(victim, "utf8"), "the owner's file\n");
+  for (const c of w.calls()) assert.match(c.cwd, new RegExp(`^${w.logbook.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.sage-pr-[^/]+/gh-[^/]+$`), "gh runs in the script's folder in the logbook");
+  assert.deepEqual(readdirSync(w.at("agent-tmp")), [], "the script made nothing in the temp folder");
+  assert.deepEqual(readdirSync(w.logbook).filter((n) => n.startsWith(".sage-pr-")), [], "the script's folder is gone at the end");
+});
+
+test("T96-S12-GHCWD: a .git that an agent plants in the temp folder is not gh's repository, and its fsmonitor never runs", () => {
+  const { w } = ready();
+  const fsmonitor = toucher(w, "fsmonitor");
+  w.git("init", "-q", w.at("agent-repo"));
+  w.git("-C", w.at("agent-repo"), "config", "core.fsmonitor", fsmonitor.script);
+  mkdirSync(w.at("agent-tmp"));
+  writeFileSync(w.at("agent-tmp", ".git"), `gitdir: ${w.at("agent-repo", ".git")}\n`); // R615 E2, without a race
+  w.env.TMPDIR = w.at("agent-tmp");
+  const r = w.pr("create", "T1");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(w.calls().map((c) => c.repo), ["none", "none"], "git finds no repository in gh's folder");
+  assert.equal(fsmonitor.ran(), false);
+  // The fake's git does find a planted repository when one is in reach: the check above can fail.
+  const probe = spawnSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: w.at("agent-tmp"), encoding: "utf8", env: { PATH: process.env.PATH, HOME: w.at("home") } });
+  assert.equal(probe.stdout.trim(), w.at("agent-repo", ".git"));
+});
+
+test("T96-S13-ENV: git and gh get only the allow-listed variables: GIT_CONFIG_*, GH_HOST, GH_REPO, a proxy and other tokens drop", () => {
+  const { w, head } = ready();
+  w.git("init", "-q", "--bare", w.at("evil.git"));
+  const hook = toucher(w, "hook");
+  mkdirSync(w.at("hooks"));
+  for (const h of ["reference-transaction", "pre-push"]) writeFileSync(w.at("hooks", h), readFileSync(hook.script)), chmodSync(w.at("hooks", h), 0o755);
+  Object.assign(w.env, {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: `url.${w.at("evil.git")}.pushInsteadOf`, // R615 E4b: the push went to evil.git while the script said "pushed"
+    GIT_CONFIG_VALUE_0: w.at("remote.git"),
+    GIT_CONFIG_PARAMETERS: `'core.hookspath'='${w.at("hooks")}' 'url.${w.at("evil.git")}.insteadof'='${w.at("remote.git")}'`,
+    GH_HOST: "ghe.example.invalid",
+    GH_REPO: "evil/other",
+    HTTPS_PROXY: "http://127.0.0.1:9",
+    GH_ENTERPRISE_TOKEN: "dummy-enterprise",
+    SOME_OTHER: "x",
+  });
+  const r = w.pr("create", "T1");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(w.remote("refs/heads/claude/t1"), head, "the push reached the origin");
+  assert.equal(w.git("--git-dir", w.at("evil.git"), "for-each-ref"), "", "nothing reached evil.git");
+  assert.equal(hook.ran(), false);
+  const passed = /^(?:LANG|LC_[A-Z]+|SSH_AUTH_SOCK|CLAUDE_CONFIG_DIR|__CF_USER_TEXT_ENCODING)$/; // kept when the test's environment has them; macOS adds the last to each process
+  for (const c of w.calls())
+    assert.deepEqual(c.keys.filter((k) => !passed.test(k)), [
+      "GH_CONFIG_DIR", "GH_NO_UPDATE_NOTIFIER", "GH_PROMPT_DISABLED", "GH_TOKEN",
+      "GIT_CEILING_DIRECTORIES", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_DIR",
+      "HOME", "PATH", "SAGE_HOME", "SAGE_PROJECT", "SAGE_REPO", "SAGE_TEST_PIDS", "SAGE_WORKTREES", "TMPDIR",
+    ]);
+});
+
+test("T96-S13-SSH: GIT_SSH_COMMAND does not reach git; an ssh origin goes through ssh on PATH", () => {
+  const { w } = ready();
+  w.p("remote", "set-url", "origin", "ssh://git@github.com/owner/repo.git");
+  const planted = toucher(w, "ssh-command");
+  const onPath = toucher(w, "ssh"); // the stand-in for ssh: no test reaches GitHub
+  writeFileSync(w.at("bin", "ssh"), readFileSync(onPath.script));
+  chmodSync(w.at("bin", "ssh"), 0o755);
+  w.env.GIT_SSH_COMMAND = planted.script; // R615 E4d
+  const r = w.pr("create", "T1");
+  assert.equal(r.status, 2, r.stderr);
+  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128\n");
+  assert.equal(planted.ran(), false);
+  assert.equal(onPath.ran(), true, "git ran ssh from PATH");
+});
+
+test("T96-S13-NODEOPTIONS: NODE_OPTIONS refuses before any git or gh", () => {
+  const { w } = ready();
+  w.env.NODE_OPTIONS = "--no-warnings";
+  refused(w.pr("create", "T1"), /^sage-pr: refused: NODE_OPTIONS is set, and it can run code inside the script\. Run sage-pr without it: env -u NODE_OPTIONS node sage-pr\.mjs <verb> <task>\n$/);
+  assert.deepEqual(w.calls(), []);
+  assert.equal(existsSync(join(w.logbook, "mirror.git")), false);
+});
+
+test("T96-S14-PARENTLINK: a bundle whose folder is a link to another place refuses", () => {
+  const { w } = ready();
+  const folder = join(w.at("worktrees"), basename(w.logbook));
+  mkdirSync(w.at("elsewhere"));
+  renameSync(folder, w.at("elsewhere", "moved")); // R615 E3
+  symlinkSync(w.at("elsewhere", "moved"), folder);
+  refused(w.pr("create", "T1"), /^sage-pr: refused: the bundle's folder .* is a link to .*\/elsewhere\/moved, not a folder in the worktree root: remove the link, then write the bundle with git bundle create .*\/T1\.bundle main\.\.claude\/t1\n$/);
+  assert.deepEqual(w.calls(), []);
+});
+
+test("T96-S14-FETCHHEAD: the mirror keeps no FETCH_HEAD, which would hold the origin's address", () => {
+  const { w } = reviewed();
+  assert.equal(existsSync(join(w.logbook, "mirror.git", "FETCH_HEAD")), false, "after create");
+  assert.equal(w.pr("merge", "T1").status, 0);
+  assert.equal(existsSync(join(w.logbook, "mirror.git", "FETCH_HEAD")), false, "after merge");
+});
+
+test("T96-S14-CREDHELPER: a credential helper in the mirror's config never runs; github.com's credentials come from gh", async () => {
+  const { w } = reviewed();
+  // A local https origin that asks for a password (401), so that git looks for a credential helper.
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", w.at("key.pem"), "-out", w.at("cert.pem")], { stdio: "ignore" });
+  const server = spawn(process.execPath, ["-e", `const f = require("node:fs"); const [key, cert, port] = process.argv.slice(1); const s = require("node:https").createServer({ key: f.readFileSync(key), cert: f.readFileSync(cert) }, (q, a) => { a.writeHead(401, { "WWW-Authenticate": 'Basic realm="t"' }); a.end(); }); s.listen(0, "127.0.0.1", () => f.writeFileSync(port, String(s.address().port))); setTimeout(() => process.exit(0), 30000);`, w.at("key.pem"), w.at("cert.pem"), w.at("port")], { stdio: "ignore" });
+  try {
+    for (let i = 0; i < 100 && !existsSync(w.at("port")); i++) await new Promise((r) => setTimeout(r, 50));
+    w.p("remote", "set-url", "origin", `https://127.0.0.1:${readFileSync(w.at("port"), "utf8")}/owner/repo.git`);
+    const helper = toucher(w, "helper");
+    const config = join(w.logbook, "mirror.git", "config");
+    writeFileSync(config, `${readFileSync(config, "utf8")}[http]\n\tsslCAInfo = ${w.at("cert.pem")}\n[credential]\n\thelper = !${helper.script}\n`); // R615 E6
+    const r = w.pr("create", "T1");
+    assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128\n");
+    assert.equal(helper.ran(), false, "the mirror's helper did not run");
+  } finally {
+    server.kill();
+  }
+  // The same settings send github.com's credentials to gh's login: git credential asks the fake gh.
+  const { clean } = await import(PR);
+  const fill = spawnSync("git", ["-C", join(w.logbook, "mirror.git"), "credential", "fill"], { input: "protocol=https\nhost=github.com\n\n", encoding: "utf8", env: { ...clean(w.env), GIT_TERMINAL_PROMPT: "0" } });
+  assert.notEqual(fill.status, 0, "the fake gh gives no password");
+  assert.deepEqual(w.calls().at(-1).args, ["auth", "git-credential", "get"]);
 });
