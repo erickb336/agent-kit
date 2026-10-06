@@ -338,6 +338,7 @@ function merge({ dir, t, branch, head, url, repo }, temp, env) {
   if (p.headRefOid !== head) no(`pull request #${pr} is at ${short(p.headRefOid)}, not at the reviewed head ${short(head)}. If ${short(head)} is a repair, push it first: sage-pr create ${t.id}. Else the branch moved after review: review ${short(p.headRefOid)} and record its verdicts`);
   const r = mergeCheck(head, env, { pr });
   if (!r.ok) no(`merge check: ${r.reason}`);
+  const moved = ". If GitHub says that the head changed, the branch moved after review: review the new head and record its verdicts";
   let out, failed;
   try {
     out = gh(["pr", "merge", `--repo=${repo}`, "--squash", "--delete-branch", `--match-head-commit=${head}`, "--", pr], temp, env);
@@ -348,10 +349,10 @@ function merge({ dir, t, branch, head, url, repo }, temp, env) {
   try {
     after = find();
   } catch (e) {
-    throw failed ?? new Error(`gh pr merge ran, but the pull request could not be read again (${e.message}): run sage-pr merge ${t.id} again`);
+    throw failed ? new Error(`${failed.message}${moved}`) : new Error(`gh pr merge ran, but the pull request could not be read again (${e.message}): run sage-pr merge ${t.id} again`);
   }
   if (after?.state === "MERGED" && after.headRefOid === head) return refresh(`merged ${branch} at ${short(head)}${out ? `: ${out}` : ""}${failed ? ` (GitHub merged it, but ${failed.message})` : ""}`);
-  if (failed) throw new Error(`${failed.message}. If GitHub says that the head changed, the branch moved after review: review the new head and record its verdicts`);
+  if (failed) throw new Error(`${failed.message}${moved}`);
   throw new Error(`gh pr merge ran, but pull request #${pr} is ${after?.state ?? "gone"} at ${short(after?.headRefOid ?? "")}, not merged at ${short(head)}: GitHub may have queued it (a merge queue or auto-merge). Run sage-pr merge ${t.id} again later: it reports "already merged" once GitHub has merged it`);
 }
 
