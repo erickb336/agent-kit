@@ -7,10 +7,10 @@
 // escaped, also ":", "." and "@" against autolinks and "&" against entities, so that the only links, images and HTML on the board are the
 // board's own PR links, built from digits.
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
-import { BLOCKS, RISKS, STATES, optionsOf, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
+import { BLOCKS, BRANCH, RISKS, STATES, mergeCheck, optionsOf, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
 
 const FOLDER = /^([a-z0-9-]+)-[0-9a-f]{6}$/;
 const CLOSED = ["merged", "concluded", "abandoned"];
@@ -49,6 +49,31 @@ function age(ms) {
   if (m < 60) return `${m} min`;
   if (m < 48 * 60) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
   return `${Math.floor(m / 1440)} d`;
+}
+
+/** The commit of a ref in a checkout, or null. */
+function commitOf(path, ref) {
+  try {
+    return execFileSync("git", ["-C", path, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * May the pull request of a verified task merge now? The merge check on its head: the task's branch in the logbook's
+ * checkout, local or at origin. It fails closed: with no head, or a local branch and origin that differ, the reason says
+ * what is missing. Without the known project list, the merge check would make it under a lock, so the board does not ask.
+ */
+function mergeable(b, t, root, env) {
+  if (!b.home) return { ok: false, reason: "head unknown: the board does not know the project's folder" };
+  if (!BRANCH.test(t.branch ?? "")) return { ok: false, reason: "head unknown: no branch recorded" };
+  const [local, origin] = [commitOf(b.home, `refs/heads/${t.branch}`), commitOf(b.home, `refs/remotes/origin/${t.branch}`)];
+  if (!local && !origin) return { ok: false, reason: `head unknown: no branch ${t.branch} in the project's folder` };
+  if (local && origin && local !== origin) return { ok: false, reason: `head unknown: branch ${t.branch} and origin differ` };
+  if (!lstatSync(join(root, "projects.tsv"), { throwIfNoEntry: false })) return { ok: false, reason: "the known project list is missing" };
+  const r = mergeCheck(local ?? origin, env, { pr: t.pr });
+  return { ok: r.ok, reason: r.reason.split(/\.(?:\s|$)/)[0] }; // the first sentence says what is missing
 }
 
 /** The GitHub repository of a checkout, as https://github.com/<owner>/<repo>, or null. */
@@ -265,13 +290,19 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const many = shown.length > 1;
   const tag = (b) => (many ? `${label(b)} ` : "");
 
-  // Needs you: open gates, then every verified pull request that is not merged. Autopilot is a per-session switch,
-  // so the board cannot know that it will merge a small one: it says so, and still lists it.
+  // Needs you: open gates, then every verified pull request that is not merged. It waits for your merge only when the
+  // merge check passes on its head; else the line says what is missing. Autopilot is a per-session switch, so the
+  // board cannot know that it will merge a small one: it says so, and still lists it.
   const gates = (b) => b.gates.filter((g) => !g.answer);
-  const waiting = (b) =>
+  const checked = new Map();
+  const verified = (b) =>
     b.tasks
       .filter((t) => WAITS.includes(t.state) && t.pr)
-      .map((t) => ({ t, why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : "autopilot may merge it tonight" }));
+      .map((t) => {
+        if (!checked.has(t)) checked.set(t, mergeable(b, t, root, env));
+        return { t, ...checked.get(t), why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : "autopilot may merge it tonight" };
+      });
+  const waiting = (b) => verified(b).filter((v) => v.ok);
   // A gate shows in full, never cut, with its project's key also on a board of one project, and each option on its own
   // line: the owner answers only a question that the board showed whole, and the chief records it in that gate's logbook.
   // The options come last: a line after a list item would join that item's text.
@@ -287,7 +318,7 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const L = [`**sage board · ${title}** · built ${built} UTC`];
   const needs = shown.flatMap((b) => [
     ...gates(b).map((g) => gateLine(b, g)),
-    ...waiting(b).map(({ t, why }) => `${tag(b)}${t.id} ${pr(b, t)} waits for your merge (${why}): ${text(t.title, 50)}`),
+    ...verified(b).map(({ t, ok, reason, why }) => `${tag(b)}${t.id} ${pr(b, t)} ${ok ? `waits for your merge (${why})` : `cannot merge yet (${text(reason, 70)})`}: ${text(t.title, 50)}`),
   ]);
   const section = (head, rows, cap) => {
     L.push("", `**${head}**`);

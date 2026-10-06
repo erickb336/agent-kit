@@ -211,6 +211,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 
 ## What's new
 
+- **The board runs the merge check.** A verified pull request "waits for your merge" only when the merge check passes on the head of its branch; else the board says what is missing, such as a clean cycle or an open finding.
 - **The PR script imports before the reviews.** `sage-pr import <task>` copies the agent's bundle into the logbook and writes a review copy (`review/<task>-<sha>/` and `review/<task>-<sha>.diff`) that agents cannot change. `create` and `merge` refuse a commit whose review copy is not older than its first verdict.
 - **A bundle is at most 10 MiB, and a slow bundle stops.** Each git call on the bundle stops after 120 s with exit 2, so a bundle that expands to gigabytes cannot hold the logbook's lock.
 - **A passing git failure is no refusal.** Only git's own answer that the mirror or the bundle is not one refuses; any other git failure is exit 2: run the call again.
@@ -288,7 +289,7 @@ Start a message with `show board` to see the board in the chat. It is short Mark
 
 The board has these parts, in this order:
 
-1. **Needs you:** every open gate in full, never cut: its project's key, its question, the recommendation, the default and a numbered list of its options, and every verified pull request that is not merged, with the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off).
+1. **Needs you:** every open gate in full, never cut: its project's key, its question, the recommendation, the default and a numbered list of its options, and every verified pull request that is not merged. A pull request "waits for your merge" only when the merge check passes on its head (the task's branch in the project's folder), with the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off). Else the line says "cannot merge yet" and what is missing, for example "T2: 1 of 2 clean cycles on this SHA", "T3 has open findings: F-T3-1" or "head unknown". The board never says "waits for your merge" when it cannot run the check.
 2. **Running now:** each agent with its task, role and age.
 3. **Merged since the last board** of each project, with links. The sage folder keeps, for each logbook, the time of its last board, its highest task id and its tasks that were not closed then, in `board.json`. A closed task never changes, so this stays small however many tasks merged, and two boards at once lose no entry.
 4. **One section per project:** a line per active task (id, title, state, pull request link, round), at most 8 and then "and N more (show board for sage)" (a board for one named project shows all), the count of framed tasks, and the next 3 framed tasks by id. The active tasks come in this order:
