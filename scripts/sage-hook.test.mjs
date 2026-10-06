@@ -1974,7 +1974,7 @@ test("R454-N6: a script's arguments and a case pattern are not programs; a shell
 });
 
 test("R454-N5: 1 MB of git words that the hook cannot read takes under 200 ms of CPU time, and still refuses a stash", async () => {
-  const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  const { handle, agentProblem } = await import("../plugins/sage/hooks/sage-hook.mjs");
   const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
   const MB = "git ".repeat(1 << 18); // 1 MB
   /** CPU time, not wall time (a busy Mac makes the process wait for a core): the fastest of 3 calls. */
@@ -1992,7 +1992,9 @@ test("R454-N5: 1 MB of git words that the hook cannot read takes under 200 ms of
   for (const command of [`echo '${MB}`, `${MB}'`, `echo '${MB}stash`]) {
     const { ms, reason } = cpu(command);
     assert.ok(ms < 200, `${ms.toFixed(1)} ms of CPU for ${JSON.stringify(command.slice(0, 20))}…`);
-    assert.equal(/never runs git stash/.test(reason ?? ""), command.endsWith("stash"), "only the text with a stash word is refused");
+    // The logbook rule (T83) refuses every agent command that the hook cannot read (fail closed), so the stash rule's own answer is checked alone.
+    assert.match(reason ?? "", /could not check this agent's command/, "an unreadable agent command is refused");
+    assert.equal(/never runs git stash/.test(agentProblem(command, FEATURE) ?? ""), command.endsWith("stash"), "only the text with a stash word is refused");
   }
 });
 
@@ -2553,4 +2555,72 @@ test("T94: an old hook state file in the temp folder is ignored, not trusted", (
   s.send(prompt("sage mode"));
   assert.match(denied(s.send(bash(MERGE))) ?? "", /autopilot is off/, "autopilot is not on: the old file does not turn it on");
   assert.match(denied(s.send(edit())) ?? "", /Give this change to a sage:implementer/, "the hook's own state still works");
+});
+
+// T83 round 4. The hook only reads these commands; no test passes them to a shell.
+test("N1-KEYWORD: a state-tool write behind a shell keyword or a wrapper with an option value is refused; a read in a loop passes (T83)", () => {
+  const s = session();
+  const write = `node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA}`;
+  const hidden = [
+    `for k in checks-pass review-clean qa-pass; do node ${TOOL} verdict T2 --kind $k --sha ${SHA}; done`,
+    `while true; do ${write}; done`,
+    `if true; then ${write}; fi`,
+    `{ ${write}; }`,
+    `! ${write}`,
+    `sudo -u root ${write}`,
+    `npx -p x ${write}`,
+    `timeout -s KILL 5 ${write}`,
+    `env -u X ${write}`,
+    `case x in x) ${write};; esac`,
+  ];
+  for (const command of hidden) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", ONLY_CHIEF, command);
+  assert.equal(denied(s.send(bash("for f in a b; do grep -n x plugins/sage/skills/sage/sage.mjs; done", FEATURE, AGENT))), undefined, "a read in a loop");
+});
+
+test("N2-PREFIXVAR: a SAGE_HOME or CLAUDE_CONFIG_DIR before a command does not make that command's $SAGE_HOME safe; one of its own does (T83)", () => {
+  const s = session();
+  const scratch = mkdtempSync(join(tmpdir(), "sage-scratch-"));
+  const refused = [
+    `SAGE_HOME=${scratch} rm -rf $SAGE_HOME/p`,
+    `CLAUDE_CONFIG_DIR=${scratch} rm -rf $CLAUDE_CONFIG_DIR/sage`,
+    `SAGE_HOME=${scratch} npm test; rm -rf $SAGE_HOME/p`,
+    `SAGE_HOME=${scratch} npm test > $SAGE_HOME/log.txt`,
+    `env SAGE_HOME=${scratch} rm -rf $SAGE_HOME/p`,
+  ];
+  for (const command of refused) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `chief: ${command}`);
+  }
+  for (const command of [`SAGE_HOME=${scratch}; rm -rf $SAGE_HOME/p`, `export SAGE_HOME=${scratch} && rm -rf $SAGE_HOME/p`]) {
+    assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, `agent: ${command}`);
+    assert.equal(denied(s.send(bash(command))), undefined, `chief: ${command}`);
+  }
+});
+
+test("N4-READS: a reviewer's reads of sage.mjs pass: node --check, python reading it, diff <(git show …), grep … | head > a scratch file; runs and logbook writes stay refused (T83)", () => {
+  const s = session();
+  const scratch = mkdtempSync(join(tmpdir(), "sage-scratch-"));
+  const path = "plugins/sage/skills/sage/sage.mjs";
+  const reads = [
+    `node --check ${path}`,
+    `node -c ${TOOL}`,
+    `python3 -c "print(open('${path}').read()[:200])"`,
+    `python3 - <<'PY'\nimport re\nsrc = open("${path}").read()\nprint(len(re.findall(r"refuse", src)))\nPY`,
+    `diff <(git show main:${path}) ${path}`,
+    `diff <(git show main:${path}) ${path} > ${scratch}/d.txt`,
+    `grep -n 'scriptRun.*(' ${path} | head -20 > ${scratch}/notes.txt`,
+    `grep -rn "tasks.tsv" plugins | head > ${scratch}/notes.txt`,
+  ];
+  for (const command of reads) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+  const runs = [
+    `python3 -c "import subprocess; subprocess.run(['node', '${TOOL}', 'init'])"`,
+    `python3 -c "__import__('os').system('node ${TOOL} init')"`,
+    `node -c -e "import('${TOOL}')"`,
+    `node --check ${path} && node ${TOOL} init`,
+  ];
+  for (const command of runs) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", ONLY_CHIEF, command);
+  const root = s.vars.SAGE_HOME;
+  for (const command of [`grep -rn x ${root}/p | head > ${root}/p/ledger.tsv`, `grep -l x ${root}/p/ledger.tsv | xargs rm`, `grep -n x ${path} | head > ${root}/p/notes.txt`]) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, command);
+  }
 });

@@ -511,8 +511,8 @@ const wordsOf = (text) =>
     .replace(/\$\{(\w+)\}/g, "$$$1")
     .split(/[\s;&|()<>`=:]+/)
     .filter(Boolean);
-/** The words of the text, folded, each as its path parts. */
-const partsOf = (text) => wordsOf(fold(text)).map((word) => ({ word, parts: word.split("/") }));
+/** The words of the text, folded, each once (a long line repeats words), as its path parts. */
+const partsOf = (text) => [...new Set(wordsOf(fold(text)))].map((word) => ({ word, parts: word.split("/") }));
 const GLOB = /[*?[{]/;
 /** Does a path part name name, also as a shell pattern (sag?, .cl*, [.]claude, {a,b})? */
 function names(part, name) {
@@ -545,21 +545,39 @@ function namesRoot(text, words, roots, cwd) {
 }
 /**
  * Does the text use a variable that sets the sage root (sageRoot: SAGE_HOME, CLAUDE_CONFIG_DIR)? An assignment of a
- * plain path that does not overlap the real root (a scratch or temp SAGE_HOME for tests) is no use, and nor is a later
- * $VAR of a variable that the text assigned so. Every other mention is a use: a $VAR (also ${VAR}, $env:VAR, %VAR%) that
- * the text did not assign so, an assignment of any other value, and a bare name in a command with a substitution or a
- * pipe, which can read the variable (printenv). Without the real root (root), every mention is a use.
+ * plain path that does not overlap the real root (a scratch or temp SAGE_HOME for tests) is no use. A later $VAR of it is
+ * no use only when the assignment is a command of its own (also after export): one before a program (SAGE_HOME=x rm …)
+ * applies to that program alone, and the shell expands that command's $VAR before it (T83-N2). Every other mention is a
+ * use: a $VAR (also ${VAR}, $env:VAR, %VAR%) that no such assignment made safe, an assignment of any other value, and a
+ * bare name in a command with a substitution or a pipe, which can read the variable (printenv). Without the real root
+ * (root), every mention is a use. In text that the hook cannot read, no assignment makes a $VAR safe.
  */
+const ROOT_VAR = /(\$\{?|\$env:|%)?\b(SAGE_HOME|CLAUDE_CONFIG_DIR)\b(=([^\s;&|<>()`]*))?/gi;
+const ASSIGNS = /^(?:export|declare|typeset|local|readonly)$/;
 function usesRootVar(text, root, cwd) {
+  if (!/SAGE_HOME|CLAUDE_CONFIG_DIR/i.test(text)) return false;
+  let commands;
+  try {
+    commands = shellCommands(text).map(({ words, redirects, bodies }) => {
+      const own = words.find((w) => !/^\w+=/.test(w));
+      return { text: [...words, ...redirects, ...bodies].join(" "), alone: own === undefined || ASSIGNS.test(own) };
+    });
+  } catch {
+    commands = [{ text, alone: false }];
+  }
   const safe = new Set();
   const reads = /\$\(|`|\|/.test(text);
-  for (const [, ref, name, set, value] of text.replace(/['"\\]/g, "").matchAll(/(\$\{?|\$env:|%)?\b(SAGE_HOME|CLAUDE_CONFIG_DIR)\b(=([^\s;&|<>()`]*))?/gi)) {
-    if (ref) {
-      if (!safe.has(name)) return true;
-    } else if (set) {
-      if (!root || !value || /[$`*?[{%]/.test(value) || overlaps(canonical(from(cwd, pathOf(value))), root)) return true;
-      safe.add(name);
-    } else if (reads) return true;
+  for (const c of commands) {
+    const made = [];
+    for (const [, ref, name, set, value] of c.text.replace(/['"\\]/g, "").matchAll(ROOT_VAR)) {
+      if (ref) {
+        if (!safe.has(name)) return true;
+      } else if (set) {
+        if (!root || !value || /[$`*?[{%]/.test(value) || overlaps(canonical(from(cwd, pathOf(value))), root)) return true;
+        if (c.alone) made.push(name);
+      } else if (reads) return true;
+    }
+    for (const name of made) safe.add(name);
   }
   return false;
 }
@@ -594,16 +612,17 @@ function nearLogbook(text, roots, cwd) {
   const leaves =
     /[$`]/.test(text) ||
     words.some(({ word, parts }) => /^(?:cd|pushd)$/.test(word) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(word) && !/^\/dev\/(?:null|stdout|stderr)$/.test(word)));
-  const resolved = [...new Set(wordsOf(text))].filter((w) => !/[$`]/.test(w)).map((w) => canonical(from(cwd, pathOf(w))));
+  const unique = [...new Set(wordsOf(text))]; // each word once: a long line repeats words
+  const resolved = unique.filter((w) => !/[$`]/.test(w)).map((w) => canonical(from(cwd, pathOf(w))));
   return (
     namesRoot(text, plain, roots, cwd) ||
     plain.some(({ word, parts }) => parts.includes(".claude") && !worktree(word)) ||
     (leaves && (words.length > plain.length || namesTable(words))) ||
     resolved.some((p) => overlaps(p, roots[1])) ||
-    wordsOf(text).some((w) => linkOnPattern(w, cwd)) ||
+    unique.some((w) => linkOnPattern(w, cwd)) ||
     words.some(({ word }) => fromHome(word) && /[*?[{$]/.test(word.replace(/^\$home/, ""))) ||
     /(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(low) ||
-    words.some(({ word }, k) => /^(?:cd|pushd)$/.test(word) && atHome(words[k + 1]?.word ?? "-"))
+    wordsOf(low).some((word, k, all) => /^(?:cd|pushd)$/.test(word) && atHome(all[k + 1] ?? "-"))
   );
 }
 /**
@@ -663,6 +682,21 @@ function writesIn({ words, redirects }) {
     /^(?:eval|source|\.|exec)$/.test(base[low.findIndex((w) => !/^\w+=/.test(w))] ?? "")
   );
 }
+/**
+ * The text of a command line that can say where it writes. When its only writes are the redirections of readers (grep …
+ * | head > notes), a reader's arguments only name what it reads, so they are left out (T83-N4); its redirections and
+ * every other command stay. A line with another write, or that the hook cannot read, is kept whole.
+ */
+function writeText(text) {
+  try {
+    const commands = shellCommands(text);
+    const reader = ({ words }) => READERS.test(basename(words.find((w) => !/^\w+=/.test(w)) ?? "").toLowerCase()) && !/^(?:cd|pushd)$/.test(words.find((w) => !/^\w+=/.test(w)));
+    if (commands.some((c) => !reader(c) && writesIn(c))) return text;
+    return commands.map((c) => [...(reader(c) ? c.words.slice(0, c.words.findIndex((w) => !/^\w+=/.test(w)) + 1) : [...c.words, ...c.bodies]), ...c.redirects].join(" ")).join("\n");
+  } catch {
+    return text;
+  }
+}
 /** Does one field of a command's text have a write form? A text that the hook cannot read counts as one (fail closed). */
 function writes(text) {
   try {
@@ -713,48 +747,47 @@ function chiefProblem(input, sage) {
   return shellWrite(input.tool_input ?? {}, sage, input.cwd ?? process.cwd()) ? "the chief never writes, moves or removes a logbook file from the shell." : undefined;
 }
 /**
- * Does a command's text run the state tool ("tool") or the PR script ("pr")? It decides on the program that runs, not on
- * a mention, so a read, a diff or a commit message that names sage.mjs passes (T83-C2). The program is the first word
- * after assignments, options and wrappers (env, xargs, ...), and the word after -exec. It runs the file when it is the
- * file; when it is an interpreter (node, python, ...) whose words up to its script, whose heredoc or whose piped input
- * name the file; and when text that a shell or eval runs does. A variable or substitution there runs the file when the
- * text names it anywhere, and so does text that the hook cannot read. Deliberate forgery past this is the sandbox's job.
+ * Does a command's text run the state tool ("tool") or the PR script ("pr")? It decides on the programs that run
+ * (programsRun: after shell keywords, assignments, wrappers and their option values, in -c text, eval and -exec), not on
+ * a mention, so a read, a diff or a commit message that names sage.mjs passes (T83-C2). A program runs the file when it is
+ * the file, or when it is an interpreter (node, python, ...) whose words up to its script, whose heredoc or whose piped
+ * input name the file; a shell does when its heredoc or piped input names it. A variable or substitution in such a place
+ * runs the file when the text names it anywhere, and so does text that the hook cannot read. Two reads pass:
+ * node --check <file>, and python code that imports only READ_MODULES and has no exec, eval, compile or "__".
+ * Deliberate forgery past this is the sandbox's job.
  */
 const kind = (text) => (/sage-pr\.mjs/i.test(text) ? "pr" : /sage\.mjs/i.test(text) ? "tool" : undefined);
-const WRAPPERS = /^(?:sudo|doas|env|nice|nohup|timeout|gtimeout|xargs|exec|stdbuf|caffeinate|watch|command|builtin|time|noglob|nocorrect)$/;
 const INTERPRETERS = /^(?:node|nodejs|deno|bun|python[\d.]*|perl|ruby|php|osascript|source|\.)$/;
-const SHELL_RUNNERS = /^(?:sh|bash|zsh|dash|ksh|fish|pwsh|powershell)$/;
-function scriptRun(text, depth = 0) {
+const READ_MODULES = /^(?:re|json|difflib|textwrap|collections|itertools|hashlib|pathlib)$/;
+/** Python code that cannot start a program: it imports only READ_MODULES, and has no exec, eval, compile or "__". */
+const pythonReads = (code) =>
+  !/__|\b(?:exec|eval|compile)\b/.test(code) && [...code.matchAll(/\b(?:from|import)\s+([\w., \t]+)/g)].every(([, names]) => names.split(/[\s,]+/).filter(Boolean).every((n) => READ_MODULES.test(n) || n === "import"));
+function scriptRun(text, cwd) {
   const named = kind(text.replace(/['"\\]/g, ""));
   if (!named) return undefined;
-  let commands;
+  let runs;
   try {
-    commands = shellCommands(text);
+    runs = programsRun(text, cwd);
   } catch {
     return named;
   }
-  for (const c of commands) {
-    for (const start of [0, ...c.words.flatMap((w, k) => (/^-(?:exec|execdir|ok|okdir)$/.test(w) ? [k + 1] : []))]) {
-      const words = c.words.slice(start);
-      const k = words.findIndex((w) => !/^\w+=/.test(w) && !w.startsWith("-") && !/^\d+[smhd]?$/.test(w) && !WRAPPERS.test(basename(w)));
-      if (k < 0) continue;
-      const name = basename(words[k]).toLowerCase();
-      const rest = words.slice(k + 1);
-      if (words[k].includes("$")) return named;
-      if (/^sage(?:-pr)?\.mjs$/.test(name)) return kind(name);
-      if (name === "eval" || SHELL_RUNNERS.test(name)) {
-        if (depth >= 3 || rest.some((w) => w.includes("$"))) return named;
-        const inner = [...(name === "eval" ? [rest.join(" ")] : rest.filter((w) => /\s/.test(w))), ...c.bodies];
-        const run = inner.map((t) => scriptRun(t, depth + 1)).sort()[0];
-        if (run) return run;
-      } else if (INTERPRETERS.test(name)) {
-        const script = rest.findIndex((w) => !w.startsWith("-"));
-        const head = script < 0 ? rest : rest.slice(0, script + 1);
-        if (head.some((w) => w.includes("$"))) return named;
-        const piped = commands.filter((p) => p.pipeTo === c).map((p) => p.words.join(" "));
-        const run = [...head, ...c.bodies, ...piped].map(kind).sort()[0];
-        if (run) return run;
-      }
+  for (const { word, args, stdin } of runs) {
+    if (word.includes("$")) return named;
+    const name = basename(word).toLowerCase();
+    if (/^sage(?:-pr)?\.mjs$/.test(name)) return kind(name);
+    if (SHELLS.test(name) || /^(?:eval|pwsh|powershell)(?:\.exe)?$/.test(name)) {
+      if (args.some((w) => w.includes("$"))) return named;
+      const run = stdin.map(kind).sort()[0]; // programsRun reads their -c text and eval's words
+      if (run) return run;
+    } else if (INTERPRETERS.test(name)) {
+      if (/^node(?:js)?$/.test(name) && /^(?:-c|--check)$/.test(args[0] ?? "") && !(args[1] ?? "-").startsWith("-")) continue; // a syntax check only
+      const script = args.findIndex((w) => !w.startsWith("-"));
+      const head = script < 0 ? args : args.slice(0, script + 1);
+      if (head.some((w) => w.includes("$"))) return named;
+      const code = [...head, ...stdin];
+      if (/^python[\d.]*$/.test(name) && pythonReads(code.join("\n"))) continue;
+      const run = code.map(kind).sort()[0];
+      if (run) return run;
     }
   }
   return undefined;
@@ -778,7 +811,7 @@ function agentCheck(input, file) {
   }
   if (ti.dangerouslyDisableSandbox) return "an agent never runs a command outside the sandbox (dangerouslyDisableSandbox).";
   const command = typeof ti.command === "string" ? ti.command : "";
-  const run = fields(ti).map((t) => scriptRun(t)).sort()[0]; // "pr" sorts before "tool"
+  const run = fields(ti).map((t) => scriptRun(t, input.cwd ?? process.cwd())).sort()[0]; // "pr" sorts before "tool"
   if (run === "pr") return "only the chief runs the PR script (sage-pr.mjs).";
   if (run === "tool") {
     const [node, path, cmd, ...args] = command.trim().split(/[ \t]+/);
@@ -794,7 +827,7 @@ function agentCheck(input, file) {
   }
   const text = fields(ti);
   const cwd = input.cwd ?? process.cwd();
-  return text.some(writes) && (nearLogbook(text.join("\n"), roots, cwd) || text.some((t) => linksNear(t, roots[1], cwd))) ? "an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it." : undefined;
+  return text.some(writes) && (nearLogbook(text.map(writeText).join("\n"), roots, cwd) || text.some((t) => linksNear(t, roots[1], cwd))) ? "an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it." : undefined;
 }
 
 /**
@@ -922,6 +955,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  *     word with a variable, ~ or a substitution, and for a program that is not found.
  *   - args: the words after the program, without their quotes and redirections.
  *   - dir: the folder it runs in, after an earlier "cd <dir>" of the same line.
+ *   - stdin: its heredoc and here-string bodies, and the words of the command piped into it.
  * It also reads the text that other programs run as commands, up to 3 levels deep: the -c text of a shell (sh, bash,
  * zsh, dash, ksh, fish) and its stdin heredoc when it has no script, the words of eval, PowerShell's -Command text,
  * the program of find -exec, and a program word with spaces that a wrapper such as watch gives to sh -c. The words
@@ -940,7 +974,9 @@ function readPrograms(command, dir, path, depth, found) {
     if (depth === 3) throw new Error("commands nested more than 3 levels deep");
     readPrograms(text, at, here, depth + 1, found);
   };
-  for (const { words, bodies } of shellCommands(command)) {
+  const commands = shellCommands(command);
+  for (const c of commands) {
+    const { words, bodies } = c;
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
     const own = words.find(set);
     if (["export", undefined].includes(words.find((w) => !set(w))) && own) path = set(own); // export PATH=… or PATH=… alone
@@ -966,12 +1002,13 @@ function readPrograms(command, dir, path, depth, found) {
         break;
       }
       const args = words.slice(k + 1);
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir });
+      const stdin = [...bodies, ...commands.filter((p) => p.pipeTo === c).map((p) => p.words.join(" "))];
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, stdin });
       for (const text of commandText(name, args, bodies)) inner(text, dir, here);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir });
+        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, stdin: [] });
       }
       break;
     }
