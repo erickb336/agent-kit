@@ -41,9 +41,9 @@ for (const d of readdirSync(skillsDir)) {
   }
 }
 
-// Every principle that the hook gives must have its skill, because the hook reads the text from it.
-for (const [moment, { principles }] of Object.entries(MOMENTS)) {
-  for (const p of principles) if (!existsSync(join(skillsDir, `principle-${p}`, "SKILL.md"))) problems.push(`hooks: moment "${moment}" names "${p}", which has no skill`);
+// Every skill that the hook gives must exist, because the hook reads the text from it.
+for (const [moment, { skills }] of Object.entries(MOMENTS)) {
+  for (const s of skills) if (!existsSync(join(skillsDir, s, "SKILL.md"))) problems.push(`hooks: moment "${moment}" names "${s}", which has no skill`);
 }
 
 // Sage mode (Claude Code only). Agents: name equals the file, a description, preloaded skills that exist, sage names that exist.
