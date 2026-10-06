@@ -1,5 +1,6 @@
 // The hook launcher runs the hook of the sage install that its own plugins tree records now, in fake plugins trees
 // under the temporary folder. It never touches the real ~/.claude/plugins.
+import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

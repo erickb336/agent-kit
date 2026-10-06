@@ -1,4 +1,5 @@
 // Runs the sage state tool as the chief of staff does: one command, one line out, against a temporary store.
+import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";

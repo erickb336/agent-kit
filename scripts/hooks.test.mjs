@@ -1,4 +1,5 @@
 // Runs the hook as Claude Code does: one JSON event on stdin, one JSON answer on stdout, in a real git repository.
+import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";

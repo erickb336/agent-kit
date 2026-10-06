@@ -1,6 +1,7 @@
 // Runs the PR script as the chief does, against a local bare repository that stands in for GitHub and a fake gh first
 // on PATH that records its arguments and its folder. HOME, GH_CONFIG_DIR, the sage root and the worktree root are temp
 // folders, and GH_TOKEN is a dummy, so no test reaches GitHub or reads the owner's token.
+import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
