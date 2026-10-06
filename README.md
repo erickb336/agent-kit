@@ -233,7 +233,9 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 - **The board runs the merge check.** A verified pull request "waits for your merge" only when its branch is at the reviewed head (the head that `sage-pr merge` merges) and the merge check passes on it; else the board says what is missing, such as a clean cycle or an open finding. The board takes no lock and writes no logbook.
 - **The PR script imports before the reviews.** `sage-pr import <task>` copies the agent's bundle into the logbook and writes a review copy (`review/<task>-<sha>/` and `review/<task>-<sha>.diff`) that agents cannot change. `create` and `merge` refuse a commit whose review copy is not older than its first verdict.
 - **A bundle is at most 10 MiB, and a slow bundle stops.** Each git call on the bundle stops after 120 s with exit 2, so a bundle that expands to gigabytes cannot hold the logbook's lock.
-- **A passing git failure is no refusal.** Only git's own answer that the mirror or the bundle is not one refuses; any other git failure is exit 2: run the call again.Older changes are in the [git log](https://github.com/erickb336/sage/commits/main).
+- **A passing git failure is no refusal.** Only git's own answer that the mirror or the bundle is not one refuses; any other git failure is exit 2: run the call again.
+
+Older changes are in the [git log](https://github.com/erickb336/sage/commits/main).
 
 ## Concepts
 
