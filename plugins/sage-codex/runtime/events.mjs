@@ -8,6 +8,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NAME = /^(?!root$)[a-z0-9_]+$/;
 const TASK = /^\/root(?:\/(?!root(?:\/|$))[a-z0-9_]+)+$/;
 const ID = /^[A-Za-z0-9_.:-]{1,256}$/;
+// Preserve a declared target, including relative names. This is not a resolved child identity.
+const TARGET = /^[A-Za-z0-9_./:-]{1,4096}$/;
 const MAX_BYTES = 16 * 1024;
 const MAX_EVENTS = 4096;
 const refuse = (message) => { throw new Error(`Codex event store: ${message}`); };
@@ -19,7 +21,7 @@ export function decodeEvent(input, { version, metadata } = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) refuse("invalid hook input");
   const event = input.hook_event_name;
   if (!["PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop"].includes(event)) return null;
-  if (["PreToolUse", "PostToolUse"].includes(event) && input.tool_name !== "collaborationspawn_agent") return null;
+  if (["PreToolUse", "PostToolUse"].includes(event) && !["collaborationspawn_agent", "collaborationsend_message", "collaborationfollowup_task"].includes(input.tool_name)) return null;
   const base = { schema: 1, runtime: version, session: value(input, "session_id", UUID) };
   const turn = value(input, "turn_id", ID);
   if (event === "SubagentStart") {
@@ -31,6 +33,11 @@ export function decodeEvent(input, { version, metadata } = {}) {
   if (event === "SubagentStop") return observation({ ...base, kind: "child-stop", child: value(input, "agent_id", UUID), turn });
   const actor = input.agent_id === undefined ? base.session : value(input, "agent_id", UUID);
   const call = value(input, "tool_use_id", ID);
+  if (input.tool_name !== "collaborationspawn_agent") {
+    if (event === "PostToolUse" && input.tool_response !== "") refuse("unrecognized dispatch result");
+    return observation({ ...base, kind: event === "PreToolUse" ? "dispatch-request" : "dispatch-result", actor, call, turn,
+      mode: input.tool_name === "collaborationsend_message" ? "message" : "task", target: value(input.tool_input ?? {}, "target", TARGET) });
+  }
   if (event === "PreToolUse") return observation({ ...base, kind: "spawn-request", actor, call, turn, name: value(input.tool_input ?? {}, "task_name", NAME) });
   let result = input.tool_response;
   if (typeof result === "string") {
@@ -50,6 +57,8 @@ export function observation(input) {
     "spawn-result": { actor: UUID, call: ID, turn: ID, path: TASK },
     "child-start": { child: UUID, parent: UUID, path: TASK, turn: ID },
     "child-stop": { child: UUID, turn: ID },
+    "dispatch-request": { actor: UUID, call: ID, turn: ID, mode: /^(message|task)$/, target: TARGET },
+    "dispatch-result": { actor: UUID, call: ID, turn: ID, mode: /^(message|task)$/, target: TARGET },
   };
   if (typeof input.kind !== "string" || !Object.hasOwn(schemas, input.kind)) refuse("unknown observation kind");
   const fields = schemas[input.kind];
@@ -196,5 +205,21 @@ export function bindings(inputs) {
       stopTurns: events.filter((e) => e.kind === "child-stop" && e.child === start.child).map((e) => e.turn).sort() };
   }).sort((a, b) => JSON.stringify([a.actor, a.call]).localeCompare(JSON.stringify([b.actor, b.call])));
   const unboundChildren = [...new Set(events.filter((e) => e.kind.startsWith("child-") && !used.has(e.child)).map((e) => e.child))].sort();
-  return { reservations, unboundChildren, unresolved: events.length === 0 || reservations.some((r) => r.state !== "bound") || unboundChildren.length > 0 };
+  const dispatchGroups = new Map();
+  for (const e of events.filter((e) => e.kind.startsWith("dispatch-"))) {
+    const key = JSON.stringify([e.session, e.actor, e.call]);
+    if (!dispatchGroups.has(key)) dispatchGroups.set(key, { session: e.session, actor: e.actor, call: e.call, requests: [], results: [] });
+    dispatchGroups.get(key)[e.kind === "dispatch-request" ? "requests" : "results"].push(e);
+  }
+  const dispatches = [...dispatchGroups.values()].map((g) => {
+    const row = { session: g.session, actor: g.actor, call: g.call, state: "pending", attributed: false };
+    if (g.requests.length > 1 || g.results.length > 1) return { ...row, state: "conflict" };
+    if (!g.requests.length || !g.results.length) return row;
+    const request = g.requests[0], result = g.results[0];
+    if (["turn", "mode", "target"].some((key) => request[key] !== result[key])) return { ...row, state: "conflict" };
+    return { ...row, state: "accepted", turn: request.turn, mode: request.mode, target: request.target };
+  }).sort((a, b) => JSON.stringify([a.actor, a.call]).localeCompare(JSON.stringify([b.actor, b.call])));
+  // An empty success result does not identify a recipient turn or prove queued input was consumed.
+  return { reservations, unboundChildren, dispatches,
+    unresolved: events.length === 0 || reservations.some((r) => r.state !== "bound") || unboundChildren.length > 0 || dispatches.length > 0 };
 }

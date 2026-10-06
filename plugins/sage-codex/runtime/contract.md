@@ -20,6 +20,10 @@ These operations require a local filesystem with hard links and directory sync. 
 
 `bindings` joins a spawn request, its successful result, and a child start by exact identity. It validates the root session, call, actor, parent path, child, and task path. The observations can arrive in any order. Repeated identical observations do not add another child.
 
+The returned `dispatches` also pair message and followup requests with their exact successful tool replies. Each accepted row keeps the sender, parent call, parent turn, mode, and declared target. Pending and conflicting details remain in the stored observations. A declared relative name or UUID is not a resolved child binding. Unknown result shapes are rejected. Message text is never retained.
+
+An accepted dispatch is not proof that the child consumed its input or started a particular turn. Native checks show that an idle child can retain a message and receive it alongside a later task. Dispatch rows stay unattributed, and their presence keeps the snapshot unresolved. A stop cannot clear them. Future task and queue reconciliation must supply that evidence.
+
 Missing records remain pending. Conflicting records and ambiguous path reuse remain unresolved. An empty set also remains unresolved. A snapshot can omit a concurrent new record; readers must not treat this snapshot as a transaction that reserves capacity.
 
 Every reservation remains held, including after a child stop. A stop records a child turn; it does not prove an accepted report or that later work is absent. This module grants no permission, starts no agent, and releases no capacity.
