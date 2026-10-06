@@ -1177,6 +1177,7 @@ test("the merge form: one --match-head-commit with the full SHA, the pull reques
   assert.match(denied(s.send(bash("gh pr merge 41 --squash --delete-branch"))) ?? "", /add --match-head-commit/);
   assert.match(denied(s.send(bash(`gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA.slice(0, 7)}`))) ?? "", /needs the full 40-character head SHA that the ledger verified, not "a1b2c3d"/);
   assert.match(denied(s.send(bash(`gh pr merge --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", /name the pull request by its number/);
+  for (const pr of ["05", "0", "007"]) assert.match(denied(s.send(bash(`gh pr merge ${pr} --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", /name the pull request by its number \(digits, no leading zero\)/, `T165-C7-HOOKPR: ${pr}`);
   assert.match(denied(s.send(bash(`gh pr merge 41 --squash --match-head-commit ${SHA}`))) ?? "", /add --squash and --delete-branch/);
   assert.match(denied(s.send(bash(`${MERGE} --admin`))) ?? "", /"--admin" is not part of it/);
   assert.match(denied(s.send(bash(`gh pr merge https://github.com/o/r/pull/41 --squash --delete-branch --match-head-commit ${SHA}`))) ?? "", CANNOT);
