@@ -505,18 +505,19 @@ const fields = (v) => (typeof v === "string" ? [v] : v && typeof v === "object" 
 /** Text as APFS compares names: it ignores case and Unicode form, and folds compatibility forms (ſ is s, ﬆ is st). */
 const fold = (text) => text.normalize("NFKC").toLowerCase();
 /**
- * The words of a command's text, in their own case. Quotes and backslashes are removed, so .cl''aude is .claude. A
- * special parameter ($? $# $* $@ $$ $! $- $0) is a variable, not a pattern, so it stays only as its "$".
+ * The text without its quotes and backslashes, as the shell gives the words to a program: .cl''aude is .claude, and the
+ * $ of an ANSI-C or locale quote ($'' or $"") goes with it, so hom$''? is hom?. A $? stays as it is: its ? is a pattern
+ * character to the hook, which does not expand variables (T83-R5-DOLLARQUOTE).
  */
+const unquote = (text) => text.replace(/\$(?=['"])/g, "").replace(/['"\\]/g, "");
+/** The words of a command's text, in their own case, without quotes. */
 const wordsOf = (text) =>
-  text
-    .replace(/['"\\]/g, "")
-    .replace(/\$[?#*@$!0-]/g, "$")
+  unquote(text)
     .replace(/\$\{(\w+)\}/g, "$$$1")
     .split(/[\s;&|()<>`=:]+/)
     .filter(Boolean);
-/** The words of the text, folded, each once (a long line repeats words), as its path parts. */
-const partsOf = (text) => [...new Set(wordsOf(fold(text)))].map((word) => ({ word, parts: word.split("/") }));
+/** The words of the text, each once (a long line repeats words), with the folded form (low) and its path parts. The word keeps its own capitals, for the refusal. */
+const partsOf = (text) => [...new Set(wordsOf(text))].map((word) => ({ word, low: fold(word), parts: fold(word).split("/") }));
 const GLOB = /[*?[{]/;
 /** Does a path part name name, also as a shell pattern (sag?, .cl*, [.]claude, {a,b})? */
 function names(part, name) {
@@ -544,8 +545,9 @@ function rootsOf(strict) {
 }
 /** The word that names the sage root: its path or a variable that sets it, or .claude then sage in one path, in any case or as a pattern. */
 function namesRoot(text, words, roots, cwd) {
-  const low = fold(text.replace(/['"\\]/g, ""));
-  return usesRootVar(text, roots[1], cwd) ?? roots.find((r) => low.includes(r)) ?? words.find(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")))?.word;
+  const low = fold(unquote(text));
+  const root = roots.find((r) => low.includes(r));
+  return usesRootVar(text, roots[1], cwd) ?? (root && (words.find((w) => w.low.includes(root))?.word ?? root)) ?? words.find(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")))?.word;
 }
 /**
  * The first use in the text of a variable that sets the sage root (sageRoot: SAGE_HOME, CLAUDE_CONFIG_DIR), or undefined.
@@ -557,7 +559,7 @@ function namesRoot(text, words, roots, cwd) {
 const ROOT_VAR = /(\$\{?|\$env:|%)?\b(SAGE_HOME|CLAUDE_CONFIG_DIR)\b(=([^\s;&|<>()`]*))?/gi;
 function usesRootVar(text, root, cwd) {
   const reads = /\$\(|`|\|/.test(text);
-  for (const [use, ref, , set, value] of text.replace(/['"\\]/g, "").matchAll(ROOT_VAR)) {
+  for (const [use, ref, , set, value] of unquote(text).matchAll(ROOT_VAR)) {
     if (ref || (set ? !root || !value || /[$`*?[{%]/.test(value) || overlaps(canonical(from(cwd, pathOf(value))), root) : reads)) return use;
   }
   return undefined;
@@ -587,25 +589,25 @@ function pathOf(word) {
 function nearLogbook(text, roots, cwd) {
   const words = partsOf(text);
   const plain = words.filter(({ word }) => !GLOB.test(word));
-  const low = fold(text);
   const home = fold(process.env.HOME ?? "");
   const atHome = (w) => /^(?:~|\$home|-)\/?$/.test(w) || (home.length > 1 && (w === home || w === `${home}/`));
   const fromHome = (w) => HOME.test(w) || (home.length > 1 && (w === home || w.startsWith(`${home}/`)));
   const leaves =
     /[$`]/.test(text) ||
-    words.some(({ word, parts }) => /^(?:cd|pushd)$/.test(word) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(word) && !/^\/dev\/(?:null|stdout|stderr)$/.test(word)));
-  const unique = [...new Set(wordsOf(text))]; // each word once: a long line repeats words
-  const lowWords = wordsOf(low);
+    words.some(({ low, parts }) => /^(?:cd|pushd)$/.test(low) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(low) && !/^\/dev\/(?:null|stdout|stderr)$/.test(low)));
+  const all = wordsOf(text); // in their own case, for the refusal
+  const unique = [...new Set(all)]; // each word once: a long line repeats words
+  const lowWords = all.map(fold);
   const cdHome = lowWords.findIndex((word, k) => /^(?:cd|pushd)$/.test(word) && atHome(lowWords[k + 1] ?? "-"));
   return (
     namesRoot(text, plain, roots, cwd) ??
-    plain.find(({ word, parts }) => parts.includes(".claude") && !worktree(word))?.word ??
+    plain.find(({ low, parts }) => parts.includes(".claude") && !worktree(low))?.word ??
     (leaves ? words.find(({ word }) => GLOB.test(word))?.word ?? namesTable(words) : undefined) ??
     unique.find((w) => !/[$`]/.test(w) && overlaps(canonical(from(cwd, pathOf(w))), roots[1])) ??
     unique.find((w) => linkOnPattern(w, cwd)) ??
-    words.find(({ word }) => fromHome(word) && /[*?[{$]/.test(word.replace(/^\$home/, "")))?.word ??
-    (/(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(low) ? "cd" : undefined) ??
-    (cdHome < 0 ? undefined : lowWords.slice(cdHome, cdHome + 2).join(" "))
+    words.find(({ low }) => fromHome(low) && /[*?[{$]/.test(low.replace(/^\$home/, "")))?.word ??
+    (/(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(fold(text)) ? "cd" : undefined) ??
+    (cdHome < 0 ? undefined : all.slice(cdHome, cdHome + 2).join(" "))
   );
 }
 /**
@@ -663,9 +665,9 @@ function writesIn({ words, redirects }) {
     base.some((w) => WRITE_NAMES.has(w)) ||
     (has(/^g?sed$|^perl$|^ruby$/) && low.some((w) => /^-[a-z]*i|^--in-place/.test(w))) ||
     (has(/^g?awk$/) && low.includes("inplace")) ||
-    (has(/^g?sort$/) && low.some((w) => /^-[a-z]*o|^--output/.test(w))) ||
+    (has(/^g?sort$/) && low.some((w) => /^-[a-z]*o|^--o/.test(w))) || // sort takes a shortened long option: --out=FILE, --outp=FILE (T83-R5-SORTABBR)
     (has(/^find$/) && low.some((w) => /^-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)$/.test(w))) ||
-    (has(/^(?:node|deno|bun|python[\d.]*|perl|ruby|php|osascript|sh|bash|zsh|dash|ksh|fish|pwsh|powershell)$/) && low.some((w) => /^-(?:[a-z]*[ce]|p|-eval|-print|command)$/.test(w))) ||
+    (has(/^(?:node|deno|bun|python[\d.]*|perl|ruby|php|osascript|sh|bash|zsh|dash|ksh|fish|pwsh|powershell)$/) && low.some((w) => CODE.test(w))) ||
     /^(?:eval|source|\.|exec)$/.test(base[low.findIndex((w) => !/^\w+=/.test(w))] ?? "")
   );
 }
@@ -732,7 +734,7 @@ function chiefProblem(input, sage) {
 const kind = (text) => (/sage-pr\.mjs/i.test(text) ? "pr" : /sage\.mjs/i.test(text) ? "tool" : undefined);
 const INTERPRETERS = /^(?:node|nodejs|deno|bun|python[\d.]*|perl|ruby|php|osascript|source|\.)$/;
 function scriptRun(text, cwd) {
-  const named = kind(text.replace(/['"\\]/g, ""));
+  const named = kind(unquote(text));
   if (!named) return undefined;
   let runs;
   try {
@@ -782,7 +784,9 @@ function agentCheck(input, file) {
   if (run === "tool") {
     const [node, path, cmd, ...args] = command.trim().split(/[ \t]+/);
     const own = PLAIN.test(command.trim()) && node === "node" && /(?:^|\/)skills\/sage\/sage\.mjs$/.test(path) && !path.split("/").includes("..");
-    if (!own || canonical(resolve(input.cwd ?? process.cwd(), path)) !== canonical(TOOL)) return "an agent runs the state tool only as one plain command, with nothing before or after it, and only the copy that this hook loads.";
+    if (!own || canonical(resolve(input.cwd ?? process.cwd(), path)) !== canonical(TOOL)) {
+      return `an agent runs the state tool only as one plain command, with nothing before or after it, and only the copy that this hook loads: ${quoted(hidesTool(command))} is not that. ${PLAIN_WAY}`;
+    }
     // The words that are not options or option values, read as the state tool reads them (sage.mjs parse).
     const pos = [];
     for (let k = 0; k < args.length; k++) {
@@ -793,9 +797,43 @@ function agentCheck(input, file) {
   }
   const text = fields(ti);
   const cwd = input.cwd ?? process.cwd();
+  const glob = text.map((t) => globRun(t, cwd)).find(Boolean);
+  if (glob) return `an agent never runs a program or a script through a pattern, because the hook cannot tell which file runs: ${quoted(glob)} has one. Write the path in full.`;
   if (!text.some(writes)) return undefined;
   const word = nearLogbook(text.join("\n"), roots, cwd) ?? text.map((t) => linksNear(t, roots[1], cwd)).find(Boolean);
-  return word && `an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it. ${quoted(word)} makes this command near the logbook: change or remove it.`;
+  const hint = word && /\$\?/.test(word) ? " The hook does not expand $?, so its ? is a pattern character: to show an exit code, write || echo FAIL or ; echo done after the command instead." : "";
+  return word && `an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it. ${quoted(word)} makes this command near the logbook: change or remove it.${hint}`;
+}
+/**
+ * The word that keeps a state-tool run from being one plain command (T83-Q3-N1WORD): the keyword, wrapper or program
+ * before it (for, {, !, sudo, npx, python3), node's option (--check, -e) or its other path, or else the first text that
+ * is not plain (a quote, ;, &&, |, $, a newline).
+ */
+function hidesTool(command) {
+  const [first, second = ""] = command.trim().split(/[ \t]+/);
+  if (first !== "node") return first;
+  if (!/(?:^|\/)skills\/sage\/sage\.mjs$/.test(second) || second.split("/").includes("..")) return second;
+  return /[^\w./=:@,+ \t-]+/.exec(command)?.[0] ?? second;
+}
+const PLAIN_WAY = "To read sage.mjs, use a plain cat <path> or git show <sha>:<path>.";
+/** An option that gives an interpreter or a shell its code (-c, -e, -p, --eval, --print, -Command): the word after it is code, not a script. */
+const CODE = /^-(?:[a-z]*[ce]|p|-eval|-print|command)$/;
+/**
+ * The word of a program, or of the script that an interpreter or a shell runs, that has a pattern character (T83-PRE-
+ * GLOBRUN: node <plugin>/skills/sage/sag?.mjs runs the state tool). The hook does not expand a pattern, so it cannot tell
+ * which file runs. Throws when the shell reader cannot read the line, and the agent's check then fails closed.
+ */
+function globRun(text, cwd) {
+  const part = (path) => path.split("/").find((p) => GLOB.test(p)); // the part with the pattern: a long path is cut in the refusal
+  for (const { word, args } of programsRun(text, cwd)) {
+    if (GLOB.test(word)) return part(word);
+    const name = basename(word).toLowerCase();
+    if (!INTERPRETERS.test(name) && !SHELLS.test(name)) continue;
+    if (args.some((a) => CODE.test(a))) continue;
+    const script = args.find((a) => !a.startsWith("-"));
+    if (script && GLOB.test(script)) return part(script);
+  }
+  return undefined;
 }
 
 /**

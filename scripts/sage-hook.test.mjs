@@ -2629,13 +2629,21 @@ test("S2-UNIQ: uniq IN OUT, sort -o FILE and less -o FILE write, so they are ref
   assert.equal(denied(s.send(bash("sort rows.txt | uniq -c > counts.txt", FEATURE, AGENT))), undefined, "uniq in a project");
 });
 
-test("Q1-DOLLARQ: a special parameter ($?, $#, $@ ...) is not a pattern, so an agent's test log with its exit code passes (T83 round 5)", () => {
+test("R5-DOLLARQUOTE: $? is a pattern character to the hook, so a test log with echo exit=$? is refused, named, with the plain way; the $'' forms are refused too (T83 round 6)", () => {
   const s = session();
   const scratch = mkdtempSync(join(tmpdir(), "sage-scratch-"));
-  for (const command of [`npm test > ${scratch}/test.log 2>&1; echo exit=$?`, `node x.mjs "$@" > ${scratch}/out.txt; echo $# $$ $! $- $0`]) {
-    assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+  const answer = denied(s.send(bash(`npm test > ${scratch}/test.log 2>&1; echo exit=$?`, FEATURE, AGENT))) ?? "";
+  assert.match(answer, LOGBOOK_SHELL);
+  assert.match(answer, /"\$\?" makes this command near the logbook/);
+  assert.match(answer, /\|\| echo FAIL or ; echo done/);
+  assert.equal(denied(s.send(bash(`npm test > ${scratch}/test.log 2>&1 || echo FAIL`, FEATURE, AGENT))), undefined, "the plain way passes");
+  // $'' is an empty ANSI-C string: the shell makes hom$''? into hom?, a pattern that names the sage root (R677 N1-N5, N9).
+  const root = s.vars.SAGE_HOME;
+  const hide = (path, q) => path.replace(/(\w)(?=\/|$)/g, `$1$${q}?`);
+  for (const command of [`rm -rf ${hide(root, "''")}`, `rm -rf ${hide(root, '""')}`, `echo row >> ${hide(`${root}/p/ledger.tsv`, "''")}`, `rm -rf ${root.slice(0, -2)}$''*`, "rm ../'$'*"]) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, command);
   }
-  assert.match(denied(s.send(bash(`rm ${scratch}/../*`, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, "a real pattern stays near");
+  assert.match(denied(s.send(bash("cp /tmp/x ~/.claud$''?/sag$''?/p/ledger.tsv"))) ?? "", /the chief never writes, moves or removes a logbook file/, "the chief, with the real root's shape");
 });
 
 test("Q2-WORD: a refusal names the word that made the command near the logbook (T83 round 5)", () => {
@@ -2645,7 +2653,7 @@ test("Q2-WORD: a refusal names the word that made the command near the logbook (
     ["rm -rf $SAGE_HOME/p", /"\$SAGE_HOME"/],
     ["rm /tmp/x/*", /"\/tmp\/x\/\*"/],
     ["cp x ~/.claude/y", /"~\/\.claude\/y"/],
-    [`echo x > ${root}/p/ledger.tsv`, `"${root.toLowerCase().slice(0, 40)}`],
+    [`echo x > ${root}/p/ledger.tsv`, `"${root.slice(0, 40)}`],
   ];
   for (const [command, word] of cases) {
     const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
@@ -2653,4 +2661,80 @@ test("Q2-WORD: a refusal names the word that made the command near the logbook (
     assert.ok(typeof word === "string" ? answer.includes(word) : word.test(answer), `${command}: ${answer}`);
   }
   assert.match(denied(s.send(bash("rm -rf $SAGE_HOME/p"))) ?? "", /"\$SAGE_HOME" names the logbook/, "chief");
+});
+
+// T83 round 6. The hook only reads these commands; no test passes them to a shell.
+test("R5-SORTABBR: sort takes a shortened long option, so --out=FILE and --outp=FILE write like --output=FILE (T83 round 6)", () => {
+  const s = session();
+  const root = s.vars.SAGE_HOME;
+  for (const option of ["--out", "--outp", "--output"]) {
+    const command = `sort ${option}=${root}/p/tasks.tsv rows.txt`;
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `chief: ${command}`);
+  }
+  assert.equal(denied(s.send(bash("sort --out=sorted.txt rows.txt", FEATURE, AGENT))), undefined, "sort into a project file");
+});
+
+test("PRE-GLOBRUN: a pattern in the path of a program, or of the script that node, python or a shell runs, is refused and named (T83 round 6)", () => {
+  const s = session();
+  const dir = dirname(TOOL);
+  const refused = [
+    [`node ${dir}/sag?.mjs verdict T2 --kind qa-pass --sha ${SHA}`, '"sag?.mjs"'],
+    [`node ${dir}/sag[e].mjs status`, '"sag[e].mjs"'],
+    ["python3 scripts/t*.py", '"t*.py"'],
+    ["bash scripts/t*.sh", '"t*.sh"'],
+    ["./scripts/run-*.sh", '"run-*.sh"'],
+  ];
+  for (const [command, word] of refused) {
+    const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
+    assert.match(answer, /never runs a program or a script through a pattern/, command);
+    assert.ok(answer.includes(word), `${command}: ${answer}`);
+  }
+  for (const command of ['node -e "console.log(a ? 1 : 2)"', "ls tests/*.mjs", "grep -n 'a?b' src/x.js", `node ${TOOL} status`]) {
+    assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+  }
+});
+
+test("Q3-N1WORD: every refusal of a hidden state-tool run names the word that hides it, and the plain way (T83 round 6)", () => {
+  const s = session();
+  const write = `node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA}`;
+  const path = "plugins/sage/skills/sage/sage.mjs";
+  const cases = [
+    [`for k in a b; do node ${TOOL} verdict T2 --kind $k --sha ${SHA}; done`, '"for"'],
+    [`while true; do ${write}; done`, '"while"'],
+    [`if true; then ${write}; fi`, '"if"'],
+    [`case x in x) ${write};; esac`, '"case"'],
+    [`{ ${write}; }`, '"{"'],
+    [`! ${write}`, '"!"'],
+    [`sudo -u root ${write}`, '"sudo"'],
+    [`timeout -s KILL 5 ${write}`, '"timeout"'],
+    [`env -u X ${write}`, '"env"'],
+    [`npx -p x ${write}`, '"npx"'],
+    [`python3 -c "import json; print(len(open('${path}').read()))"`, '"python3"'],
+    [`node --check ${path} && node ${TOOL} init`, '"--check"'],
+    [`node -e "import('${TOOL}')"`, '"-e"'],
+    [`node ${TOOL} status; node ${TOOL} init`, '";"'],
+  ];
+  for (const [command, word] of cases) {
+    const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
+    assert.match(answer, ONLY_CHIEF, command);
+    assert.ok(answer.includes(`${word} is not that`), `${command}: ${answer}`);
+    assert.match(answer, /plain cat <path> or git show <sha>:<path>/, command);
+  }
+});
+
+test("Q4-CASE: the named word keeps the command's own capitals (T83 round 6)", () => {
+  const s = session();
+  const cases = [
+    ["rm -rf $HOME/.claude/x", '"$HOME/.claude/x"'],
+    ["cp x ~/.Claude/Sage/y", '"~/.Claude/Sage/y"'],
+    ["cd $HOME; rm -rf X", '"cd $HOME"'],
+    ["rm /Tmp/X/*", '"/Tmp/X/*"'],
+  ];
+  for (const [command, word] of cases) {
+    const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
+    assert.match(answer, LOGBOOK_SHELL, command);
+    assert.ok(answer.includes(word), `${command}: ${answer}`);
+  }
+  assert.match(denied(s.send(bash("cp x ~/.Claude/Sage/y"))) ?? "", /"~\/\.Claude\/Sage\/y" names the logbook/, "chief");
 });
