@@ -25,6 +25,8 @@ This skill is a map. Each section holds the facts that its answer must carry: gi
 2. Do the read that the section's **Read** line names. Make it your first tool call, before you write any of the answer.
 3. Answer from what you read and from the section's facts. When the source disagrees with this map, trust the source.
 
+**Never give the user a state-tool command.** This rule wins over the source. Do not give `pages`, `init`, `task`, `gate`, `logbook`, `board` or any other command of the state tool, and no `node …sage.mjs …` command, also when the README or another source names one. Only the chief runs the state tool. Where the source names such a command, write "ask the chief" and say what the chief does. A phrase that the user sends, such as "show board", is not a command: give it as the section says.
+
 Give only the phrases that this map or the source writes, letter for letter: do not make up a form.
 
 - **The README** is not in the installed plugin. When the session's folder is the sage repository, Read its `README.md`. Otherwise run this one command alone, exactly as written: no pipe, no `grep`, no redirect and no other argument. Run it once. Find the section in its output yourself. When Claude Code saves a long output to a file, Read that file, with an offset and a limit if it is long; do not run `curl` again, and do not pipe it.
@@ -127,7 +129,7 @@ A hook gives each principle at the moment that it applies, so the user seldom lo
 
 **Read:** the README, section "How it works".
 
-Give these paths. Give no command, also not one that the README names, such as the state tool's `pages`: only the chief runs the state tool, and the user cannot.
+Give these paths, and no state-tool command (see the rule above).
 
 - **The logbook** of each project, in `~/.claude/sage/<project>-<hash>/`: its tasks, runs, findings, verdicts, the user's answers and the decision trail. In sage mode, the user can ask the chief to print the exact folder.
 - **The hook's state**, in `~/.claude/sage/.hooks/`: the modes, autopilot and the agent slots.
