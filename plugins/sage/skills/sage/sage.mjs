@@ -587,8 +587,9 @@ function enlist(root, rows) {
  * migration). After that, a missing list refuses, and only the owner's rebuild lists the folders again. The list must be
  * a regular file, not a link, with its header line; anything else refuses. It never removes a line. With add (init),
  * make runs under the root's lock after the list passed and before add joins it, so a refusal here changes nothing.
+ * With readOnly, it takes no lock and writes nothing: a missing list gives undefined.
  */
-function known(root, add, make) {
+function known(root, add, make, readOnly) {
   const file = join(root, "projects.tsv");
   const names = () => {
     let text;
@@ -604,7 +605,9 @@ function known(root, add, make) {
     return rowsOf({ cols: head.split("\t"), lines });
   };
   if (!add && !statSync(root, { throwIfNoEntry: false })?.isDirectory()) return new Set(); // no root, no logbook
-  if (!add && lstatSync(file, { throwIfNoEntry: false })) return new Set(names().map((r) => r.logbook));
+  const list = !add && names(); // one read: no gap between a look and the read
+  if (list) return new Set(list.map((r) => r.logbook));
+  if (readOnly) return undefined;
   if (add) mkdirSync(root, { recursive: true });
   return withLock(root, () => {
     const was = names();
@@ -644,9 +647,10 @@ function rebuild(root) {
  * project's logbook, must pass on its own rows, also an abandoned one, so no other logbook or task can lend its verdicts.
  * With pr, the tasks of that pull request in those logbooks must pass too, and there must be one. Each task wants the
  * clean cycles of its size and risk (cyclesFor), or cycles when it is given and higher: cycles only raises. The hook calls this, so it
- * never throws: what it cannot read refuses the merge.
+ * never throws: what it cannot read refuses the merge. With readOnly (the board), it takes no lock and writes nothing, so
+ * it refuses when the known project list is missing instead of making it.
  */
-export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
+export function mergeCheck(sha, env = process.env, { cycles, pr, readOnly } = {}) {
   const root = sageRoot(env);
   try {
     if (notFull(sha)) return { ok: false, reason: notFull(sha) };
@@ -655,7 +659,8 @@ export function mergeCheck(sha, env = process.env, { cycles, pr } = {}) {
     const cfg = config(env); // once: the merge check may judge thousands of tasks
     const broken = Object.keys(cfg).find((k) => cfg[k] === "invalid"); // fail closed: a default would ask fewer cycles than the owner meant
     if (broken) return { ok: false, reason: `the merge check refuses every merge, because ${broken} in ${join(root, "config.json")} is not a number. Set it with sage config ${broken}=<n> (a whole number from ${floor(broken)} to 10), or remove the key.` };
-    const [listed, strangers] = [known(root), []];
+    const [listed, strangers] = [known(root, undefined, undefined, readOnly), []];
+    if (!listed) return { ok: false, reason: `the known project list is missing. This read-only check does not make it: sage merge-check --sha <sha> makes ${join(root, "projects.tsv")} or says how to get it back.` };
     const each = folders(root).flatMap((dir) => {
       // A folder with tasks.tsv, also a link, is a logbook, and it must pass the integrity check. A folder without it is
       // none: init has not finished it, or it lost its tasks. Its verdicts name tasks that it does not have, so they refuse.
