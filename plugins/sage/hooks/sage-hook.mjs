@@ -54,7 +54,12 @@ const LINE_START = String.raw`^(?:${SP}|["'“‘*_>-])*`;
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
 const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
 const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
-const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?(?:${END}|${SP}+(?!off\\b)(?!.*\\?))`, "i"); // "." stops at a line break
+// The two lookaheads come before the space run, so that one space and two spaces give the same answer, and so that the
+// run never backtracks into a re-scan of the line: a lookahead after a greedy run reads the line again at each step of the
+// run, quadratic time on a long first line (T34, T194 cycle 1). The off guard blocks only the exact off word: "sage mode
+// offline" and "sage mode office hours" turn the mode on, as any other word after the phrase does; "sage mode off-topic"
+// is an off word with a hyphen, so OFF_LINE reads it as an autopilot off and SAGE_ON does not turn the mode on.
+const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?(?:${END}|(?!${SP}*off\\b)(?!.*[?？])${SP}+)`, "i"); // "." stops at a line break
 const OFF_LINE = new RegExp(`${LINE_START}(?:sage${SP}+mode|autopilot)${SP}+off\\b`, "im"); // in any text, at the start of any line
 const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");

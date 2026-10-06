@@ -823,7 +823,13 @@ test("only the start of the user's message switches a mode, except autopilot off
     [[], "sage mode continue, right?", "sage mode off, autopilot off", 'words after the phrase, with a "?" on the line'],
     [[], "sage mode\ncontinue?", "sage mode on, autopilot off", 'a "?" on a later line'],
     [[], "is sage mode on", "sage mode off, autopilot off", "the phrase not at the start"],
-    [[], "sage mode off-topic: the logo first", "sage mode off, autopilot off", "an off that the off rule does not read never turns on"],
+    [[], "sage mode off-topic: the logo first", "sage mode off, autopilot off", "off with a hyphen: the off line rule reads it as an autopilot off, and the on rule's off guard blocks it too"],
+    [[], "sage mode  off-topic: the logo first", "sage mode off, autopilot off", "two spaces before off with a hyphen give the same answer as one (R703-1)"],
+    [[], "sage mode offline: the logo first", "sage mode on, autopilot off", "a longer word that starts with off is a word after the phrase, not an off"],
+    [[], "sage mode  offline: the logo first", "sage mode on, autopilot off", "two spaces before a longer word give the same answer as one"],
+    [[], "sage mode continue？", "sage mode off, autopilot off", "the full-width question mark counts as a question (R703-3, G68)"],
+    [[], "sage mode？", "sage mode off, autopilot off", "the phrase and a full-width question mark"],
+    [BOTH, "sage mode  off continue", "sage mode off, autopilot off", "the exact off word after two spaces: off wins over on"],
     [BOTH, "sage mode off continue", "sage mode off, autopilot off", "off wins over on: the off rule reads the message first"],
     [SAGE, "sage mode autopilot continue", "sage mode on, autopilot off", "words after autopilot: the autopilot rule stays strict"],
     [[], "sage mode online: is it a thing?", "sage mode off, autopilot off", "sage mode and a longer word"],
@@ -1316,6 +1322,10 @@ test("1 MB of padding in an agent's text cannot time out the hook: its time grow
       "a long gh api endpoint with slashes": bash(`gh api --hostname github.com -X POST repos/${pad("a/")}git/refs -f ref=refs/heads/main -f sha=${ROOT_SHA}`),
       "many gh api fields": bash(`gh api --hostname github.com -X POST repos/o/r/git/refs ${pad("-f ref=refs/heads/main ")}`),
       "blank lines in a report": { hook_event_name: "SubagentStop", agent_type: "sage:implementer", agent_id: "x", last_assistant_message: pad(" \n") },
+      // The owner's first line (T194): the on rule's question guard must not re-scan the line at each step of the space
+      // run after the mode phrase. Before the repair, 64 KB of spaces took about 0.5 s and 1 MB over 100 s (R702, R703).
+      "the mode phrase, then spaces and a question": prompt(`sage mode${pad(" ")}x?`),
+      "the mode phrase, then words and a question": prompt(`sage mode${pad(" word")}?`),
     };
     return [...stops, ...Object.entries(others)];
   };
