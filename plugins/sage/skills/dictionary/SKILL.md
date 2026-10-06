@@ -34,10 +34,12 @@ A part marked "coming with programs" describes programs, a feature that is appro
 | **cycle** | One full set of fresh reviews and QA on one head commit; a new commit starts again from cycle 1. | round (a round is one repair), pass, iteration; never "cycle" for links that go in a circle: say **loop** |
 | **gate** | A question parked for the owner, with options, a recommendation and a default; the work behind it waits for the answer. Coming with programs: the owner approves a program's breakdown through a gate. | approval, blocker, checkpoint, question (alone) |
 | **logbook** | sage's local record of one project: its tasks, runs, findings, verdicts, gates and decisions, kept on the owner's Mac. | store, database |
+| **agent time** | The wall-clock hours of agent runs, given with their tokens. The default for every time figure: give it with its basis and a range. | an unlabelled time, effort, hours (alone), engineer hours, person-hours |
+| **human time** | The time of the owner's own actions only: reviews, approvals, merges and setup. Give it with its basis and a range. | an unlabelled time, effort, hours (alone), person-hours |
 
 ## Phrases
 
-These are not new words. They are fixed phrases inside the lines above, so that the list stays at 16 words.
+These are not new words. They are fixed phrases inside the lines above, so that the list stays at 18 words.
 
 - **breakdown** (coming with programs): the content of a program that the owner approves (goal, done condition, tasks, "waits for" links, pilot, cost, questions). In the program line.
 - **waits for** (coming with programs): the link from a task to a task or a pull request that must merge first. In the task line. A circle of such links is a **loop**, and sage refuses it.
@@ -57,6 +59,7 @@ The names of sage's parts. They are not words of the list above, but the README'
 | **standing orders** | Short rules for a project that every brief carries word for word. |
 | **arena** | N candidates for one design, scored and combined by a judge. |
 | **autopilot** | Verified pull requests merge by themselves after their clean cycles: 1 for a tiny or small task, 2 for a large task or a task with a risk flag. Off by default. A message of the owner that starts with "autopilot on" or "sage mode autopilot" turns it on. Your own text that mentions autopilot with an off word turns it off, also between two frames and in a message queued while Claude works. A queued message is yours only as a whole system reminder outside every other frame. It can stop autopilot, but it cannot start autopilot or sage mode: send an on again when Claude is idle. Inside an agent's report or a notice, only a line that starts with "autopilot off" or "sage mode off" turns it off. Text inside an agent's report, a notice or another session's message never turns it on. |
+| **board** | The compact view of every project's logbook for the chat: what needs you, the agents running now, each active task, what merged since the last board and the next tasks. A message of the owner that starts with "show board" prints it. |
 | **the dojo** | Everything that makes the agents good: the principles, checks, tests and skills. |
 | **seal the lesson** | Give a mistake that comes back twice a lasting fix, from the most enforced kind down: a test or a check in code first; a principle or a standing order only when code cannot hold it. Each sealed lesson makes the dojo stronger. |
 

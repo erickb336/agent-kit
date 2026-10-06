@@ -1,0 +1,12 @@
+id	title	size	risk	route	state	branch	pr	round	keys
+T1	Sample: the merged readme change	small		build,code-review,qa	merged	t1	4	0	
+T2	Sample: the chat board	small	input	build,code-review,security-review,qa	verified	t2	7	0	
+T3	Sample: a docs fix	small		build,code-review,qa	verified	t3	8	1	
+T4	Sample: the large rebuild	large		design,pe,build,code-review,security-review,ux-review,qa	pr-ready	t4	9	0	
+T5	Sample: a hook change in progress	small		build,code-review,qa	building	t5		0	
+T6	Sample: the config reader	small		build,code-review,qa	reviewing	t6	10	2	
+T7	Sample: next task one	tiny		build	framed			0	
+T9	Sample: next task three	tiny		build	framed			0	
+T8	Sample: next task two	tiny		build	framed			0	
+T10	Sample: next task four	tiny		build	framed			0	
+T11	Sample: an abandoned idea	tiny		build	abandoned			0	

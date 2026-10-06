@@ -1,0 +1,4 @@
+id	task	role	round	candidate	branch	status	tokens	report	started	ended
+R1	T5	implementer	0		t5	running			2026-10-05T04:00:00Z	
+R2	T6	code-review	2		t6	running			2026-10-05T04:30:00Z	
+R3	T1	implementer	0		t1	done	1000		2026-10-04T10:00:00Z	2026-10-04T11:00:00Z
