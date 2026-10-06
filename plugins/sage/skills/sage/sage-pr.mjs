@@ -5,8 +5,9 @@
 // reviewed head come only from the logbook, which only the chief writes: the branch from tasks.tsv, the head from the
 // task's latest ledger row. git runs only in the script's own mirror (<logbook>/mirror.git), with sage's neutral options,
 // and gh only in an empty temp folder; both through execFile with argument arrays, never a shell. No message prints a
-// URL's user or password, nor the argument list of a failed git call. Exit codes: 0 done, 1 refused, 2 failed, 3 merged
-// but the mirror refresh failed (the merge happened: do not run merge again).
+// URL's user or password, the origin or SAGE_REPO, nor the argument list of a failed git call. Exit codes: 0 done (also
+// "already merged"), 1 refused (the script's own checks), 2 failed (git or gh failed), 3 merged but the mirror refresh
+// failed (the merge happened: do not run merge again).
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,8 +24,12 @@ const TASK = /^T[1-9][0-9]{0,5}$/;
 const GITHUB = /^(?:https:\/\/(?:[^/@\s]+@)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
 const REPO = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 
-/** A URL's user and password (//user:pass@ or //token@) as ***: no message prints a credential of the origin. */
-const redact = (text) => String(text).replace(/\/\/[^/@\s]+@/g, "//***@");
+/**
+ * The user and password before a host as ***@, for every address form: //user:pass@host/, //token@host/, an '@' inside the
+ * password (up to the last '@' before the host) and the scp form user:pass@host:path. Messages never print the origin or
+ * SAGE_REPO; this covers text that the script does not write, such as gh's error messages.
+ */
+const redact = (text) => String(text).replace(/([a-z][a-z0-9+.-]*:\/\/)?[^\s"'<>()]*@(?=[^\s"'<>()@]*[:/])/gi, "$1***@");
 class Refusal extends Error {}
 /** The merge happened, and only the mirror's refresh after it failed: exit 3, so the chief does not merge again. */
 class Merged extends Error {}
@@ -32,6 +37,7 @@ const no = (message) => {
   throw new Refusal(redact(`refused: ${message}`));
 };
 const short = (sha) => sha.slice(0, 7);
+const PR_NUMBER = /^[1-9][0-9]*$/;
 
 /** The arguments: exactly a verb and a task id. A third word, an option or any other form refuses. */
 export function parse(argv) {
@@ -49,11 +55,11 @@ export function record(task, verb, env = process.env) {
   if (!existsSync(join(dir, "tasks.tsv"))) no(`no logbook for the project ${project}: run sage-pr from the project's main checkout, or set SAGE_PROJECT=<that folder>`);
   const t = read(dir, "tasks").find((r) => r.id === task) ?? no(`no task ${task} in ${dir}`);
   const branch = t.branch || no(`${task} has no branch: sage task ${task} set branch=<branch>`);
-  if (branch.replace(/^refs\/heads\//i, "").toLowerCase() === BASE) no(`branch "${branch}" is the base branch`);
+  if (branch.replace(/^refs\/heads\//i, "").toLowerCase() === BASE) no(`branch "${branch}" is the base branch: sage task ${task} set branch=claude/${task.toLowerCase()}`);
   if (!ofTask(task, branch)) no(`branch "${branch}" is not a branch of ${task} ([<prefix>/]${task.toLowerCase()}[-<words>]): sage task ${task} set branch=claude/${task.toLowerCase()}`);
   let head;
   if (verb !== "view") {
-    head = read(dir, "ledger").filter((r) => r.task === task && r.sha).at(-1)?.sha ?? no(`${task} has no verdict with a SHA, so it has no reviewed head`);
+    head = read(dir, "ledger").filter((r) => r.task === task && r.sha).at(-1)?.sha ?? no(`${task} has no verdict with a SHA, so it has no reviewed head: record the route's verdicts on the reviewed head (sage verdict ${task} --sha <sha> --kind <kind>)`);
     if (!/^[0-9a-f]{40}$/.test(head)) no(`the reviewed head of ${task} is not a full SHA: ${JSON.stringify(head)}`);
   }
   let url;
@@ -62,11 +68,11 @@ export function record(task, verb, env = process.env) {
   } catch {
     no(`the project ${project} has no origin remote`);
   }
-  if (!url || url.startsWith("-")) no(`the origin of ${project} is not a repository address: ${JSON.stringify(url)}`);
-  const github = GITHUB.exec(url)?.[1];
-  const repo = env.SAGE_REPO ?? github ?? no(`the origin ${JSON.stringify(url)} is not a GitHub repository; set SAGE_REPO=<owner>/<name>`);
-  if (!REPO.test(repo)) no(`SAGE_REPO is not <owner>/<name>: ${JSON.stringify(repo)}`);
-  if (github && github.toLowerCase() !== repo.toLowerCase()) no(`SAGE_REPO ${repo} is not the origin's repository ${github}, so gh and git would act on two repositories. Unset SAGE_REPO, or set it to ${github}`);
+  if (!url || url.startsWith("-")) no(`the origin of ${project} is not a repository address: git -C ${project} remote set-url origin <address>`);
+  const github = GITHUB.exec(url)?.[1]; // owner/name only: the pattern takes no user, password or host
+  const repo = env.SAGE_REPO ?? github ?? no(`the origin of ${project} is not a GitHub repository; set SAGE_REPO=<owner>/<name>`);
+  if (!REPO.test(repo)) no(`SAGE_REPO is not <owner>/<name>: set it to the repository's owner and name only, such as SAGE_REPO=octo/app`);
+  if (github && github.toLowerCase() !== repo.toLowerCase()) no(`SAGE_REPO is not the origin's repository ${github}, so gh and git would act on two repositories. Unset SAGE_REPO, or set it to ${github}`);
   return { project, dir, t, branch, head, url, repo };
 }
 
@@ -113,19 +119,20 @@ function ancestor(mirror, a, b, env) {
  */
 export function copyBundle(path, temp, branch) {
   const make = `git bundle create ${path} ${BASE}..${branch}`;
+  const remake = `: remove it, then write it with ${make}`;
   let fd;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
-    if (e.code === "ELOOP") no(`the bundle ${path} is a link, not a plain file`);
+    if (e.code === "ELOOP") no(`the bundle ${path} is a link, not a plain file${remake}`);
     if (e.code === "ENOENT") no(`no bundle at ${path}: write it with ${make}`);
     throw e;
   }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile()) no(`the bundle ${path} is not a plain file`);
+    if (!st.isFile()) no(`the bundle ${path} is not a plain file${remake}`);
     if (!st.size) no(`the bundle ${path} is empty. Write it with ${make}`);
-    if (st.nlink !== 1) no(`the bundle ${path} has ${st.nlink} links, not 1`);
+    if (st.nlink !== 1) no(`the bundle ${path} has ${st.nlink} links, not 1${remake}`);
     if (st.size > BUNDLE_MAX) no(`the bundle ${path} is over ${BUNDLE_MAX} bytes`);
     const copy = join(temp, "task.bundle");
     const out = openSync(copy, "wx", 0o600);
@@ -145,26 +152,30 @@ export function copyBundle(path, temp, branch) {
   }
 }
 
-/** gh in a new empty folder that is not a repository, so it reads no git config; with --repo, never a prompt. */
-function gh(args, temp, env) {
+/**
+ * gh in a new empty folder that is not a repository, so it reads no git config; with --repo, never a prompt. A failed gh
+ * call (network, GitHub, login, a refused merge) is a failure, exit 2, not a refusal: the script did not refuse it.
+ */
+function gh(args, temp, env, next = "") {
   try {
     return execFileSync("gh", args, { cwd: mkdtempSync(join(temp, "gh-")), encoding: "utf8", env: { ...env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" }, stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch (e) {
-    no(`gh ${args.slice(0, 2).join(" ")} failed: ${String(e.stderr ?? e.message).trim()}`);
+    throw new Error(`gh ${args.slice(0, 2).join(" ")} failed: ${String(e.stderr || e.message).trim()}${next}`);
   }
 }
 
-/** The open pull requests of the branch in the repository itself: a fork's pull request with the same branch name is not the task's. */
+/** The open pull requests of the branch into main in the repository itself: a fork's pull request with the same branch name is not the task's. */
 function ours(repo, branch, temp, env) {
   const owner = repo.split("/")[0].toLowerCase();
-  const all = JSON.parse(gh(["pr", "list", `--repo=${repo}`, `--head=${branch}`, "--state=open", "--json=number,url,isCrossRepository,headRepositoryOwner"], temp, env) || "[]");
+  const all = JSON.parse(gh(["pr", "list", `--repo=${repo}`, `--head=${branch}`, `--base=${BASE}`, "--state=open", "--json=number,url,isCrossRepository,headRepositoryOwner"], temp, env) || "[]");
   return all.filter((p) => p.isCrossRepository === false && p.headRepositoryOwner?.login?.toLowerCase() === owner);
 }
 
 /**
  * create: pushes the reviewed head to the task's branch, fast-forward only, and opens a pull request when none is open.
- * A second create after a repair pushes the new reviewed head and opens nothing new. A task without a PR number gets the
- * pull request's number in the logbook, through the state tool, so that merge knows which pull request to merge.
+ * A second create after a repair pushes the new reviewed head and opens nothing new. The logbook gets the number of the
+ * open pull request, through the state tool, when it has none or another (such as a closed or merged one), so that merge
+ * knows which pull request to merge.
  */
 function create({ project, dir, t, branch, head, url, repo }, temp, env) {
   const path = join(worktreeRoot(env), basename(dir), `${t.id}.bundle`);
@@ -178,12 +189,12 @@ function create({ project, dir, t, branch, head, url, repo }, temp, env) {
   }
   const tip = inMirror(mirror, ["rev-parse", "--verify", `${ref}^{commit}`], env);
   if (tip !== head) no(`the bundle tip ${short(tip)} is not the reviewed head ${short(head)}. Review ${short(tip)} and record its verdicts, or write the bundle with ${branch} at ${short(head)}: git bundle create ${path} main..${branch}`);
-  if (ancestor(mirror, head, `refs/heads/${BASE}`, env)) no(`the head ${short(head)} is already on ${BASE}`);
+  if (ancestor(mirror, head, `refs/heads/${BASE}`, env)) no(`the head ${short(head)} is already on ${BASE}: the task's work is on ${BASE}, so mark the task merged: sage task ${t.id} set state=merged`);
   const line = inMirror(mirror, ["ls-remote", "--", url, `refs/heads/${branch}`], env).split("\n").find((l) => l.endsWith(`\trefs/heads/${branch}`));
   const remote = line?.split("\t")[0];
   let pushed = `${branch} is already at ${short(head)}`;
   if (remote !== head) {
-    if (remote && !ancestor(mirror, remote, head, env)) no(`the remote ${branch} is at ${short(remote)}, and ${short(head)} does not follow from it: a push would not be a fast-forward`);
+    if (remote && !ancestor(mirror, remote, head, env)) no(`the remote ${branch} is at ${short(remote)}, and ${short(head)} does not follow from it: a push would not be a fast-forward. The remote branch moved: review its tip, or ask the user`);
     inMirror(mirror, ["-c", "push.followTags=false", "push", "-q", "--", url, `${head}:refs/heads/${branch}`], env); // a tag can start a release
     pushed = `pushed ${short(head)} to ${branch}`;
   }
@@ -198,35 +209,41 @@ function create({ project, dir, t, branch, head, url, repo }, temp, env) {
     number = /\/pull\/([1-9][0-9]*)$/.exec(made)?.[1];
     if (!number) throw new Error(`${out}, but its number is not in gh's answer, so the logbook has no PR number: sage task ${t.id} set pr=<n>`);
   }
-  if (t.pr) return out;
+  if (t.pr === number) return out;
   try {
     sage(["task", t.id, "set", `pr=${number}`, "--project", project], env);
   } catch (e) {
     throw new Error(`${out}, but the logbook did not take PR ${number} (${e.message}). Run sage-pr create ${t.id} again`);
   }
-  return `${out}; ${t.id} has PR ${number} in the logbook`;
+  return `${out}; ${t.id} has PR ${number} in the logbook${t.pr ? `, not PR ${t.pr}` : ""}`;
 }
 
 /**
  * merge: merges the task's pull request (its PR number in the logbook) only when it is the open pull request of the
  * task's branch into main in the repository itself, the merge check passes on the reviewed head with that PR, and the
- * head is still the reviewed one. Then it fetches the new main into the mirror.
+ * head is still the reviewed one. Then it fetches the new main into the mirror. When that pull request is already
+ * merged (a merge before, whose mirror refresh failed), there is nothing to merge: it only refreshes the mirror.
  */
 function merge({ dir, t, branch, head, url, repo }, temp, env) {
   const pr = t.pr || no(`${t.id} has no PR number in the logbook: run sage-pr create ${t.id}, which records it`);
+  if (!PR_NUMBER.test(pr)) no(`the PR of ${t.id} in the logbook is not a pull request number: sage task ${t.id} set pr=<n>`);
   const p = JSON.parse(gh(["pr", "view", `--repo=${repo}`, "--json=number,state,baseRefName,headRefName,isCrossRepository", "--", pr], temp, env));
-  if (p.state !== "OPEN" || p.baseRefName !== BASE || p.headRefName !== branch || p.isCrossRepository !== false) {
+  const ofBranch = p.baseRefName === BASE && p.headRefName === branch && p.isCrossRepository === false;
+  const refresh = (done) => {
+    try {
+      return `${done}; the mirror's ${BASE} is now ${short(inMirror(mirrorOf(dir, url, env), ["rev-parse", `refs/heads/${BASE}`], env))}`;
+    } catch (e) {
+      throw new Merged(`${done}; the mirror refresh failed: ${e.message.replace(/^refused: /, "")}. Do not run merge again: the next sage-pr create refreshes the mirror`);
+    }
+  };
+  if (ofBranch && p.state === "MERGED") return refresh(`already merged: ${branch} at ${short(head)}; nothing to do`);
+  if (!ofBranch || p.state !== "OPEN") {
     no(`pull request #${pr} is not the open pull request of ${branch} into ${BASE} in ${repo}: it is ${p.state}, from ${p.isCrossRepository === false ? "" : "another repository's "}${p.headRefName} into ${p.baseRefName}. Give ${t.id} its own PR: sage task ${t.id} set pr=<n>`);
   }
   const r = mergeCheck(head, env, { pr });
   if (!r.ok) no(`merge check: ${r.reason}`);
-  const out = gh(["pr", "merge", `--repo=${repo}`, "--squash", "--delete-branch", `--match-head-commit=${head}`, "--", pr], temp, env);
-  const merged = `merged ${branch} at ${short(head)}${out ? `: ${out}` : ""}`;
-  try {
-    return `${merged}; the mirror's ${BASE} is now ${short(inMirror(mirrorOf(dir, url, env), ["rev-parse", `refs/heads/${BASE}`], env))}`;
-  } catch (e) {
-    throw new Merged(redact(`${merged}; the mirror refresh failed: ${e.message.replace(/^refused: /, "")}`));
-  }
+  const out = gh(["pr", "merge", `--repo=${repo}`, "--squash", "--delete-branch", `--match-head-commit=${head}`, "--", pr], temp, env, `. If GitHub says that the head changed, the branch moved after review: review the new head and record its verdicts`);
+  return refresh(`merged ${branch} at ${short(head)}${out ? `: ${out}` : ""}`);
 }
 
 /** Runs one call. A refusal throws, with its reason. */
