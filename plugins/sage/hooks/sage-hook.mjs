@@ -15,14 +15,19 @@
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
 //   - A sage agent may finish only with the full report of the sage:report skill.
+//   - Only the chief writes the logbook, in any mode (agentWriteProblem): an agent runs the state tool only as one plain
+//     read command, never the PR script, never a command outside the sandbox, never writes under the sage root with a
+//     file tool (canonical paths), and never runs a shell write near the logbook (deny by default). Shell text cannot be
+//     read completely: the sandbox (T80) is the full guard for shell writes.
+//   - Only sage.mjs changes the logbook (chiefProblem): the chief's own file tools and shell writes never change it.
 //   - An agent (a sage agent, or any subagent in sage mode; never the chief) never runs git stash, and never runs a
 //     program that lists or signals processes unless that program is a fake in the temp folder (agentProblem).
-// SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge
-// or a push.
+// SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge,
+// a push, every file change and command of an agent, and a chief's shell write that names a logbook file.
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The state tool. When it cannot load, the hook still runs: its merge check refuses every merge, and it starts no new agent.
@@ -65,8 +70,12 @@ const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit
 const broadOff = (text) => OFF_LINE.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
+/** The tools that run a command. The PreToolUse matcher in claude.json names each of them. */
+const SHELL_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.+)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
 const OURS = /^sage:/;
+/** An agent's event: Claude Code sets agent_id only for a subagent's events. An empty agent_id, or a sage role other than the chief, counts too (fail closed). */
+const agentEvent = (input) => "agent_id" in (input ?? {}) || (OURS.test(input?.agent_type ?? "") && !CHIEF.test(input.agent_type));
 export const BRIEF_FIELDS = ["GOAL", "SCOPE", "CONTEXT", "DECISIONS", "ACCEPTANCE", "VERIFY", "BUDGET", "FORBIDDEN", "REPORT", "STANDING"];
 export const REPORT_FIELDS = ["STATUS", "RESULT", "EVIDENCE", "FINDINGS", "QUESTIONS", "NOT VERIFIED", "BRANCH"];
 /** The fields of a template that do not start a line. Markdown around a field ("**STATUS**", "| STATUS |") is fine. */
@@ -195,7 +204,7 @@ const running = (n) => `${n} sage ${n === 1 ? "agent is" : "agents are"} running
 
 export function handle(input, state, slots) {
   const event = input.hook_event_name;
-  const main = !input.agent_id; // Claude Code sets agent_id only for a subagent's events
+  const main = !agentEvent(input);
   if (main && CHIEF.test(input.agent_type ?? "")) state.sage = true;
 
   if (event === "UserPromptSubmit") {
@@ -215,7 +224,7 @@ export function handle(input, state, slots) {
     return undefined;
   }
   const ours = OURS.test(input.agent_type ?? "");
-  if (!main && ours) slots.touch(input.agent_id); // the agent's lease: a slot that no event touched for an hour expires
+  if (!main && ours && input.agent_id) slots.touch(input.agent_id); // the agent's lease: a slot that no event touched for an hour expires
   if (event === "SubagentStart") return void (ours && slots.bind(input.agent_id));
   // The session's live tasks at the main session's Stop: a slot whose agent is not among them is free. An agent that
   // dies (for one, on a usage limit) fires no SubagentStop, but it leaves the registry, and the chief's next turn ends.
@@ -231,10 +240,13 @@ export function handle(input, state, slots) {
   }
   if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
   if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
+  const why = event === "PreToolUse" ? (main ? chiefProblem(input, state.sage) : agentWriteProblem(input)) : undefined;
+  if (why && main) return deny(event, `${why} Only sage.mjs changes the logbook: run the state tool's command for this change (node <path to skills/sage/sage.mjs> ...), as a command of its own. If no command does it, ask the user.`);
+  if (why) return deny(event, `${why} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
   const agent = (ours || (!main && state.sage)) && !CHIEF.test(input.agent_type ?? "");
   if (event === "PreToolUse" && agent && SHELL_TOOLS.test(input.tool_name ?? "")) {
-    const why = agentProblem([].concat(input.tool_input?.command ?? []).join(" "), input.cwd ?? process.cwd());
-    if (why) return deny(event, why);
+    const problem = agentProblem([].concat(input.tool_input?.command ?? []).join(" "), input.cwd ?? process.cwd());
+    if (problem) return deny(event, problem);
   }
   if (event !== "PreToolUse" || !state.sage) return undefined;
 
@@ -477,6 +489,337 @@ function firstCreation({ owner, repo, branch, sha }) {
   }
 }
 
+/**
+ * Only the chief writes the logbook (T83). An agent's event may run the state tool only as one plain read command, by an
+ * allow-list of subcommands, so a subcommand added later is refused until it is listed here. The rule holds for every
+ * tool that runs a command (SHELL_TOOLS), not only Bash. Shell text cannot be read completely, so the shell rule stops
+ * mistakes and the common forgery forms; the sandbox (T80) is the full guard for shell writes. Undefined, or the reason.
+ */
+const READS = { status: () => true, "merge-check": () => true, logbook: (pos) => pos[0] !== "repair", standing: (pos) => pos[0] !== "add", config: (pos) => !pos.length };
+const READ_FORM = "node <path to skills/sage/sage.mjs> <status, merge-check, logbook, standing or config> [--project <path>], as one plain command: no quote, variable, ;, &&, ||, |, `, $(, >, < or newline, and config with no key=value";
+const PLAIN = /^[\w./=:@,+-]+(?:[ \t]+[\w./=:@,+-]+)*$/;
+/** The logbook's files by name (S2). */
+const TABLES = ["tasks.tsv", "runs.tsv", "findings.tsv", "gates.tsv", "ledger.tsv", "decisions.tsv", "config.json", "standing.md", "status.md"];
+/** All the text of a tool call's input, one string per field. */
+const fields = (v) => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(fields) : []);
+/** Text as APFS compares names: it ignores case and Unicode form, and folds compatibility forms (ſ is s, ﬆ is st). */
+const fold = (text) => text.normalize("NFKC").toLowerCase();
+/**
+ * The text without its quotes and backslashes, as the shell gives the words to a program: .cl''aude is .claude, and the
+ * $ of an ANSI-C or locale quote ($'' or $"") goes with it, so hom$''? is hom?. A $? stays as it is: its ? is a pattern
+ * character to the hook, which does not expand variables (T83-R5-DOLLARQUOTE).
+ */
+const unquote = (text) => text.replace(/\$(?=['"])/g, "").replace(/['"\\]/g, "");
+/** The words of a command's text, in their own case, without quotes. */
+const wordsOf = (text) =>
+  unquote(text)
+    .replace(/\$\{(\w+)\}/g, "$$$1")
+    .split(/[\s;&|()<>`=:]+/)
+    .filter(Boolean);
+/** The words of the text, each once (a long line repeats words), with the folded form (low) and its path parts. The word keeps its own capitals, for the refusal. */
+const partsOf = (text) => [...new Set(wordsOf(text))].map((word) => ({ word, low: fold(word), parts: fold(word).split("/") }));
+const GLOB = /[*?[{]/;
+/** Does a path part name name, also as a shell pattern (sag?, .cl*, [.]claude, {a,b})? */
+function names(part, name) {
+  if (part === name) return true;
+  if (!GLOB.test(part)) return false;
+  if (part.replace(/[^*?[{]/g, "").length > 8) return true; // many wildcards could name anything, and would make a slow match
+  const re = part.replace(/[.+^$()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".").replace(/\[!/g, "[^").replace(/\{([^{}]*)\}/g, (_, alts) => `(?:${alts.split(",").join("|")})`);
+  try {
+    return new RegExp(`^${re}$`).test(name);
+  } catch {
+    return true; // a pattern that the hook cannot read could name anything
+  }
+}
+const HOME = /^(?:~|\$home)(?:\/|$)/;
+/** The sage root's text and canonical path, in lower case. strict: throw when the root cannot be resolved (for agents). */
+function rootsOf(strict) {
+  let raw;
+  try {
+    raw = stateTool.sageRoot(process.env);
+    return [fold(raw), canonical(raw)];
+  } catch (e) {
+    if (strict) throw e;
+    return raw ? [fold(raw)] : [];
+  }
+}
+/** The word that names the sage root: its path or a variable that sets it, or .claude then sage in one path, in any case or as a pattern. */
+function namesRoot(text, words, roots, cwd) {
+  const low = fold(unquote(text));
+  const root = roots.find((r) => low.includes(r));
+  return usesRootVar(text, roots[1], cwd) ?? (root && (words.find((w) => w.low.includes(root))?.word ?? root)) ?? words.find(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")))?.word;
+}
+/**
+ * The first use in the text of a variable that sets the sage root (sageRoot: SAGE_HOME, CLAUDE_CONFIG_DIR), or undefined.
+ * Every $VAR (also ${VAR}, $env:VAR, %VAR%) is a use, whatever assignments come before it (T83-N2: a prefix, a subshell,
+ * a pipe, a $( ) or a skipped && can each keep the real value). An assignment is a use unless its value is a plain path
+ * that does not overlap the real root (a scratch SAGE_HOME for tests). A bare name is a use in a command with a
+ * substitution or a pipe, which can read the variable (printenv). Without the real root (root), every mention is a use.
+ */
+const ROOT_VAR = /(\$\{?|\$env:|%)?\b(SAGE_HOME|CLAUDE_CONFIG_DIR)\b(=([^\s;&|<>()`]*))?/gi;
+function usesRootVar(text, root, cwd) {
+  const reads = /\$\(|`|\|/.test(text);
+  for (const [use, ref, , set, value] of unquote(text).matchAll(ROOT_VAR)) {
+    if (ref || (set ? !root || !value || /[$`*?[{%]/.test(value) || overlaps(canonical(from(cwd, pathOf(value))), root) : reads)) return use;
+  }
+  return undefined;
+}
+/** The word that names a logbook file, in any case or as a pattern. */
+const namesTable = (words) => words.find(({ parts }) => parts.some((p) => TABLES.some((t) => names(p, t))))?.word;
+/** A path into a project's worktrees (<project>/.claude/worktrees/<name>), where agents work: plain, with no "..", pattern or variable. */
+const worktree = (word) => /(?:^|\/)\.claude\/worktrees\/[\w-]/.test(word) && word.split(".claude").length === 2 && !/[*?[{$~]/.test(word) && !word.split("/").includes("..");
+/** A path from the cwd, as the shell gives it to the system: ".." is not removed here, so the system resolves it after a link. */
+const from = (cwd, path) => (isAbsolute(path) ? path : `${isAbsolute(cwd) ? cwd : resolve(cwd)}/${path}`); // throws on a cwd that is not text
+/** Does a canonical path overlap the canonical root: is it in the root, or the root in it? */
+const overlaps = (path, root) => [[path, root], [root, path]].some(([a, b]) => a === b || a.startsWith(b.endsWith(sep) ? b : b + sep));
+/** A shell word as a path: ~ is the home folder, and a pattern stands for the folder before its first wildcard. */
+function pathOf(word) {
+  const parts = word.replace(/^~(?=\/|$)/, process.env.HOME ?? "~").split("/");
+  const k = parts.findIndex((p) => GLOB.test(p));
+  return (k < 0 ? parts : parts.slice(0, k)).join("/") || (word.startsWith("/") ? "/" : ".");
+}
+/**
+ * The word that makes an agent's command near the logbook (deny by default), or undefined. It names the sage root or a
+ * logbook file's folder; or .claude (not in a plain worktree path); or the home folder with a variable or a pattern; or
+ * it changes to the home folder. A word that, through the links on disk, is in the sage root or holds it is near too. A
+ * pattern or a logbook file's name is near only in a command that can leave the cwd: cd or pushd, "..", ~, $, a
+ * backtick, or an absolute path (the owner's decision T83-COST-GLOB, so that rm dist/* and jq ... > config.json pass in
+ * a project).
+ */
+function nearLogbook(text, roots, cwd) {
+  const words = partsOf(text);
+  const plain = words.filter(({ word }) => !GLOB.test(word));
+  const home = fold(process.env.HOME ?? "");
+  const atHome = (w) => /^(?:~|\$home|-)\/?$/.test(w) || (home.length > 1 && (w === home || w === `${home}/`));
+  const fromHome = (w) => HOME.test(w) || (home.length > 1 && (w === home || w.startsWith(`${home}/`)));
+  const leaves =
+    /[$`]/.test(text) ||
+    words.some(({ low, parts }) => /^(?:cd|pushd)$/.test(low) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(low) && !/^\/dev\/(?:null|stdout|stderr)$/.test(low)));
+  const all = wordsOf(text); // in their own case, for the refusal
+  const unique = [...new Set(all)]; // each word once: a long line repeats words
+  const lowWords = all.map(fold);
+  const cdHome = lowWords.findIndex((word, k) => /^(?:cd|pushd)$/.test(word) && atHome(lowWords[k + 1] ?? "-"));
+  return (
+    namesRoot(text, plain, roots, cwd) ??
+    plain.find(({ low, parts }) => parts.includes(".claude") && !worktree(low))?.word ??
+    (leaves ? words.find(({ word }) => GLOB.test(word))?.word ?? namesTable(words) : undefined) ??
+    unique.find((w) => !/[$`]/.test(w) && overlaps(canonical(from(cwd, pathOf(w))), roots[1])) ??
+    unique.find((w) => linkOnPattern(w, cwd)) ??
+    words.find(({ low }) => fromHome(low) && /[*?[{$]/.test(low.replace(/^\$home/, "")))?.word ??
+    (/(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(fold(text)) ? "cd" : undefined) ??
+    (cdHome < 0 ? undefined : all.slice(cdHome, cdHome + 2).join(" "))
+  );
+}
+/**
+ * Is a link on a pattern's path (T83-S-GLOBLINK)? The hook does not expand a pattern, so it cannot resolve the links
+ * that the pattern matches. A part before the first wildcard that is a link, or an entry of that folder that the first
+ * pattern part names and that is a link (also a dangling one), makes the word near.
+ */
+function linkOnPattern(word, cwd) {
+  const parts = word.replace(/^~(?=\/|$)/, process.env.HOME ?? "~").split("/");
+  const k = parts.findIndex((p) => GLOB.test(p));
+  if (k < 0) return false;
+  let dir = word.startsWith("/") ? "" : isAbsolute(cwd) ? cwd : resolve(cwd);
+  try {
+    for (const part of parts.slice(0, k).filter(Boolean)) {
+      dir = `${dir}/${part}`; // as the shell gives it to the system: ".." is not removed
+      if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) return true;
+    }
+    return readdirSync(dir || "/", { withFileTypes: true }).some((e) => e.isSymbolicLink() && names(fold(parts[k]), fold(e.name)));
+  } catch (e) {
+    if (["ENOENT", "ENOTDIR"].includes(e?.code)) return false; // no folder there: the pattern matches nothing
+    throw e; // the agent check refuses what it cannot read
+  }
+}
+/** The word of a link command (ln, link) whose target the hook cannot read, or whose target, read from the link's folder, overlaps the root. */
+function linksNear(text, root, cwd) {
+  for (const { words } of shellCommands(text)) {
+    const k = words.findIndex((w) => !/^\w+=/.test(w));
+    if (!/^(?:ln|link)$/.test(basename(words[k] ?? ""))) continue;
+    const variable = words.find((w) => w.includes("$")); // also $(…) and a backtick, which shellCommands gives as $(…)
+    if (variable) return variable;
+    const operands = words.slice(k + 1).filter((w) => !w.startsWith("-"));
+    const link = from(cwd, operands.at(-1) ?? ".");
+    const near = operands.find((w) => [link, dirname(link)].some((dir) => overlaps(canonical(from(dir, pathOf(w))), root)));
+    if (near) return near;
+  }
+  return undefined;
+}
+/** The commands that write, move, remove or link a file, also in PowerShell (case does not matter there). uniq IN OUT and less -o FILE write, so uniq and less always count. */
+const WRITE_NAMES = new Set(["uniq", "less", "tee", "cp", "mv", "rm", "rmdir", "ln", "link", "install", "touch", "dd", "truncate", "rsync", "sponge", "patch", "unlink", "shred", "tar", "unzip", "set-content", "out-file", "add-content", "copy-item", "move-item", "remove-item", "rename-item", "new-item", "ni", "sc", "ac", "del"]);
+/** The commands that only read: their words name no command to run, so only a redirection makes them write. */
+const READERS = /^(?:cat|grep|egrep|fgrep|rg|head|tail|wc|echo|printf|ls|diff|cut|stat|file|jq|cd|pushd)$/;
+/** A redirection (operator and target, as shellCommands keeps it) to a file: not /dev/null, /dev/stdout or /dev/stderr, an input or a &N duplicate. */
+function toFile(redirect) {
+  const [, op, to] = /^(&>>?|>>|>\||>&|<>|<&|>|<)([^]*)$/.exec(redirect);
+  if (op === "<" || op === "<&" || (op === ">&" && /^(?:\d+-?|-)$/.test(to))) return false;
+  return !/^\/dev\/(?:null|stdout|stderr)$/.test(to);
+}
+function writesIn({ words, redirects }) {
+  if (redirects.some(toFile)) return true;
+  const low = words.map((w) => w.toLowerCase());
+  const base = low.map((w) => basename(w));
+  if (READERS.test(base[low.findIndex((w) => !/^\w+=/.test(w))] ?? "")) return false;
+  const has = (re) => base.some((w) => re.test(w));
+  return (
+    base.some((w) => WRITE_NAMES.has(w)) ||
+    (has(/^g?sed$|^perl$|^ruby$/) && low.some((w) => /^-[a-z]*i|^--in-place/.test(w))) ||
+    (has(/^g?awk$/) && low.includes("inplace")) ||
+    (has(/^g?sort$/) && low.some((w) => /^-[a-z]*o|^--o/.test(w))) || // sort takes a shortened long option: --out=FILE, --outp=FILE (T83-R5-SORTABBR)
+    (has(/^find$/) && low.some((w) => /^-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)$/.test(w))) ||
+    (has(/^(?:node|deno|bun|python[\d.]*|perl|ruby|php|osascript|sh|bash|zsh|dash|ksh|fish|pwsh|powershell)$/) && low.some((w) => CODE.test(w))) ||
+    /^(?:eval|source|\.|exec)$/.test(base[low.findIndex((w) => !/^\w+=/.test(w))] ?? "")
+  );
+}
+/** Does one field of a command's text have a write form? A text that the hook cannot read counts as one (fail closed). */
+function writes(text) {
+  try {
+    return shellCommands(text).some(writesIn);
+  } catch {
+    return true;
+  }
+}
+/** Is the command only the state tool: one command, node and the tool's path, with no redirection, pipe, chain or substitution? */
+function stateToolOnly(command) {
+  try {
+    const [c, ...more] = shellCommands(command);
+    return !more.length && !c.writes && !c.piped && !c.grouped && !c.bodies.length && c.words[0] === "node" && /(?:^|\/)skills\/sage\/sage\.mjs$/.test(c.words[1] ?? "") && !c.words[1].split("/").includes("..");
+  } catch {
+    return false; // the hook cannot read it
+  }
+}
+/** The file that a file tool changes, as a canonical path under the sage root, or undefined. It throws when it cannot resolve a path. */
+function underRoot(input) {
+  const ti = input.tool_input ?? {};
+  const root = canonical(stateTool.sageRoot(process.env));
+  const path = canonical(from(input.cwd ?? process.cwd(), String(ti.file_path ?? ti.notebook_path ?? "")));
+  return path === root || path.startsWith(root + sep) ? `the sage root ${root} (${path})` : undefined;
+}
+/** The word with which a command tool's input writes a logbook file, or undefined. sage: in sage mode a logbook file's name counts too. */
+function shellWrite(ti, sage, cwd) {
+  const text = fields(ti);
+  const all = text.join("\n");
+  const words = partsOf(all);
+  if (!text.some(writes) || stateToolOnly(typeof ti.command === "string" ? ti.command : "")) return undefined;
+  return namesRoot(all, words, rootsOf(false), cwd) ?? (sage ? namesTable(words) : undefined);
+}
+/**
+ * The chief's own tools change no logbook file either (S2): only sage.mjs does, so each change leaves its record. A file
+ * tool never writes under the sage root, and a command that names the sage root (or, in sage mode, a logbook file) with a
+ * write form is refused, unless it is only the state tool. The hook sees the command, not the files that sage.mjs writes.
+ * The owner's own ! commands are no hook events, so they stay free. Undefined, or the reason for the refusal.
+ */
+function chiefProblem(input, sage) {
+  if (FILE_TOOLS.test(input.tool_name ?? "")) {
+    try {
+      const at = underRoot(input);
+      return at && `the chief never writes under ${at} with a file tool.`;
+    } catch {
+      return undefined; // the sage root cannot be read: in sage mode, the rule that the chief changes no file still refuses
+    }
+  }
+  if (!SHELL_TOOLS.test(input.tool_name ?? "")) return undefined;
+  const word = shellWrite(input.tool_input ?? {}, sage, input.cwd ?? process.cwd());
+  return word && `the chief never writes, moves or removes a logbook file from the shell (${quoted(word)} names the logbook).`;
+}
+/**
+ * The name rule (T83 round 7, G84): for an agent, a text that names sage.mjs or sage-pr.mjs (in any case, after its
+ * quotes) may run only plain readers. Any other program in it is refused, also an interpreter, a shell, eval or a
+ * variable: the hook does not look for the script among a program's options. Returns the word of the first program
+ * that is not a plain reader, the name when the hook cannot read the text (fail closed), or undefined.
+ */
+const TOOL_NAME = /sage(?:-pr)?\.mjs/i;
+const READER = /^(?:cat|grep|egrep|fgrep|rg|head|tail|wc|ls|diff|shasum|sha\d*sum|jq|g?awk|g?sed|git)$/;
+const GIT_PLAIN = /^(?:show|log|diff|status|blame|grep|ls-files|add|commit)$/;
+function runsNamed(text, cwd) {
+  const name = TOOL_NAME.exec(unquote(text))?.[0];
+  if (!name) return undefined;
+  let runs;
+  try {
+    runs = programsRun(text, cwd);
+  } catch {
+    return name;
+  }
+  for (const { word, args } of runs) {
+    const base = basename(word).toLowerCase();
+    if (word.includes("$") || !READER.test(base)) return word;
+    if (/^g?(?:sed|awk)$/.test(base) && args.some((a) => /^-[a-z]*i|^--in-place|^inplace$/i.test(a))) return word;
+    if (base === "git" && (!GIT_PLAIN.test(subcommand(args, 0)) || args.some((a) => /^(?:-c|--exec-path)/.test(a)))) return word;
+  }
+  return undefined;
+}
+const READ_WAY = "To run a read command of the state tool, run node <path to skills/sage/sage.mjs> status (or merge-check, logbook, standing, config) alone; to read the file, use cat <path> or git show <sha>:<path>.";
+/** An agent's check fails closed: when it throws, the agent's command or file change is refused. */
+function agentWriteProblem(input) {
+  const file = FILE_TOOLS.test(input.tool_name ?? "");
+  if (!file && !SHELL_TOOLS.test(input.tool_name ?? "")) return undefined;
+  try {
+    return agentCheck(input, file);
+  } catch (e) {
+    return `the hook could not check this agent's ${file ? "file change" : "command"} (${e?.message ?? e}), so it refuses it.`;
+  }
+}
+function agentCheck(input, file) {
+  const ti = input.tool_input ?? {};
+  const roots = rootsOf(true); // fail closed: an agent does nothing while the sage root cannot be resolved
+  if (file) {
+    const at = underRoot(input);
+    return at ? `an agent never writes under ${at}.` : undefined;
+  }
+  if (ti.dangerouslyDisableSandbox) return "an agent never runs a command outside the sandbox (dangerouslyDisableSandbox).";
+  const command = typeof ti.command === "string" ? ti.command : "";
+  const cwd = input.cwd ?? process.cwd();
+  const texts = fields({ ...ti, description: undefined }); // a description runs nothing
+  const named = texts.map((t) => runsNamed(t, cwd)).find(Boolean);
+  if (named) {
+    if (texts.some((t) => /sage-pr\.mjs/i.test(unquote(t)))) return "only the chief runs the PR script (sage-pr.mjs).";
+    const [node, path, cmd, ...args] = command.trim().split(/[ \t]+/);
+    const own = PLAIN.test(command.trim()) && node === "node" && /(?:^|\/)skills\/sage\/sage\.mjs$/.test(path) && !path.split("/").includes("..");
+    if (!own || canonical(resolve(cwd, path)) !== canonical(TOOL)) {
+      return `an agent runs the state tool only as one plain command, with nothing before or after it, and only the copy that this hook loads: ${quoted(named)} is not that. ${READ_WAY}`;
+    }
+    // The words that are not options or option values, read as the state tool reads them (sage.mjs parse).
+    const pos = [];
+    for (let k = 0; k < args.length; k++) {
+      if (!args[k].startsWith("--")) pos.push(args[k]);
+      else if (!args[k].includes("=")) k++;
+    }
+    return Object.hasOwn(READS, cmd ?? "") && READS[cmd](pos) ? undefined : `"${[cmd, ...pos.slice(0, 1)].join(" ")}" writes the logbook, or is not a read command of the state tool.`;
+  }
+  const text = fields(ti);
+  if (!text.some(writes)) return undefined;
+  const word = nearLogbook(text.join("\n"), roots, cwd) ?? text.map((t) => linksNear(t, roots[1], cwd)).find(Boolean);
+  const hint = word && /\$\?/.test(word) ? " The hook does not expand $?, so its ? is a pattern character: to show an exit code, write || echo FAIL or ; echo done after the command instead." : "";
+  return word && `an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it. ${quoted(word)} makes this command near the logbook: change or remove it.${hint}`;
+}
+/** An option that gives an interpreter or a shell its code (-c, -e, -p, --eval, --print, -Command): the word after it is code, not a script. */
+const CODE = /^-(?:[a-z]*[ce]|p|-eval|-print|command)$/;
+
+/**
+ * The canonical path for a compare: the real path of its longest part that exists (a link is followed, also when its
+ * target is missing), in lower case and NFC, because APFS ignores both. On a volume that is case-sensitive, this can only
+ * refuse more.
+ */
+const canonical = (path) => fold(real(path));
+function real(path) {
+  let rest = [];
+  for (let hops = 0; ; ) {
+    try {
+      return join(realpathSync.native(path), ...rest); // the system resolves ".." after each link; only the missing rest is joined
+    } catch {
+      let link = false;
+      try {
+        link = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink();
+      } catch {} // a name that is too long, or a file used as a folder: it does not exist
+      if (link) {
+        if (++hops > 64) throw new Error(`too many links in ${path}`);
+        path = from(dirname(path), readlinkSync(path));
+      } else if (dirname(path) === path) return join(path, ...rest);
+      else [path, rest] = [dirname(path), [basename(path), ...rest]];
+    }
+  }
+}
+
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
 function gitGate(event, command, state, cwd, main) {
@@ -509,7 +852,6 @@ function gitGate(event, command, state, cwd, main) {
  * passes. programsRun finds the programs. A process.kill inside a script is not visible here.
  * Undefined when the command line passes; else the reason for the refusal.
  */
-const SHELL_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.+)$/;
 const NO_STASH = "an agent never runs git stash: every worktree of a repo shares one stash list, so another agent can pop or drop your work (standing order 16). To test old code, use git worktree add --detach <scratch> <sha>, or git show <sha>:<path> into your scratch folder.";
 /** The process programs: unix names as the shell matches them (case-sensitive), PowerShell names in any case. */
 const UNIX_PROCESS = "ps|pgrep|pkill|kill|killall|lsof|top|htop|fuser|pidof|kill-port|fkill";
@@ -578,6 +920,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  *     word with a variable, ~ or a substitution, and for a program that is not found.
  *   - args: the words after the program, without their quotes and redirections.
  *   - dir: the folder it runs in, after an earlier "cd <dir>" of the same line.
+ *   - stdin: its heredoc and here-string bodies, and the words of the command piped into it.
  * It also reads the text that other programs run as commands, up to 3 levels deep: the -c text of a shell (sh, bash,
  * zsh, dash, ksh, fish) and its stdin heredoc when it has no script, the words of eval, PowerShell's -Command text,
  * the program of find -exec, and a program word with spaces that a wrapper such as watch gives to sh -c. The words
@@ -596,7 +939,9 @@ function readPrograms(command, dir, path, depth, found) {
     if (depth === 3) throw new Error("commands nested more than 3 levels deep");
     readPrograms(text, at, here, depth + 1, found);
   };
-  for (const { words, bodies } of shellCommands(command)) {
+  const commands = shellCommands(command);
+  for (const c of commands) {
+    const { words, bodies } = c;
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
     const own = words.find(set);
     if (["export", undefined].includes(words.find((w) => !set(w))) && own) path = set(own); // export PATH=… or PATH=… alone
@@ -622,12 +967,13 @@ function readPrograms(command, dir, path, depth, found) {
         break;
       }
       const args = words.slice(k + 1);
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir });
+      const stdin = [...bodies, ...commands.filter((p) => p.pipeTo === c).map((p) => p.words.join(" "))];
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, stdin });
       for (const text of commandText(name, args, bodies)) inner(text, dir, here);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir });
+        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, stdin: [] });
       }
       break;
     }
@@ -781,11 +1127,11 @@ export function shellCommands(src) {
 }
 
 function readCommands(src, i, close, out, host) {
-  const fresh = () => ({ words: [], bodies: [], host, piped: false, grouped: false, writes: false, heredoc: false });
+  const fresh = () => ({ words: [], bodies: [], host, piped: false, grouped: false, writes: false, redirects: [], heredoc: false });
   let cmd = fresh();
   let word;
   let depth = 0;
-  let target; // after a redirection: "drop" its target word, or "body" for the text of a here-string
+  let target; // after a redirection: its operator, kept with its target in redirects, or "body" for the text of a here-string
   const cases = []; // each open case: { depth } where it opens, and pattern: true before an arm's ")", false after it
   const arm = () => (cases.at(-1)?.depth === depth ? cases.at(-1) : undefined); // the case whose arms are read at this depth
   const heredocs = [];
@@ -793,7 +1139,8 @@ function readCommands(src, i, close, out, host) {
   const endWord = () => {
     if (word === undefined) return;
     if (target === "body") cmd.bodies.push(word);
-    else if (!target) cmd.words.push(word);
+    else if (target) cmd.redirects.push(target + word);
+    else cmd.words.push(word);
     word = target = undefined;
     const [first, , third] = cmd.words;
     if (first === "case" && cmd.words.length === 3 && third === "in") {
@@ -805,7 +1152,7 @@ function readCommands(src, i, close, out, host) {
     endWord();
     if (target) throw new Error("a redirection with no target");
     cmd.grouped ||= depth > 0;
-    if ((cmd.words.length || cmd.heredoc) && !arm()?.pattern) out.push(cmd);
+    if ((cmd.words.length || cmd.heredoc || cmd.redirects.length) && !arm()?.pattern) out.push(cmd); // a bare "> file" is a command: it writes (T83-R6-BAREREDIRECT)
     cmd = fresh();
   };
   const here = () => ({ cmd, index: cmd.words.length });
@@ -873,7 +1220,7 @@ function readCommands(src, i, close, out, host) {
       endWord();
       const op = /^(?:&>>?|>>|>\||>&|<>|<&|>|<)/.exec(src.slice(i, i + 3))[0];
       cmd.writes ||= op.includes(">");
-      target = "drop";
+      target = op;
       i += op.length;
     } else if (c === "|" && src[i + 1] !== "|") {
       const from = cmd;
@@ -1144,7 +1491,15 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   } catch (e) {
     // Never break the session, but never let a merge or a push through because the hook failed.
     const command = [].concat(input?.tool_input?.command ?? []).join(" ");
-    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command))) {
+    const tools = (re) => re.test(input?.tool_name ?? "");
+    const agentWrite = agentEvent(input) && (tools(FILE_TOOLS) || tools(SHELL_TOOLS)); // fail closed: an agent does nothing unchecked
+    let chiefWrite;
+    try {
+      chiefWrite = tools(SHELL_TOOLS) && shellWrite(input.tool_input ?? {}, true, input.cwd ?? process.cwd());
+    } catch {
+      chiefWrite = tools(SHELL_TOOLS);
+    }
+    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command) || agentWrite || chiefWrite)) {
       process.stdout.write(JSON.stringify(deny("PreToolUse", `the hook could not check this command (${e?.message ?? e}), so it refuses it. Tell the user.`)));
     }
   }
