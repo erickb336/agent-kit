@@ -1011,11 +1011,16 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       if (opt.sha && notFull(opt.sha)) refuse(notFull(opt.sha));
       const sha = opt.sha?.toLowerCase() ?? ""; // as git prints it
       const decided = opt.pr ? setPr(task, opt.pr, "verdict --pr") : [];
+      const backToReview = task.state === "verified" && NOT_CLEAN.includes(kind);
+      if (backToReview) {
+        move(task, "reviewing");
+        decided.push({ at: now(), task: task.id, decision: "verified → reviewing", why: `${kind} verdict on ${sha}` });
+      }
       if (decided.length) write(dir, "decisions", [...read(dir, "decisions"), ...decided]);
       write(dir, "tasks", tasks);
       write(dir, "ledger", [...read(dir, "ledger"), { task: task.id, pr: task.pr, sha, kind, cycle: opt.cycle ?? "1", run: opt.run ?? "", at: now() }]);
       const open = NOT_CLEAN.includes(kind) ? [] : findings.filter((f) => f.triage === "fix");
-      return `${task.id} ${kind}${sha ? ` · ${sha.slice(0, 7)}` : ""} · cycle ${opt.cycle ?? "1"}${open.length ? ` · still open: ${open.map((f) => f.key).join(", ")}. Close the ones that this review confirmed fixed.` : ""}`;
+      return `${task.id} ${kind}${sha ? ` · ${sha.slice(0, 7)}` : ""} · cycle ${opt.cycle ?? "1"}${backToReview ? " · reviewing" : ""}${open.length ? ` · still open: ${open.map((f) => f.key).join(", ")}. Close the ones that this review confirmed fixed.` : ""}`;
     }
     case "gate": {
       const gates = read(dir, "gates");

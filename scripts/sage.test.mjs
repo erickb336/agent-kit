@@ -433,6 +433,39 @@ test("verified needs one clean cycle on the latest SHA; an autopilot merge of a 
   assert.match(s.no("merge-check", "--sha", SHA, "--cycles", "1"), /1 of 2 clean cycles/, "F-T42-3: --cycles never lowers it");
 });
 
+for (const [blocking, clean] of [["findings", "review-clean"], ["qa-fail", "qa-pass"], ["checks-fail", "checks-pass"]]) {
+  test(`T180: ${blocking} moves a verified task to reviewing and records why; ${clean} leaves it verified`, () => {
+    const s = store();
+    s.ok("task", "add", "--title", "t", "--size", "small");
+    toReviewing(s, "T1");
+    s.ok("task", "T1", "set", "state=verifying");
+    for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+    s.ok("task", "T1", "set", "state=verified");
+
+    assert.equal(s.ok("verdict", "T1", "--sha", SHA, "--kind", clean), `T1 ${clean} · a1b2c3d · cycle 1`);
+    assert.equal(rows(s.dir, "tasks")[0].state, "verified");
+    assert.deepEqual(rows(s.dir, "decisions"), [], "a clean verdict adds no state decision");
+    if (blocking !== "checks-fail") {
+      assert.match(s.no("verdict", "T1", "--sha", SHA, "--kind", blocking), /no open medium or high finding/);
+      assert.equal(rows(s.dir, "tasks")[0].state, "verified", "a refused verdict does not change the state");
+      s.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", "A new problem");
+    }
+
+    assert.equal(s.ok("verdict", "T1", "--sha", SHA, "--kind", blocking), `T1 ${blocking} · a1b2c3d · cycle 1 · reviewing`);
+    assert.equal(rows(s.dir, "tasks")[0].state, "reviewing");
+    assert.match(s.ok("task", "T1"), /^T1 reviewing/);
+    assert.deepEqual(rows(s.dir, "decisions").map(({ task, decision, why }) => ({ task, decision, why })), [
+      { task: "T1", decision: "verified → reviewing", why: `${blocking} verdict on ${SHA}` },
+    ]);
+    assert.equal(rows(s.dir, "ledger").at(-1).kind, blocking, "the blocking verdict stays in the ledger");
+    if (blocking !== "checks-fail") {
+      s.ok("finding", "triage", "T1", "F-T1-1", "fix");
+      s.ok("finding", "close", "T1", "F-T1-1");
+    }
+    assert.match(s.no("merge-check", "--sha", SHA), /found problems on this SHA/, "the verdict still prevents a merge after findings close");
+  });
+}
+
 test("two chiefs at once: 2 x 50 rounds of updates and of creates lose no write and repeat no id", async () => {
   const s = store();
   s.ok("task", "add", "--title", "a", "--size", "small");

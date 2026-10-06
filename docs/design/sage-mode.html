@@ -215,9 +215,10 @@ stateDiagram-v2
   verifying --> verified: QA pass on this head SHA
   verified --> merged: autopilot lane allows it
   verified --> pr_ready: otherwise
+  verified --> reviewing: findings, qa-fail or checks-fail verdict
   pr_ready --> merged: you merge
   merged --> [*]
-</pre><p class="cap">A new commit after "verified" voids the verdicts, and the task goes back to reviewing.</p></div>
+</pre><p class="cap">A new commit after "verified" voids the verdicts, and the task goes back to reviewing. A <code>findings</code>, <code>qa-fail</code> or <code>checks-fail</code> verdict also returns a verified task to reviewing, with its reason in the decision trail.</p></div>
 
 <h2 id="data">7. The data</h2>
 <div class="diagram"><pre class="mermaid">
