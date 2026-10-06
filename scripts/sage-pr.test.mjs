@@ -13,7 +13,11 @@ const TOOL = fileURLToPath(new URL("../plugins/sage/skills/sage/sage.mjs", impor
 const PR = fileURLToPath(new URL("../plugins/sage/skills/sage/sage-pr.mjs", import.meta.url));
 const timeout = 20_000;
 
-/** The fake gh: it records each call (arguments, folder, the folder's entries, token, config folder) and plays GitHub's pull requests on the bare repository. */
+/**
+ * The fake gh: it records each call (arguments, folder, the folder's entries, token, config folder) and plays GitHub's
+ * pull requests on the bare repository. A pull request in FAKE_GH_STATE may have base (default main), cross (from a fork)
+ * and owner (its head repository's owner, default "owner"); view and merge take a number or a branch after --.
+ */
 const FAKE_GH = `#!/usr/bin/env node
 const { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
@@ -25,14 +29,16 @@ const flag = (n) => args.find((a) => a.startsWith("--" + n + "="))?.slice(n.leng
 const after = args[args.indexOf("--") + 1];
 const bare = (...a) => execFileSync("git", ["--git-dir", env.FAKE_GH_BARE, ...a], { encoding: "utf8" }).trim();
 const url = (n) => "https://github.com/owner/repo/pull/" + n;
-if (args[1] === "list") console.log(JSON.stringify(prs.filter((p) => p.head === flag("head") && p.state === "OPEN").map((p) => ({ number: p.number, url: url(p.number) }))));
-else if (args[1] === "create") { prs.push({ number: prs.length + 1, head: flag("head"), state: "OPEN" }); save(); console.log(url(prs.length)); }
-else if (args[1] === "view") { const p = prs.find((x) => x.head === after); if (!p) { console.error("no pull requests found for branch " + after); process.exit(1); } console.log(JSON.stringify({ number: p.number, state: p.state, url: url(p.number) })); }
+const json = (p) => { const all = { number: p.number, state: p.state, url: url(p.number), baseRefName: p.base ?? "main", headRefName: p.head, isCrossRepository: !!p.cross, headRepositoryOwner: { login: p.owner ?? "owner" } }; return Object.fromEntries(flag("json").split(",").filter((k) => k in all).map((k) => [k, all[k]])); };
+const pick = () => prs.find((x) => (/^[0-9]+$/.test(after) ? x.number === Number(after) : x.head === after));
+if (args[1] === "list") console.log(JSON.stringify(prs.filter((p) => p.head === flag("head") && p.state === "OPEN").map(json)));
+else if (args[1] === "create") { prs.push({ number: prs.length + 1, head: flag("head"), base: flag("base"), state: "OPEN" }); save(); console.log(url(prs.length)); }
+else if (args[1] === "view") { const p = pick(); if (!p) { console.error("no pull requests found for " + after); process.exit(1); } console.log(JSON.stringify(json(p))); }
 else if (args[1] === "merge") {
-  const p = prs.find((x) => x.head === after && x.state === "OPEN");
-  if (!p || bare("rev-parse", "refs/heads/" + after) !== flag("match-head-commit")) { console.error("head mismatch"); process.exit(1); }
+  const p = pick();
+  if (!p || p.state !== "OPEN" || bare("rev-parse", "refs/heads/" + p.head) !== flag("match-head-commit")) { console.error("head mismatch"); process.exit(1); }
   const squash = bare("commit-tree", flag("match-head-commit") + "^{tree}", "-p", "refs/heads/main", "-m", "squash");
-  bare("update-ref", "refs/heads/main", squash); bare("update-ref", "-d", "refs/heads/" + after);
+  bare("update-ref", "refs/heads/main", squash); bare("update-ref", "-d", "refs/heads/" + p.head);
   p.state = "MERGED"; save();
 } else process.exit(3);
 `;
@@ -107,7 +113,12 @@ function world() {
       return "";
     }
   };
-  return { at, env, git, p, sage, pr, logbook, bundle, commit, calls, remote };
+  /** A task's row in tasks.tsv, by its column names. */
+  const task = (id) => {
+    const [head, ...rows] = readFileSync(join(logbook, "tasks.tsv"), "utf8").trim().split("\n").map((l) => l.split("\t"));
+    return Object.fromEntries(head.map((c, i) => [c, rows.find((r) => r[0] === id)?.[i]]));
+  };
+  return { at, env, git, p, sage, pr, logbook, bundle, commit, calls, remote, task };
 }
 
 /** A refusal: exit 1, and stderr starts with "sage-pr: refused:" and matches why. */
@@ -123,11 +134,12 @@ test("create pushes the reviewed head and opens one pull request, with gh in an 
   w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
   const r = w.pr("create", "T1");
   assert.equal(r.stderr, "");
-  assert.equal(r.stdout, `pushed ${head.slice(0, 7)} to claude/t1; opened https://github.com/owner/repo/pull/1\n`);
+  assert.equal(r.stdout, `pushed ${head.slice(0, 7)} to claude/t1; opened https://github.com/owner/repo/pull/1; T1 has PR 1 in the logbook\n`);
+  assert.equal(w.task("T1").pr, "1", "T96-Q3: the logbook has the PR number");
   assert.equal(w.remote("refs/heads/claude/t1"), head);
   const calls = w.calls();
   assert.deepEqual(calls.map((c) => c.args.slice(0, -1).concat(c.args.at(-1).startsWith("--body-file=") ? ["--body-file=<temp>"] : c.args.at(-1))), [
-    ["pr", "list", "--repo=owner/repo", "--head=claude/t1", "--state=open", "--json=number,url"],
+    ["pr", "list", "--repo=owner/repo", "--head=claude/t1", "--state=open", "--json=number,url,isCrossRepository,headRepositoryOwner"],
     ["pr", "create", "--repo=owner/repo", "--base=main", "--head=claude/t1", "--title=T1: Add b", "--body-file=<temp>"],
   ]);
   for (const c of calls) {
@@ -176,7 +188,7 @@ test("merge runs the merge check, merges only the reviewed head, and fetches the
   const head = w.commit("b.txt");
   w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
   w.pr("create", "T1");
-  w.sage("task", "T1", "set", "pr=1");
+  assert.equal(w.task("T1").pr, "1", "create recorded the PR number");
   // The merge check refuses: only checks-pass, no review or QA.
   refused(w.pr("merge", "T1"), /merge check: T1: 0 of 1 clean cycles on this SHA; never recorded: review-clean, qa-pass/);
   assert.equal(w.calls().filter((c) => c.args[1] === "merge").length, 0);
@@ -193,7 +205,7 @@ test("merge runs the merge check, merges only the reviewed head, and fetches the
   assert.equal(r.status, 0, r.stderr);
   const main = w.remote("refs/heads/main");
   assert.equal(r.stdout, `merged claude/t1 at ${head.slice(0, 7)}; the mirror's main is now ${main.slice(0, 7)}\n`);
-  assert.deepEqual(w.calls().at(-1).args, ["pr", "merge", "--repo=owner/repo", "--squash", "--delete-branch", `--match-head-commit=${head}`, "--", "claude/t1"]);
+  assert.deepEqual(w.calls().at(-1).args, ["pr", "merge", "--repo=owner/repo", "--squash", "--delete-branch", `--match-head-commit=${head}`, "--", "1"]);
   assert.equal(w.git("--git-dir", join(w.logbook, "mirror.git"), "rev-parse", "refs/heads/main"), main);
   assert.notEqual(main, head); // the stand-in squashed: the new main is a new commit that the mirror fetched
 });
@@ -217,6 +229,7 @@ test("the argument grammar: exactly create, view or merge and a task id; everyth
     [["view", "-T1"], /the task id is T and digits/],
     [["view", "T01"], /the task id is T and digits/],
     [["view", "T1 "], /the task id is T and digits/],
+    [["view", "t1"], /the task id is T and digits/], // T96-C3: only a capital T
     [["--admin", "T1"], /the verb is create, view or merge/],
     [["pr", "T1"], /the verb is create, view or merge/],
     [["Create", "T1"], /the verb is create, view or merge/],
@@ -240,8 +253,12 @@ test("the bundle: a link, a second hard link, a folder, a file over the limit or
     [() => linkSync(good, w.bundle), /the bundle .* has 2 links, not 1/],
     [() => mkdirSync(w.bundle), /the bundle .* is not a plain file/],
     [() => (writeFileSync(w.bundle, ""), truncateSync(w.bundle, 100 * 1024 * 1024 + 1)), /the bundle .* is over 104857600 bytes/],
-    [() => {}, /no bundle at .*T1\.bundle/],
-    [() => writeFileSync(w.bundle, "not a bundle\n"), /the bundle is not a git bundle of the branch claude\/t1/],
+    [() => {}, /no bundle at (.*T1\.bundle): write it with git bundle create \1 main\.\.claude\/t1$/m],
+    [() => writeFileSync(w.bundle, "not a bundle\n"), /T1\.bundle is not a git bundle: it does not start with "# v2 git bundle" or "# v3 git bundle"\. Write it with git bundle create .*T1\.bundle main\.\.claude\/t1/],
+    [() => writeFileSync(w.bundle, ""), /T1\.bundle is empty\. Write it with git bundle create/],
+    // T96-S3: a gitdir file names a repository, and git's local transport would fetch from it as from a bundle.
+    [() => writeFileSync(w.bundle, `gitdir: ${w.at("project", ".git")}\n`), /T1\.bundle is not a git bundle: it does not start with "# v2 git bundle"/],
+    [() => writeFileSync(w.bundle, "# v2 git bundle\nnot really\n"), /the bundle is not a git bundle of the branch claude\/t1/],
   ];
   for (const [plant, why] of cases) {
     rmSync(w.bundle, { recursive: true, force: true });
@@ -257,7 +274,7 @@ test("a bundle whose tip is not the reviewed head refuses", () => {
   const head = w.commit("b.txt");
   w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
   const extra = w.commit("unreviewed.txt");
-  refused(w.pr("create", "T1"), new RegExp(`the bundle tip ${extra.slice(0, 7)} is not the reviewed head ${head.slice(0, 7)}`));
+  refused(w.pr("create", "T1"), new RegExp(`the bundle tip ${extra.slice(0, 7)} is not the reviewed head ${head.slice(0, 7)}\\. Review ${extra.slice(0, 7)} and record its verdicts, or write the bundle with claude/t1 at ${head.slice(0, 7)}: git bundle create .*T1\\.bundle main\\.\\.claude/t1$`, "m"));
   assert.equal(w.remote("refs/heads/claude/t1"), "");
   assert.deepEqual(w.calls(), []);
 });
@@ -272,12 +289,12 @@ test("a forged branch in the logbook: the base branch or a branch outside the ta
     ["main", /branch "main" is the base branch/],
     ["refs/heads/main", /branch "refs\/heads\/main" is the base branch/],
     ["MAIN", /branch "MAIN" is the base branch/],
-    ["master", /branch "master" is not a task branch/],
-    ["origin/claude/t1", /branch "origin\/claude\/t1" is not a task branch/],
-    ["--force", /branch "--force" is not a task branch/],
-    ["feature-x", /branch "feature-x" is outside the task's pattern/],
-    ["claude/t10", /branch "claude\/t10" is outside the task's pattern/],
-    ["a/b/t1", /branch "a\/b\/t1" is outside the task's pattern/],
+    ["master", /branch "master" is not a branch of T1 \(\[<prefix>\/\]t1\[-<words>\]\): sage task T1 set branch=claude\/t1/],
+    ["origin/claude/t1", /branch "origin\/claude\/t1" is not a branch of T1 \(\[<prefix>\/\]t1\[-<words>\]\): sage task T1 set branch=claude\/t1/],
+    ["--force", /branch "--force" is not a branch of T1 \(\[<prefix>\/\]t1\[-<words>\]\): sage task T1 set branch=claude\/t1/],
+    ["feature-x", /branch "feature-x" is not a branch of T1 \(\[<prefix>\/\]t1\[-<words>\]\): sage task T1 set branch=claude\/t1/],
+    ["claude/t10", /branch "claude\/t10" is not a branch of T1 \(\[<prefix>\/\]t1\[-<words>\]\): sage task T1 set branch=claude\/t1/],
+    ["a/b/t1", /branch "a\/b\/t1" is not a branch of T1 \(\[<prefix>\/\]t1\[-<words>\]\): sage task T1 set branch=claude\/t1/],
   ];
   for (const verb of ["create", "view", "merge"]) {
     for (const [branch, why] of cases) {
@@ -307,6 +324,122 @@ test("create and merge need a reviewed head; a task without one refuses", () => 
   refused(w.pr("create", "T1"), /T1 has no verdict with a SHA, so it has no reviewed head/);
   refused(w.pr("merge", "T1"), /T1 has no verdict with a SHA/);
   assert.deepEqual(w.calls(), []);
+});
+
+const short = (sha) => sha.slice(0, 7);
+/** World with T1's head reviewed clean (checks, review and QA) and its pull request opened by create. */
+function reviewed() {
+  const w = world();
+  const head = w.commit("b.txt");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) w.sage("verdict", "T1", "--sha", head, "--kind", kind);
+  assert.equal(w.pr("create", "T1").status, 0);
+  return { w, head };
+}
+
+test("T96-S1: create fetches and pushes no tag, also with push.followTags=true in the global config", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  w.p("tag", "-a", "-m", "release", "v9.9.9", head);
+  rmSync(w.bundle);
+  w.p("bundle", "create", "-q", w.bundle, "main..claude/t1", "v9.9.9");
+  assert.match(w.p("bundle", "list-heads", w.bundle), /refs\/tags\/v9\.9\.9/, "the bundle carries the tag");
+  writeFileSync(w.at("home", ".gitconfig"), "[push]\n\tfollowTags = true\n");
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  const r = w.pr("create", "T1");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(w.remote("refs/heads/claude/t1"), head);
+  assert.equal(w.git("--git-dir", w.at("remote.git"), "tag", "-l"), "", "no tag reached the remote");
+  assert.equal(w.git("--git-dir", join(w.logbook, "mirror.git"), "tag", "-l"), "", "no tag in the mirror");
+});
+
+test("T96-C1: a merge whose mirror refresh fails exits 3 and says that it merged", () => {
+  const { w, head } = reviewed();
+  const before = w.remote("refs/heads/main");
+  writeFileSync(join(w.logbook, "mirror.git", "refs", "heads", "main.lock"), ""); // a held lock: the fetch of main fails
+  const r = w.pr("merge", "T1");
+  assert.equal(r.status, 3, r.stderr);
+  assert.equal(r.stdout, "");
+  assert.equal(r.stderr, `sage-pr: merged claude/t1 at ${short(head)}; the mirror refresh failed: git fetch failed with exit 1\n`);
+  assert.notEqual(w.remote("refs/heads/main"), before, "the merge happened");
+});
+
+test("T96-S2: no message prints the origin's user or password, nor the arguments of a failed git", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  delete w.env.SAGE_REPO;
+  w.p("remote", "set-url", "origin", "https://user:s3cret-token@gitlab.invalid/x/y.git");
+  let r = w.pr("create", "T1");
+  refused(r, /the origin "https:\/\/\*\*\*@gitlab\.invalid\/x\/y\.git" is not a GitHub repository/);
+  assert.doesNotMatch(r.stderr, /s3cret/);
+  w.env.SAGE_REPO = "owner/repo";
+  w.p("remote", "set-url", "origin", `${w.at("nowhere")}//user:s3cret-token@host/repo.git`); // a local path: the fetch fails with no network
+  r = w.pr("create", "T1");
+  assert.equal(r.status, 2, r.stderr);
+  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128\n");
+});
+
+test("T96-S4: a fork's open pull request with the task's branch name is not the task's", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) w.sage("verdict", "T1", "--sha", head, "--kind", kind);
+  writeFileSync(w.at("gh.json"), JSON.stringify([{ number: 1, head: "claude/t1", state: "OPEN", cross: true, owner: "stranger" }]));
+  assert.equal(w.pr("create", "T1").stdout, `pushed ${short(head)} to claude/t1; opened https://github.com/owner/repo/pull/2; T1 has PR 2 in the logbook\n`);
+  w.sage("task", "T1", "set", "pr=1"); // a logbook that names the fork's pull request
+  refused(w.pr("merge", "T1"), /pull request #1 is not the open pull request of claude\/t1 into main in owner\/repo: it is OPEN, from another repository's claude\/t1 into main/);
+  assert.equal(w.calls().filter((c) => c.args[1] === "merge").length, 0);
+});
+
+test("T96-S5: SAGE_REPO that is not the GitHub origin's repository refuses before gh", () => {
+  const w = world();
+  for (const url of ["https://github.com/other/repo.git", "https://x-access-token:s3cret@github.com/other/repo.git", "git@github.com:other/repo.git"]) {
+    w.p("remote", "set-url", "origin", url);
+    const r = w.pr("view", "T1");
+    refused(r, /SAGE_REPO owner\/repo is not the origin's repository other\/repo, so gh and git would act on two repositories\. Unset SAGE_REPO, or set it to other\/repo/);
+    assert.doesNotMatch(r.stderr, /s3cret/);
+  }
+  assert.deepEqual(w.calls(), []);
+  w.env.SAGE_REPO = "Other/Repo"; // GitHub's names ignore case
+  refused(w.pr("view", "T1"), /gh pr view failed: no pull requests found for claude\/t1/);
+  assert.deepEqual(w.calls().at(-1).args.slice(0, 3), ["pr", "view", "--repo=Other/Repo"]);
+});
+
+test("T96-C2: create takes the task's own reviewed head, not a later verdict of another task of the same PR", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  w.sage("task", "add", "--title", "Other", "--size", "small");
+  w.sage("task", "T1", "set", "pr=1");
+  w.sage("task", "T2", "set", "pr=1");
+  w.sage("verdict", "T2", "--sha", w.p("rev-parse", "main"), "--kind", "checks-pass"); // later in the ledger
+  const r = w.pr("create", "T1");
+  assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; opened https://github.com/owner/repo/pull/1\n`, r.stderr);
+  assert.equal(w.remote("refs/heads/claude/t1"), head);
+});
+
+test("T96-C4: merge takes the logbook's PR number, only when it is the open pull request of the branch into main", () => {
+  const { w, head } = reviewed();
+  const prs = JSON.parse(readFileSync(w.at("gh.json"), "utf8"));
+  writeFileSync(w.at("gh.json"), JSON.stringify([...prs, { number: 2, head: "claude/t2", state: "OPEN" }, { number: 3, head: "claude/t1", base: "release", state: "OPEN" }]));
+  const cases = [
+    ["2", /pull request #2 is not the open pull request of claude\/t1 into main in owner\/repo: it is OPEN, from claude\/t2 into main\. Give T1 its own PR: sage task T1 set pr=<n>/],
+    ["3", /pull request #3 is not the open pull request .*: it is OPEN, from claude\/t1 into release\./],
+    ["", /T1 has no PR number in the logbook: run sage-pr create T1, which records it/],
+  ];
+  for (const [n, why] of cases) {
+    w.sage("task", "T1", "set", `pr=${n}`);
+    refused(w.pr("merge", "T1"), why);
+  }
+  assert.equal(w.calls().filter((c) => c.args[1] === "merge").length, 0);
+  w.sage("task", "T1", "set", "pr=1");
+  assert.equal(w.pr("merge", "T1").status, 0);
+  assert.deepEqual(w.calls().at(-1).args, ["pr", "merge", "--repo=owner/repo", "--squash", "--delete-branch", `--match-head-commit=${head}`, "--", "1"]);
+});
+
+test("T96-Q1: no logbook names the next step", () => {
+  const w = world();
+  w.env.SAGE_PROJECT = w.at("home");
+  refused(w.pr("view", "T1"), /no logbook for the project .*\/home: run sage-pr from the project's main checkout, or set SAGE_PROJECT=<that folder>/);
 });
 
 test("the script starts git and gh only through execFile with an argument array, never a shell", () => {
