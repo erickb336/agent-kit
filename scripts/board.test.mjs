@@ -677,7 +677,7 @@ test("R452: 10 boards at once lose no board.json entry", async () => {
   mkdirSync(bin);
   writeFileSync(join(bin, "ps"), '#!/bin/sh\necho "Sat Jan  1 00:00:00 2000"\n');
   chmodSync(join(bin, "ps"), 0o755);
-  const env = { ...process.env, ...w.env, PATH: `${bin}:${process.env.PATH}` };
+  const env = { ...process.env, ...w.env, SAGE_TEST_PIDS: "{}", PATH: `${bin}:${process.env.PATH}` };
   for (let round = 0; round < 3; round++) { // without the lock, about 1 round in 3 loses an entry
     rmSync(join(w.home, "board.json"), { force: true });
     const codes = await Promise.all(

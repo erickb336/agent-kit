@@ -74,7 +74,7 @@ test("npm run check fails on a flagged word in an agent file, a skill or the REA
 test("npm run check refuses a wall-clock time under a fixed number of ms in a test, and names the file, line and fix (T53)", () => {
   const c = copy();
   const sample = (body) => c.write("scripts/sample.test.mjs", `import assert from "node:assert/strict";\n${body}\n`);
-  const refused = (line) => new RegExp(`✗ scripts/sample\\.test\\.mjs:${line}: a test holds a wall-clock time under a fixed number of ms, so a busy machine breaks it\\. Instead, assert CPU time \\(process\\.cpuUsage\\)`);
+  const refused = (line) => new RegExp(`✗ scripts/sample\\.test\\.mjs:${line}: a test holds a wall-clock or CPU time under a fixed number, so a busy machine can break it\\. Instead, assert CPU time \\(process\\.cpuUsage\\)`);
   const forms = [
     "const t0 = Date.now();\nwork();\nassert.ok(Date.now() - t0 < 3000);",
     "const t0 = performance.now();\nwork();\nconst ms = performance.now() - t0;\nassert.ok(ms <= 50, `${ms} ms`);",
@@ -87,15 +87,41 @@ test("npm run check refuses a wall-clock time under a fixed number of ms in a te
     assert.match(r.stderr, refused(body.split("\n").length + 1), body);
   }
   sample(`${forms[0]} // timing-ok: the hook's own 10 s budget`);
-  assert.match(c.run("check").stdout, /✓ all checks pass \(1 wall-clock bound carries "\/\/ timing-ok:"\)/, "an explicit escape passes, and the check counts it");
+  assert.match(c.run("check").stdout, /✓ all checks pass \(2 timing bounds carry "\/\/ timing-ok:"\)/, "an explicit escape passes, and the check counts it");
   for (const allowed of [
     "const t0 = Date.now();\nwork();\nassert.ok(Date.now() - t0 >= 3000, 'a lower bound: a busy machine only adds time');",
-    "const t = process.cpuUsage();\nwork();\nconst { user, system } = process.cpuUsage(t);\nassert.ok((user + system) / 1000 < 2000);",
     "for (const end = Date.now() + 2500; Date.now() < end; ) work();\nassert.ok(count < 3, 'Date.now() < 3000 in a string');",
   ]) {
     sample(allowed);
     const r = c.run("check");
     assert.equal(r.status, 0, `${allowed}\n${r.stderr}`);
+  }
+});
+
+test("T188: check rejects fixed CPU-time bounds and permits ratios or a reason", () => {
+  const c = copy();
+  const forms = [
+    "assert.ok(process.cpuUsage().user < 200_000);",
+    "const start = process.cpuUsage();\nwork();\nconst usage = process.cpuUsage(start);\nassert.ok(usage.user + usage.system <= 200_000);",
+    "const { user, system } = process.cpuUsage();\nconst ms = (user + system) / 1000;\nassert.ok(200 > ms);",
+    "const cpu = () => {\n  const usage = process.cpuUsage();\n  return usage.user + usage.system;\n};\nconst [small, big] = [cpu(), cpu()];\nassert.ok(big < 200_000);",
+  ];
+  const sample = (body) => c.write("scripts/sample.test.mjs", `${body}\n`);
+  for (const body of forms) {
+    sample(body);
+    const r = c.run("check");
+    assert.equal(r.status, 1, body);
+    assert.match(r.stderr, /scripts\/sample\.test\.mjs:\d+: a test holds a wall-clock or CPU time under a fixed number/);
+  }
+  for (const body of [
+    `${forms[0]} // timing-ok: a generous bound detects an endless reader`,
+    "const cpu = process.cpuUsage();\nassert.ok(cpu.user >= 1);",
+    "const [a, b] = [process.cpuUsage().user, process.cpuUsage().user];\nassert.ok(b < 30 * a + 20_000);",
+    'const text = "assert.ok(process.cpuUsage().user < 200)";\nassert.ok(count < 3);',
+  ]) {
+    sample(body);
+    const r = c.run("check");
+    assert.equal(r.status, 0, `${body}\n${r.stderr}`);
   }
 });
 

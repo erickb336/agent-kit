@@ -2063,7 +2063,7 @@ test("R454-N5: 1 MB of git words that the hook cannot read takes under 2 s of CP
     const { ms, reason } = cpu(command);
     // A wide margin, with a reason: a linear scan takes about 100 to 210 ms (CI, 2026-10-06), and a bound of 200 ms failed
     // there at 209.6 ms. The slow path that this guards against, a regex that backtracks over each git word, runs for minutes.
-    assert.ok(ms < 2000, `${ms.toFixed(1)} ms of CPU for ${JSON.stringify(command.slice(0, 20))}…`);
+    assert.ok(ms < 2000, `${ms.toFixed(1)} ms of CPU for ${JSON.stringify(command.slice(0, 20))}…`); // timing-ok: about 10 times the observed CPU cost; the broken path takes minutes
     // The logbook rule (T83) refuses every agent command that the hook cannot read (fail closed), so the stash rule's own answer is checked alone.
     assert.match(reason ?? "", /could not check this agent's command/, "an unreadable agent command is refused");
     assert.equal(/never runs git stash/.test(agentProblem(command, FEATURE) ?? ""), command.endsWith("stash"), "only the text with a stash word is refused");
