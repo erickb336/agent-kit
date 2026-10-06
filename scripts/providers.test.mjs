@@ -184,3 +184,82 @@ test("check rejects a hook change made only in the generated Claude plugin", (t)
   const current = spawnSync(process.execPath, [join(dir, "scripts/check.mjs")], { encoding: "utf8" });
   assert.equal(current.status, 0, current.stderr);
 });
+
+const assignmentScope = { project: "project-a", session: "root-session", epoch: "11111111-1111-4111-8111-111111111111" };
+const assignmentDispatch = { task: "T1", run: "R1", issuer: "root-session", call: "spawn-1" };
+const assignmentId = "22222222-2222-4222-8222-222222222222";
+const assignmentCase = () => ({
+  scope: { ...assignmentScope },
+  assignment: { ...assignmentScope, id: assignmentId, ...assignmentDispatch },
+  binding: { ...assignmentScope, assignment: assignmentId, issuer: "root-session", call: "spawn-1", child: "child-a" },
+  native: { session: "root-session", child: "child-a", turn: "turn-a" },
+  reference: { assignment: assignmentId, task: "T1", run: "R1" },
+});
+const assignmentApi = () => import("../packages/sage-core/index.mjs");
+
+test("assignment intents use fresh IDs and retain project, epoch and dispatch identity", async () => {
+  const { createAssignment } = await assignmentApi();
+  const first = createAssignment(assignmentScope, assignmentDispatch);
+  const second = createAssignment(assignmentScope, assignmentDispatch);
+  assert.match(first.id, /^[0-9a-f]{8}-[0-9a-f-]{27}$/);
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual({ ...first, id: assignmentId }, { ...assignmentScope, id: assignmentId, ...assignmentDispatch });
+  assert.deepEqual(assignmentScope, { project: "project-a", session: "root-session", epoch: "11111111-1111-4111-8111-111111111111" });
+});
+
+test("report correlation returns only an exact nonterminal identity receipt", async () => {
+  const { correlateReport } = await assignmentApi();
+  const input = assignmentCase();
+  const expected = { schema: 1, kind: "report-submission", ...assignmentScope, assignment: assignmentId,
+    task: "T1", run: "R1", issuer: "root-session", call: "spawn-1", child: "child-a", turn: "turn-a" };
+  assert.deepEqual(correlateReport(input), expected);
+  assert.deepEqual(correlateReport(structuredClone(input)), expected);
+  assert.deepEqual(input, assignmentCase());
+});
+
+test("equal task and run IDs cannot cross a project, session or restart epoch", async () => {
+  const { correlateReport } = await assignmentApi();
+  for (const [key, value] of Object.entries({ project: "project-b", session: "other-root", epoch: "33333333-3333-4333-8333-333333333333" })) {
+    for (const part of ["scope", "binding"]) {
+      const input = assignmentCase(); input[part][key] = value;
+      assert.throws(() => correlateReport(input), /current scope/);
+    }
+  }
+});
+
+test("a report cannot substitute the dispatch issuer, call or native child identity", async () => {
+  const { correlateReport } = await assignmentApi();
+  for (const [part, key, value] of [
+    ["binding", "assignment", "33333333-3333-4333-8333-333333333333"], ["binding", "issuer", "another-lead"], ["binding", "call", "spawn-2"], ["binding", "session", "another-root"],
+    ["native", "session", "another-root"], ["native", "child", "another-child"],
+  ]) {
+    const input = assignmentCase(); input[part][key] = value;
+    assert.throws(() => correlateReport(input), /binding|another child or session/);
+  }
+  const self = assignmentCase(); self.binding.child = self.native.child = self.binding.issuer;
+  assert.throws(() => correlateReport(self), /own child/);
+});
+
+test("stale assignment, task and run references cannot claim a newer assignment", async () => {
+  const { correlateReport } = await assignmentApi();
+  for (const [key, value] of Object.entries({ assignment: "44444444-4444-4444-8444-444444444444", task: "T2", run: "R2" })) {
+    const input = assignmentCase(); input.reference[key] = value;
+    assert.throws(() => correlateReport(input), /another assignment|another task or run/);
+  }
+});
+
+test("assignment boundaries reject missing, malformed and extra identity fields", async () => {
+  const { createAssignment, correlateReport } = await assignmentApi();
+  assert.throws(() => createAssignment({ ...assignmentScope, project: "" }, assignmentDispatch), /project/);
+  assert.throws(() => createAssignment(assignmentScope, { ...assignmentDispatch, task: "T0" }), /task/);
+  for (const part of ["scope", "assignment", "binding", "native", "reference"]) {
+    for (const bad of [null, [], {}, { ...assignmentCase()[part], message: "private report text" }]) {
+      const input = assignmentCase(); input[part] = bad;
+      assert.throws(() => correlateReport(input), /Assignment:/);
+    }
+  }
+  for (const turn of ["", "x".repeat(257), "line\nbreak", "turn\n"]) {
+    const input = assignmentCase(); input.native.turn = turn;
+    assert.throws(() => correlateReport(input), /turn/);
+  }
+});
