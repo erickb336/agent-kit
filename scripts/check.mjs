@@ -168,9 +168,11 @@ for (const f of readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".te
   const term = `(?:${CLOCK}${clocked.size ? `|(?<![\\w$.])(?:${[...clocked].join("|")})(?![\\w$])` : ""})`;
   // The number must be the complete bound: `big < 30 * small` is a ratio, not a fixed cap.
   const number = String.raw`[\d_.]+`;
-  const under = new RegExp(`${term}[^<>&|,;?]*?<=?\\s*${number}\\s*(?=[),;]|$)|(?:^|[,(;])\\s*${number}\\s*>=?[^<>&|,;?]*?${term}`);
+  const under = new RegExp(`${term}[^<>&|,;?]*?<=?\\s*${number}\\s*(?=[),;]|&&|\\|\\||$)|(?:^|[,(;]|&&|\\|\\|)\\s*${number}\\s*>=?[^<>&|,;?]*?${term}[^<>&|,;?]*`, "g");
+  const ratio = new RegExp(`/\\s*\\(*\\s*${term}`); // divide by another measured size, not by a unit such as 1000
   lines.forEach((line, i) => {
-    if (!under.test(line.replace(/\/\/ timing-ok:.*$/, ""))) return;
+    const comparisons = [...line.replace(/\/\/ timing-ok:.*$/, "").matchAll(under)];
+    if (!comparisons.some(([comparison]) => !ratio.test(comparison))) return;
     if (/\/\/ timing-ok: \S/.test(line)) timingOk++;
     else problems.push(`scripts/${f}:${i + 1}: a test holds a wall-clock or CPU time under a fixed number, so a busy machine can break it. Instead, ${FIX}.`);
   });

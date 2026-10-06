@@ -102,6 +102,12 @@ test("T188: check rejects fixed CPU-time bounds and permits ratios or a reason",
   const c = copy();
   const forms = [
     "assert.ok(process.cpuUsage().user < 200_000);",
+    "const elapsed = Date.now();\nassert.ok(elapsed < 50 && count === 1);",
+    "const elapsed = Date.now();\nassert.ok(count === 1 || 50 > elapsed);",
+    "const usage = process.cpuUsage();\nassert.ok(usage.user < 200_000 && count === 1);",
+    "const usage = process.cpuUsage();\nassert.ok(count === 1 && 200_000 > usage.user);",
+    "const usage = process.cpuUsage();\nassert.ok(usage.user / 1000 < 200);",
+    "const [a, b] = [process.cpuUsage().user, process.cpuUsage().user];\nassert.ok(b / a < 30 && b < 200);",
     "const start = process.cpuUsage();\nwork();\nconst usage = process.cpuUsage(start);\nassert.ok(usage.user + usage.system <= 200_000);",
     "const { user, system } = process.cpuUsage();\nconst ms = (user + system) / 1000;\nassert.ok(200 > ms);",
     "const cpu = () => {\n  const usage = process.cpuUsage();\n  return usage.user + usage.system;\n};\nconst [small, big] = [cpu(), cpu()];\nassert.ok(big < 200_000);",
@@ -117,6 +123,8 @@ test("T188: check rejects fixed CPU-time bounds and permits ratios or a reason",
     `${forms[0]} // timing-ok: a generous bound detects an endless reader`,
     "const cpu = process.cpuUsage();\nassert.ok(cpu.user >= 1);",
     "const [a, b] = [process.cpuUsage().user, process.cpuUsage().user];\nassert.ok(b < 30 * a + 20_000);",
+    "const [a, b] = [process.cpuUsage().user, process.cpuUsage().user];\nassert.ok(b / a < 30);",
+    "const [a, b] = [process.cpuUsage().user, process.cpuUsage().user];\nassert.ok(30 > b / a);",
     'const text = "assert.ok(process.cpuUsage().user < 200)";\nassert.ok(count < 3);',
   ]) {
     sample(body);
