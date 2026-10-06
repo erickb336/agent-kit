@@ -82,6 +82,12 @@ test("only a README document gets the README guide: any language part, a documen
   for (const p of ["/x/src/readme.rs", "readme.py", "pkg/readme.go"]) assert.doesNotMatch(edit(p), /# Write a project README/, p);
 });
 
+test("a translated README gets the README guide when its language part follows a dot, an underscore or a hyphen", () => {
+  const edit = (file_path) => context(session().send({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path } }));
+  for (const p of ["README_zh.md", "/x/README-ja.md", "README_CN.md", "docs/README_zh-CN.md", "README-CN.md"]) assert.match(edit(p), /# Write a project README/, p);
+  for (const p of ["readme-guide.md", "/x/src/readme.rs", "notREADME.md", "README.md.bak"]) assert.doesNotMatch(edit(p), /# Write a project README/, p);
+});
+
 test("a README with no extension gets contextualize with the README guide", () => {
   const out = context(session().send({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "/x/README" } }));
   assert.match(out, /# Contextualize and write for the reader/);
