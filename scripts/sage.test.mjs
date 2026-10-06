@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -76,6 +76,9 @@ function store(home = mkdtempSync(join(tmpdir(), "sage-home-")), name = "sage-pr
   };
   return { home, project, pids, run, go, ok, no, dir: ok("init").replace(/^\S+ /, "") }; // init prints "logbook <folder>"
 }
+
+/** Adds a folder of the root to the known project list by hand, as init does, so that its verdicts count. */
+const enlist = (home, name) => appendFileSync(join(home, "projects.tsv"), `${name}\t2000-01-01T00:00:00Z\tinit\n`);
 
 /** The rows of one table in a store. */
 function rows(dir, table) {
@@ -941,6 +944,7 @@ test("F3: a ledger of blank lines blocks nothing, and a refusal names the full p
   const planted = join(s.home, "0-plant");
   mkdirSync(planted);
   writeFileSync(join(planted, "ledger.tsv"), `task\tpr\tsha\tkind\tcycle\trun\tat\nT404\t\t${SHA}\tchecks-pass\t1\t\t\n`);
+  enlist(s.home, "0-plant"); // a known logbook that lost its tasks.tsv
   assert.equal(s.no("merge-check", "--sha", SHA), `sage: 2 tasks have verdicts on a1b2c3d, and each must pass; 1 fails. ${planted} T404 is in ${join(planted, "ledger.tsv")} but not in its tasks.tsv: a stray or damaged logbook. If no project uses it, ask the user to remove ${planted}. To merge, make each one pass, or push a new commit and record its verdicts under the live tasks only.`);
   rmSync(planted, { recursive: true });
   const shut = join(s.home, "zz-shut", "ledger.tsv");
@@ -1258,6 +1262,7 @@ test("F-R50-3: the merge check reads each table once and groups it by task, so i
     writeFileSync(join(many, "ledger.tsv"), ["task\tpr\tsha\tkind\tcycle\trun\tat", ...ids.map((t) => `${t}\t\t${SHA}\tchecks-pass\t1\t\t`)].join("\n") + "\n");
     writeFileSync(join(many, "tasks.tsv"), ["id\ttitle\tsize\trisk\troute\tstate\tbranch\tpr\tround\tkeys", ...ids.map((t) => `${t}\tt\ttiny\t\tbuild\tbuilding\t\t\t0\t`)].join("\n") + "\n");
     for (const t of ["findings", "runs", "gates", "decisions"]) writeFileSync(join(many, `${t}.tsv`), readFileSync(join(s.dir, `${t}.tsv`))); // a logbook has every table
+    enlist(s.home, "zz-many");
     let ms = Infinity;
     for (let i = 0; i < 3; i++) {
       const t = process.cpuUsage();
@@ -1304,7 +1309,7 @@ test("F-R56-1: the way to make a logbook quotes the path for a shell, so a paste
   const pasted = spawnSync("sh", ["-c", `node ${JSON.stringify(TOOL)} ${line}`], { encoding: "utf8", env, cwd: dirname(project) });
   assert.equal(pasted.status, 0, pasted.stderr);
   const made = pasted.stdout.trim().replace(/^logbook /, "");
-  assert.deepEqual([readdirSync(home), existsSync(join(dirname(project), "pwned"))], [[basename(made)], false]);
+  assert.deepEqual([readdirSync(home), existsSync(join(dirname(project), "pwned"))], [[basename(made), "projects.tsv"], false]);
   assert.match(spawnSync("node", [TOOL, "status", "--project", project], { encoding: "utf8", env }).stdout, /^sage · /, "the logbook is the folder's own");
 });
 
@@ -2061,4 +2066,93 @@ test("T94C2-L2: pages record refuses a FIFO, a link and a file over 16 MiB at on
 
 test("no command that these tests started called process.kill on another process (the kill spy's log is empty)", () => {
   assert.equal(existsSync(KILLS) ? readFileSync(KILLS, "utf8") : "", "");
+});
+
+/** A copy of a logbook's tables in a new folder of its root: a logbook that init did not make, with the same verdicts. */
+function forge(s, name) {
+  const fake = join(s.home, name);
+  mkdirSync(fake);
+  for (const t of ["tasks", "runs", "findings", "ledger", "gates", "decisions"]) writeFileSync(join(fake, `${t}.tsv`), readFileSync(join(s.dir, `${t}.tsv`)));
+  return fake;
+}
+const known = (home) => readFileSync(join(home, "projects.tsv"), "utf8").split("\n").filter(Boolean).slice(1).map((l) => `${l.split("\t")[0]} ${l.split("\t")[2]}`);
+const stranger = (home, dirs) => `sage: ${dirs.join(" and ")} ${dirs.length === 1 ? "has" : "have"} verdicts on a1b2c3d but ${dirs.length === 1 ? "is" : "are"} not in the known project list (${join(home, "projects.tsv")}), so the merge check refuses: a logbook that init did not make may be forged. If it is a project's logbook, run sage init in that project. If no project uses it, ask the user to remove it.`;
+
+test("T95: a logbook outside the known project list that has verdicts on the SHA refuses the merge; known logbooks pass as before", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA");
+  const fake = forge(s, "rogue-926427"); // T77 round 3: a new logbook that lends its verdicts
+  assert.equal(s.no("merge-check", "--sha", SHA), stranger(s.home, [fake]));
+  assert.equal(s.no("merge-check", "--sha", SHA, "--pr", "5"), stranger(s.home, [fake]), "the refusal comes before any other");
+  const other = "b".repeat(40);
+  s.ok("verdict", "T1", "--sha", other, "--kind", "checks-pass");
+  byHand(join(fake, ".."), "rogue-926427/ledger", 2, SHA, (c) => [c[0], c[1], "c".repeat(40), ...c.slice(3)]); // its verdicts now name another SHA
+  assert.equal(s.ok("merge-check", "--sha", other), "T1 may merge: 1 clean cycle on this SHA", "an unknown folder without verdicts on the SHA does not count");
+  assert.deepEqual(known(s.home), [`${basename(s.dir)} init`], "only init adds a line: the forged folder is not in the list");
+  rmSync(fake, { recursive: true });
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA", "the way out: remove it");
+});
+
+test("T95: init adds the project's logbook to the known project list, under the root's lock, and keeps every line", async () => {
+  const home = mkdtempSync(join(tmpdir(), "sage-home-"));
+  const s = store(home);
+  const first = readFileSync(join(home, "projects.tsv"), "utf8");
+  assert.match(first, new RegExp(`^logbook\tat\thow\n${basename(s.dir)}\t\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ\tinit\n$`));
+  s.ok("init");
+  assert.equal(readFileSync(join(home, "projects.tsv"), "utf8"), first, "init again changes nothing");
+  // Five chief sessions make five logbooks at once: each line stays.
+  const more = Array.from({ length: 5 }, () => mkdtempSync(join(tmpdir(), "sage-p-")));
+  const done = await Promise.all(more.map((p) => new Promise((ok) => execFile("node", [TOOL, "init", "--project", p], { env: testEnv({ SAGE_HOME: home }), timeout }, (err, out) => ok(err ? `failed: ${err.message}` : out.trim())))));
+  assert.ok(done.every((d) => d.startsWith("logbook ")), done.join("\n"));
+  assert.deepEqual(known(home).sort(), [basename(s.dir), ...done.map((d) => basename(d))].map((n) => `${n} init`).sort());
+});
+
+test("T95: the first command with no projects.tsv lists today's logbooks once (how: migration), and a second run changes nothing", async () => {
+  const { mergeCheck } = await import(LIB);
+  const home = mkdtempSync(join(tmpdir(), "sage-home-"));
+  const [a, b] = [store(home), store(home)];
+  a.ok("task", "add", "--title", "t", "--size", "tiny");
+  a.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  mkdirSync(join(home, "no-logbook")); // a folder with neither tasks.tsv nor ledger.tsv holds no verdicts
+  rmSync(join(home, "projects.tsv")); // the root as the version before this one left it
+  // The hook calls the merge check first: it makes the list.
+  assert.deepEqual(mergeCheck(SHA, { SAGE_HOME: home, SAGE_TEST_PIDS: "{}" }), { ok: true, reason: "T1 may merge: 1 clean cycle on this SHA" });
+  assert.deepEqual(known(home).sort(), [`${basename(a.dir)} migration`, `${basename(b.dir)} migration`].sort());
+  const once = readFileSync(join(home, "projects.tsv"), "utf8");
+  forge(a, "zz-later"); // a folder made after the migration stays unknown
+  assert.equal(a.no("merge-check", "--sha", SHA), stranger(home, [join(home, "zz-later")]));
+  b.ok("status");
+  assert.equal(readFileSync(join(home, "projects.tsv"), "utf8"), once, "a second run changes nothing");
+  // Any other command is a first use too.
+  rmSync(join(home, "zz-later"), { recursive: true });
+  rmSync(join(home, "projects.tsv"));
+  b.ok("status");
+  assert.deepEqual(known(home).sort(), [`${basename(a.dir)} migration`, `${basename(b.dir)} migration`].sort());
+  assert.equal(a.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA");
+});
+
+test("T95: projects.tsv must be a regular file with its header; a link, a folder or a damaged header refuses every merge and every init", () => {
+  const s = store();
+  s.ok("task", "add", "--title", "t", "--size", "tiny");
+  s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
+  const file = join(s.home, "projects.tsv");
+  const copy = join(mkdtempSync(join(tmpdir(), "sage-copy-")), "projects.tsv");
+  renameSync(file, copy);
+  symlinkSync(copy, file); // a link to a list that names the logbook still refuses: a link can point anywhere
+  const notRegular = `sage: the merge check refuses every merge, because ${file} is not a regular file. Ask the user to fix or remove it.`;
+  assert.equal(s.no("merge-check", "--sha", SHA), notRegular);
+  assert.equal(s.no("init"), `sage: ${file} is not a regular file. Ask the user to fix or remove it.`);
+  assert.equal(readFileSync(copy, "utf8").split("\n").length, 3, "init wrote nothing through the link");
+  rmSync(file);
+  mkdirSync(file);
+  assert.equal(s.no("merge-check", "--sha", SHA), notRegular);
+  rmSync(file, { recursive: true });
+  writeFileSync(file, `${basename(s.dir)}\t\tinit\n`); // the header line is lost
+  const damaged = `the header of ${file}, the known project list, is damaged: its first line must be the column names logbook, at, how, separated by tabs. Ask the user to fix that line. Each line after it names one logbook folder that init made.`;
+  assert.equal(s.no("merge-check", "--sha", SHA), `sage: the merge check refuses every merge, because ${damaged}`);
+  assert.equal(s.no("init"), `sage: ${damaged}`);
+  writeFileSync(file, `logbook\tat\thow\n${basename(s.dir)}\t\tinit\n`);
+  assert.equal(s.ok("merge-check", "--sha", SHA), "T1 may merge: 1 clean cycle on this SHA");
 });
