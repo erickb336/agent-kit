@@ -1,7 +1,9 @@
 # Working on sage
 
-- **Edit the sources only:** `principles/`, `writing/`, `preferences/`, and the agents, skills and hooks that are not generated.
-  - Never edit a generated file: a skill marked "Generated", or `instructions/core.md`.
+- **Edit the sources only:** `principles/`, `writing/`, `preferences/`, and `packages/` (shared code and provider sources).
+  - Never edit build output: `plugins/sage/`, `plugins/sage-codex/`, or `instructions/core.md`.
+  - Provider packages depend only on the public `sage-core` entry point. Core must not import a provider or name its models or settings.
+  - A provider plugin bundles core and that provider only; `scripts/providers.test.mjs` checks isolated copies.
   - Never edit `upstream/pstack/` by hand. `npm run sync` owns it.
   - Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests.
 - **Principles:**
@@ -11,9 +13,10 @@
 - **Skills:**
   - Use only the shared frontmatter keys: `name`, `description`, `license`, `allowed-tools`, `metadata`.
   - `name` equals the folder name.
-- **Hooks** (`plugins/sage/hooks/`):
+- **Claude hooks** (`packages/sage-claude/hooks/`):
   - `hooks.json` runs `principles-hook.mjs`, and `claude.json` runs `sage-hook.mjs`.
   - The hooks are hand-written. The principle hook reads each principle's text from its skill.
+  - Codex hooks live in `packages/sage-codex/hooks/`. Only verified events go in its hook manifest.
 - **Sage mode:**
   - A rule that matters goes into code (the sage hook or the state tool), with a test. An instruction in a prompt alone is not enough.
   - The brief fields live in the sage hook (`BRIEF_FIELDS`) and the report fields there too (`REPORT_FIELDS`). The chief's brief template and the `report` skill must list the same fields; `npm run check` checks this.

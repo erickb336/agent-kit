@@ -3,7 +3,7 @@
 import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "node:test";
@@ -53,9 +53,16 @@ function copy() {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-dictionary-")); // the real path, so that build.mjs sees that it runs as the script
   cpSync(ROOT, dir, { recursive: true, filter: (src) => ![".git", ".claude", "node_modules"].includes(relative(ROOT, src)) });
   const run = (script) => spawnSync("node", [join(dir, "scripts", `${script}.mjs`)], { encoding: "utf8" });
+  // These tests edit authored text. Keep its assembled copy in step; generated skills
+  // still change only through build, so stale-output tests retain their meaning.
+  const write = (rel, text) => {
+    writeFileSync(join(dir, rel), text);
+    const authored = rel.replace(/^plugins\/sage\//, "packages/sage-claude/");
+    if (authored !== rel && existsSync(join(dir, authored))) writeFileSync(join(dir, authored), text);
+  };
   const file = join(dir, "plugins/sage/agents/qa.md");
   const original = readFileSync(file, "utf8");
-  return { dir, run, write: (rel, text) => writeFileSync(join(dir, rel), text), read: (rel) => readFileSync(join(dir, rel), "utf8"), agent: (line) => writeFileSync(file, `${original}\n${line}\n`) };
+  return { dir, run, write, read: (rel) => readFileSync(join(dir, rel), "utf8"), agent: (line) => write("plugins/sage/agents/qa.md", `${original}\n${line}\n`) };
 }
 
 test("npm run check fails on a flagged word in an agent file, a skill or the README, and names the file and line", () => {

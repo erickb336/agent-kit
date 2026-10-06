@@ -16,6 +16,8 @@
 
 It also gives every session 25 short working principles at the moment they apply.
 
+**Codex:** a separate plugin includes the same principles, writing guides and manual logbook commands. Sage mode and autopilot remain Claude-only. See [Codex setup and package boundaries](docs/design/provider-packages.md).
+
 > **Built on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by [Lauren Tan (poteto)](https://github.com/poteto).** sage follows pstack's principles by itself, every week, and sage mode takes its ideas from poteto mode. The name is a nod to Sage Mode in *Naruto*. See [Credits](#credits).
 
 ## Quick start
@@ -443,7 +445,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 **Which projects fit?** A project with tests and a GitHub remote. Without tests, QA can only check by running the app. Without a remote, the work stops at a verified branch.
 
-**Does it work in Codex?** Sage is for Claude Code.
+**Does it work in Codex?** The separate Codex plugin provides principles, writing guides and a manual logbook. The chief, agent limits, report gates and autopilot are not enabled. See [Codex setup](docs/design/provider-packages.md).
 
 **How mature is it?** Early. It has done one dry run on a demo project ([the report](docs/runs/dry-run-1.html)). A pilot on a real project comes next. The full design is in [docs/design/sage-mode.html](docs/design/sage-mode.html).
 
@@ -451,9 +453,13 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 | Path | What it is |
 | --- | --- |
-| `plugins/sage/agents/` | Sage mode's team. |
+| `packages/sage-core/` | Shared policy, logbook rules and board code. |
+| `packages/sage-claude/` | Claude hooks, team, skills and settings. |
+| `packages/sage-codex/` | Codex hooks, skills and settings. |
+| `plugins/sage/agents/` | Built copy of Sage mode's team. |
 | `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard and the README guide (generated), `remote-control`, `sage-help`, the state tool `sage`, and `report`. |
-| `plugins/sage/hooks/` | `hooks.json`: the principle hooks. `claude.json`: the sage mode hook. |
+| `plugins/sage/hooks/` | Built Claude hooks. |
+| `plugins/sage-codex/` | Built Codex plugin, without Claude hooks or agents. |
 | `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
@@ -464,7 +470,7 @@ While the server runs, your claude.ai account can start sessions on your compute
 
 **Change it:**
 
-1. Edit a source: `principles/`, `writing/`, `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
+1. Edit a source: `principles/`, `writing/`, `preferences/`, or code or instructions in `packages/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
 2. After a change to a graphic, draw the graphics again:
 
    ```sh

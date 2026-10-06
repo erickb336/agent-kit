@@ -2010,7 +2010,7 @@ test("T94: one branch pattern accepts today's task branches and refuses main, re
   assert.match(sage(["task", "T1", "set", "branch=tool/t1-agent-state-writes"]).out, /· tool\/t1-agent-state-writes$/);
   // T96-Q2: task set takes only a branch of that task, the one rule that the PR script checks too, and names the fix.
   for (const other of ["tool/t83-agent-state-writes", "claude/t10", "a/b/t1", "feature-x", "claude/main-fix"]) {
-    assert.match(sage(["task", "T1", "set", `branch=${other}`]).out, new RegExp(`"${other.replaceAll("/", "\\/")}" is not a branch of T1: use \\[<prefix>\\/\\]t1\\[-<words>\\], for example sage task T1 set branch=claude\\/t1`));
+    assert.match(sage(["task", "T1", "set", `branch=${other}`]).out, new RegExp(`"${other.replaceAll("/", "\\/")}" is not a branch of T1: use \\[<prefix>\\/\\]t1\\[-<words>\\], for example sage task T1 set branch=sage\\/t1`));
   }
   assert.match(sage(["task", "T1", "set", "branch=CLAUDE/T1-Upper"]).out, /· CLAUDE\/T1-Upper$/);
   assert.deepEqual(sage(["run", "add", "T1", "--role", "implementer", "--branch=-x"]).status, 1, "run add refuses the same names");

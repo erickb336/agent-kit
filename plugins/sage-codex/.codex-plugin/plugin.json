@@ -1,0 +1,15 @@
+{
+  "name": "sage",
+  "version": "0.1.0",
+  "description": "Sage principles, writing guides and a manual task logbook for Codex. Agent orchestration is not enabled.",
+  "author": {
+    "name": "Erick Benitez-Ramos"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/erickb336/sage",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Sage for Codex",
+    "shortDescription": "Principles, writing guides and a manual logbook"
+  }
+}
