@@ -1084,13 +1084,15 @@ test("T166-B: a work folder that the script cannot remove gives a warning on std
   }
 });
 
-test("T168: merge refuses a task that is not verified; an already merged pull request at the reviewed head still exits 0", () => {
+test("T168: merge refuses a task that is not verified or pr-ready; an already merged pull request at the reviewed head still exits 0", () => {
   const { w, head } = reviewed();
   w.forge("T1", "state", "reviewing");
-  refused(w.pr("merge", "T1"), /^sage-pr: refused: T1 is reviewing, not verified: merge only a task whose route is done\. When it is: sage task T1 set state=verified\n$/);
+  refused(w.pr("merge", "T1"), /^sage-pr: refused: T1 is reviewing, not verified or pr-ready: merge only a task whose route is done\. When it is: sage task T1 set state=verified\n$/);
   assert.equal(w.calls().filter((c) => c.args[1] === "merge").length, 0);
-  w.forge("T1", "state", "verified");
-  assert.equal(w.pr("merge", "T1").status, 0);
+  w.forge("T1", "state", "pr-ready");
+  const ready = w.pr("merge", "T1");
+  assert.equal(ready.status, 0, ready.stderr);
+  assert.match(ready.stdout, new RegExp(`^merged claude/t1 at ${short(head)}`));
   w.forge("T1", "state", "merged");
   const r = w.pr("merge", "T1");
   assert.equal(r.status, 0, r.stderr);

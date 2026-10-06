@@ -313,7 +313,7 @@ function remember({ project, t }, { out, number }, env) {
 
 /**
  * merge: merges the task's pull request (its PR number in the logbook) only when it is the open pull request of the
- * task's branch into main in the repository itself, at the reviewed head, the task is verified, and the merge check
+ * task's branch into main in the repository itself, at the reviewed head, the task is verified or pr-ready, and the merge check
  * passes on the reviewed head with that PR. Then it reads the pull request again: only MERGED at the reviewed head is a
  * merge (a merge queue can leave it open; a failure after the merge, such as the branch deletion, still merged it), and
  * it fetches the new main into the mirror. When that pull request is already merged with the reviewed head (a merge
@@ -334,7 +334,7 @@ function merge({ dir, t, branch, head, url, repo }, temp, env) {
   };
   if (p.state === "MERGED" && sameHead(p, head)) return refresh(`already merged: ${branch} at ${short(head)}; nothing to do`);
   if (p.state !== "OPEN") no(`pull request #${pr} of ${branch} is ${p.state}, not open: reopen it on GitHub, or run sage-pr create ${t.id} to open a new one`);
-  if (t.state !== "verified") no(`${t.id} is ${t.state || "in no state"}, not verified: merge only a task whose route is done. When it is: sage task ${t.id} set state=verified`);
+  if (!["verified", "pr-ready"].includes(t.state)) no(`${t.id} is ${t.state || "in no state"}, not verified or pr-ready: merge only a task whose route is done. When it is: sage task ${t.id} set state=verified`);
   if (p.headRefOid !== head) no(`pull request #${pr} is at ${short(p.headRefOid)}, not at the reviewed head ${short(head)}. If ${short(head)} is a repair, push it first: sage-pr create ${t.id}. Else the branch moved after review: review ${short(p.headRefOid)} and record its verdicts`);
   const r = mergeCheck(head, env, { pr });
   if (!r.ok) no(`merge check: ${r.reason}`);
