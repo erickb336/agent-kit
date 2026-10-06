@@ -7,7 +7,13 @@ source: this kit's own words, from sage's README (github.com/erickb336/sage) as 
 
 A README is the front door of a project. A reader arrives cold and decides in a few seconds to stay or leave. Write it so that the first screen answers their questions, and the rest lets them start and go deeper. sage's own [README](https://github.com/erickb336/sage#readme) is the worked example.
 
-**The top 10 lines answer five questions**
+**The first screen answers five questions**
+
+The first screen is the first 10 lines of the raw file. Blank lines and lines that hold only an HTML tag (`<a>`, `<picture>`, `<source>`, `<p>`, or a closing tag) do not count. This command shows them:
+
+```sh
+grep -v -E '^[[:space:]]*(</?(a|picture|p)( [^>]*)?>|<source [^>]*>)?[[:space:]]*$' README.md | head -n 10
+```
 
 1. What is it? One bold sentence: "**<name> is a <kind of thing> that <does what> for <whom>.**"
 2. Why use it? The problem it solves, or the main result, in one or two sentences.
@@ -17,7 +23,7 @@ A README is the front door of a project. A reader arrives cold and decides in a 
 
 **The order of sections**
 
-A project is large when it has more than one kind of user, more than one way in, or a README over 150 lines. Otherwise it is small.
+A project is large when it has more than one kind of user, more than one way in, or a README over 150 lines. Otherwise it is small. The sections of the table come in its order. A section of the project's own can go between them.
 
 | Section | What it holds | Small | Large |
 | --- | --- | --- | --- |
@@ -94,17 +100,20 @@ More examples: [awesome-readme](https://github.com/matiassingers/awesome-readme)
 
 **The checklist**
 
+A person can check each item in about a minute, except the items marked "tool" or "release".
+
 - [ ] The first sentence says what the project is, what it does and for whom.
-- [ ] The top 10 lines answer the five questions.
-- [ ] The sections follow the order, with all the required ones for the project's size.
-- [ ] The quick start gives a first result in 5 commands or fewer, and it works in a clean place.
+- [ ] The first screen answers the five questions. Run the command above.
+- [ ] The sections of the table come in its order, with all the required ones for the project's size.
+- [ ] The quick start gives a first result in 5 commands or fewer.
+- [ ] Release: the quick start works in a fresh clone or a container. Better: CI runs it.
 - [ ] Each command block has one command, no prompt sign and a language.
 - [ ] Each diagram comes from text or code, in light and dark, and CI checks it.
 - [ ] Each image has an alt text with its main point.
 - [ ] No graphic uses a logo or a character that the project does not own.
-- [ ] Each badge is true and checked by a machine.
-- [ ] The Why section says when not to use the project.
+- [ ] Each badge is true and checked by a machine: it links to a CI result or reads the repository.
+- [ ] If the project has a Why section, it says when not to use the project.
 - [ ] Each claim such as "fast" has a measured comparison and its method.
-- [ ] What's new lists the latest changes, newest first.
-- [ ] The text follows the writing standard and the project's dictionary.
-- [ ] Each link resolves.
+- [ ] If the project has a What's new section, it lists the latest changes, newest first.
+- [ ] Tool: the project's word check passes. Without one, read the text against the writing-standard skill and the project's dictionary.
+- [ ] Tool: each link resolves. Use the project's link check, or a link checker such as `lychee README.md`.
