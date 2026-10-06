@@ -1,5 +1,6 @@
 // The dictionary (writing/dictionary.md): the flagged-word scan on literal texts, then `npm run build` and
 // `npm run check` as people run them, in a copy of this repository.
+import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
