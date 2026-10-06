@@ -1,7 +1,7 @@
 import "./test-env.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,7 +16,7 @@ const source = (path) => readFileSync(join(ROOT, path), "utf8");
 const json = (path) => JSON.parse(source(path));
 
 function isolated(t, provider) {
-  const dir = mkdtempSync(join(tmpdir(), "sage-provider-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-provider-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const plugin = join(dir, "plugin");
   cpSync(join(ROOT, provider === "claude" ? "plugins/sage" : "plugins/sage-codex"), plugin, { recursive: true });
@@ -61,7 +61,7 @@ test("provider packages are complete outside the checkout, with no opposite adap
 });
 
 test("core instances isolate provider defaults and validation without changing process environment", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "sage-core-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-core-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const a = createStateTool({ defaultRoot: () => join(dir, "a"), models: ["a", "inherit"], modelDefaults: { arena_models: "a" } });
   const b = createStateTool({ defaultRoot: () => join(dir, "b") });
@@ -123,7 +123,7 @@ test("Codex process hooks isolate roots, children and providers; unknown input c
 });
 
 test("unknown check outcomes cannot erase recorded failures in shared policy", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "sage-outcome-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-outcome-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
   writeFileSync(join(dir, "code.js"), "one");
@@ -138,7 +138,7 @@ test("unknown check outcomes cannot erase recorded failures in shared policy", (
 });
 
 test("check rejects a foreign file and build removes it from an assembled plugin", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "sage-build-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-build-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
   const foreign = join(dir, "plugins/sage/hooks/codex-only.mjs");
@@ -155,7 +155,7 @@ test("check rejects a foreign file and build removes it from an assembled plugin
 });
 
 test("a mismatched core pin fails the build before replacing plugin files", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "sage-pin-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-pin-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
   const manifest = join(dir, "packages/sage-codex/package.json");
