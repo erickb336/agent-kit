@@ -33,7 +33,7 @@ const REFACTOR = /\b(refactor\w*|clean(ing)?[ -]?up|simplif\w*|rewrite|restructu
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.\w+$|_test\.\w+$|(^|\/)test_[^/]+\.py$/i;
 const DOC_FILE = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
 /** A README document: no extension, or a document extension after an optional language part (README.zh-CN.md). Not code such as readme.rs. */
-const README_FILE = /(^|\/)readme((\.[a-z]{2,3}([-_][a-z0-9]+)?)?\.(md|mdx|markdown|rst|adoc|txt))?$/i;
+const README_FILE = /(^|\/)readme(([._-][a-z]{2,3}([-_][a-z0-9]+)?)?\.(md|mdx|markdown|rst|adoc|txt))?$/i;
 const COMMIT = /\bgit\s+(-C\s+\S+\s+)?commit\b/;
 /** A shell command that checks the code. The match is the check's name, so "npm test | tail" and "npm test" are one check. */
 const CHECK =
