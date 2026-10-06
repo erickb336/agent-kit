@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { board } from "../plugins/sage/skills/sage/board.mjs";
-import { storeDir } from "../plugins/sage/skills/sage/sage.mjs";
+import { mergeCheck, storeDir } from "../plugins/sage/skills/sage/sage.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/board/home", import.meta.url));
 const TOOL = fileURLToPath(new URL("../plugins/sage/skills/sage/sage.mjs", import.meta.url));
@@ -67,9 +67,9 @@ test("show board: the session's project, and one line per other project with som
       "  Recommended: drop\\: nobody uses it. Default: keep.",
       "  1. keep",
       "  2. drop",
-      "- T2 [#7](https://github.com/acme/sage/pull/7) waits for your merge (risk input): Sample\\: the chat board",
-      "- T3 [#8](https://github.com/acme/sage/pull/8) waits for your merge (autopilot may merge it tonight): Sample\\: a docs fix",
-      "- T4 [#9](https://github.com/acme/sage/pull/9) waits for your merge (large): Sample\\: the large rebuild",
+      "- T2 [#7](https://github.com/acme/sage/pull/7) waits for your merge (risk input, as of the last fetch): Sample\\: the chat board",
+      "- T3 [#8](https://github.com/acme/sage/pull/8) waits for your merge (autopilot may merge it tonight, as of the last fetch): Sample\\: a docs fix",
+      "- T4 [#9](https://github.com/acme/sage/pull/9) waits for your merge (large, as of the last fetch): Sample\\: the large rebuild",
       "",
       "**Running now (2)**",
       "- T5 implementer · 15 h",
@@ -132,9 +132,9 @@ test("needs you: a verified PR that is not merged is always listed, with the rea
   for (const now of [DAY, NIGHT]) {
     const out = w.show("this", w.sage, now);
     assert.match(out, /\*\*Needs you \(4\)\*\*/);
-    assert.match(out, /\n- T3 \[#8\]\(https:\/\/github\.com\/acme\/sage\/pull\/8\) waits for your merge \(autopilot may merge it tonight\): Sample\\: a docs fix\n/);
-    assert.match(out, /T2 \[#7\][^\n]*waits for your merge \(risk input\)/);
-    assert.match(out, /T4 \[#9\][^\n]*waits for your merge \(large\)/);
+    assert.match(out, /\n- T3 \[#8\]\(https:\/\/github\.com\/acme\/sage\/pull\/8\) waits for your merge \(autopilot may merge it tonight, as of the last fetch\): Sample\\: a docs fix\n/);
+    assert.match(out, /T2 \[#7\][^\n]*waits for your merge \(risk input, as of the last fetch\)/);
+    assert.match(out, /T4 \[#9\][^\n]*waits for your merge \(large, as of the last fetch\)/);
     assert.doesNotMatch(out, /G2/); // an answered gate
   }
 });
@@ -142,7 +142,7 @@ test("needs you: a verified PR that is not merged is always listed, with the rea
 test("T174: a verified PR waits for your merge only when the merge check passes on its head; else the line says what is missing", () => {
   const w = world();
   const line = (id) => w.show("this").split("\n").find((l) => l.startsWith(`- ${id} `));
-  assert.equal(line("T2"), "- T2 [#7](https://github.com/acme/sage/pull/7) waits for your merge (risk input): Sample\\: the chat board");
+  assert.equal(line("T2"), "- T2 [#7](https://github.com/acme/sage/pull/7) waits for your merge (risk input, as of the last fetch): Sample\\: the chat board");
   // Too few clean cycles: T2 has a risk flag, so it wants 2; drop cycle 2.
   const ledger = join(w.home, w.book, "ledger.tsv");
   writeFileSync(ledger, readFileSync(ledger, "utf8").replace(/^T2\t[^\n]*\t2\tR1\t[^\n]*\n/gm, ""));
@@ -156,20 +156,51 @@ test("T174: a verified PR waits for your merge only when the merge check passes 
   assert.doesNotMatch(w.show("this"), /waits for your merge/);
 });
 
-test("T174: fail closed: a new commit without verdicts, a missing branch, a branch that differs from origin or no project list never waits for your merge", () => {
+test("T174: fail closed: a new commit without verdicts, a missing branch, a branch not at the reviewed head or no project list never waits for your merge", () => {
   const w = world();
   const line = (id) => w.show("this").split("\n").find((l) => l.startsWith(`- ${id} `));
   commit(w.sage, "t3"); // a new head: its verdicts are not recorded yet
-  assert.match(line("T3"), /^- T3 \S+ cannot merge yet \(no verdicts recorded for [0-9a-f]{40}\): /);
+  assert.match(line("T3"), new RegExp(`^- T3 \\S+ cannot merge yet \\(branch t3 is not at the reviewed head ${w.heads.T3.slice(0, 7)}\\): `));
   execFileSync("git", ["-C", w.sage, "update-ref", "-d", "refs/heads/t2"]);
   assert.match(line("T2"), /^- T2 \S+ cannot merge yet \(head unknown\\: no branch t2 in the project's folder\): /);
   execFileSync("git", ["-C", w.sage, "update-ref", "refs/remotes/origin/t2", w.heads.T2]);
-  assert.match(line("T2"), /waits for your merge \(risk input\)/); // the head at origin alone
+  assert.match(line("T2"), /waits for your merge \(risk input, as of the last fetch\)/); // the head at origin alone
   execFileSync("git", ["-C", w.sage, "update-ref", "refs/heads/t2", w.heads.T3]);
-  assert.match(line("T2"), /cannot merge yet \(head unknown\\: branch t2 and origin differ\)/);
+  assert.equal(line("T2"), `- T2 [#7](https://github.com/acme/sage/pull/7) cannot merge yet (branch t2 is not at the reviewed head ${w.heads.T2.slice(0, 7)}): Sample\\: the chat board`); // local moved, origin did not
   rmSync(join(w.home, "projects.tsv"));
   assert.match(line("T4"), /cannot merge yet \(the known project list is missing\)/);
   assert.ok(!existsSync(join(w.home, "projects.tsv")), "the board made no project list");
+});
+
+test("T174 R650: the reviewed head is the last ledger SHA, as sage-pr merge takes it; a stale origin never waits for your merge", () => {
+  const w = world();
+  const line = (id) => w.show("this").split("\n").find((l) => l.startsWith(`- ${id} `));
+  const A = w.heads.T2; // 2 clean cycles
+  const B = commit(w.sage, "t2"); // a merge of main after review: 1 clean cycle so far
+  for (const kind of ["checks-pass", "review-clean", "security-clean", "qa-pass"]) add(w, w.book, "ledger", ["T2", "7", B, kind, "1", "R2", "2026-10-05T02:00:00Z"]);
+  execFileSync("git", ["-C", w.sage, "update-ref", "-d", "refs/heads/t2"]);
+  execFileSync("git", ["-C", w.sage, "update-ref", "refs/remotes/origin/t2", A]); // the last fetch was before B was pushed
+  assert.equal(line("T2"), `- T2 [#7](https://github.com/acme/sage/pull/7) cannot merge yet (branch t2 is not at the reviewed head ${B.slice(0, 7)}): Sample\\: the chat board`);
+  execFileSync("git", ["-C", w.sage, "update-ref", "refs/remotes/origin/t2", B]); // a fetch
+  assert.equal(line("T2"), "- T2 [#7](https://github.com/acme/sage/pull/7) cannot merge yet (T2\\: 1 of 2 clean cycles on this SHA): Sample\\: the chat board");
+  for (const kind of ["review-clean", "security-clean", "qa-pass"]) add(w, w.book, "ledger", ["T2", "7", B, kind, "2", "R3", "2026-10-05T03:00:00Z"]);
+  assert.equal(line("T2"), "- T2 [#7](https://github.com/acme/sage/pull/7) waits for your merge (risk input, as of the last fetch): Sample\\: the chat board");
+});
+
+test("T174 R650: the read-only merge check takes no lock and writes nothing, also when the known project list is missing", () => {
+  const w = world();
+  const files = () => execFileSync("find", [w.home, "-print"], { encoding: "utf8" }).split("\n").sort().join("\n");
+  const contents = () => execFileSync("find", [w.home, "-type", "f", "-exec", "cksum", "{}", "+"], { encoding: "utf8" }).split("\n").sort().join("\n");
+  assert.deepEqual(mergeCheck(w.heads.T2, w.env, { pr: "7", readOnly: true }), { ok: true, reason: "T2 may merge: 2 clean cycles on this SHA" });
+  rmSync(join(w.home, "projects.tsv"));
+  const [before, sums] = [files(), contents()];
+  const r = mergeCheck(w.heads.T2, w.env, { pr: "7", readOnly: true });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, `the known project list is missing. This read-only check does not make it: sage merge-check --sha <sha> makes ${join(w.home, "projects.tsv")} or says how to get it back.`);
+  assert.equal(files(), before, "no file made or removed: no lock, no list");
+  assert.equal(contents(), sums, "no file changed");
+  assert.ok(mergeCheck(w.heads.T2, w.env, { pr: "7" }).ok, "without readOnly, the first check makes the list, as before");
+  assert.ok(existsSync(join(w.home, "projects.tsv")));
 });
 
 test("merged since the last board: the next board lists only the new merges, and board.json holds the highest task and the open ones", () => {
@@ -266,7 +297,7 @@ test("an id-like cell is kept only in its format, else shown as ?: a hand-made P
   add(w, w.book, "gates", ["G4```", "T6```", "Sample: a forged gate", "a|b", "a", "a", "", "2026-10-05T03:00:00Z"]);
   add(w, w.book, "runs", ["R4", "T5```", "implementer```", "0", "", "t5", "running", "", "", "2026-10-05T05:00:00Z", ""]);
   const out = w.show("this");
-  assert.ok(out.includes("\n- T13 PR ? cannot merge yet (head unknown\\: no branch t13 in the project's folder): Sample\\: a forged PR cell\n"), out);
+  assert.ok(out.includes("\n- T13 PR ? cannot merge yet (no reviewed head\\: no verdict with a SHA): Sample\\: a forged PR cell\n"), out);
   assert.ok(out.includes("\n- ? Sample\\: a forged id · ? · no PR · round ?\n"), out);
   assert.ok(out.includes("\n- sage **?** · ? · Sample\\: a forged gate\n  Recommended: a. Default: a.\n  1. a\n  2. b\n"), out);
   assert.ok(out.includes("\n- ? ? · 14 h\n"), out);
