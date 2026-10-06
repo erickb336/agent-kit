@@ -5,40 +5,28 @@
 </picture>
 </a>
 
+**sage is a Claude Code plugin that turns any session into your chief of staff.** Start a message with "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
+
 <p align="center">
   <a href="https://github.com/erickb336/sage/actions/workflows/check.yml"><img alt="checks" src="https://github.com/erickb336/sage/actions/workflows/check.yml/badge.svg"></a>
-  <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-E5600B">
-  <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-21160F">
+  <a href="LICENSE"><img alt="licence" src="https://img.shields.io/github/license/erickb336/sage"></a>
 </p>
 
-**sage is a Claude Code plugin that turns any session into your chief of staff.** Start a message with "sage mode", say what you want, and a team of specialist agents designs, builds, reviews and proves the work. You answer only the product questions, and you look at results, not code.
+**Contents:** [Quick start](#quick-start) · [Learn sage in 5 minutes](#learn-sage-in-5-minutes) · [Why "sage"?](#why-sage) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say](#what-to-say) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
 
 It also gives every session 25 short working principles at the moment they apply.
 
 > **Built on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by [Lauren Tan (poteto)](https://github.com/poteto).** sage follows pstack's principles by itself, every week, and sage mode takes its ideas from poteto mode. The name is a nod to Sage Mode in *Naruto*. See [Credits](#credits).
 
-**Contents:** [Why "sage"?](#why-sage) · [Quick start](#quick-start) · [Learn sage in 5 minutes](#learn-sage-in-5-minutes) · [How it works](#how-it-works) · [Concepts](#concepts) · [What to say](#what-to-say) · [Principles](#principles) · [Following pstack](#following-pstack) · [Remote Control](#remote-control) · [FAQ](#faq) · [Under the hood](#under-the-hood) · [Credits](#credits)
-
-## Why "sage"?
-
-In *Naruto*, a sage stays still to gather natural energy. In Sage Mode, the sage sees and senses more than in normal combat.
-
-sage mode works the same way:
-
-- **The chief of staff stays still.** It never edits a file. It frames the work, writes the briefs and keeps the record.
-- **It gathers natural energy.** Here, that energy is the team's work: specialists work in parallel, each in its own git worktree.
-- **It sees the whole.** It groups related work, puts tasks that share code in order, and gives a mistake that repeats a lasting fix.
-
-The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
-
-And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing of a hooded toad that meditates while its team works.
-
 ## Quick start
 
 **1. Install** (in a Claude Code terminal):
 
-```
+```text
 /plugin marketplace add erickb336/sage
+```
+
+```text
 /plugin install sage@sage
 ```
 
@@ -50,7 +38,7 @@ In the desktop app, run `claude plugin marketplace add erickb336/sage` and then 
 
 **3. Switch it on:** start a message with "sage mode", then say what you want.
 
-```
+```text
 sage mode. Ramen Finder: add a favourites list, and fix this week's crash.
 ```
 
@@ -98,6 +86,27 @@ This is one session, step by step. It is an illustration with sample data.
   <img alt="The toad sage's tip: try it on one small, real bug, from your phone. Then look at the result, not the code." src="docs/assets/tip-try-light.svg" width="100%">
 </picture>
 </a>
+
+## Why "sage"?
+
+In *Naruto*, a sage stays still to gather natural energy. In Sage Mode, the sage sees and senses more than in normal combat.
+
+sage mode works the same way:
+
+- **The chief of staff stays still.** It never edits a file. It frames the work, writes the briefs and keeps the record.
+- **It gathers natural energy.** Here, that energy is the team's work: specialists work in parallel, each in its own git worktree.
+- **It sees the whole.** It groups related work, puts tasks that share code in order, and gives a mistake that repeats a lasting fix.
+
+The idea of a mode that you switch on by name comes from pstack's **poteto mode**.
+
+And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing of a hooded toad that meditates while its team works.
+
+### When not to use sage
+
+- **A small change that you can make yourself.** Each task runs several agents. In the first dry run, a small bug fix took 15 agent runs, about $2.60 at API prices (see the [FAQ](#faq)).
+- **A project without tests or a GitHub remote.** Without tests, QA can only run the app. Without a remote, the work stops at a verified branch.
+- **When you want to read and steer each line of code.** sage shows you results and asks only product questions.
+- **A tool other than Claude Code.** sage is for Claude Code only.
 
 ## How it works
 
@@ -211,6 +220,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 
 ## What's new
 
+- **A guide for project READMEs.** The `readme-guide` skill, built from `writing/readme.md`, gives the order of sections, what the first screen must answer, rules for diagrams and commands, examples of great READMEs, and a checklist. The hook gives it when an agent is about to write or change a README.
 - **The board runs the merge check.** A verified pull request "waits for your merge" only when its branch is at the reviewed head (the head that `sage-pr merge` merges) and the merge check passes on it; else the board says what is missing, such as a clean cycle or an open finding. The board takes no lock and writes no logbook.
 - **The PR script imports before the reviews.** `sage-pr import <task>` copies the agent's bundle into the logbook and writes a review copy (`review/<task>-<sha>/` and `review/<task>-<sha>.diff`) that agents cannot change. `create` and `merge` refuse a commit whose review copy is not older than its first verdict.
 - **A bundle is at most 10 MiB, and a slow bundle stops.** Each git call on the bundle stops after 120 s with exit 2, so a bundle that expands to gigabytes cannot hold the logbook's lock.
@@ -319,6 +329,7 @@ Agents seldom load a skill by themselves, so a **hook** gives the principle at t
 | The request asks for a refactor or a cleanup | subtract-before-you-add, laziness-protocol, migrate-callers-then-delete-legacy-apis |
 | The agent is about to change a test file | test-behavior-not-implementation |
 | The agent is about to write a document | contextualize-and-write-for-the-reader |
+| The agent is about to write or change a README | readme-guide (not a principle: the README guide) |
 | The agent is about to commit | sequence-verifiable-units |
 | A check fails | fix-root-causes |
 | Two changes in a row do not make the same check pass | attack-the-premise |
@@ -413,11 +424,12 @@ While the server runs, your claude.ai account can start sessions on your compute
 | Path | What it is |
 | --- | --- |
 | `plugins/sage/agents/` | Sage mode's team. |
-| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, `sage-help`, the state tool `sage`, and `report`. |
+| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard and the README guide (generated), `remote-control`, `sage-help`, the state tool `sage`, and `report`. |
 | `plugins/sage/hooks/` | `hooks.json`: the principle hooks. `claude.json`: the sage mode hook. |
 | `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
+| `writing/readme.md` | The README guide: how to write a project README, with examples and a checklist. |
 | `preferences/`, `instructions/core.md` | How I work with agents, and the always-on file made from it. |
 | `docs/` | The design, the dry run reports, and the README's graphics. |
 | `scripts/graphics.mjs` | Draws the graphics in this README, the toad sage too, in light and dark. |

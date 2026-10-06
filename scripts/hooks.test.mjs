@@ -67,6 +67,26 @@ test("a document edit gets contextualize; a commit gets sequence-verifiable-unit
   assert.equal(s.send(bash("PreToolUse", "git status")), undefined);
 });
 
+test("a README edit gets the README guide, once per session, beside contextualize", () => {
+  const s = session();
+  const first = context(s.send({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: "/x/README.md" } }));
+  assert.match(first, /# Write a project README/);
+  assert.match(first, /# Contextualize and write for the reader/);
+  assert.equal(s.send({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "/x/docs/readme.rst" } }), undefined);
+  assert.doesNotMatch(context(session().send({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "docs/design.md" } })), /# Write a project README/);
+});
+
+test("only a README document gets the README guide: any language part, a document extension or none", () => {
+  const edit = (file_path) => context(session().send({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path } }));
+  for (const p of ["/x/README", "/x/README.zh-CN.md", "docs/README.ja.md", "readme.txt"]) assert.match(edit(p), /# Write a project README/, p);
+  for (const p of ["/x/src/readme.rs", "readme.py", "pkg/readme.go"]) assert.doesNotMatch(edit(p), /# Write a project README/, p);
+});
+
+test("a README with no extension gets contextualize with the README guide", () => {
+  const out = context(session().send({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "/x/README" } }));
+  assert.match(out, /# Contextualize and write for the reader/);
+});
+
 test("the stop check blocks once when the code changed and no check ran", () => {
   const s = session();
   s.send(prompt("Make sum handle strings"));

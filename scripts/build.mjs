@@ -1,7 +1,7 @@
 // Builds the generated files from the sources, so each principle has one copy:
-//   principles/*.md, writing/ste-80.md, preferences/working-preferences.md  (the sources)
+//   principles/*.md, writing/ste-80.md, writing/readme.md, preferences/working-preferences.md  (the sources)
 //   upstream/pstack/skills/principle-*/SKILL.md  (pstack, kept up to date by scripts/sync-pstack.mjs)
-//   → plugins/sage/skills/<name>/SKILL.md   (one skill per principle, plus the writing standard)
+//   → plugins/sage/skills/<name>/SKILL.md   (one skill per principle, plus the writing standard and the README guide)
 // A principle in principles/ overrides pstack's principle of the same id. pstack's other principles go in as they are.
 //   → instructions/core.md                        (the always-on file: preferences + writing standard)
 //   writing/dictionary.md → plugins/sage/skills/dictionary/SKILL.md, and the word table in README.md (scripts/dictionary.mjs)
@@ -67,6 +67,8 @@ export function outputs() {
   for (const u of upstream) out.set(join("plugins/sage/skills", u.name, "SKILL.md"), skill(u.name, `${u.title}. ${u.description}`, u.source, keepLinks(u.body, ships)));
   const w = parseSource(readFileSync(join(ROOT, "writing/ste-80.md"), "utf8"), "writing/ste-80.md");
   out.set("plugins/sage/skills/writing-standard/SKILL.md", skill("writing-standard", `${w.meta.name}. Apply to ${w.meta.applyWhen}`, w.meta.source, `# ${w.meta.name}\n\n${w.body}`));
+  const r = parseSource(readFileSync(join(ROOT, "writing/readme.md"), "utf8"), "writing/readme.md");
+  out.set("plugins/sage/skills/readme-guide/SKILL.md", skill("readme-guide", `${r.meta.name}. Apply when ${r.meta.applyWhen}`, r.meta.source, `# ${r.meta.name}\n\n${r.body}`));
   const d = parseSource(readFileSync(join(ROOT, "writing/dictionary.md"), "utf8"), "writing/dictionary.md");
   checkWords(d.body); // a dictionary that the check cannot use stops the build
   out.set("plugins/sage/skills/dictionary/SKILL.md", skill("dictionary", `${d.meta.name}: sage's approved words, one meaning each, and the words not to say. Apply to ${d.meta.applyWhen} Claude Code only.`, d.meta.source, `# ${d.meta.name}\n\n${d.body}`));
