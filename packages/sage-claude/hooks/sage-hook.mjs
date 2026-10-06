@@ -841,7 +841,38 @@ function real(path) {
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
 
+/** Expansion in a command word can hide git, gh, push or merge. Arguments keep their ordinary braces and globs. */
+function expansionProblem(command, cwd) {
+  const expansion = /[{[*?]/;
+  const expands = (word) => !/^(?:[{}]|\[\[?)$/.test(word) && expansion.test(word); // literal groups and test commands
+  const reason = "shell expansion can hide the command. Use literal program and git or gh subcommand words, without {, [, * or ?.";
+  let runs;
+  try {
+    runs = programsRun(command, cwd);
+  } catch (e) {
+    return expansion.test(command) ? `${reason} The hook cannot read this command (${e.message}).` : undefined;
+  }
+  for (const { word, args, stdin, piped } of runs) {
+    if (expands(word)) return reason;
+    const name = word.split("/").pop();
+    // A shell can run text from a pipe, including through filters. Its output is unknown: refuse expansion in that text.
+    if (piped && commandText(name, args, stdin) === stdin && runnable(shellCommands(command)).some(({ words, bodies }) => [...words, ...bodies].some(expands))) return reason;
+    if (name === "git" && expansion.test(subcommand(args, 0))) return reason;
+    if (name !== "gh") continue;
+    let k = 0;
+    for (let n = 0; n < 2; n++) {
+      while (args[k]?.startsWith("-")) k += /^(?:-R|--repo)$/.test(args[k]) ? 2 : 1;
+      const sub = args[k++] ?? "";
+      if (expansion.test(sub)) return reason;
+      if (n === 0 && sub !== "pr") break; // api's next word is an endpoint, not a subcommand
+    }
+  }
+  return undefined;
+}
+
 function gitGate(event, command, state, cwd, main) {
+  const expansion = expansionProblem(command, cwd);
+  if (expansion) return deny(event, expansion);
   const first = main ? firstUpload(command) : undefined; // an agent never gets the exception
   if (first) {
     const { decision, reason } = firstCreation(first);
@@ -931,7 +962,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
 
 /**
  * The programs that a command line runs, for the hook's rules on agents (agentProblem) and on the state tool (T83).
- * Each is { word, file, args, dir }, in the order of the command line:
+ * Each is { word, file, args, dir, stdin, piped }, in the order of the command line:
  *   - word: the program as written, after shell keywords (if, while, do, !, {), assignments (X=1), redirections
  *     (2>/dev/null, >out) and wrappers with their options (sudo, env, timeout, xargs, nice, npx, npm exec, pnpm dlx,
  *     bunx and others in WRAPPER). After for, select and case come words, not a program; a case pattern is not one.
@@ -941,6 +972,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  *   - args: the words after the program, without their quotes and redirections.
  *   - dir: the folder it runs in, after an earlier "cd <dir>" of the same line.
  *   - stdin: its heredoc and here-string bodies, and the words of the command piped into it.
+ *   - piped: whether another command supplies its stdin through a pipe; a heredoc alone is not a pipe.
  * It also reads the text that other programs run as commands, up to 3 levels deep: the -c text of a shell (sh, bash,
  * zsh, dash, ksh, fish) and its stdin heredoc when it has no script, the words of eval, PowerShell's -Command text,
  * the program of find -exec, and a program word with spaces that a wrapper such as watch gives to sh -c. The words
@@ -987,13 +1019,14 @@ function readPrograms(command, dir, path, depth, found) {
         break;
       }
       const args = words.slice(k + 1);
-      const stdin = [...bodies, ...commands.filter((p) => p.pipeTo === c).map((p) => p.words.join(" "))];
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, stdin });
+      const pipes = commands.filter((p) => p.pipeTo === c);
+      const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, stdin, piped: pipes.length > 0 });
       for (const text of commandText(name, args, bodies)) inner(text, dir, here);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, stdin: [] });
+        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, stdin: [], piped: false });
       }
       break;
     }
