@@ -16,7 +16,8 @@ const PR = fileURLToPath(new URL("../plugins/sage/skills/sage/sage-pr.mjs", impo
 const SPY = fileURLToPath(new URL("kill-spy.mjs", import.meta.url));
 /** The origin of every test project: GitHub's address. The mirror's config sends it to the local stand-in, so no test reaches GitHub. */
 const ORIGIN = "https://github.com/owner/repo.git";
-const timeout = 20_000;
+/** A call that hangs is stopped after this. It only catches a hang, so it is far longer than any call on a busy machine. */
+const timeout = 60_000;
 
 /**
  * The fake gh: it records each call (arguments, folder, the folder's entries, token, config folder, the names of its
@@ -775,8 +776,9 @@ test("T96-S11-BODYLINK: create writes nothing in the temp folder, so an agent's 
   writeFileSync(victim, "the owner's file\n");
   // An agent that links body.md, in each new folder of the temp folder, to the owner's file (R615 E1).
   const stop = w.at("stop");
-  const agent = spawn(process.execPath, ["-e", `const f = require("node:fs"), p = require("node:path"); const [tmp, target, stop] = process.argv.slice(1); const end = Date.now() + 30000; while (Date.now() < end && !f.existsSync(stop)) for (const n of f.readdirSync(tmp)) { try { f.symlinkSync(target, p.join(tmp, n, "body.md")); } catch {} }`, w.at("agent-tmp"), victim, stop], { stdio: "ignore" });
-  await new Promise((r) => setTimeout(r, 300));
+  const agent = spawn(process.execPath, ["-e", `const f = require("node:fs"), p = require("node:path"); const [tmp, target, stop] = process.argv.slice(1); f.writeFileSync(stop + ".ready", ""); const end = Date.now() + 30000; while (Date.now() < end && !f.existsSync(stop)) for (const n of f.readdirSync(tmp)) { try { f.symlinkSync(target, p.join(tmp, n, "body.md")); } catch {} }`, w.at("agent-tmp"), victim, stop], { stdio: "ignore" });
+  while (agent.exitCode === null && !existsSync(`${stop}.ready`)) await new Promise((r) => setTimeout(r, 10)); // create starts once the agent runs
+  assert.equal(agent.exitCode, null, "the agent runs");
   let r;
   try {
     r = w.pr("create", "T1");
@@ -882,9 +884,10 @@ test("T96-S14-CREDHELPER: a credential helper in the mirror's config never runs;
   const { w } = reviewed();
   // A local https origin that asks for a password (401), so that git looks for a credential helper.
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", w.at("key.pem"), "-out", w.at("cert.pem")], { stdio: "ignore" });
-  const server = spawn(process.execPath, ["-e", `const f = require("node:fs"); const [key, cert, port] = process.argv.slice(1); const s = require("node:https").createServer({ key: f.readFileSync(key), cert: f.readFileSync(cert) }, (q, a) => { a.writeHead(401, { "WWW-Authenticate": 'Basic realm="t"' }); a.end(); }); s.listen(0, "127.0.0.1", () => f.writeFileSync(port, String(s.address().port))); setTimeout(() => process.exit(0), 30000);`, w.at("key.pem"), w.at("cert.pem"), w.at("port")], { stdio: "ignore" });
+  const server = spawn(process.execPath, ["-e", `const f = require("node:fs"); const [key, cert, port] = process.argv.slice(1); const s = require("node:https").createServer({ key: f.readFileSync(key), cert: f.readFileSync(cert) }, (q, a) => { a.writeHead(401, { "WWW-Authenticate": 'Basic realm="t"' }); a.end(); }); s.listen(0, "127.0.0.1", () => { f.writeFileSync(port + ".tmp", String(s.address().port)); f.renameSync(port + ".tmp", port); }); setTimeout(() => process.exit(0), 30000);`, w.at("key.pem"), w.at("cert.pem"), w.at("port")], { stdio: "ignore" });
   try {
-    for (let i = 0; i < 100 && !existsSync(w.at("port")); i++) await new Promise((r) => setTimeout(r, 50));
+    // The port file appears whole (a rename), once the server listens; the server ends by itself after 30 s.
+    while (server.exitCode === null && !existsSync(w.at("port"))) await new Promise((r) => setTimeout(r, 50));
     w.route(`https://127.0.0.1:${readFileSync(w.at("port"), "utf8")}/owner/repo.git`);
     const helper = toucher(w, "helper");
     const config = join(w.logbook, "mirror.git", "config");
@@ -1354,14 +1357,16 @@ test("T165-S3-FORGEDREVIEW: the agent's clone shows harmless text at the SHA, th
 
 test("T165-S4-BUNDLEDOS: a bundle fetch, archive or diff that takes too long stops with exit 2 and frees the lock", () => {
   const w = world();
-  w.env.SAGE_PR_TIMEOUT = "2";
+  // Every timed git call of the script has this limit, also the fast ones, which run through the fake git (a node start)
+  // in well under 1 s on a busy machine. 5 s leaves them a wide margin; only the call that never ends reaches it.
+  w.env.SAGE_PR_TIMEOUT = "5";
   const head = w.commit("b.txt", { imported: false });
   for (const [when, verb] of [[["fetch", "task.bundle"], "import"], [["archive"], "import"], [["diff", "--no-ext-diff"], "import"], [["fetch", "task.bundle"], "create"]]) {
     if (verb === "create") (w.imports(), w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass"));
-    gitRule(w, { when, sleep: 60_000, status: 0 });
-    const r = w.pr(verb, "T1"); // the fake sleeps 60 s, and the test stops a call at 20 s: exit 2 shows that the script stopped it
+    gitRule(w, { when, sleep: 2 * timeout, status: 0 });
+    const r = w.pr(verb, "T1"); // the fake sleeps past the test's timeout: exit 2 shows that the script stopped it
     assert.equal(r.status, 2, `${when}: ${r.stderr}`);
-    assert.equal(r.stderr, `sage-pr: failed: git ${when[0]} took over 2 s and was stopped: run it again. If it stops again, the bundle holds too much data: ask the user\n`);
+    assert.equal(r.stderr, `sage-pr: failed: git ${when[0]} took over 5 s and was stopped: run it again. If it stops again, the bundle holds too much data: ask the user\n`);
     if (verb === "import") assert.equal(existsSync(w.review(head).diff), false, "no review copy from a stopped import");
     assert.deepEqual(readdirSync(w.logbook).filter((n) => n.startsWith(".sage-pr-") || n === ".lock"), [], "no work folder, and the lock is free");
     rmSync(w.at("bin", "git-rule.json"));

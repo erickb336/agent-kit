@@ -654,6 +654,8 @@ test("R452: a FIFO, a link to /dev/zero, a folder or a 1 MB checkout.txt gives t
     make();
     const r = timedBoard(w);
     assert.equal(r.status, 0, kind);
+    // A wide margin, with a reason: the whole child, node's start included, takes about 0.07 s of CPU time (2026-10-06);
+    // a read of /dev/zero to its end never stops, and a busy machine adds wait time, not 14 times the CPU time.
     assert.ok(r.cpu < 1, `${kind}: ${r.cpu} s CPU`);
     assert.match(r.out, /^\*\*sage-bot\*\*$/m, kind);
   }

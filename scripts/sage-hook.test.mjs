@@ -1431,7 +1431,7 @@ test("R454-N6: a script's arguments and a case pattern are not programs; a shell
   for (const command of refused) assert.match((await refusal(command)) ?? "", /standing order 14/, JSON.stringify(command));
 });
 
-test("R454-N5: 1 MB of git words that the hook cannot read takes under 200 ms of CPU time, and still refuses a stash", async () => {
+test("R454-N5: 1 MB of git words that the hook cannot read takes under 2 s of CPU time, and still refuses a stash", async () => {
   const { handle } = await import("../plugins/sage/hooks/sage-hook.mjs");
   const slots = { bind() {}, release() {}, drop() {}, touch() {}, reconcile() {} };
   const MB = "git ".repeat(1 << 18); // 1 MB
@@ -1449,7 +1449,9 @@ test("R454-N5: 1 MB of git words that the hook cannot read takes under 200 ms of
   };
   for (const command of [`echo '${MB}`, `${MB}'`, `echo '${MB}stash`]) {
     const { ms, reason } = cpu(command);
-    assert.ok(ms < 200, `${ms.toFixed(1)} ms of CPU for ${JSON.stringify(command.slice(0, 20))}…`);
+    // A wide margin, with a reason: a linear scan takes about 100 to 210 ms (CI, 2026-10-06), and a bound of 200 ms failed
+    // there at 209.6 ms. The slow path that this guards against, a regex that backtracks over each git word, runs for minutes.
+    assert.ok(ms < 2000, `${ms.toFixed(1)} ms of CPU for ${JSON.stringify(command.slice(0, 20))}…`);
     assert.equal(/never runs git stash/.test(reason ?? ""), command.endsWith("stash"), "only the text with a stash word is refused");
   }
 });

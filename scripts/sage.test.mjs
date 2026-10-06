@@ -20,8 +20,11 @@ const BOOT = (() => {
     return null;
   }
 })();
-/** A command that hangs is stopped after this, so that a test fails instead of waiting for ever. */
-const timeout = 10_000;
+/**
+ * A command that hangs is stopped after this, so that a test fails instead of waiting for ever. It only catches a hang:
+ * a command that waits 3 s for the lock, on a busy machine, must still end inside it, so it is far longer than that.
+ */
+const timeout = 60_000;
 /** The model keys that sage config prints by default, after the numbers. */
 const MODEL_DEFAULTS = "model.code-reviewer.tiny=fable model.code-reviewer.small=fable model.security-reviewer.tiny=fable model.security-reviewer.small=fable model.ux-reviewer.tiny=fable model.ux-reviewer.small=fable model.qa.tiny=fable model.qa.small=fable";
 /** Every line that the tool printed in this file's tests: the last test reads them. */
@@ -616,7 +619,7 @@ test("a holder that may be alive keeps the lock: a waiter waits for it, or refus
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
   // The times below are lower bounds only, which a busy machine cannot break. A waiter that hangs is stopped at the
-  // hook's 10 s (timeout), and then its status is not 1.
+  // timeout, and then its status is not 1.
   let h = await hold(s.dir);
   let t0 = Date.now();
   let r = s.run("task", "T1", "set", "branch=t1-while-held");
@@ -784,10 +787,10 @@ test("S2: a planted lock never hangs a command, the refusal says which folder to
   execFileSync("mkfifo", [join(fifoLock, `${randomUUID()}.json`)]);
   const liveLock = plant(live.dir, `${randomUUID()}.json`, { pid: 1, host: hostname(), boot: BOOT, start: Date.now(), at: Date.now() }); // alive, and not sage
   const t0 = Date.now();
-  const [a, b] = await Promise.all([fifo.go("log", "-", "x", "--why", "w"), live.go("log", "-", "x", "--why", "w")]); // a hang is stopped at 10 s, and its status is not 1
+  const [a, b] = await Promise.all([fifo.go("log", "-", "x", "--why", "w"), live.go("log", "-", "x", "--why", "w")]); // a hang is stopped at the timeout, and its status is not 1
   const ms = Date.now() - t0;
   assert.equal(a.stderr, `sage: the logbook is busy: ${fifoLock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${fifoLock} first.\n`);
-  assert.match(b.stderr, new RegExp(`^sage: the logbook is busy: pid 1 on ${hostname()} has held ${liveLock} for \\d\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on ${hostname()}, remove ${liveLock} first\\.\\n$`));
+  assert.match(b.stderr, new RegExp(`^sage: the logbook is busy: pid 1 on ${hostname()} has held ${liveLock} for \\d+\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on ${hostname()}, remove ${liveLock} first\\.\\n$`));
   assert.deepEqual([a.status, b.status], [1, 1]);
   assert.ok(ms >= 3000, `both refused after ${ms} ms`);
   rmSync(liveLock, { recursive: true }); // what the line says to do
@@ -869,7 +872,7 @@ test("S7: config and the merge check read only regular files and never throw, so
   s.ok("task", "add", "--title", "t", "--size", "tiny");
   s.ok("verdict", "T1", "--sha", SHA, "--kind", "checks-pass");
   execFileSync("mkfifo", [join(s.home, "config.json")]);
-  const out = [s.ok("config"), s.ok("merge-check", "--sha", SHA)]; // a read that waited on the FIFO would hang until the 10 s timeout, and fail
+  const out = [s.ok("config"), s.ok("merge-check", "--sha", SHA)]; // a read that waited on the FIFO would hang until the timeout, and fail
   assert.deepEqual(out, ["max_agents=3 cycles.small=1 cycles.large=2 cycles.risk=2 max_rounds=3 arena=3 arena_models=opus,sonnet,sonnet cap_total=12 " + MODEL_DEFAULTS, "T1 may merge: 1 clean cycle on this SHA"]);
   rmSync(join(s.dir, "ledger.tsv"));
   execFileSync("mkfifo", [join(s.dir, "ledger.tsv")]);
@@ -1201,7 +1204,7 @@ test("F-R50-1: a table that is not a regular file refuses with its path, never h
   const gate = (path) => `sage: the merge check refuses every merge, because ${path} is not a regular file. Ask the user to fix or remove it.`;
   renameSync(findings, `${findings}.keep`);
   mkdirSync(findings); // atk50b C8: the folder hid the open finding, so the merge passed
-  const out = [s.no("merge-check", "--sha", SHA), s.no("log", "-", "x", "--why", "y")]; // a hang stops at the 10 s timeout, and no() fails
+  const out = [s.no("merge-check", "--sha", SHA), s.no("log", "-", "x", "--why", "y")]; // a hang stops at the timeout, and no() fails
   assert.deepEqual(out, [gate(findings), `sage: ${findings} is not a regular file. Ask the user to fix or remove it.`]);
   rmSync(findings, { recursive: true });
   renameSync(`${findings}.keep`, findings);
@@ -1830,16 +1833,20 @@ test("F-T42-2: a config write never lands on a link's target, also when a link r
   // Another process swaps config.json between a regular file and a link to victim.json, each by an atomic rename.
   const swap = spawn("node", ["-e", `const fs = require("fs"); const [f, v] = process.argv.slice(1); for (let i = 0; ; i++) { fs.symlinkSync(v, f + ".l"); fs.renameSync(f + ".l", f); fs.writeFileSync(f + ".r", "{}"); fs.renameSync(f + ".r", f); }`, f, victim], { stdio: "ignore", env: testEnv() });
   try {
-    await new Promise((r) => setTimeout(r, 200));
-    let writes = 0;
-    for (const end = Date.now() + 2500; Date.now() < end; ) {
+    // The writes start once the swaps run (config.json was a link once), and stop at a count, not at a time on the clock.
+    while (swap.exitCode === null && !lstatSync(f, { throwIfNoEntry: false })?.isSymbolicLink()) await new Promise((r) => setImmediate(r));
+    assert.equal(swap.exitCode, null, "the swaps run");
+    let [writes, refused] = [0, 0];
+    while (writes < 300 && refused < 30_000) {
       try {
         sage(["config", `max_rounds=${(writes % 5) + 1}`], env);
         writes++;
-      } catch {} // a refusal (config.json was a link) is fine
+      } catch {
+        refused++; // a refusal (config.json was a link) is fine
+      }
       await new Promise((r) => setImmediate(r));
     }
-    assert.ok(writes > 0, "some writes ran");
+    assert.equal(writes, 300, `300 writes ran (${refused} refused)`);
     assert.equal(readFileSync(victim, "utf8"), "victim\n", `the victim is unchanged after ${writes} writes`);
   } finally {
     swap.kill();
@@ -2061,7 +2068,7 @@ test("T94C2-L2: pages record refuses a FIFO, a link and a file over 16 MiB at on
   truncateSync(join(folder, "full.html"), 16 * 1024 * 1024);
   for (const name of ["pipe.html", "link.html", "big.html"]) {
     const r = sage(["pages", "T1", "record", join(folder, name)], at, fake);
-    assert.equal(r.status, 1, `${name} is refused, and the command ends before the 10 s timeout`);
+    assert.equal(r.status, 1, `${name} is refused, and the command ends before the timeout`);
     assert.match(r.out, new RegExp(`${name} is not a page that pages record takes: it takes only a regular file of at most 16 MiB, not a link, a named pipe`));
     assert.equal(sage(["log", "-", `after ${name}`, "--why", "the lock is free"], at, fake).out, "logged", `the lock is free after ${name}`);
   }

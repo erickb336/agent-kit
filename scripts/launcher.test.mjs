@@ -36,9 +36,10 @@ function home() {
   const newer = version("new");
   const recordFile = join(dir, ".claude", "plugins", "installed_plugins.json");
   const record = (installPath, entries = [{ scope: "user", installPath, version: "x" }]) => writeFileSync(recordFile, JSON.stringify({ version: 2, plugins: { "sage@sage": entries } }));
-  // Runs an event through the OLD version's registered command, as a session that started before the update does.
+  // Runs an event through the OLD version's registered command, as a session that started before the update does. The
+  // timeout only stops a hang, so it is far longer than a node start on a busy machine.
   const exec = (name = HOOK, event = { hook_event_name: "Stop" }, cwd = dir) =>
-    spawnSync("sh", ["-c", REGISTERED[name]], { cwd, input: JSON.stringify(event), encoding: "utf8", timeout: 5000, env: { ...process.env, HOME: dir, CLAUDE_PLUGIN_ROOT: old, SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home") } });
+    spawnSync("sh", ["-c", REGISTERED[name]], { cwd, input: JSON.stringify(event), encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: dir, CLAUDE_PLUGIN_ROOT: old, SAGE_HOOKS_STATE: join(dir, "state"), SAGE_HOME: join(dir, "home") } });
   const run = (name, event, cwd) => {
     const r = exec(name, event, cwd);
     assert.equal(r.status, 0, r.stderr);
@@ -92,22 +93,15 @@ test("the real hook, run through the launcher from an old session, names the new
   assert.match(out.hookSpecificOutput.additionalContext, new RegExp(`The state tool: node ${join(h.newer, "skills/sage/sage.mjs")} <command>`));
 });
 
-test("the launcher adds under 50 ms of CPU time to an event", () => {
+// The launcher's cost is one node start per event: it imports the chosen hook into its own process, and never starts a
+// second node. The process ids show that, with no clock: a CPU-time bound broke on a busy machine.
+test("the launcher runs the chosen hook in its own process: one node start per event", () => {
   const h = home();
   h.record(h.newer);
-  const direct = join(h.newer, "hooks", HOOK);
-  // CPU time, not wall-clock time: a busy machine makes a process wait for a core, but it does not add to its CPU time.
-  // The child reports its own user + system time at exit, node start included.
-  const report = "data:text/javascript,process.on('exit',()=>{const u=process.cpuUsage();process.stderr.write(String((u.user+u.system)/1000))})";
-  const cpu = (args) => {
-    const r = spawnSync("node", ["--import", report, ...args], { input: "{}", encoding: "utf8", env: { ...process.env, HOME: h.dir } });
-    assert.equal(r.status, 0, r.stderr);
-    return Number(r.stderr);
-  };
-  const median = (args) => Array.from({ length: 11 }, () => cpu(args)).sort((a, b) => a - b)[5];
-  const [launched, alone] = [median([join(h.old, "hooks", "launcher.mjs"), HOOK]), median([direct])];
-  console.log(`launcher CPU overhead: ${(launched - alone).toFixed(1)} ms (${launched.toFixed(1)} ms against ${alone.toFixed(1)} ms)`);
-  assert.ok(launched - alone < 50, `${launched - alone} ms of CPU`);
+  writeFileSync(join(h.newer, "hooks", HOOK), "process.stdout.write(JSON.stringify({ version: \"new\", pid: process.pid }));\n");
+  const r = spawnSync(process.execPath, [join(h.old, "hooks", "launcher.mjs"), HOOK], { input: "{}", encoding: "utf8", env: { ...process.env, HOME: h.dir } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { version: "new", pid: r.pid }, "the newer install's hook ran in the launcher's process");
 });
 
 test("every event of both hook files runs through the launcher", () => {
