@@ -145,10 +145,10 @@ try {
 const core = readFileSync(join(ROOT, "instructions/core.md"), "utf8");
 if (Buffer.byteLength(core) > 8 * 1024) problems.push(`instructions/core.md: ${Buffer.byteLength(core)} bytes; keep it under 8 KiB (it loads into every session, so each byte costs context there)`);
 
-// A test must not hold a wall-clock time under a fixed number of milliseconds: on a busy machine a process waits for a
-// core, and the test fails for no defect (T53). A name takes the clock when it is set from a clock reading or from a
+// A test must not hold wall-clock or CPU time under a tight fixed bound: load and machine differences can fail a
+// correct test (T53, T188). A name takes the clock when it is set from a clock reading or from a
 // name that took it, or when it is a function that returns one. A lower bound may stay: a busy machine only adds time.
-const CLOCK = String.raw`(?:Date\.now|performance\.now|process\.hrtime(?:\.bigint)?)\(\)`;
+const CLOCK = String.raw`(?:(?:Date\.now|performance\.now|process\.hrtime(?:\.bigint)?)\(\)|process\.cpuUsage\([^)]*\))`;
 const FIX = 'assert CPU time (process.cpuUsage) as a ratio between two sizes with a generous bound, an order of events or a flag (for example: the lock holder still holds when the command returns), or a count. If none can, end the line with "// timing-ok: <reason>"';
 let timingOk = 0;
 for (const f of readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".test.mjs"))) {
@@ -162,17 +162,21 @@ for (const f of readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".te
       // The function that a return line is in: the last one that a line named, or none after an unnamed one.
       const named = /(?:function\s+([\w$]+)|([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>)/.exec(line)?.slice(1).find(Boolean);
       fn = named ?? (/=>\s*\{|function\s*\(/.test(line) ? undefined : fn);
-      const set = /(\[[^\]]*\]|[\w$]+)\s*=(?![=>])([^;]*)/.exec(line);
+      const set = /(\[[^\]]*\]|\{[^}]*\}|[\w$]+)\s*=(?![=>])([^;]*)/.exec(line);
       if (set && takes(set[2])) for (const name of set[1].match(/[\w$]+/g)) clocked.add(name);
       if (fn && /\breturn\b/.test(line) && takes(line.replace(/^.*?\breturn\b/, ""))) clocked.add(fn);
     }
   }
   const term = `(?:${CLOCK}${clocked.size ? `|(?<![\\w$.])(?:${[...clocked].join("|")})(?![\\w$])` : ""})`;
-  const under = new RegExp(`${term}[^<>&|,;?]*?<=?\\s*[\\d_.]+|[\\d_.]+\\s*>=?[^<>&|,;?]*?${term}`);
+  // The number must be the complete bound: `big < 30 * small` is a ratio, not a fixed cap.
+  const number = String.raw`[\d_.]+`;
+  const under = new RegExp(`${term}[^<>&|,;?]*?<=?\\s*${number}\\s*(?=[),;]|&&|\\|\\||$)|(?:^|[,(;]|&&|\\|\\|)\\s*${number}\\s*>=?[^<>&|,;?]*?${term}[^<>&|,;?]*`, "g");
+  const ratio = new RegExp(`/\\s*\\(*\\s*${term}`); // divide by another measured size, not by a unit such as 1000
   lines.forEach((line, i) => {
-    if (!under.test(line.replace(/\/\/ timing-ok:.*$/, ""))) return;
+    const comparisons = [...line.replace(/\/\/ timing-ok:.*$/, "").matchAll(under)];
+    if (!comparisons.some(([comparison]) => !ratio.test(comparison))) return;
     if (/\/\/ timing-ok: \S/.test(line)) timingOk++;
-    else problems.push(`scripts/${f}:${i + 1}: a test holds a wall-clock time under a fixed number of ms, so a busy machine breaks it. Instead, ${FIX}.`);
+    else problems.push(`scripts/${f}:${i + 1}: a test holds a wall-clock or CPU time under a fixed number, so a busy machine can break it. Instead, ${FIX}.`);
   });
 }
 
@@ -186,4 +190,4 @@ for (const dir of ["plugins/sage", "plugins/sage-codex"]) {
 
 // The build reads the dictionary too, so a problem in it comes twice: report it once.
 if (problems.length) { console.error([...new Set(problems)].map((p) => `✗ ${p}`).join("\n")); process.exit(1); }
-console.log(`✓ all checks pass (${timingOk} wall-clock ${timingOk === 1 ? "bound carries" : "bounds carry"} "// timing-ok:")`);
+console.log(`✓ all checks pass (${timingOk} timing ${timingOk === 1 ? "bound carries" : "bounds carry"} "// timing-ok:")`);
