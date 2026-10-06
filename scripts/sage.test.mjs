@@ -436,10 +436,10 @@ test("two chiefs at once: 2 x 50 rounds of updates and of creates lose no write 
   const refused = [];
   let lost = 0;
   for (let i = 1; i <= 50; i++) {
-    const out = await Promise.all([s.go("task", "T1", "set", `branch=a-${i}`), s.go("task", "T2", "set", `branch=b-${i}`)]);
+    const out = await Promise.all([s.go("task", "T1", "set", `branch=t1-a-${i}`), s.go("task", "T2", "set", `branch=t2-b-${i}`)]);
     refused.push(...out.filter((r) => r.status !== 0).map((r) => r.stderr));
     const branch = Object.fromEntries(rows(s.dir, "tasks").map((t) => [t.id, t.branch]));
-    lost += (branch.T1 !== `a-${i}`) + (branch.T2 !== `b-${i}`);
+    lost += (branch.T1 !== `t1-a-${i}`) + (branch.T2 !== `t2-b-${i}`);
   }
   for (let i = 1; i <= 50; i++) {
     const out = await Promise.all([s.go("task", "add", "--title", `ca-${i}`, "--size", "tiny"), s.go("task", "add", "--title", `cb-${i}`, "--size", "tiny")]);
@@ -480,27 +480,27 @@ test("a lock left by a crashed command is cleared by the next command, and no co
   s.ok("task", "add", "--title", "t", "--size", "small");
   const lock = crash(s);
   // A waiter that could not clear the lock would refuse after 3 s: status 0 shows that it cleared it.
-  let r = s.run("task", "T1", "set", "branch=after-crash");
+  let r = s.run("task", "T1", "set", "branch=t1-after-crash");
   assert.equal(r.status, 0, r.stderr);
   assert.equal(existsSync(lock), false);
-  assert.equal(rows(s.dir, "tasks")[0].branch, "after-crash");
+  assert.equal(rows(s.dir, "tasks")[0].branch, "t1-after-crash");
 
   crash(s, { boot: 1 }); // the machine started again since the lock was taken
-  r = s.run("task", "T1", "set", "branch=after-boot");
+  r = s.run("task", "T1", "set", "branch=t1-after-boot");
   assert.equal(r.status, 0, r.stderr);
 
   crash(s, { pid: 424242, start: 1000 });
   s.pids[424242] = Date.now(); // its pid now names another live process, which started later
   const t0 = Date.now();
-  r = s.run("task", "T1", "set", "branch=after-reuse");
+  r = s.run("task", "T1", "set", "branch=t1-after-reuse");
   assert.equal(r.status, 0, r.stderr);
   assert.ok(Date.now() - t0 >= 500, "the start time is checked after 500 ms"); // a lower bound: a busy machine only adds time
   assert.equal(existsSync(lock), false);
-  assert.equal(rows(s.dir, "tasks")[0].branch, "after-reuse");
+  assert.equal(rows(s.dir, "tasks")[0].branch, "t1-after-reuse");
 
   crash(s, { pid: 424243, start: Date.now() });
   s.pids[424243] = Date.now() - 60_000; // a live process that started before the holder took the lock: the holder itself
-  r = s.run("task", "T1", "set", "branch=while-alive");
+  r = s.run("task", "T1", "set", "branch=t1-while-alive");
   assert.match(r.stderr, /^sage: the logbook is busy: pid 424243 on /);
   assert.equal(existsSync(lock), true);
   assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
@@ -525,19 +525,19 @@ test("T151: without uptime, as in the macOS sandbox, the tool works and the lock
   assert.equal(s.ok("task", "add", "--title", "t", "--size", "small"), "T1 framed · small · route build,code-review,qa");
 
   crash(s); // a dead holder on this host: no boot time is needed to clear it
-  assert.equal(s.run("task", "T1", "set", "branch=after-crash").status, 0);
-  assert.equal(rows(s.dir, "tasks")[0].branch, "after-crash");
+  assert.equal(s.run("task", "T1", "set", "branch=t1-after-crash").status, 0);
+  assert.equal(rows(s.dir, "tasks")[0].branch, "t1-after-crash");
 
   let lock = crash(s, { boot: 1 }); // an earlier boot, but this command cannot know it: only the pid decides
   const pid = JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8")).pid;
   s.pids[pid] = Date.now() - 60_000; // the pid is alive and started before the holder: it may be the holder
-  let r = s.run("task", "T1", "set", "branch=while-alive");
+  let r = s.run("task", "T1", "set", "branch=t1-while-alive");
   assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on /);
   assert.equal(existsSync(lock), true, "a live pid keeps the lock");
   rmSync(lock, { recursive: true });
 
   lock = crash(s, { host: "other-host" }); // another host, whose pid this machine cannot check
-  r = s.run("task", "T1", "set", "branch=other-host");
+  r = s.run("task", "T1", "set", "branch=t1-other-host");
   assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on other-host has held /);
   assert.equal(existsSync(lock), true, "a holder on another host is never cleared on a guess");
   rmSync(lock, { recursive: true });
@@ -547,7 +547,7 @@ test("T151: without uptime, as in the macOS sandbox, the tool works and the lock
   normal.ok("task", "add", "--title", "t", "--size", "small");
   lock = crash(normal, { boot: null });
   normal.pids[JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8")).pid] = Date.now() - 60_000;
-  r = normal.run("task", "T1", "set", "branch=while-alive");
+  r = normal.run("task", "T1", "set", "branch=t1-while-alive");
   assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on /);
   assert.equal(existsSync(lock), true, "an unknown boot time is not an earlier boot");
   assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
@@ -559,10 +559,10 @@ test("T151-C2: a holder on this host from an earlier boot is cleared, although i
   s.ok("task", "add", "--title", "t", "--size", "small");
   const lock = crash(s, { boot: 1 }, { NODE_OPTIONS: UP_1S }); // taken in a boot long before this one
   delete s.pids[JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8")).pid]; // the pid is alive again, start unknown
-  const r = s.run("task", "T1", "set", "branch=after-reboot");
+  const r = s.run("task", "T1", "set", "branch=t1-after-reboot");
   assert.equal(r.status, 0, r.stderr);
   assert.equal(existsSync(lock), false);
-  assert.equal(rows(s.dir, "tasks")[0].branch, "after-reboot");
+  assert.equal(rows(s.dir, "tasks")[0].branch, "t1-after-reboot");
 });
 
 test("T151-Q1: a lock taken without a boot time stays with its live holder, for an older sage and for this one", () => {
@@ -575,10 +575,10 @@ test("T151-Q1: a lock taken without a boot time stays with its live holder, for 
   const record = JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8"));
   assert.deepEqual(Object.keys(record), ["pid", "host", "start", "at"], "an unknown boot time has no key");
   delete s.pids[record.pid]; // the holder is alive, start unknown
-  const old = spawnSync("node", [OLD_TOOL, "task", "T1", "set", "branch=old", "--project", s.project], { encoding: "utf8", env: testEnv({ ...vars, SAGE_HOME: s.home, SAGE_TEST_PIDS: JSON.stringify(s.pids) }), timeout });
+  const old = spawnSync("node", [OLD_TOOL, "task", "T1", "set", "branch=t1-old", "--project", s.project], { encoding: "utf8", env: testEnv({ ...vars, SAGE_HOME: s.home, SAGE_TEST_PIDS: JSON.stringify(s.pids) }), timeout });
   assert.match(old.stderr, /^sage: the logbook is busy: pid \d+ on /, "the older sage keeps the lock");
   assert.equal(old.status, 1);
-  const r = s.run("task", "T1", "set", "branch=new");
+  const r = s.run("task", "T1", "set", "branch=t1-new");
   assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on /, "this sage keeps the lock");
   assert.deepEqual([existsSync(lock), rows(s.dir, "tasks")[0].branch], [true, ""]);
   assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
@@ -589,7 +589,7 @@ test("T91-F1: SAGE_TEST_PIDS weakens no lock outside a node test run or outside 
   const fakes = fakePs();
   const s = store();
   s.ok("task", "add", "--title", "t", "--size", "small");
-  const set = (vars) => spawnSync("node", [TOOL, "task", "T1", "set", "branch=b", "--project", s.project], { encoding: "utf8", env: testEnv({ SAGE_HOME: s.home, PATH: `${fakes}:${process.env.PATH}`, ...vars }), timeout });
+  const set = (vars) => spawnSync("node", [TOOL, "task", "T1", "set", "branch=t1-b", "--project", s.project], { encoding: "utf8", env: testEnv({ SAGE_HOME: s.home, PATH: `${fakes}:${process.env.PATH}`, ...vars }), timeout });
 
   // The pids map says that the crashed holder is dead. Outside a test run, or for a logbook outside the temp folder, the
   // tool ignores the map and asks the system: the kill spy answers "alive" and records the call, so the lock stays.
@@ -619,7 +619,7 @@ test("a holder that may be alive keeps the lock: a waiter waits for it, or refus
   // hook's 10 s (timeout), and then its status is not 1.
   let h = await hold(s.dir);
   let t0 = Date.now();
-  let r = s.run("task", "T1", "set", "branch=while-held");
+  let r = s.run("task", "T1", "set", "branch=t1-while-held");
   const ms = Date.now() - t0;
   assert.equal(r.status, 1);
   assert.match(r.stderr, new RegExp(`^sage: the logbook is busy: pid ${h.pid} on (\\S+) has held (\\S+\\.lock) for \\d+\\.\\d s\\. Nothing changed\\. Run the command again; if no sage command runs on \\1, remove \\2 first\\.\\n$`));
@@ -630,23 +630,23 @@ test("a holder that may be alive keeps the lock: a waiter waits for it, or refus
 
   // The waiter shows that it waits by its temp folder next to the held lock; the holder lets go only after that.
   h = await hold(s.dir);
-  const waiting = s.go("task", "T1", "set", "branch=after-wait");
+  const waiting = s.go("task", "T1", "set", "branch=t1-after-wait");
   while (!readdirSync(s.dir).some((n) => n.startsWith(".lock."))) await new Promise((tick) => setTimeout(tick, 10));
   h.release();
   r = await waiting;
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(rows(s.dir, "tasks")[0].branch, "after-wait", "it took the lock when the holder let go");
+  assert.equal(rows(s.dir, "tasks")[0].branch, "t1-after-wait", "it took the lock when the holder let go");
   await h.exited;
 
   const lock = crash(s, { host: "other-host", boot: 1 }); // this machine cannot check a process on another one
   t0 = Date.now();
-  r = s.run("task", "T1", "set", "branch=other-host");
+  r = s.run("task", "T1", "set", "branch=t1-other-host");
   assert.equal(r.status, 1);
   assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on other-host has held \S+\.lock for/);
   assert.ok(Date.now() - t0 >= 3000, "it waited 3 s first");
   assert.equal(existsSync(lock), true);
   rmSync(lock, { recursive: true });
-  assert.match(s.ok("task", "T1", "set", "branch=after-removal"), /^T1 framed/);
+  assert.match(s.ok("task", "T1", "set", "branch=t1-after-removal"), /^T1 framed/);
 });
 
 test("merge-check, status, logbook and standing take no lock: they work while another command holds it", async () => {
@@ -766,12 +766,12 @@ test("S1: a waiter takes the owner file's name only from the lock folder, so no 
   const victim = join(s.home, "important.txt");
   writeFileSync(victim, "keep me");
   let lock = crash(s, { file: "../../important.txt" }); // a dead holder whose record names another file
-  assert.match(s.ok("task", "T1", "set", "branch=after-plant"), /^T1 framed/, "the waiter clears the dead holder's own file");
+  assert.match(s.ok("task", "T1", "set", "branch=t1-after-plant"), /^T1 framed/, "the waiter clears the dead holder's own file");
   assert.equal(existsSync(lock), false);
   assert.equal(readFileSync(victim, "utf8"), "keep me");
 
   lock = plant(s.dir, "x.json", { file: "../../important.txt", pid: spawnSync("node", ["-e", ""], { env: testEnv() }).pid, host: hostname(), boot: BOOT, start: 0, at: 0 });
-  const r = await s.go("task", "T1", "set", "branch=odd-name");
+  const r = await s.go("task", "T1", "set", "branch=t1-odd-name");
   assert.equal(r.stderr, `sage: the logbook is busy: ${lock} has no valid owner file. Nothing changed. Run the command again; if no sage command runs, remove ${lock} first.\n`, "an owner file not named <uuid>.json is never removed");
   assert.equal(r.status, 1);
   assert.deepEqual([readFileSync(victim, "utf8"), readdirSync(lock)], ["keep me", ["x.json"]]);
@@ -1117,7 +1117,7 @@ test("unknown-columns: a logbook that a newer sage wrote refuses every write com
     ["standing", "add", "x"],
     ["task", "add", "--title", "c", "--size", "tiny"],
     ["task", "T2", "set", "state=briefed"],
-    ["task", "T2", "set", "branch=b"],
+    ["task", "T2", "set", "branch=t2-b"],
     ["round", "T1"],
     ["run", "add", "T1", "--role", "qa"],
     ["run", "done", "R1", "--status", "done"],
@@ -1931,7 +1931,12 @@ test("T94: one branch pattern accepts today's task branches and refuses main, re
   sage(["init"]);
   sage(["task", "add", "--title", "t", "--size", "small"]);
   assert.match(sage(["task", "T1", "set", "branch=refs/heads/main"]).out, /"refs\/heads\/main" is not a task branch/);
-  assert.match(sage(["task", "T1", "set", "branch=tool/t83-agent-state-writes"]).out, /· tool\/t83-agent-state-writes$/);
+  assert.match(sage(["task", "T1", "set", "branch=tool/t1-agent-state-writes"]).out, /· tool\/t1-agent-state-writes$/);
+  // T96-Q2: task set takes only a branch of that task, the one rule that the PR script checks too, and names the fix.
+  for (const other of ["tool/t83-agent-state-writes", "claude/t10", "a/b/t1", "feature-x", "claude/main-fix"]) {
+    assert.match(sage(["task", "T1", "set", `branch=${other}`]).out, new RegExp(`"${other.replaceAll("/", "\\/")}" is not a branch of T1: use \\[<prefix>\\/\\]t1\\[-<words>\\], for example sage task T1 set branch=claude\\/t1`));
+  }
+  assert.match(sage(["task", "T1", "set", "branch=CLAUDE/T1-Upper"]).out, /· CLAUDE\/T1-Upper$/);
   assert.deepEqual(sage(["run", "add", "T1", "--role", "implementer", "--branch=-x"]).status, 1, "run add refuses the same names");
   assert.match(sage(["run", "add", "T1", "--role", "implementer", "--branch", "claude/t1"]).out, /^R1 running · implementer on T1 · claude\/t1/);
   assert.match(sage(["task", "T1", "set", "branch="]).out, /route build,code-review,qa$/, "branch= clears it");

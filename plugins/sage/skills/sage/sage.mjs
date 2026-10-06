@@ -180,6 +180,8 @@ const PAGE_MAX = 16 * 1024 * 1024;
  * characters are outside the letters. The one pattern for every branch check in this tool: task set and run add.
  */
 export const BRANCH = /^(?![-./])(?!(?:refs|heads|remotes|origin)\/)(?!(?:main|master|HEAD)$)(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|[/.]$))[A-Za-z0-9._/-]+$/i;
+/** Does a branch belong to a task: a BRANCH of the form [<prefix>/]<task>[-<words>]? task set and the PR script check this one rule. */
+export const ofTask = (task, name) => BRANCH.test(name) && new RegExp(`^(?:[A-Za-z0-9_-]+/)?${task}(?:-[A-Za-z0-9._-]+)?$`, "i").test(name);
 const branchOf = (name) => (BRANCH.test(name) ? name : refuse(`${JSON.stringify(name)} is not a task branch: use letters, digits and . _ / - (for example claude/t12 or tool/t12-short-name), not main, master or HEAD in any case, not under refs/, heads/, remotes/ or origin/, and not a name that starts with - or holds .., @{ or a space.`));
 
 /** The project's name: its main checkout's folder name as a slug. The store's folder and the cap.<project> config key use it. */
@@ -862,7 +864,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
           } else if (k === "pr") setPr(task, v);
-          else if (k === "branch") task.branch = v && branchOf(v); // branch= clears it
+          else if (k === "branch") task.branch = v && (ofTask(task.id, branchOf(v)) ? v : refuse(`${JSON.stringify(v)} is not a branch of ${task.id}: use [<prefix>/]${task.id.toLowerCase()}[-<words>], for example sage task ${task.id} set branch=claude/${task.id.toLowerCase()}`)); // branch= clears it
           else if (k === "title") task.title = v;
           else refuse(`task set takes state=, branch=, pr= or title=`);
         }
