@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
-import { BLOCKS, RISKS, STATES, optionsOf, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
+import { BLOCKS, BRANCH, RISKS, STATES, mergeCheck, optionsOf, projectName, projectRoot, read, sageRoot, slug, storeDir, withLock } from "./sage.mjs";
 
 const FOLDER = /^([a-z0-9-]+)-[0-9a-f]{6}$/;
 const CLOSED = ["merged", "concluded", "abandoned"];
@@ -49,6 +49,35 @@ function age(ms) {
   if (m < 60) return `${m} min`;
   if (m < 48 * 60) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
   return `${Math.floor(m / 1440)} d`;
+}
+
+/** The branch tips of a checkout, local and at origin, as a Map from the full ref name to its commit: one git call. */
+function tips(path) {
+  try {
+    const out = execFileSync("git", ["-C", path, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/", "refs/remotes/origin/"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return new Map(out.split("\n").filter(Boolean).map((l) => l.split(" ")));
+  } catch {
+    return new Map();
+  }
+}
+
+/**
+ * May the pull request of a verified task merge now? The reviewed head is the task's last ledger SHA, as sage-pr merge
+ * takes it. It may merge only when the task's branch in the logbook's checkout, local and at origin (as of the last
+ * fetch), is at that head, and the merge check passes on it. The check is read-only: no lock, no write. It fails closed:
+ * the reason says what is missing.
+ */
+function mergeable(b, t, env) {
+  if (!b.home) return { ok: false, reason: "head unknown: the board does not know the project's folder" };
+  if (!BRANCH.test(t.branch ?? "")) return { ok: false, reason: "head unknown: no branch recorded" };
+  const head = b.reviewed[t.id]?.toLowerCase();
+  if (!head) return { ok: false, reason: "no reviewed head: no verdict with a SHA" };
+  b.tips ??= tips(b.home);
+  const at = [b.tips.get(`refs/heads/${t.branch}`), b.tips.get(`refs/remotes/origin/${t.branch}`)].filter(Boolean);
+  if (!at.length) return { ok: false, reason: `head unknown: no branch ${t.branch} in the project's folder` };
+  if (at.some((sha) => sha !== head)) return { ok: false, reason: `branch ${t.branch} is not at the reviewed head ${head.slice(0, 7)}` };
+  const r = mergeCheck(head, env, { pr: t.pr, readOnly: true });
+  return { ok: r.ok, reason: r.reason.split(/\.(?:\s|$)/)[0] }; // the first sentence says what is missing
 }
 
 /** The GitHub repository of a checkout, as https://github.com/<owner>/<repo>, or null. */
@@ -101,13 +130,14 @@ function logbooks(root) {
   const books = folders.map(({ name: folder }) => {
     const dir = join(root, folder);
     const checkout = small(join(dir, "checkout.txt"), 4096)?.trim() || null;
-    const book = { folder, name: FOLDER.exec(folder)[1], dir, checkout, tasks: [], runs: [], gates: [], changed: {}, error: null };
+    const book = { folder, name: FOLDER.exec(folder)[1], dir, checkout, tasks: [], runs: [], gates: [], changed: {}, reviewed: {}, error: null };
     try {
       const [tasks, runs, gates, ledger, decisions] = Object.keys(FORMAT).map((t) => read(dir, t).map((row) => clean(t, row)));
       for (const [task, at] of [...runs.flatMap((r) => [[r.task, r.started], [r.task, r.ended]]), ...[...gates, ...ledger, ...decisions].map((r) => [r.task, r.at])]) {
         const ms = Date.parse(at);
         if (task && ms > (book.changed[task] ?? -Infinity)) book.changed[task] = ms;
       }
+      for (const r of ledger) if (r.task && r.sha) book.reviewed[r.task] = r.sha; // the last one: the reviewed head
       Object.assign(book, { tasks, runs, gates });
     } catch (e) {
       book.error = text(e.message.replaceAll(`${dir}/`, "").replaceAll(dir, folder), 120); // the reason, not the long path
@@ -265,13 +295,20 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const many = shown.length > 1;
   const tag = (b) => (many ? `${label(b)} ` : "");
 
-  // Needs you: open gates, then every verified pull request that is not merged. Autopilot is a per-session switch,
-  // so the board cannot know that it will merge a small one: it says so, and still lists it.
+  // Needs you: open gates, then every verified pull request that is not merged. It waits for your merge only when the
+  // merge check passes on its reviewed head and the branch is there (mergeable); else the line says what is missing. A
+  // push from elsewhere shows only after a fetch, so the line says "as of the last fetch". Autopilot is a per-session switch, so the
+  // board cannot know that it will merge a small one: it says so, and still lists it.
   const gates = (b) => b.gates.filter((g) => !g.answer);
-  const waiting = (b) =>
+  const checked = new Map();
+  const verified = (b) =>
     b.tasks
       .filter((t) => WAITS.includes(t.state) && t.pr)
-      .map((t) => ({ t, why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : "autopilot may merge it tonight" }));
+      .map((t) => {
+        if (!checked.has(t)) checked.set(t, mergeable(b, t, env));
+        return { t, ...checked.get(t), why: t.size === "large" ? "large" : t.risk ? `risk ${t.risk}` : "autopilot may merge it tonight" };
+      });
+  const waiting = (b) => verified(b).filter((v) => v.ok);
   // A gate shows in full, never cut, with its project's key also on a board of one project, and each option on its own
   // line: the owner answers only a question that the board showed whole, and the chief records it in that gate's logbook.
   // The options come last: a line after a list item would join that item's text.
@@ -287,7 +324,7 @@ export function board({ scope = "this", project, env = process.env, now = new Da
   const L = [`**sage board · ${title}** · built ${built} UTC`];
   const needs = shown.flatMap((b) => [
     ...gates(b).map((g) => gateLine(b, g)),
-    ...waiting(b).map(({ t, why }) => `${tag(b)}${t.id} ${pr(b, t)} waits for your merge (${why}): ${text(t.title, 50)}`),
+    ...verified(b).map(({ t, ok, reason, why }) => `${tag(b)}${t.id} ${pr(b, t)} ${ok ? `waits for your merge (${why}, as of the last fetch)` : `cannot merge yet (${text(reason, 70)})`}: ${text(t.title, 50)}`),
   ]);
   const section = (head, rows, cap) => {
     L.push("", `**${head}**`);

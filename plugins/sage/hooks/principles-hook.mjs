@@ -15,22 +15,25 @@ import { fileURLToPath } from "node:url";
 
 const SKILLS = join(dirname(fileURLToPath(import.meta.url)), "../skills");
 
-/** The moments that a hook can see, and the principles that apply then. A principle with no moment stays on the skill listing only. */
+/** The moments that a hook can see, and the skills (principles and guides) that apply then. A skill with no moment stays on the skill listing only. */
 export const MOMENTS = {
-  design: { why: "the request asks for a design, a plan or a new feature", principles: ["exhaust-the-design-space", "experience-first", "foundational-thinking"] },
-  refactor: { why: "the request asks for a refactor or a cleanup", principles: ["subtract-before-you-add", "laziness-protocol", "migrate-callers-then-delete-legacy-apis"] },
-  testEdit: { why: "you are about to change a test file", principles: ["test-behavior-not-implementation"] },
-  docEdit: { why: "you are about to write a document for a person", principles: ["contextualize-and-write-for-the-reader"] },
-  commit: { why: "you are about to commit", principles: ["sequence-verifiable-units"] },
-  checkFailed: { why: "a check failed", principles: ["fix-root-causes"] },
-  fixesFailed: { why: "two changes in a row did not make the same check pass", principles: ["attack-the-premise"] },
-  unchecked: { why: "the code changed and no check ran after the change", principles: ["prove-it-works"] },
+  design: { why: "the request asks for a design, a plan or a new feature", skills: ["principle-exhaust-the-design-space", "principle-experience-first", "principle-foundational-thinking"] },
+  refactor: { why: "the request asks for a refactor or a cleanup", skills: ["principle-subtract-before-you-add", "principle-laziness-protocol", "principle-migrate-callers-then-delete-legacy-apis"] },
+  testEdit: { why: "you are about to change a test file", skills: ["principle-test-behavior-not-implementation"] },
+  docEdit: { why: "you are about to write a document for a person", skills: ["principle-contextualize-and-write-for-the-reader"] },
+  readmeEdit: { why: "you are about to write or change a README", skills: ["principle-contextualize-and-write-for-the-reader", "readme-guide"] },
+  commit: { why: "you are about to commit", skills: ["principle-sequence-verifiable-units"] },
+  checkFailed: { why: "a check failed", skills: ["principle-fix-root-causes"] },
+  fixesFailed: { why: "two changes in a row did not make the same check pass", skills: ["principle-attack-the-premise"] },
+  unchecked: { why: "the code changed and no check ran after the change", skills: ["principle-prove-it-works"] },
 };
 
 const DESIGN = /\b(design\w*|architect\w*|new feature|prototype|data model|schema|plan(s|ning)?)\b/i;
 const REFACTOR = /\b(refactor\w*|clean(ing)?[ -]?up|simplif\w*|rewrite|restructur\w*|dead code|deprecat\w*|legacy)\b/i;
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.\w+$|_test\.\w+$|(^|\/)test_[^/]+\.py$/i;
 const DOC_FILE = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
+/** A README document: no extension, or a document extension after an optional language part (README.zh-CN.md). Not code such as readme.rs. */
+const README_FILE = /(^|\/)readme((\.[a-z]{2,3}([-_][a-z0-9]+)?)?\.(md|mdx|markdown|rst|adoc|txt))?$/i;
 const COMMIT = /\bgit\s+(-C\s+\S+\s+)?commit\b/;
 /** A shell command that checks the code. The match is the check's name, so "npm test | tail" and "npm test" are one check. */
 const CHECK =
@@ -51,7 +54,7 @@ export function handle(input, state) {
   }
   if (event === "PreToolUse") {
     const paths = shell ? [] : [input.tool_input?.file_path, input.tool_input?.notebook_path].filter((p) => typeof p === "string");
-    return inject(event, state, [paths.some((p) => TEST_FILE.test(p)) && "testEdit", paths.some((p) => DOC_FILE.test(p)) && "docEdit", shell && COMMIT.test(command) && "commit"]);
+    return inject(event, state, [paths.some((p) => TEST_FILE.test(p)) && "testEdit", paths.some((p) => DOC_FILE.test(p)) && "docEdit", paths.some((p) => README_FILE.test(p)) && "readmeEdit", shell && COMMIT.test(command) && "commit"]);
   }
   if (event === "PostToolUse" || event === "PostToolUseFailure") {
     const check = shell ? CHECK.exec(command)?.[0] : LOOK_TOOL.test(tool) ? tool : undefined;
@@ -88,7 +91,7 @@ export function handle(input, state) {
       reason:
         "sage stops you once here: the code changed, and no check ran after the change. " +
         "Run the check that shows that the change works. If you cannot run one, say what you did not verify. Then finish.\n\n" +
-        principleText("prove-it-works"),
+        skillText("principle-prove-it-works"),
     };
   }
   return undefined;
@@ -96,20 +99,20 @@ export function handle(input, state) {
 
 /** The principles of these moments that the session did not get yet, as added context. */
 function inject(event, state, moments) {
-  const parts = moments.filter(Boolean).flatMap((m) => give(state, m).map((p) => `Why now: ${MOMENTS[m].why}.\n\n${principleText(p)}`));
+  const parts = moments.filter(Boolean).flatMap((m) => give(state, m).map((p) => `Why now: ${MOMENTS[m].why}.\n\n${skillText(p)}`));
   if (!parts.length) return undefined;
   const text = `sage: ${parts.length === 1 ? "a principle applies" : "these principles apply"} to what you do now. Follow ${parts.length === 1 ? "it" : "them"}.\n\n${parts.join("\n\n---\n\n")}`;
   return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
 }
 
 function give(state, moment) {
-  const fresh = MOMENTS[moment].principles.filter((p) => !state.given.includes(p));
+  const fresh = MOMENTS[moment].skills.filter((p) => !state.given.includes(p));
   state.given.push(...fresh);
   return fresh;
 }
 
-export function principleText(id) {
-  const text = readFileSync(join(SKILLS, `principle-${id}`, "SKILL.md"), "utf8");
+export function skillText(name) {
+  const text = readFileSync(join(SKILLS, name, "SKILL.md"), "utf8");
   return text.replace(/^---\n[\s\S]*?\n---\n/, "").replace(/<!--[\s\S]*?-->/, "").trim();
 }
 

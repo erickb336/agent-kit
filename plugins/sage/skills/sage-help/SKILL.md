@@ -103,6 +103,7 @@ sage mode is the default answer for real work: the chief runs the agents and the
 | Get work done by a team of agents | sage mode ([Quick start](https://github.com/erickb336/sage/blob/main/README.md#quick-start)) |
 | Follow, steer or start sessions from a phone | [`/sage:remote-control`](https://github.com/erickb336/sage/blob/main/plugins/sage/skills/remote-control/SKILL.md) |
 | Write text that a person reads on the first pass | [`writing-standard`](https://github.com/erickb336/sage/blob/main/plugins/sage/skills/writing-standard/SKILL.md) |
+| Write or review a project README | [`readme-guide`](https://github.com/erickb336/sage/blob/main/plugins/sage/skills/readme-guide/SKILL.md) |
 | Use sage's approved words | [`dictionary`](https://github.com/erickb336/sage/blob/main/plugins/sage/skills/dictionary/SKILL.md) |
 | Apply one working rule, such as "prove it works" | a `principle-<name>` skill ([Principles](https://github.com/erickb336/sage/blob/main/README.md#principles)) |
 | Find their way around sage | `/sage:sage-help` |
