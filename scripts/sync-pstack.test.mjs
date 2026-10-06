@@ -1,5 +1,6 @@
 // Runs the pstack sync as the weekly workflow does: against a fake upstream git repository, in a copy of the kit's
 // layout, with GITHUB_OUTPUT set.
+import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
