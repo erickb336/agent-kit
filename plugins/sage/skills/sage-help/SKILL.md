@@ -19,15 +19,15 @@ The model for this skill is pstack's `poteto-help` skill, by Lauren Tan (poteto)
 
 ## Read the source first
 
-This skill is a map. The sources below hold the details, and they change, so this map can be out of date. Do these steps for every question, also when this map seems to hold the answer:
+This skill is a map. Each section holds the facts that its answer must carry: give them, also when you do not read a source. The sources hold the details, and they change, so this map can be out of date. Do these steps for every question, also when this map seems to hold the answer:
 
 1. Find the section of this map that the question goes to.
 2. Do the read that the section's **Read** line names. Make it your first tool call, before you write any of the answer.
-3. Answer from what you read. When the source disagrees with this map, trust the source.
+3. Answer from what you read and from the section's facts. When the source disagrees with this map, trust the source.
 
 Give only the phrases that this map or the source writes, letter for letter: do not make up a form.
 
-- **The README** is not in the installed plugin. When the session's folder is the sage repository, Read its `README.md`. Otherwise run this one command, exactly as written, with no pipe and no other argument:
+- **The README** is not in the installed plugin. When the session's folder is the sage repository, Read its `README.md`. Otherwise run this one command alone, exactly as written: no pipe, no `grep`, no redirect and no other argument. Run it once. Find the section in its output yourself. When Claude Code saves a long output to a file, Read that file, with an offset and a limit if it is long; do not run `curl` again, and do not pipe it.
 
   ```
   curl -fsS https://raw.githubusercontent.com/erickb336/sage/main/README.md
@@ -37,7 +37,7 @@ Give only the phrases that this map or the source writes, letter for letter: do 
 
 If a read fails, say so in one line, and give only the link.
 
-Give the user the public link, because they may not be able to open the installed plugin: `https://github.com/erickb336/sage/blob/main/` and the path, with the README's section anchor.
+Give the user the public link, because they may not be able to open the installed plugin: `https://github.com/erickb336/sage/blob/main/` and the path. A README link may end with one of these anchors only, because no other anchor exists: `#quick-start`, `#learn-sage-in-5-minutes`, `#how-it-works`, `#a-tasks-life`, `#rules-held-in-code`, `#what-to-say`, `#the-board`, `#principles`, `#following-pstack`, `#faq`. A FAQ question has no anchor of its own: link `#faq`.
 
 ## Find out what the user needs
 
@@ -76,17 +76,19 @@ The chief asks at most once per task, in one batch of product questions. Each qu
 
 ## What sage does alone, and what it asks
 
-**Read:** `<base directory>/../../agents/chief-of-staff.md`, and the README, sections "Rules held in code", "A task's life" and "FAQ" (the question "Is it safe to let it work alone?").
+**Read:** `<base directory>/../../agents/chief-of-staff.md`, and the README, section "FAQ" (the question "Is it safe to let it work alone?").
 
 The chief decides the engineering choices, runs the team, and tells the user the results with evidence. The user decides the product questions. With autopilot on, a verified pull request merges after its clean cycles.
 
-The chief's instructions say that some actions always need the user's yes, also on autopilot: a deploy, deleting data, a force-push, and closing a pull request that is not sage's. Tell the user that this is an instruction to the chief, and that the hook does not hold it yet: the FAQ says so. Cite the chief's instructions for it, not "Rules held in code".
+Every answer from this section carries these two facts, in these words:
 
-This section answers a question; it has no prompt to send. Do not give one. The sources:
+- "The chief's instructions say that a deploy, deleting data, and closing a pull request that is not sage's always need your yes, also on autopilot. That rule is not yet held in code."
+- "The hook refuses every force-push, also on autopilot."
+
+This section answers a question; it has no prompt to send. Do not give one. Link these two sources and no other:
 
 - [The chief's instructions](https://github.com/erickb336/sage/blob/main/plugins/sage/agents/chief-of-staff.md): what the chief always asks first, also on autopilot.
-- [Rules held in code](https://github.com/erickb336/sage/blob/main/README.md#rules-held-in-code): the rules that the hook and the state tool enforce, and their limits.
-- [A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life): the states and the clean cycles before a merge.
+- [FAQ](https://github.com/erickb336/sage/blob/main/README.md#faq), the question "Is it safe to let it work alone?": what the hook holds, and that the rule above is not yet in code.
 
 ## Pick a skill or a principle
 
@@ -116,20 +118,22 @@ A hook gives each principle at the moment that it applies, so the user seldom lo
 | A mode did not switch | The phrase must start the user's own message. A message sent while Claude works cannot start sage mode or autopilot, and cannot end sage mode; it can only stop autopilot. Send it again when Claude is idle. See the text under [What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say). |
 | Merges must stop now | Send a message that mentions autopilot with an off word. Pull requests then wait for the user. |
 | The user wants a normal session again | Send the off phrase of sage mode ([What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say)). |
-| A task waits and nothing moves | Show the board: an open question under "Needs you" holds the task until the user answers. A task in the held state waits for the user: for an answer to a product question, or, after 3 repair rounds that did not make it clean, for the user to choose what comes next. A task in the replan state waits for a new plan ([A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life)). |
+| A task waits and nothing moves | Show the board: an open question under "Needs you" holds the task until the user answers. A task in the held state waits for the user: for an answer to a product question, or, after 3 repair rounds that did not make it clean, for the user to choose what comes next. The chief asks one question with options, a recommendation and a default; the user picks one or answers in their own words. A task in the replan state waits for a new plan. Link [the chief's instructions](https://github.com/erickb336/sage/blob/main/plugins/sage/agents/chief-of-staff.md), step 4 (an escalation when the tool says held or replan). |
 | A pull request does not merge | A merge needs its clean cycles on the exact head commit. A new commit starts again from cycle 1 ([A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life)). Tell the chief what to do with it in your own words. |
 | An agent must stop | Tell the chief in your own words, for example "stop the run on T3". The agent's slot frees as soon as the agent ends, fails or is stopped ([Rules held in code](https://github.com/erickb336/sage/blob/main/README.md#rules-held-in-code)). |
 | A new version of sage has no effect | Start a new session ([Quick start](https://github.com/erickb336/sage/blob/main/README.md#quick-start), "To update sage"). |
 
 ## Where sage keeps things
 
-**Read:** the README, section "How it works", and `<base directory>/../sage/SKILL.md`.
+**Read:** the README, section "How it works".
 
-- **The logbook** of each project: its tasks, runs, findings, verdicts, the user's answers and the decision trail.
-- **The hook's state**: the modes, autopilot and the agent slots.
-- **The pages folder** of each task: research pages, designs and findings pages, outside the logbook.
+Give these paths. Give no command, also not one that the README names, such as the state tool's `pages`: only the chief runs the state tool, and the user cannot.
 
-The paths are in [How it works](https://github.com/erickb336/sage/blob/main/README.md#how-it-works), below the loop graphic. The state tool's `pages` command is in [its skill](https://github.com/erickb336/sage/blob/main/plugins/sage/skills/sage/SKILL.md).
+- **The logbook** of each project, in `~/.claude/sage/<project>-<hash>/`: its tasks, runs, findings, verdicts, the user's answers and the decision trail. In sage mode, the user can ask the chief to print the exact folder.
+- **The hook's state**, in `~/.claude/sage/.hooks/`: the modes, autopilot and the agent slots.
+- **The pages folder** of each task, in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook: research pages, designs and findings pages. In sage mode, the user can ask the chief to make it and print its path.
+
+Link [How it works](https://github.com/erickb336/sage/blob/main/README.md#how-it-works): the paths are below the loop graphic.
 
 ## Close calls
 
