@@ -36,13 +36,16 @@ const boardTool = await import("../skills/sage/board.mjs").catch((error) => ({ e
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // The mode phrases, in a message from the user (promptOf). "sage mode" (also "sage mode on"), "sage mode off" and
 // "autopilot on" count only at the start of the message, so that a mention or a quote switches nothing: "sage mode
-// off" also drops the git rules. "sage mode" and "autopilot on" must stand alone or end at ".", ",", ":", ";", "!" or
-// the end of their line, so "autopilot on?" and "autopilot on main" switch nothing. "sage mode off" must not run on into
-// a longer word ("sage mode off-topic"), and its line must have no "?" ("sage mode off? what does it do?"). Because a
-// missed off is the unsafe one, any line that starts with "sage mode off" or "autopilot off" switches autopilot off,
-// even as a question or in a frame. The owner's own text also switches it off when it mentions autopilot and has an off
-// word anywhere. A frame does not, because its boilerplate has off words ("NOT a message from the user"). Off wins over
-// on. Only OFF_LINE has the m flag: with it, "^" also matches the start of each later line.
+// off" also drops the git rules. "sage mode" may stand alone, end at ".", ",", ":", ";", "!" or the end of its line, or
+// go on with a space and more words ("sage mode continue on the sage project"), as long as its line has no "?" and the
+// next word is not "off": "sage mode?" and "sage mode online: is it a thing?" switch nothing (T194). "autopilot on" stays
+// strict: it must stand alone or end at that punctuation or its line, so "autopilot on?" and "autopilot on main" switch
+// nothing. "sage mode off" must not run on into a longer word ("sage mode off-topic"), and its line must have no "?"
+// ("sage mode off? what does it do?"). Because a missed off is the unsafe one, any line that starts with "sage mode off"
+// or "autopilot off" switches autopilot off, even as a question or in a frame. The owner's own text also switches it
+// off when it mentions autopilot and has an off word anywhere. A frame does not, because its boilerplate has off words
+// ("NOT a message from the user"). Off wins over on. Only OFF_LINE has the m flag: with it, "^" also matches the start
+// of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
 // A prefix that stays on its line. With the m flag, "^" matches after each line break, so a prefix that also matched
@@ -51,10 +54,12 @@ const LINE_START = String.raw`^(?:${SP}|["'“‘*_>-])*`;
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
 const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
 const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
-const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?${END}`, "i");
+const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?(?:${END}|${SP}+(?!off\\b)(?!.*\\?))`, "i"); // "." stops at a line break
 const OFF_LINE = new RegExp(`${LINE_START}(?:sage${SP}+mode|autopilot)${SP}+off\\b`, "im"); // in any text, at the start of any line
 const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
 const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
+// A first line that starts with a mode word but matches no rule gets a note (switchModes), so that a miss is never silent.
+const MODE_WORD = new RegExp(`${START}(?:sage${SP}+mode|autopilot)(?![\\p{L}\\p{N}])`, "iu");
 // The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
 // "show board", "show board for this project", "show board for all (projects)", "show board for <project>": at the start of the
 // owner's own text only, like the mode phrases, so a quote or an agent's report shows no board. The phrase may be in bold
@@ -152,14 +157,18 @@ export function promptOf(input) {
  */
 function switchModes({ owner, text, outside, all }, state) {
   const notes = [];
+  let matched = true; // false only when no rule read the message; a rule that kept the state as it was counts as read
   if (owner && SAGE_OFF.test(text)) {
     Object.assign(state, { sage: false, given: false, autopilot: false });
     notes.push("sage: sage mode is off. You may change files yourself again.");
   } else if (owner && SAGE_ON.test(text)) state.sage = true;
+  else matched = false;
   if (OFF_LINE.test(all) || broadOff(owner ? outside : all)) {
     if (state.autopilot) notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     state.autopilot = false;
+    matched = true;
   } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
+    matched = true;
     state.autopilot = true;
     const c = stateTool.config();
     const broken = Object.keys(c).find((k) => c[k] === "invalid");
@@ -167,6 +176,10 @@ function switchModes({ owner, text, outside, all }, state) {
     if (broken) notes.push(`sage: autopilot is on. ${broken} in config.json is not a number: no merge until it is fixed (sage config ${broken}=<n>).`);
     else notes.push(`sage: autopilot is on. A pull request merges on its head SHA after ${small} clean cycle${small === 1 ? "" : "s"} for a tiny or small task, ${large} for a large task and ${risky} for a task with a risk flag; a large task with a risk flag needs the larger count. Merge with gh pr merge <n> --squash --delete-branch --match-head-commit <sha>.`);
   }
+  // The owner's message starts with a mode word, and no rule read it: say so. A silent miss left a session's hook off
+  // for two days (T194): the owner's first message had words after the on phrase, and nothing told the chief. Only the
+  // owner's text gets the note, never an agent's, and a message that a rule read keeps no note, also when it changed nothing.
+  if (owner && !matched && MODE_WORD.test(text)) notes.push('sage: this message did not switch anything. The phrases are "sage mode", "sage mode on", "sage mode off", "autopilot on" and "autopilot off", at the start of the message.');
   return notes;
 }
 

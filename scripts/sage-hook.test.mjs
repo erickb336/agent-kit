@@ -72,9 +72,9 @@ test("sage mode makes the session the chief of staff, and only subagents may cha
   assert.equal(s.send(edit()), undefined);
 });
 
-test("F-T72-20: full-width punctuation ends only the board phrase; a mode phrase with ！ or 。 switches nothing", () => {
+test("F-T72-20: full-width punctuation ends only the board phrase; a mode phrase with ！ or 。 switches nothing, and gets the miss note (T194)", () => {
   const s = session();
-  for (const p of ["sage mode！", "sage mode。"]) assert.equal(s.send(prompt(p)), undefined, p);
+  for (const p of ["sage mode！", "sage mode。"]) assert.match(context(s.send(prompt(p))), /^sage: this message did not switch anything\./, p);
   assert.equal(s.send(edit()), undefined, "still not in sage mode");
 });
 
@@ -817,6 +817,15 @@ test("only the start of the user's message switches a mode, except autopilot off
     [[], "Sage mode on. Ramen Finder: fix the crash", "sage mode on, autopilot off", "sage mode on, then a request"],
     [[], "enter sage mode on", "sage mode on, autopilot off", "enter sage mode on"],
     [[], "sage mode on?", "sage mode off, autopilot off", "sage mode on as a question"],
+    [[], "sage mode continue on sage project with remote control on", "sage mode on, autopilot off", "the owner's real first message, with words after the phrase (T194)"],
+    [[], "sage mode on continue with T194", "sage mode on, autopilot off", "sage mode on, then words"],
+    [[], "sage mode?", "sage mode off, autopilot off", "the phrase as a question"],
+    [[], "sage mode continue, right?", "sage mode off, autopilot off", 'words after the phrase, with a "?" on the line'],
+    [[], "sage mode\ncontinue?", "sage mode on, autopilot off", 'a "?" on a later line'],
+    [[], "is sage mode on", "sage mode off, autopilot off", "the phrase not at the start"],
+    [[], "sage mode off-topic: the logo first", "sage mode off, autopilot off", "an off that the off rule does not read never turns on"],
+    [BOTH, "sage mode off continue", "sage mode off, autopilot off", "off wins over on: the off rule reads the message first"],
+    [SAGE, "sage mode autopilot continue", "sage mode on, autopilot off", "words after autopilot: the autopilot rule stays strict"],
     [[], "sage mode online: is it a thing?", "sage mode off, autopilot off", "sage mode and a longer word"],
     [[], "Sage mode. Ramen Finder: fix the crash", "sage mode on, autopilot off", "a request after a full stop"],
     [[], "sage mode\nRamen Finder: fix the crash", "sage mode on, autopilot off", "a request on the next line"],
@@ -883,6 +892,33 @@ test("only the start of the user's message switches a mode, except autopilot off
   const results = await Promise.all(cases.map(([before, message]) => modesAfter([...before, message])));
   const wrong = cases.flatMap(([, message, expected, why], i) => (results[i] === expected ? [] : [`${why}: ${JSON.stringify(message)} gives "${results[i]}", not "${expected}"`]));
   assert.deepEqual(wrong, [], "each case shows its message and both results");
+});
+
+test("a message of the owner that starts with a mode word and switches nothing gets a note; a read message or an agent's text gets none (T194)", async () => {
+  const NOTE = /^sage: this message did not switch anything\. The phrases are "sage mode", "sage mode on", "sage mode off", "autopilot on" and "autopilot off", at the start of the message\.$/m;
+  const noted = async (messages) => NOTE.test((await modesAfter(messages, { notes: true })).note);
+  const cases = [
+    // [the modes before, the message, whether the note comes, why]
+    [[], "sage mode continue on sage project with remote control on", false, "the real first message switches sage mode on"],
+    [[], "sage mode?", true, "the phrase as a question"],
+    [[], "sage mode online: is it a thing?", true, "a longer word and a question"],
+    [["sage mode"], "autopilot on main", true, "autopilot on, then a word"],
+    [["sage mode"], "autopilot", true, "autopilot alone"],
+    [["sage mode"], "Autopilot on? What does it do?", true, "autopilot on as a question"],
+    [[], "is sage mode on", false, "the message does not start with a mode word"],
+    [[], "sage modes are great", false, "a longer word is not the mode word"],
+    [["sage mode"], "sage mode", false, "a read phrase that keeps the state gets no note"],
+    [["sage mode"], "sage mode. Ramen Finder: fix the crash", false, "a read phrase with a request"],
+    [["sage mode", "autopilot on"], "autopilot off", false, "a read off phrase"],
+    [["sage mode"], "autopilot on", false, "a read autopilot on"],
+    [["sage mode"], `<task-notification>\n<result>sage mode?\nautopilot on main</result>\n</task-notification>`, false, "an agent's text gets no note"],
+    [["sage mode"], `<task-notification>\n<result>STATUS done</result>\n</task-notification>\nsage mode?`, true, "the owner's text after a frame still gets it"],
+  ];
+  const results = await Promise.all(cases.map(([before, message]) => noted([...before, message])));
+  const wrong = cases.flatMap(([, message, expected, why], i) => (results[i] === expected ? [] : [`${why}: ${JSON.stringify(message)} ${results[i] ? "gets" : "does not get"} the note`]));
+  assert.deepEqual(wrong, []);
+  const { note } = await modesAfter(["sage mode continue on sage project with remote control on"], { notes: true });
+  assert.match(note, /^sage: sage mode is on\. You are the user's chief of staff/, "the real first message gives the chief text");
 });
 
 // The frames that Claude Code 2.1.288 puts around a prompt that the user did not type: a hand-back from another
