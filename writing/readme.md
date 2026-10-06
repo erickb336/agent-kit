@@ -23,16 +23,16 @@ grep -v -E '^[[:space:]]*(</?(a|picture|p)( [^>]*)?>|<source [^>]*>)?[[:space:]]
 
 **The order of sections**
 
-A project is large when it has more than one kind of user, more than one way in, or a README over 150 lines. Otherwise it is small. The sections of the table come in its order. A section of the project's own can go between them.
+A project is large when it has more than one kind of user, more than one way in, or a README over 150 lines. Otherwise it is small. The sections of the table come in its order. A section counts by what it holds, whatever its heading: for example, sage's "Learn sage in 5 minutes" is its Usage section. A section of the project's own can go between them.
 
 | Section | What it holds | Small | Large |
 | --- | --- | --- | --- |
 | Title, pitch, graphic | The answers to the five questions | required | required |
 | Quick start | Install and a first result in 5 commands or fewer | required | required |
 | Usage | Examples of the common jobs, each with what the reader sees | required | required |
-| Why | The problem, the alternatives, and when not to use the project | optional | required |
+| Why | The problem, and the alternatives | optional | required |
 | How it works | A diagram of the parts and the flow, then short text | optional | required |
-| What's new | The last 3 to 5 changes, newest first | optional | required |
+| What's new | The last 3 to 5 changes, newest first; older ones in a changelog or the git log | optional | required |
 | Concepts | The project's own words, one meaning each | none | required |
 | FAQ | The real questions that users asked | optional | required |
 | Under the hood | The folders, how to change the project, and how to run its checks | one line: run the checks | required |
@@ -72,7 +72,6 @@ sage shows each graphic this way. `scripts/graphics.mjs` draws both files, and `
 **Claims**
 
 - Back each claim such as "fast" or "small" with a measured comparison. Say what you measured and how.
-- Say when not to use the project. The reader trusts the rest more.
 
 **Words**
 
@@ -88,11 +87,11 @@ Each of these READMEs does one thing especially well. Read the raw file, and tak
 | README | Kind | The lesson |
 | --- | --- | --- |
 | [sage](https://github.com/erickb336/sage#readme) | agent plugin | Graphics drawn by a script in light and dark, checked in CI; a word table for the project's own words |
-| [ripgrep](https://github.com/BurntSushi/ripgrep#readme) | CLI tool | A timing table against other tools, with the exact commands; a section on when not to use it |
+| [ripgrep](https://github.com/BurntSushi/ripgrep#readme) | CLI tool | A timing table against other tools, with the exact commands |
 | [uv](https://github.com/astral-sh/uv#readme) | package manager | A one-line pitch, then a benchmark chart in light and dark with an alt text and a caption that says what it measured |
 | [fzf](https://github.com/junegunn/fzf#readme) | CLI tool | A table of install commands, one row for each package manager |
 | [FastAPI](https://github.com/fastapi/fastapi#readme) | web framework | One example in steps (create it, run it, check it, then upgrade it), each with what the reader sees |
-| [Transformers](https://github.com/huggingface/transformers#readme) | ML library | A "why use it" list and a "when not to use it" list, one after the other |
+| [Transformers](https://github.com/huggingface/transformers#readme) | ML library | A "why use it" list of concrete reasons, each one short |
 | [Tauri](https://github.com/tauri-apps/tauri#readme) | desktop apps | One command to start, and a table of the supported platforms and versions |
 | [Excalidraw](https://github.com/excalidraw/excalidraw#readme) | web app | A cover in light and dark, a two-line pitch, then a picture of the product before the list of features |
 
@@ -107,12 +106,11 @@ A person can check each item in about a minute, except the items marked "tool" o
 - [ ] The sections of the table come in its order, with all the required ones for the project's size.
 - [ ] The quick start gives a first result in 5 commands or fewer.
 - [ ] Release: the quick start works in a fresh clone or a container. Better: CI runs it.
-- [ ] Each command block has one command, no prompt sign and a language.
+- [ ] Every command a reader should run is in a fenced block, with one command, no prompt sign and a language.
 - [ ] Each diagram comes from text or code, in light and dark, and CI checks it.
 - [ ] Each image has an alt text with its main point.
 - [ ] No graphic uses a logo or a character that the project does not own.
 - [ ] Each badge is true and checked by a machine: it links to a CI result or reads the repository.
-- [ ] If the project has a Why section, it says when not to use the project.
 - [ ] Each claim such as "fast" has a measured comparison and its method.
 - [ ] If the project has a What's new section, it lists the latest changes, newest first.
 - [ ] Tool: the project's word check passes. Without one, read the text against the writing-standard skill and the project's dictionary.

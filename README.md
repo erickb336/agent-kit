@@ -30,9 +30,23 @@ It also gives every session 25 short working principles at the moment they apply
 /plugin install sage@sage
 ```
 
-In the desktop app, run `claude plugin marketplace add erickb336/sage` and then `claude plugin install sage@sage` in a terminal. The `/plugin` dialog opens only in a terminal.
+In the desktop app, run these two commands in a terminal instead. The `/plugin` dialog opens only in a terminal.
 
-**To update sage**, run `claude plugin update sage@sage`. The update applies to every running session at its next event: each hook event runs the newest installed sage. This holds for sessions that started on this version of sage or a later one. A new hook event or matcher needs a restart, and so do the instructions that a session already read (its skills and agent texts).
+```sh
+claude plugin marketplace add erickb336/sage
+```
+
+```sh
+claude plugin install sage@sage
+```
+
+**To update sage**, run this command in a terminal:
+
+```sh
+claude plugin update sage@sage
+```
+
+The update applies to every running session at its next event: each hook event runs the newest installed sage. This holds for sessions that started on this version of sage or a later one. A new hook event or matcher needs a restart, and so do the instructions that a session already read (its skills and agent texts).
 
 **2. Start a new session** in a project folder, or in a folder of projects such as `~/workspace`.
 
@@ -101,12 +115,7 @@ The idea of a mode that you switch on by name comes from pstack's **poteto mode*
 
 And the toad? In the story, toads teach Sage Mode. So sage's mascot is a toad sage: an original drawing of a hooded toad that meditates while its team works.
 
-### When not to use sage
-
-- **A small change that you can make yourself.** Each task runs several agents. In the first dry run, a small bug fix took 15 agent runs, about $2.60 at API prices (see the [FAQ](#faq)).
-- **A project without tests or a GitHub remote.** Without tests, QA can only run the app. Without a remote, the work stops at a verified branch.
-- **When you want to read and steer each line of code.** sage shows you results and asks only product questions.
-- **A tool other than Claude Code.** sage is for Claude Code only.
+The alternatives: a plain Claude Code session, where you guide each step and read the code yourself, or another plugin that runs a team of agents.
 
 ## How it works
 
@@ -224,8 +233,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 - **The board runs the merge check.** A verified pull request "waits for your merge" only when its branch is at the reviewed head (the head that `sage-pr merge` merges) and the merge check passes on it; else the board says what is missing, such as a clean cycle or an open finding. The board takes no lock and writes no logbook.
 - **The PR script imports before the reviews.** `sage-pr import <task>` copies the agent's bundle into the logbook and writes a review copy (`review/<task>-<sha>/` and `review/<task>-<sha>.diff`) that agents cannot change. `create` and `merge` refuse a commit whose review copy is not older than its first verdict.
 - **A bundle is at most 10 MiB, and a slow bundle stops.** Each git call on the bundle stops after 120 s with exit 2, so a bundle that expands to gigabytes cannot hold the logbook's lock.
-- **A passing git failure is no refusal.** Only git's own answer that the mirror or the bundle is not one refuses; any other git failure is exit 2: run the call again.
-- **The merge rule takes one PR-number rule.** The hook refuses `gh pr merge 05` and `gh pr merge 0`, as the state tool does.
+- **A passing git failure is no refusal.** Only git's own answer that the mirror or the bundle is not one refuses; any other git failure is exit 2: run the call again.Older changes are in the [git log](https://github.com/erickb336/sage/commits/main).
 
 ## Concepts
 
@@ -401,9 +409,23 @@ With Remote Control, you can follow, steer and start Claude Code sessions from t
 
 In the desktop app, also turn on **Settings → Claude Code → Connect new sessions to Remote Control**. Before the first `server`, do three things once, in the macOS Terminal app:
 
-1. Run `claude auth login`. A `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` does not work for Remote Control. If your `~/.zshrc` sets it, run step 3 as `env -u CLAUDE_CODE_OAUTH_TOKEN claude remote-control`.
-2. Run `claude` in the server's folder, and answer Yes to the trust question.
-3. Run `claude remote-control` in the same folder, answer `y` to "Enable Remote Control?", then press Ctrl+C.
+1. Log in. A `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` does not work for Remote Control.
+
+   ```sh
+   claude auth login
+   ```
+
+2. In the server's folder, start Claude Code, and answer Yes to the trust question.
+
+   ```sh
+   claude
+   ```
+
+3. In the same folder, run this command, answer `y` to "Enable Remote Control?", then press Ctrl+C. If your `~/.zshrc` sets `CLAUDE_CODE_OAUTH_TOKEN`, put `env -u CLAUDE_CODE_OAUTH_TOKEN` before it.
+
+   ```sh
+   claude remote-control
+   ```
 
 While the server runs, your claude.ai account can start sessions on your computer, and they can reach everything in the folder.
 
@@ -437,7 +459,25 @@ While the server runs, your claude.ai account can start sessions on your compute
 **Change it:**
 
 1. Edit a source: `principles/`, `writing/`, `preferences/`, or an agent in `plugins/sage/agents/`. To override a pstack principle, add `principles/<name>.md` with `source: pstack principle-<name>` and its `upstream:` fingerprint.
-2. Run `npm run build`, then `npm run check` and `npm test`. CI runs the check and the tests. After a change to a graphic, run `npm run graphics`.
+2. After a change to a graphic, draw the graphics again:
+
+   ```sh
+   npm run graphics
+   ```
+
+3. Build, then run the checks and the tests. CI runs the check and the tests.
+
+   ```sh
+   npm run build
+   ```
+
+   ```sh
+   npm run check
+   ```
+
+   ```sh
+   npm test
+   ```
 
 ## Credits
 
