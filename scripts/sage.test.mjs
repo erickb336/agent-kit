@@ -95,11 +95,11 @@ function byHand(dir, table, col, id, edit) {
  * does not let go by itself before 60 s, so a busy machine cannot end its hold before a test has seen what happens while
  * it holds, and a test that fails before release() does not leave it running.
  */
-function hold(dir, crash) {
+function hold(dir, crash, vars = {}) {
   const done = join(mkdtempSync(join(tmpdir(), "sage-hold-")), "release");
   const inside = crash ? `process.kill(process.pid, "SIGKILL")` : `for (const end = Date.now() + 60_000; !existsSync(${JSON.stringify(done)}) && Date.now() < end; ) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)`;
   const args = ["--input-type=module", "-e", `import { existsSync } from "node:fs"; import { withLock } from ${JSON.stringify(LIB)}; withLock(${JSON.stringify(dir)}, () => { console.log("holding"); ${inside}; });`];
-  const env = testEnv();
+  const env = testEnv(vars);
   if (crash) return spawnSync("node", args, { encoding: "utf8", env });
   const child = spawn("node", args, { env });
   const exited = once(child, "exit");
@@ -109,9 +109,9 @@ function hold(dir, crash) {
   });
 }
 
-/** Leaves the lock of a crashed command in store s, with its owner record changed by edit, and its pid dead. Returns the lock's path. */
-function crash(s, edit = {}) {
-  const r = hold(s.dir, true);
+/** Leaves the lock of a crashed command (run with vars) in store s, with its owner record changed by edit, and its pid dead. Returns the lock's path. */
+function crash(s, edit = {}, vars = {}) {
+  const r = hold(s.dir, true, vars);
   assert.equal(r.signal, "SIGKILL");
   s.pids[r.pid] = null;
   const lock = join(s.dir, ".lock");
@@ -504,8 +504,14 @@ test("a lock left by a crashed command is cleared by the next command, and no co
   assert.equal(existsSync(kills), false, "no command called process.kill");
 });
 
-/** NODE_OPTIONS for a command in which os.uptime throws EPERM, as in the macOS sandbox: the kill spy, then the throw. */
-const NO_UPTIME = `--import=${JSON.stringify(SPY)} --import=data:text/javascript,${encodeURIComponent(`import os from "node:os"; import { syncBuiltinESMExports } from "node:module"; os.uptime = () => { throw Object.assign(new Error("uv_uptime returned EPERM"), { code: "EPERM" }); }; syncBuiltinESMExports();`)}`;
+/** NODE_OPTIONS for a command whose os.uptime is the function fn (source text): the kill spy, then the new uptime. */
+const uptimeIs = (fn) => `--import=${JSON.stringify(SPY)} --import=data:text/javascript,${encodeURIComponent(`import os from "node:os"; import { syncBuiltinESMExports } from "node:module"; os.uptime = ${fn}; syncBuiltinESMExports();`)}`;
+/** os.uptime throws EPERM, as in the macOS sandbox. */
+const NO_UPTIME = uptimeIs(`() => { throw Object.assign(new Error("uv_uptime returned EPERM"), { code: "EPERM" }); }`);
+/** The machine started 1 s ago: a boot time that a test knows, also where the real uptime throws. */
+const UP_1S = uptimeIs("() => 1");
+/** The state tool of main before T151 (14c0d0c), so that a test can run an older sage against this one's lock. */
+const OLD_TOOL = fileURLToPath(new URL("fixtures/sage-14c0d0c/sage.mjs", import.meta.url));
 
 test("T151: without uptime, as in the macOS sandbox, the tool works and the lock clears only a holder that is surely gone", () => {
   const fakes = fakePs();
@@ -541,6 +547,37 @@ test("T151: without uptime, as in the macOS sandbox, the tool works and the lock
   r = normal.run("task", "T1", "set", "branch=while-alive");
   assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on /);
   assert.equal(existsSync(lock), true, "an unknown boot time is not an earlier boot");
+  assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
+  assert.equal(existsSync(kills), false, "no command called process.kill");
+});
+
+test("T151-C2: a holder on this host from an earlier boot is cleared, although its pid is alive", () => {
+  const s = store(undefined, undefined, { NODE_OPTIONS: UP_1S });
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  const lock = crash(s, { boot: 1 }, { NODE_OPTIONS: UP_1S }); // taken in a boot long before this one
+  delete s.pids[JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8")).pid]; // the pid is alive again, start unknown
+  const r = s.run("task", "T1", "set", "branch=after-reboot");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(lock), false);
+  assert.equal(rows(s.dir, "tasks")[0].branch, "after-reboot");
+});
+
+test("T151-Q1: a lock taken without a boot time stays with its live holder, for an older sage and for this one", () => {
+  const fakes = fakePs();
+  const kills = join(fakes, "kills");
+  const vars = { PATH: `${fakes}:${process.env.PATH}`, SAGE_TEST_KILLS: kills, NODE_OPTIONS: UP_1S };
+  const s = store(undefined, undefined, vars);
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  const lock = crash(s, {}, { NODE_OPTIONS: NO_UPTIME }); // taken in the sandbox
+  const record = JSON.parse(readFileSync(join(lock, readdirSync(lock)[0]), "utf8"));
+  assert.deepEqual(Object.keys(record), ["pid", "host", "start", "at"], "an unknown boot time has no key");
+  delete s.pids[record.pid]; // the holder is alive, start unknown
+  const old = spawnSync("node", [OLD_TOOL, "task", "T1", "set", "branch=old", "--project", s.project], { encoding: "utf8", env: testEnv({ ...vars, SAGE_HOME: s.home, SAGE_TEST_PIDS: JSON.stringify(s.pids) }), timeout });
+  assert.match(old.stderr, /^sage: the logbook is busy: pid \d+ on /, "the older sage keeps the lock");
+  assert.equal(old.status, 1);
+  const r = s.run("task", "T1", "set", "branch=new");
+  assert.match(r.stderr, /^sage: the logbook is busy: pid \d+ on /, "this sage keeps the lock");
+  assert.deepEqual([existsSync(lock), rows(s.dir, "tasks")[0].branch], [true, ""]);
   assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
   assert.equal(existsSync(kills), false, "no command called process.kill");
 });
