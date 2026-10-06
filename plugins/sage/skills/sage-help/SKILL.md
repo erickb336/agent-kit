@@ -39,7 +39,7 @@ Give only the phrases that this map or the source writes, letter for letter: do 
 
 If a read fails, say so in one line, and give only the link.
 
-Give the user the public link, because they may not be able to open the installed plugin: `https://github.com/erickb336/sage/blob/main/` and the path. A README link may end with one of these anchors only, because no other anchor exists: `#quick-start`, `#learn-sage-in-5-minutes`, `#how-it-works`, `#a-tasks-life`, `#rules-held-in-code`, `#what-to-say`, `#the-board`, `#principles`, `#following-pstack`, `#faq`. A FAQ question has no anchor of its own: link `#faq`.
+Give the user the public link, because they may not be able to open the installed plugin: `https://github.com/erickb336/sage/blob/main/` and the path. Link only these anchors of the README: `#quick-start`, `#learn-sage-in-5-minutes`, `#how-it-works`, `#a-tasks-life`, `#rules-held-in-code`, `#what-to-say`, `#the-board`, `#principles`, `#following-pstack`, `#faq`. A FAQ question has no anchor of its own: link `#faq`.
 
 ## Find out what the user needs
 
@@ -122,16 +122,22 @@ A hook gives each principle at the moment that it applies, so the user seldom lo
 | The user wants a normal session again | Send the off phrase of sage mode ([What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say)). |
 | A task waits and nothing moves | Show the board: an open question under "Needs you" holds the task until the user answers. A task in the held state waits for the user: for an answer to a product question, or, after 3 repair rounds that did not make it clean, for the user to choose what comes next. The chief asks one question with options, a recommendation and a default; the user picks one or answers in their own words. A task in the replan state waits for a new plan. Link [the chief's instructions](https://github.com/erickb336/sage/blob/main/plugins/sage/agents/chief-of-staff.md), step 4 (an escalation when the tool says held or replan). |
 | A pull request does not merge | A merge needs its clean cycles on the exact head commit. A new commit starts again from cycle 1 ([A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life)). Tell the chief what to do with it in your own words. |
-| An agent must stop | Tell the chief in your own words, for example "stop the run on T3". The agent's slot frees as soon as the agent ends, fails or is stopped ([Rules held in code](https://github.com/erickb336/sage/blob/main/README.md#rules-held-in-code)). |
+| An agent must stop | There is no fixed phrase: the user tells the chief in their own words. Give this example as the prompt, letter for letter: "stop the run on T3" (the user replaces T3 with the task id). The agent's slot frees as soon as the agent ends, fails or is stopped ([Rules held in code](https://github.com/erickb336/sage/blob/main/README.md#rules-held-in-code)). |
 | A new version of sage has no effect | Start a new session ([Quick start](https://github.com/erickb336/sage/blob/main/README.md#quick-start), "To update sage"). |
 
 ## Where sage keeps things
 
 This section has no read: the README and the chief's instructions name state-tool commands here. Answer from this text alone. Give these paths, and no state-tool command (see the rule above).
 
-- **The logbook** of each project, in `~/.claude/sage/<project>-<hash>/`: its tasks, runs, findings, verdicts, the user's answers and the decision trail. In sage mode, the user can ask the chief to print the exact folder.
+- **The logbook** of each project, in `~/.claude/sage/<project>-<hash>/`: its tasks, runs, findings, verdicts, the user's answers and the decision trail.
 - **The hook's state**, in `~/.claude/sage/.hooks/`: the modes, autopilot and the agent slots.
-- **The pages folder** of each task, in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook: research pages, designs and findings pages. In sage mode, the user can ask the chief to make it and print its path.
+- **The pages folder** of each task, in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook: research pages, designs and findings pages.
+
+To see the exact folders, the user sends this prompt, in the form of the README's Quick start (replace T3 with the task id):
+
+```
+sage mode. Make the pages folder of T3, and print its path and the path of this project's logbook.
+```
 
 Link [How it works](https://github.com/erickb336/sage/blob/main/README.md#how-it-works): the paths are below the loop graphic.
 
