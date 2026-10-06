@@ -1,71 +1,98 @@
 ---
 name: sage-help
-description: "Help with sage: how to set it up, switch sage mode and autopilot, read the board, answer the chief's questions, pick a skill or a principle, fix a run that went wrong, and find where sage keeps its files. The user types /sage-help with a question. Load it only when the user types /sage-help; do not load it on your own. Claude Code only."
+description: "Help with sage: how to set it up, switch sage mode and autopilot, read the board, answer the chief's questions, pick a skill or a principle, fix a run that went wrong, and find where sage keeps its files. The user types /sage:sage-help (or /sage-help) with a question. Load it only when the user types it; do not load it on your own. Claude Code only."
 license: MIT
-allowed-tools: Read, Bash(curl -fsS https://raw.githubusercontent.com/erickb336/sage/main/*)
+allowed-tools: Read, Bash(curl -fsS https://raw.githubusercontent.com/erickb336/sage/main/README.md)
 ---
 
 # sage help
 
-Answer the user's question about sage. Give them one prompt that they can send, and link the file that the answer comes from. Then stop.
+Answer the user's question about sage. Give them at most one prompt that they can send, and link the file that the answer comes from. Then stop.
+
+**A question about autopilot and an off word turns autopilot off.** The hook reads the user's message before this skill loads. Any message of the user that mentions autopilot together with an off word (off, stop, pause, disable, cancel, in any form) turns autopilot off, a help question too. When the question has both, say this first, in one sentence, before anything else: "Your question mentions autopilot with an off word, so autopilot is now off." If the user wants it on, they send the on phrase again ([What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say)).
 
 **A help question starts no work.** Do not start sage mode, an agent, a task or a command that changes anything. The user asked how, and each sage run spends real tokens, so the user sends the prompt.
 
-**A request for work is not a help question.** An example is "/sage-help fix the failing test in foo". Do not do the work, and do not start an agent. Say in one line that sage mode does work, and give the prompt that starts it: the README's [Quick start](https://github.com/erickb336/sage/blob/main/README.md#quick-start) shows its form.
+**A request for work is not a help question.** An example is "/sage:sage-help fix the failing test in foo". Do not do the work, and do not start an agent. Say in one line that sage mode does work, and give the prompt that starts it: the README's [Quick start](https://github.com/erickb336/sage/blob/main/README.md#quick-start) shows its form.
 
 The model for this skill is pstack's `poteto-help` skill, by Lauren Tan (poteto): [its source](https://github.com/cursor/plugins/blob/main/pstack/skills/poteto-help/SKILL.md).
 
-## The files own the answers
+## Read the source first
 
-This skill is a map. The files below hold the details, and they change. Before you answer, read the section that this map links, and when it disagrees with this map, trust it. Give only the phrases that this map or that section writes, letter for letter: do not make up a form.
+This skill is a map. The sources below hold the details, and they change, so this map can be out of date. Do these steps for every question, also when this map seems to hold the answer:
 
-- **The README** is not in the installed plugin. Read the copy in the session's folder when it is the sage repository. Otherwise get the public copy: `curl -fsS https://raw.githubusercontent.com/erickb336/sage/main/README.md`.
-- **The agents and skills** are in the installed plugin: `${CLAUDE_SKILL_DIR}/../<skill>/SKILL.md` and `${CLAUDE_SKILL_DIR}/../../agents/<agent>.md`.
+1. Find the section of this map that the question goes to.
+2. Do the read that the section's **Read** line names. Make it your first tool call, before you write any of the answer.
+3. Answer from what you read. When the source disagrees with this map, trust the source.
+
+Give only the phrases that this map or the source writes, letter for letter: do not make up a form.
+
+- **The README** is not in the installed plugin. When the session's folder is the sage repository, Read its `README.md`. Otherwise run this one command, exactly as written, with no pipe and no other argument:
+
+  ```
+  curl -fsS https://raw.githubusercontent.com/erickb336/sage/main/README.md
+  ```
+
+- **A plugin file** is in the installed plugin. Claude Code prints this skill's base directory above these instructions. Read the file at the path that the **Read** line gives, from that directory: for example `<base directory>/../../agents/chief-of-staff.md`.
+
+If a read fails, say so in one line, and give only the link.
 
 Give the user the public link, because they may not be able to open the installed plugin: `https://github.com/erickb336/sage/blob/main/` and the path, with the README's section anchor.
 
 ## Find out what the user needs
 
-Find the need in the question and in the conversation. A clear question goes to its section. When the question is empty or unclear, ask one multiple-choice question (with AskUserQuestion when you have it) with these options, and answer only the section that the user picks:
+Find the need in the question and in the conversation. A clear question goes to its section. When the question is empty or unclear, ask one choice question (with AskUserQuestion when you have it) with these four groups:
 
-1. Get set up
-2. Switch sage mode or autopilot
-3. Show the board
-4. Answer the chief's questions
-5. What sage does alone, and what it asks
-6. Pick a skill or a principle
-7. Fix a run that went wrong
-8. Where sage keeps things
+1. **Start and switch:** Get set up · Switch sage mode or autopilot · What sage does alone, and what it asks
+2. **Daily use:** Show the board · Answer the chief's questions · Pick a skill or a principle
+3. **When something goes wrong:** Fix a run that went wrong
+4. **Where things are:** Where sage keeps things
+
+When the picked group has two or more sections, ask a second choice question with its sections as the options. A group with one section goes to it. Answer only the section that the user picks. Without AskUserQuestion, write the four groups as a numbered list, and ask the user to reply with a number.
 
 ## Get set up
+
+**Read:** the README, sections "Quick start" and "FAQ".
 
 Install the plugin, then start a new session: a session that is already open does not get the new skills and hooks. The [Quick start](https://github.com/erickb336/sage/blob/main/README.md#quick-start) has the install commands for the terminal and the desktop app, and how to update. The [FAQ](https://github.com/erickb336/sage/blob/main/README.md#faq) says which projects fit and what sage costs.
 
 ## Switch sage mode or autopilot
 
-sage mode makes the session the user's chief of staff. Autopilot lets verified pull requests merge without the user. Autopilot is off until the user turns it on. Each one switches only on a phrase at the start of the user's own message: "sage mode" (then a full stop, a comma, a colon or a line break) and "sage mode off" for the mode, and "autopilot on" for autopilot, which needs sage mode on. The other forms and the exact rules are in [What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say): link that table, and do not copy it.
+**Read:** the README, section "What to say".
 
-Tell the user about one effect. A message that mentions autopilot together with an off word turns autopilot off, wherever the words are in the message. That includes a /sage-help question about how to turn it off.
+sage mode makes the session the user's chief of staff. Autopilot lets verified pull requests merge without the user. Autopilot is off until the user turns it on. Each one switches on only at the start of the user's own message: "sage mode" (then a full stop, a comma, a colon or a line break) and "sage mode off" for the mode, and "autopilot on" for autopilot, which needs sage mode on. An off word with autopilot works anywhere in the user's message. The other forms and the exact rules are in [What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say): link that table, and do not copy it.
 
 ## Show the board
+
+**Read:** the README, section "The board".
 
 The board is a short view of every project's logbook: what needs the user, the agents running now, and each active task. A message that starts with "show board" prints it for this project, "show board for all" for every project, and "show board for <project>" for one project. [The board](https://github.com/erickb336/sage/blob/main/README.md#the-board) gives the other forms and what each part shows. "status" in sage mode gives only the status lines of this session's project.
 
 ## Answer the chief's questions
 
+**Read:** the README, section "Learn sage in 5 minutes" (step 3).
+
 The chief asks at most once per task, in one batch of product questions. Each question has options, a recommendation and a default. The user picks an option on the choice card, or answers in their own words, and the chief records the answer as theirs. An open question also shows under "Needs you" on the board. [Learn sage in 5 minutes](https://github.com/erickb336/sage/blob/main/README.md#learn-sage-in-5-minutes) (step 3) gives the exceptions that can ask again.
 
 ## What sage does alone, and what it asks
 
-The chief decides the engineering choices, runs the team, and tells the user the results with evidence. The user decides the product questions. An irreversible action always gets its own yes, also on autopilot: for example a deploy or deleting data. With autopilot on, a verified pull request merges after its clean cycles. The sources:
+**Read:** `<base directory>/../../agents/chief-of-staff.md`, and the README, sections "Rules held in code", "A task's life" and "FAQ" (the question "Is it safe to let it work alone?").
 
+The chief decides the engineering choices, runs the team, and tells the user the results with evidence. The user decides the product questions. With autopilot on, a verified pull request merges after its clean cycles.
+
+The chief's instructions say that some actions always need the user's yes, also on autopilot: a deploy, deleting data, a force-push, and closing a pull request that is not sage's. Tell the user that this is an instruction to the chief, and that the hook does not hold it yet: the FAQ says so. Cite the chief's instructions for it, not "Rules held in code".
+
+This section answers a question; it has no prompt to send. Do not give one. The sources:
+
+- [The chief's instructions](https://github.com/erickb336/sage/blob/main/plugins/sage/agents/chief-of-staff.md): what the chief always asks first, also on autopilot.
 - [Rules held in code](https://github.com/erickb336/sage/blob/main/README.md#rules-held-in-code): the rules that the hook and the state tool enforce, and their limits.
-- [The chief's instructions](https://github.com/erickb336/sage/blob/main/plugins/sage/agents/chief-of-staff.md): what the chief always asks first.
 - [A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life): the states and the clean cycles before a merge.
 
 ## Pick a skill or a principle
 
-sage mode is the default answer for real work: the chief runs the agents and the principles when the steps need them. Name a skill only when the user wants it alone.
+**Read:** the README, section "Principles", and the `SKILL.md` of the skill that you name, at `<base directory>/../<skill>/SKILL.md`.
+
+sage mode is the default answer for real work: the chief runs the agents and the principles when the steps need them. Name a skill only when the user wants it alone. A plugin skill has the form `/sage:<skill>`.
 
 | The user wants to | Skill |
 | --- | --- |
@@ -74,7 +101,7 @@ sage mode is the default answer for real work: the chief runs the agents and the
 | Write text that a person reads on the first pass | [`writing-standard`](https://github.com/erickb336/sage/blob/main/plugins/sage/skills/writing-standard/SKILL.md) |
 | Use sage's approved words | [`dictionary`](https://github.com/erickb336/sage/blob/main/plugins/sage/skills/dictionary/SKILL.md) |
 | Apply one working rule, such as "prove it works" | a `principle-<name>` skill ([Principles](https://github.com/erickb336/sage/blob/main/README.md#principles)) |
-| Find their way around sage | `/sage-help` |
+| Find their way around sage | `/sage:sage-help` |
 
 For a skill that is not in this table, read its description in its `SKILL.md` and route by it. Two skills are for sage itself, not for the user: `sage` (the chief's state tool) and `report` (the end of each agent's run).
 
@@ -82,17 +109,21 @@ A hook gives each principle at the moment that it applies, so the user seldom lo
 
 ## Fix a run that went wrong
 
+**Read:** the README, sections "What to say", "A task's life" and "Rules held in code", and `<base directory>/../../agents/chief-of-staff.md`.
+
 | The user sees | What to do |
 | --- | --- |
-| A mode did not switch | The phrase must start the user's own message, and a message sent while Claude works cannot switch a mode on. See the text under [What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say). |
+| A mode did not switch | The phrase must start the user's own message. A message sent while Claude works cannot start sage mode or autopilot, and cannot end sage mode; it can only stop autopilot. Send it again when Claude is idle. See the text under [What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say). |
 | Merges must stop now | Send a message that mentions autopilot with an off word. Pull requests then wait for the user. |
 | The user wants a normal session again | Send the off phrase of sage mode ([What to say](https://github.com/erickb336/sage/blob/main/README.md#what-to-say)). |
-| A task waits and nothing moves | Show the board: an open question under "Needs you" holds the task until the user answers. A task in the held state waits for a new plan ([A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life)). |
+| A task waits and nothing moves | Show the board: an open question under "Needs you" holds the task until the user answers. A task in the held state waits for the user: for an answer to a product question, or, after 3 repair rounds that did not make it clean, for the user to choose what comes next. A task in the replan state waits for a new plan ([A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life)). |
 | A pull request does not merge | A merge needs its clean cycles on the exact head commit. A new commit starts again from cycle 1 ([A task's life](https://github.com/erickb336/sage/blob/main/README.md#a-tasks-life)). Tell the chief what to do with it in your own words. |
-| An agent must stop | Tell the chief in your own words, for example "stop the run on T3". The chief stops it and records it. |
+| An agent must stop | Tell the chief in your own words, for example "stop the run on T3". The agent's slot frees as soon as the agent ends, fails or is stopped ([Rules held in code](https://github.com/erickb336/sage/blob/main/README.md#rules-held-in-code)). |
 | A new version of sage has no effect | Start a new session ([Quick start](https://github.com/erickb336/sage/blob/main/README.md#quick-start), "To update sage"). |
 
 ## Where sage keeps things
+
+**Read:** the README, section "How it works", and `<base directory>/../sage/SKILL.md`.
 
 - **The logbook** of each project: its tasks, runs, findings, verdicts, the user's answers and the decision trail.
 - **The hook's state**: the modes, autopilot and the agent slots.
@@ -104,8 +135,8 @@ The paths are in [How it works](https://github.com/erickb336/sage/blob/main/READ
 
 - **The board or "status":** the board reads every project's logbook; "status" gives the lines of one project.
 - **The off phrase of sage mode, or autopilot off:** autopilot off stops only the merges; the off phrase of sage mode ends the mode, and autopilot goes off with it.
-- **Not in sage:** pstack's poteto mode and its playbooks (sage mode replaces them; see [Following pstack](https://github.com/erickb336/sage/blob/main/README.md#following-pstack)). sage does not run in Codex ([FAQ](https://github.com/erickb336/sage/blob/main/README.md#faq)).
+- **Not in sage:** pstack's own modes, poteto mode, orchestrate and autopilot (sage mode replaces them; see [Following pstack](https://github.com/erickb336/sage/blob/main/README.md#following-pstack)). sage's own autopilot is a different thing: the switch above. sage does not run in Codex ([FAQ](https://github.com/erickb336/sage/blob/main/README.md#faq)).
 
 ## Reply
 
-Lead with the answer, in two to five sentences. Give at most one prompt that the user can send, in a code block. End with the public link of the file that the answer comes from. Write at 80% of Simplified Technical English, with sage's approved words. Keep it short unless the user asks for the whole map.
+When the question mentions autopilot with an off word, the first sentence says that autopilot is now off. Then lead with the answer, in two to five sentences. Give at most one prompt that the user can send, in a code block, and none when the section says so. End with the public link of the file that the answer comes from. Write at 80% of Simplified Technical English, with sage's approved words. Keep it short unless the user asks for the whole map.
