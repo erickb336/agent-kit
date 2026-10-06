@@ -16,7 +16,8 @@ const timeout = 20_000;
 /**
  * The fake gh: it records each call (arguments, folder, the folder's entries, token, config folder) and plays GitHub's
  * pull requests on the bare repository. A pull request in FAKE_GH_STATE may have base (default main), cross (from a fork)
- * and owner (its head repository's owner, default "owner"); view and merge take a number or a branch after --.
+ * and owner (its head repository's owner, default "owner"); its headRefOid is oid (set by merge), else the branch's tip in the
+ * bare repository. view and merge take a number or a branch after --.
  * FAKE_GH_FAIL names a call (create, merge, ...) that fails like GitHub, with FAKE_GH_ERR on stderr; FAKE_GH_CREATE_OUT
  * replaces create's answer.
  */
@@ -31,7 +32,8 @@ const flag = (n) => args.find((a) => a.startsWith("--" + n + "="))?.slice(n.leng
 const after = args[args.indexOf("--") + 1];
 const bare = (...a) => execFileSync("git", ["--git-dir", env.FAKE_GH_BARE, ...a], { encoding: "utf8" }).trim();
 const url = (n) => "https://github.com/owner/repo/pull/" + n;
-const json = (p) => { const all = { number: p.number, state: p.state, url: url(p.number), baseRefName: p.base ?? "main", headRefName: p.head, isCrossRepository: !!p.cross, headRepositoryOwner: { login: p.owner ?? "owner" } }; return Object.fromEntries(flag("json").split(",").filter((k) => k in all).map((k) => [k, all[k]])); };
+const tip = (b) => { try { return bare("rev-parse", "--verify", "-q", "refs/heads/" + b); } catch { return ""; } };
+const json = (p) => { const all = { number: p.number, state: p.state, url: url(p.number), baseRefName: p.base ?? "main", headRefName: p.head, headRefOid: p.oid ?? tip(p.head), isCrossRepository: !!p.cross, headRepositoryOwner: { login: p.owner ?? "owner" } }; return Object.fromEntries(flag("json").split(",").filter((k) => k in all).map((k) => [k, all[k]])); };
 if (args[1] === env.FAKE_GH_FAIL) { console.error(env.FAKE_GH_ERR ?? "HTTP 502: Bad Gateway (https://api.github.com/graphql)"); process.exit(1); }
 const pick = () => prs.find((x) => (/^[0-9]+$/.test(after) ? x.number === Number(after) : x.head === after));
 if (args[1] === "list") console.log(JSON.stringify(prs.filter((p) => p.head === flag("head") && (p.base ?? "main") === flag("base") && p.state === "OPEN").map(json)));
@@ -42,7 +44,7 @@ else if (args[1] === "merge") {
   if (!p || p.state !== "OPEN" || bare("rev-parse", "refs/heads/" + p.head) !== flag("match-head-commit")) { console.error("head mismatch"); process.exit(1); }
   const squash = bare("commit-tree", flag("match-head-commit") + "^{tree}", "-p", "refs/heads/main", "-m", "squash");
   bare("update-ref", "refs/heads/main", squash); bare("update-ref", "-d", "refs/heads/" + p.head);
-  p.state = "MERGED"; save();
+  p.state = "MERGED"; p.oid = flag("match-head-commit"); save();
 } else process.exit(3);
 `;
 
@@ -192,7 +194,7 @@ test("view shows the task's pull request, with -- before the branch", () => {
   w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
   w.pr("create", "T1");
   const r = w.pr("view", "T1");
-  assert.equal(r.stdout, `{"number":1,"state":"OPEN","url":"https://github.com/owner/repo/pull/1"}\n`);
+  assert.equal(r.stdout, `{"number":1,"state":"OPEN","headRefOid":"${head}","url":"https://github.com/owner/repo/pull/1"}\n`);
   assert.deepEqual(w.calls().at(-1).args, ["pr", "view", "--repo=owner/repo", "--json=number,state,headRefOid,url", "--", "claude/t1"]);
 });
 
@@ -265,7 +267,7 @@ test("the bundle: a link, a second hard link, a folder, a file over the limit or
     [() => symlinkSync(good, w.bundle), /is a link, not a plain file/],
     [() => linkSync(good, w.bundle), /the bundle (.*) has 2 links, not 1: remove it, then write it with git bundle create \1 main\.\.claude\/t1$/m],
     [() => mkdirSync(w.bundle), /the bundle (.*) is not a plain file: remove it, then write it with git bundle create \1 main\.\.claude\/t1$/m],
-    [() => (writeFileSync(w.bundle, ""), truncateSync(w.bundle, 100 * 1024 * 1024 + 1)), /the bundle .* is over 104857600 bytes/],
+    [() => (writeFileSync(w.bundle, ""), truncateSync(w.bundle, 100 * 1024 * 1024 + 1)), /the bundle .* is over 104857600 bytes: the bundle is too big, ask the user$/m],
     [() => {}, /no bundle at (.*T1\.bundle): write it with git bundle create \1 main\.\.claude\/t1$/m],
     [() => writeFileSync(w.bundle, "not a bundle\n"), /T1\.bundle is not a git bundle: it does not start with "# v2 git bundle" or "# v3 git bundle"\. Write it with git bundle create .*T1\.bundle main\.\.claude\/t1/],
     [() => writeFileSync(w.bundle, ""), /T1\.bundle is empty\. Write it with git bundle create/],
@@ -372,7 +374,7 @@ test("T96-C1: a merge whose mirror refresh fails exits 3 and says that it merged
   const r = w.pr("merge", "T1");
   assert.equal(r.status, 3, r.stderr);
   assert.equal(r.stdout, "");
-  assert.equal(r.stderr, `sage-pr: merged claude/t1 at ${short(head)}; the mirror refresh failed: git fetch failed with exit 1. Do not run merge again: the next sage-pr create refreshes the mirror\n`);
+  assert.equal(r.stderr, `sage-pr: merged claude/t1 at ${short(head)}; the mirror refresh failed: git fetch failed with exit 1. Run sage-pr merge T1 again later: it reports "already merged" and refreshes the mirror\n`);
   assert.notEqual(w.remote("refs/heads/main"), before, "the merge happened");
 });
 
@@ -384,7 +386,7 @@ test("T96-R2-AFTEREXIT3: merge again after exit 3 says already merged, refreshes
   const main = w.remote("refs/heads/main");
   let r = w.pr("merge", "T1"); // the lock is still held: the refresh fails again
   assert.equal(r.status, 3, r.stderr);
-  assert.equal(r.stderr, `sage-pr: already merged: claude/t1 at ${short(head)}; nothing to do; the mirror refresh failed: git fetch failed with exit 1. Do not run merge again: the next sage-pr create refreshes the mirror\n`);
+  assert.equal(r.stderr, `sage-pr: already merged: claude/t1 at ${short(head)}; nothing to do; the mirror refresh failed: git fetch failed with exit 1. Run sage-pr merge T1 again later: it reports "already merged" and refreshes the mirror\n`);
   rmSync(lock);
   r = w.pr("merge", "T1");
   assert.equal(r.status, 0, r.stderr);
@@ -549,11 +551,10 @@ test("T96-C2: create takes the task's own reviewed head, not a later verdict of 
   const head = w.commit("b.txt");
   w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
   w.sage("task", "add", "--title", "Other", "--size", "small");
-  w.sage("task", "T1", "set", "pr=1");
   w.sage("task", "T2", "set", "pr=1");
-  w.sage("verdict", "T2", "--sha", w.p("rev-parse", "main"), "--kind", "checks-pass"); // later in the ledger
+  w.sage("verdict", "T2", "--sha", w.p("rev-parse", "main"), "--kind", "checks-pass"); // later in the ledger, with PR 1
   const r = w.pr("create", "T1");
-  assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; opened https://github.com/owner/repo/pull/1\n`, r.stderr);
+  assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; opened https://github.com/owner/repo/pull/1; T1 has PR 1 in the logbook\n`, r.stderr);
   assert.equal(w.remote("refs/heads/claude/t1"), head);
 });
 
@@ -580,6 +581,87 @@ test("T96-Q1: no logbook names the next step", () => {
   const w = world();
   w.env.SAGE_PROJECT = w.at("home");
   refused(w.pr("view", "T1"), /no logbook for the project .*\/home: run sage-pr from the project's main checkout, or set SAGE_PROJECT=<that folder>/);
+});
+
+test("T96-S8-STALEMERGED: merge says already merged only when GitHub merged the reviewed head", () => {
+  const { w, head } = reviewed();
+  const other = w.remote("refs/heads/main"); // a web merge of another commit
+  w.github((prs) => [{ ...prs[0], state: "MERGED", oid: other }]);
+  const stale = new RegExp(`^sage-pr: refused: pull request #1 merged ${short(other)}, not the reviewed head ${short(head)}: ask the user\n$`);
+  refused(w.pr("merge", "T1"), stale);
+  refused(w.pr("create", "T1"), stale);
+  // A merge before a repair: the merged head is the one reviewed before, not the reviewed head now.
+  const { w: w2, head: first } = reviewed();
+  assert.equal(w2.pr("merge", "T1").status, 0);
+  const repaired = w2.commit("c.txt");
+  for (const kind of ["checks-pass", "review-clean", "qa-pass"]) w2.sage("verdict", "T1", "--sha", repaired, "--kind", kind);
+  refused(w2.pr("merge", "T1"), new RegExp(`^sage-pr: refused: pull request #1 merged ${short(first)}, not the reviewed head ${short(repaired)}: ask the user\n$`));
+  assert.equal(w2.calls().filter((c) => c.args[1] === "merge").length, 1, "one gh pr merge only");
+  assert.equal(w2.remote("refs/heads/claude/t1"), "", "nothing pushed after the merge");
+});
+
+test("T96-R3-REOPEN: create after a merge (normal, or one that exited 3) refuses and opens no new pull request", () => {
+  const already = /^sage-pr: refused: already merged as PR #1: nothing to create\. Mark the task merged: sage task T1 set state=merged\n$/;
+  const { w } = reviewed();
+  assert.equal(w.pr("merge", "T1").status, 0);
+  refused(w.pr("create", "T1"), already);
+  assert.equal(w.remote("refs/heads/claude/t1"), "", "the merged branch is not pushed again");
+  assert.equal(w.task("T1").pr, "1");
+  assert.equal(w.calls().filter((c) => c.args[1] === "create").length, 1);
+  const { w: w3, head } = reviewed();
+  const lock = join(w3.logbook, "mirror.git", "refs", "heads", "main.lock");
+  writeFileSync(lock, "");
+  assert.equal(w3.pr("merge", "T1").status, 3);
+  refused(w3.pr("create", "T1"), already);
+  rmSync(lock);
+  const r = w3.pr("merge", "T1"); // what the exit-3 message says to do
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, `already merged: claude/t1 at ${short(head)}; nothing to do; the mirror's main is now ${short(w3.remote("refs/heads/main"))}\n`);
+  assert.equal(w3.calls().filter((c) => c.args[1] === "create").length, 1);
+});
+
+test("T96-C5-TWOOPEN: two open pull requests of the branch: create keeps the recorded one, and refuses when none is recorded", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  writeFileSync(w.at("gh.json"), JSON.stringify([1, 2].map((number) => ({ number, head: "claude/t1", state: "OPEN" }))));
+  refused(w.pr("create", "T1"), /^sage-pr: refused: 2 pull requests of claude\/t1 into main are open \(#1, #2\), and the logbook names none of them: ask the user which one is T1's, then sage task T1 set pr=<n>\n$/);
+  assert.equal(w.remote("refs/heads/claude/t1"), "", "nothing pushed");
+  w.sage("task", "T1", "set", "pr=2");
+  const r = w.pr("create", "T1");
+  assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; pull request #2 https://github.com/owner/repo/pull/2 is open\n`, r.stderr);
+  assert.equal(w.task("T1").pr, "2");
+  assert.equal(w.calls().filter((c) => c.args[1] === "create").length, 0);
+});
+
+test("T96-S9-REDACTGAPS: gh's stderr loses a credential URL with no path, an Authorization line and each token's value", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  Object.assign(w.env, { GH_TOKEN: "tokA-s3cret", GITHUB_TOKEN: "tokB-s3cret", GH_ENTERPRISE_TOKEN: "tokC-s3cret", GITHUB_ENTERPRISE_TOKEN: "tokD-s3cret" });
+  w.env.FAKE_GH_FAIL = "list";
+  const u = "https://user:s3cret@github.com";
+  w.env.FAKE_GH_ERR = [`a ${u}`, `b ${u} c`, `d ${u}?x ${u}#y (${u}) ${u}.`, "Authorization: token s3cret-header", "> authorization: Bearer s3cret-bearer", "tokens tokA-s3cret tokB-s3cret tokC-s3cret tokD-s3cret"].join("\n");
+  const r = w.pr("create", "T1");
+  assert.equal(r.status, 2, r.stderr);
+  const v = "https://***@github.com";
+  assert.equal(r.stderr, `sage-pr: failed: gh pr list failed: a ${v}\nb ${v} c\nd ${v}?x ${v}#y (${v}) ${v}.\nAuthorization: ***\n> authorization: ***\ntokens *** *** *** ***\n`);
+  assert.doesNotMatch(r.stderr, /s3cret/);
+});
+
+test("T96-R3-NEXTSTEP3: each refusal names the next step", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  refused(w.pr("view", "T9"), /^sage-pr: refused: no task T9 in .*: check the task id, or frame the task first \(sage task add\)\n$/);
+  const ledger = join(w.logbook, "ledger.tsv");
+  writeFileSync(ledger, `${readFileSync(ledger, "utf8").trim()}\nT1\t\tabc1234\tchecks-pass\t1\t\t2026-10-05T00:00:00Z\n`);
+  refused(w.pr("create", "T1"), /^sage-pr: refused: the reviewed head of T1 is not a full SHA: "abc1234"\. Record the verdict with the full SHA: sage verdict T1 --sha <40-character sha> --kind <kind>\n$/);
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  writeFileSync(join(w.logbook, "mirror.git"), "");
+  refused(w.pr("create", "T1"), /^sage-pr: refused: .*\/mirror\.git is not a folder: ask the user to remove it\n$/);
+  w.p("remote", "remove", "origin");
+  refused(w.pr("view", "T1"), /^sage-pr: refused: the project (.*\/project) has no origin remote: git -C \1 remote add origin <address>\n$/);
+  assert.deepEqual(w.calls(), []);
 });
 
 test("the script starts git and gh only through execFile with an argument array, never a shell", () => {
