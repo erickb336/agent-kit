@@ -1,7 +1,7 @@
 // Checks the sources and that the generated files match them. Fails with a list of every problem.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { GENERATED, ROOT, outputs, parseSource } from "./build.mjs";
+import { GENERATED, ROOT, outputs, filesUnder, parseSource } from "./build.mjs";
 import { checkWords, flaggedWords, yamlText } from "./dictionary.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
@@ -134,8 +134,10 @@ for (const f of dictionary ? readByPeople : []) {
   for (const h of found) problems.push(`${f}:${h.line}: "${h.word}" is a flagged word${h.use.length ? `; say ${h.use.join(" or ")}` : ""} (writing/dictionary.md)${f.startsWith("docs/assets/") ? "; fix it in scripts/graphics.mjs, then run npm run graphics" : ""}`);
 }
 
+let expected;
 try {
-  for (const [rel, text] of outputs()) {
+  expected = outputs();
+  for (const [rel, text] of expected) {
     const f = join(ROOT, rel);
     if (!existsSync(f) || readFileSync(f, "utf8") !== text) problems.push(`${rel}: out of date; run npm run build`);
   }
@@ -172,6 +174,14 @@ for (const f of readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".te
     if (/\/\/ timing-ok: \S/.test(line)) timingOk++;
     else problems.push(`scripts/${f}:${i + 1}: a test holds a wall-clock time under a fixed number of ms, so a busy machine breaks it. Instead, ${FIX}.`);
   });
+}
+
+// Provider build outputs must be exact, including the absence of obsolete or foreign files.
+for (const dir of ["plugins/sage", "plugins/sage-codex"]) {
+  for (const file of filesUnder(join(ROOT, dir))) {
+    const rel = file.slice(ROOT.length + 1);
+    if (expected && !expected.has(rel)) problems.push(`${rel}: not in the package; run npm run build`);
+  }
 }
 
 // The build reads the dictionary too, so a problem in it comes twice: report it once.
