@@ -1812,7 +1812,6 @@ test("C3: a SAGE_HOME or CLAUDE_CONFIG_DIR set to a scratch folder passes, for a
   const allowed = [
     `SAGE_HOME=${scratch} npm test > ${scratch}/log.txt`,
     `SAGE_HOME=${scratch} npm test > ${scratch}/log.txt 2>&1`,
-    `export SAGE_HOME=${scratch}; node x.mjs > $SAGE_HOME/out.txt`,
     `CLAUDE_CONFIG_DIR=${scratch} npm test 2>&1 | tee ${scratch}/log.txt`,
   ];
   const refused = [
@@ -1823,6 +1822,7 @@ test("C3: a SAGE_HOME or CLAUDE_CONFIG_DIR set to a scratch folder passes, for a
     `SAGE_HOME=$HOME/.claude/sage npm test > ${scratch}/log.txt`,
     `cp x "$(printenv SAGE_HOME)"/p/x`,
     "rm -rf $SAGE_HOME/p",
+    `export SAGE_HOME=${scratch}; node x.mjs > $SAGE_HOME/out.txt`, // round 5: every $SAGE_HOME in a write is refused (T83-N2)
   ];
   for (const command of allowed) {
     assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, `agent: ${command}`);
@@ -2577,7 +2577,7 @@ test("N1-KEYWORD: a state-tool write behind a shell keyword or a wrapper with an
   assert.equal(denied(s.send(bash("for f in a b; do grep -n x plugins/sage/skills/sage/sage.mjs; done", FEATURE, AGENT))), undefined, "a read in a loop");
 });
 
-test("N2-PREFIXVAR: a SAGE_HOME or CLAUDE_CONFIG_DIR before a command does not make that command's $SAGE_HOME safe; one of its own does (T83)", () => {
+test("N2-PREFIXVAR: every $SAGE_HOME or $CLAUDE_CONFIG_DIR in a write is refused, whatever assignments come before it, for an agent and the chief (T83 round 5)", () => {
   const s = session();
   const scratch = mkdtempSync(join(tmpdir(), "sage-scratch-"));
   const refused = [
@@ -2586,35 +2586,29 @@ test("N2-PREFIXVAR: a SAGE_HOME or CLAUDE_CONFIG_DIR before a command does not m
     `SAGE_HOME=${scratch} npm test; rm -rf $SAGE_HOME/p`,
     `SAGE_HOME=${scratch} npm test > $SAGE_HOME/log.txt`,
     `env SAGE_HOME=${scratch} rm -rf $SAGE_HOME/p`,
+    `SAGE_HOME=${scratch}; rm -rf $SAGE_HOME/p`,
+    `export SAGE_HOME=${scratch} && rm -rf $SAGE_HOME/p`,
+    `(export SAGE_HOME=${scratch}); rm -rf $SAGE_HOME/p`,
+    `false && SAGE_HOME=${scratch}; rm -rf $SAGE_HOME/p`,
+    `true || export SAGE_HOME=${scratch}; rm -rf \${SAGE_HOME}/p`,
+    `export SAGE_HOME=${scratch} | true; rm -rf $SAGE_HOME/p`,
+    `X=$(export SAGE_HOME=${scratch}; echo hi); rm -rf $SAGE_HOME/p`,
   ];
   for (const command of refused) {
     assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
     assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `chief: ${command}`);
   }
-  for (const command of [`SAGE_HOME=${scratch}; rm -rf $SAGE_HOME/p`, `export SAGE_HOME=${scratch} && rm -rf $SAGE_HOME/p`]) {
-    assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, `agent: ${command}`);
-    assert.equal(denied(s.send(bash(command))), undefined, `chief: ${command}`);
-  }
 });
 
-test("N4-READS: a reviewer's reads of sage.mjs pass: node --check, python reading it, diff <(git show …), grep … | head > a scratch file; runs and logbook writes stay refused (T83)", () => {
+test("N4-READS: diff <(git show …) of sage.mjs passes; runs of the state tool and logbook writes stay refused, also through python and node --check (T83 round 5)", () => {
   const s = session();
-  const scratch = mkdtempSync(join(tmpdir(), "sage-scratch-"));
   const path = "plugins/sage/skills/sage/sage.mjs";
-  const reads = [
-    `node --check ${path}`,
-    `node -c ${TOOL}`,
-    `python3 -c "print(open('${path}').read()[:200])"`,
-    `python3 - <<'PY'\nimport re\nsrc = open("${path}").read()\nprint(len(re.findall(r"refuse", src)))\nPY`,
-    `diff <(git show main:${path}) ${path}`,
-    `diff <(git show main:${path}) ${path} > ${scratch}/d.txt`,
-    `grep -n 'scriptRun.*(' ${path} | head -20 > ${scratch}/notes.txt`,
-    `grep -rn "tasks.tsv" plugins | head > ${scratch}/notes.txt`,
-  ];
-  for (const command of reads) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+  assert.equal(denied(s.send(bash(`diff <(git show main:${path}) ${path}`, FEATURE, AGENT))), undefined, "a diff");
   const runs = [
     `python3 -c "import subprocess; subprocess.run(['node', '${TOOL}', 'init'])"`,
     `python3 -c "__import__('os').system('node ${TOOL} init')"`,
+    `python3 -c "import pathlib; pathlib.os.system('node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA}')"`,
+    `python3 -c "import collections; collections._sys.modules['os'].system('node ${TOOL} init')"`,
     `node -c -e "import('${TOOL}')"`,
     `node --check ${path} && node ${TOOL} init`,
   ];
@@ -2623,4 +2617,40 @@ test("N4-READS: a reviewer's reads of sage.mjs pass: node --check, python readin
   for (const command of [`grep -rn x ${root}/p | head > ${root}/p/ledger.tsv`, `grep -l x ${root}/p/ledger.tsv | xargs rm`, `grep -n x ${path} | head > ${root}/p/notes.txt`]) {
     assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, command);
   }
+});
+
+test("S2-UNIQ: uniq IN OUT, sort -o FILE and less -o FILE write, so they are refused into the logbook, for an agent and the chief (T83 round 5)", () => {
+  const s = session();
+  const root = s.vars.SAGE_HOME;
+  for (const command of [`uniq rows.txt ${root}/p/ledger.tsv`, `sort -o ${root}/p/tasks.tsv x`, `sort --output=${root}/p/tasks.tsv x`, `less -o ${root}/p/ledger.tsv x`]) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
+    assert.match(denied(s.send(bash(command))) ?? "", /the chief never writes, moves or removes a logbook file/, `chief: ${command}`);
+  }
+  assert.equal(denied(s.send(bash("sort rows.txt | uniq -c > counts.txt", FEATURE, AGENT))), undefined, "uniq in a project");
+});
+
+test("Q1-DOLLARQ: a special parameter ($?, $#, $@ ...) is not a pattern, so an agent's test log with its exit code passes (T83 round 5)", () => {
+  const s = session();
+  const scratch = mkdtempSync(join(tmpdir(), "sage-scratch-"));
+  for (const command of [`npm test > ${scratch}/test.log 2>&1; echo exit=$?`, `node x.mjs "$@" > ${scratch}/out.txt; echo $# $$ $! $- $0`]) {
+    assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+  }
+  assert.match(denied(s.send(bash(`rm ${scratch}/../*`, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, "a real pattern stays near");
+});
+
+test("Q2-WORD: a refusal names the word that made the command near the logbook (T83 round 5)", () => {
+  const s = session();
+  const root = s.vars.SAGE_HOME;
+  const cases = [
+    ["rm -rf $SAGE_HOME/p", /"\$SAGE_HOME"/],
+    ["rm /tmp/x/*", /"\/tmp\/x\/\*"/],
+    ["cp x ~/.claude/y", /"~\/\.claude\/y"/],
+    [`echo x > ${root}/p/ledger.tsv`, `"${root.toLowerCase().slice(0, 40)}`],
+  ];
+  for (const [command, word] of cases) {
+    const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
+    assert.match(answer, LOGBOOK_SHELL, command);
+    assert.ok(typeof word === "string" ? answer.includes(word) : word.test(answer), `${command}: ${answer}`);
+  }
+  assert.match(denied(s.send(bash("rm -rf $SAGE_HOME/p"))) ?? "", /"\$SAGE_HOME" names the logbook/, "chief");
 });

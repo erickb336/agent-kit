@@ -504,10 +504,14 @@ const TABLES = ["tasks.tsv", "runs.tsv", "findings.tsv", "gates.tsv", "ledger.ts
 const fields = (v) => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(fields) : []);
 /** Text as APFS compares names: it ignores case and Unicode form, and folds compatibility forms (ſ is s, ﬆ is st). */
 const fold = (text) => text.normalize("NFKC").toLowerCase();
-/** The words of a command's text, in their own case. Quotes and backslashes are removed, so .cl''aude is .claude. */
+/**
+ * The words of a command's text, in their own case. Quotes and backslashes are removed, so .cl''aude is .claude. A
+ * special parameter ($? $# $* $@ $$ $! $- $0) is a variable, not a pattern, so it stays only as its "$".
+ */
 const wordsOf = (text) =>
   text
     .replace(/['"\\]/g, "")
+    .replace(/\$[?#*@$!0-]/g, "$")
     .replace(/\$\{(\w+)\}/g, "$$$1")
     .split(/[\s;&|()<>`=:]+/)
     .filter(Boolean);
@@ -538,51 +542,28 @@ function rootsOf(strict) {
     return raw ? [fold(raw)] : [];
   }
 }
-/** Does the text name the sage root: its path or a variable that sets it, or .claude then sage in one path, in any case or as a pattern? */
+/** The word that names the sage root: its path or a variable that sets it, or .claude then sage in one path, in any case or as a pattern. */
 function namesRoot(text, words, roots, cwd) {
   const low = fold(text.replace(/['"\\]/g, ""));
-  return usesRootVar(text, roots[1], cwd) || roots.some((r) => low.includes(r)) || words.some(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")));
+  return usesRootVar(text, roots[1], cwd) ?? roots.find((r) => low.includes(r)) ?? words.find(({ parts }) => parts.some((p, k) => names(p, ".claude") && names(parts[k + 1] ?? "", "sage")))?.word;
 }
 /**
- * Does the text use a variable that sets the sage root (sageRoot: SAGE_HOME, CLAUDE_CONFIG_DIR)? An assignment of a
- * plain path that does not overlap the real root (a scratch or temp SAGE_HOME for tests) is no use. A later $VAR of it is
- * no use only when the assignment is a command of its own (also after export): one before a program (SAGE_HOME=x rm …)
- * applies to that program alone, and the shell expands that command's $VAR before it (T83-N2). Every other mention is a
- * use: a $VAR (also ${VAR}, $env:VAR, %VAR%) that no such assignment made safe, an assignment of any other value, and a
- * bare name in a command with a substitution or a pipe, which can read the variable (printenv). Without the real root
- * (root), every mention is a use. In text that the hook cannot read, no assignment makes a $VAR safe.
+ * The first use in the text of a variable that sets the sage root (sageRoot: SAGE_HOME, CLAUDE_CONFIG_DIR), or undefined.
+ * Every $VAR (also ${VAR}, $env:VAR, %VAR%) is a use, whatever assignments come before it (T83-N2: a prefix, a subshell,
+ * a pipe, a $( ) or a skipped && can each keep the real value). An assignment is a use unless its value is a plain path
+ * that does not overlap the real root (a scratch SAGE_HOME for tests). A bare name is a use in a command with a
+ * substitution or a pipe, which can read the variable (printenv). Without the real root (root), every mention is a use.
  */
 const ROOT_VAR = /(\$\{?|\$env:|%)?\b(SAGE_HOME|CLAUDE_CONFIG_DIR)\b(=([^\s;&|<>()`]*))?/gi;
-const ASSIGNS = /^(?:export|declare|typeset|local|readonly)$/;
 function usesRootVar(text, root, cwd) {
-  if (!/SAGE_HOME|CLAUDE_CONFIG_DIR/i.test(text)) return false;
-  let commands;
-  try {
-    commands = shellCommands(text).map(({ words, redirects, bodies }) => {
-      const own = words.find((w) => !/^\w+=/.test(w));
-      return { text: [...words, ...redirects, ...bodies].join(" "), alone: own === undefined || ASSIGNS.test(own) };
-    });
-  } catch {
-    commands = [{ text, alone: false }];
-  }
-  const safe = new Set();
   const reads = /\$\(|`|\|/.test(text);
-  for (const c of commands) {
-    const made = [];
-    for (const [, ref, name, set, value] of c.text.replace(/['"\\]/g, "").matchAll(ROOT_VAR)) {
-      if (ref) {
-        if (!safe.has(name)) return true;
-      } else if (set) {
-        if (!root || !value || /[$`*?[{%]/.test(value) || overlaps(canonical(from(cwd, pathOf(value))), root)) return true;
-        if (c.alone) made.push(name);
-      } else if (reads) return true;
-    }
-    for (const name of made) safe.add(name);
+  for (const [use, ref, , set, value] of text.replace(/['"\\]/g, "").matchAll(ROOT_VAR)) {
+    if (ref || (set ? !root || !value || /[$`*?[{%]/.test(value) || overlaps(canonical(from(cwd, pathOf(value))), root) : reads)) return use;
   }
-  return false;
+  return undefined;
 }
-/** Does the text name a logbook file, in any case or as a pattern? */
-const namesTable = (words) => words.some(({ parts }) => parts.some((p) => TABLES.some((t) => names(p, t))));
+/** The word that names a logbook file, in any case or as a pattern. */
+const namesTable = (words) => words.find(({ parts }) => parts.some((p) => TABLES.some((t) => names(p, t))))?.word;
 /** A path into a project's worktrees (<project>/.claude/worktrees/<name>), where agents work: plain, with no "..", pattern or variable. */
 const worktree = (word) => /(?:^|\/)\.claude\/worktrees\/[\w-]/.test(word) && word.split(".claude").length === 2 && !/[*?[{$~]/.test(word) && !word.split("/").includes("..");
 /** A path from the cwd, as the shell gives it to the system: ".." is not removed here, so the system resolves it after a link. */
@@ -596,11 +577,12 @@ function pathOf(word) {
   return (k < 0 ? parts : parts.slice(0, k)).join("/") || (word.startsWith("/") ? "/" : ".");
 }
 /**
- * Is an agent's command near the logbook (deny by default)? It names the sage root or a logbook file's folder; or
- * .claude (not in a plain worktree path); or the home folder with a variable or a pattern; or it changes to the home
- * folder. A word that, through the links on disk, is in the sage root or holds it is near too. A pattern or a logbook
- * file's name is near only in a command that can leave the cwd: cd or pushd, "..", ~, $, a backtick, or an absolute path
- * (the owner's decision T83-COST-GLOB, so that rm dist/* and jq ... > config.json pass in a project).
+ * The word that makes an agent's command near the logbook (deny by default), or undefined. It names the sage root or a
+ * logbook file's folder; or .claude (not in a plain worktree path); or the home folder with a variable or a pattern; or
+ * it changes to the home folder. A word that, through the links on disk, is in the sage root or holds it is near too. A
+ * pattern or a logbook file's name is near only in a command that can leave the cwd: cd or pushd, "..", ~, $, a
+ * backtick, or an absolute path (the owner's decision T83-COST-GLOB, so that rm dist/* and jq ... > config.json pass in
+ * a project).
  */
 function nearLogbook(text, roots, cwd) {
   const words = partsOf(text);
@@ -613,16 +595,17 @@ function nearLogbook(text, roots, cwd) {
     /[$`]/.test(text) ||
     words.some(({ word, parts }) => /^(?:cd|pushd)$/.test(word) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(word) && !/^\/dev\/(?:null|stdout|stderr)$/.test(word)));
   const unique = [...new Set(wordsOf(text))]; // each word once: a long line repeats words
-  const resolved = unique.filter((w) => !/[$`]/.test(w)).map((w) => canonical(from(cwd, pathOf(w))));
+  const lowWords = wordsOf(low);
+  const cdHome = lowWords.findIndex((word, k) => /^(?:cd|pushd)$/.test(word) && atHome(lowWords[k + 1] ?? "-"));
   return (
-    namesRoot(text, plain, roots, cwd) ||
-    plain.some(({ word, parts }) => parts.includes(".claude") && !worktree(word)) ||
-    (leaves && (words.length > plain.length || namesTable(words))) ||
-    resolved.some((p) => overlaps(p, roots[1])) ||
-    unique.some((w) => linkOnPattern(w, cwd)) ||
-    words.some(({ word }) => fromHome(word) && /[*?[{$]/.test(word.replace(/^\$home/, ""))) ||
-    /(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(low) ||
-    wordsOf(low).some((word, k, all) => /^(?:cd|pushd)$/.test(word) && atHome(all[k + 1] ?? "-"))
+    namesRoot(text, plain, roots, cwd) ??
+    plain.find(({ word, parts }) => parts.includes(".claude") && !worktree(word))?.word ??
+    (leaves ? words.find(({ word }) => GLOB.test(word))?.word ?? namesTable(words) : undefined) ??
+    unique.find((w) => !/[$`]/.test(w) && overlaps(canonical(from(cwd, pathOf(w))), roots[1])) ??
+    unique.find((w) => linkOnPattern(w, cwd)) ??
+    words.find(({ word }) => fromHome(word) && /[*?[{$]/.test(word.replace(/^\$home/, "")))?.word ??
+    (/(?:^|[\s;&|(`])(?:cd|pushd)[ \t]*(?:$|[\n;&|)`])/m.test(low) ? "cd" : undefined) ??
+    (cdHome < 0 ? undefined : lowWords.slice(cdHome, cdHome + 2).join(" "))
   );
 }
 /**
@@ -646,21 +629,24 @@ function linkOnPattern(word, cwd) {
     throw e; // the agent check refuses what it cannot read
   }
 }
-/** Does a link command (ln, link) make a link whose target the hook cannot read, or whose target, read from the link's folder, overlaps the root? */
+/** The word of a link command (ln, link) whose target the hook cannot read, or whose target, read from the link's folder, overlaps the root. */
 function linksNear(text, root, cwd) {
-  return shellCommands(text).some(({ words }) => {
+  for (const { words } of shellCommands(text)) {
     const k = words.findIndex((w) => !/^\w+=/.test(w));
-    if (!/^(?:ln|link)$/.test(basename(words[k] ?? ""))) return false;
-    if (words.some((w) => w.includes("$"))) return true; // also $(…) and a backtick, which shellCommands gives as $(…)
+    if (!/^(?:ln|link)$/.test(basename(words[k] ?? ""))) continue;
+    const variable = words.find((w) => w.includes("$")); // also $(…) and a backtick, which shellCommands gives as $(…)
+    if (variable) return variable;
     const operands = words.slice(k + 1).filter((w) => !w.startsWith("-"));
     const link = from(cwd, operands.at(-1) ?? ".");
-    return operands.some((w) => [link, dirname(link)].some((dir) => overlaps(canonical(from(dir, pathOf(w))), root)));
-  });
+    const near = operands.find((w) => [link, dirname(link)].some((dir) => overlaps(canonical(from(dir, pathOf(w))), root)));
+    if (near) return near;
+  }
+  return undefined;
 }
-/** The commands that write, move, remove or link a file, also in PowerShell (case does not matter there). */
-const WRITE_NAMES = new Set(["tee", "cp", "mv", "rm", "rmdir", "ln", "link", "install", "touch", "dd", "truncate", "rsync", "sponge", "patch", "unlink", "shred", "tar", "unzip", "set-content", "out-file", "add-content", "copy-item", "move-item", "remove-item", "rename-item", "new-item", "ni", "sc", "ac", "del"]);
+/** The commands that write, move, remove or link a file, also in PowerShell (case does not matter there). uniq IN OUT and less -o FILE write, so uniq and less always count. */
+const WRITE_NAMES = new Set(["uniq", "less", "tee", "cp", "mv", "rm", "rmdir", "ln", "link", "install", "touch", "dd", "truncate", "rsync", "sponge", "patch", "unlink", "shred", "tar", "unzip", "set-content", "out-file", "add-content", "copy-item", "move-item", "remove-item", "rename-item", "new-item", "ni", "sc", "ac", "del"]);
 /** The commands that only read: their words name no command to run, so only a redirection makes them write. */
-const READERS = /^(?:cat|grep|egrep|fgrep|rg|head|tail|wc|echo|printf|ls|less|diff|cut|uniq|stat|file|jq|cd|pushd)$/;
+const READERS = /^(?:cat|grep|egrep|fgrep|rg|head|tail|wc|echo|printf|ls|diff|cut|stat|file|jq|cd|pushd)$/;
 /** A redirection (operator and target, as shellCommands keeps it) to a file: not /dev/null, /dev/stdout or /dev/stderr, an input or a &N duplicate. */
 function toFile(redirect) {
   const [, op, to] = /^(&>>?|>>|>\||>&|<>|<&|>|<)([^]*)$/.exec(redirect);
@@ -677,25 +663,11 @@ function writesIn({ words, redirects }) {
     base.some((w) => WRITE_NAMES.has(w)) ||
     (has(/^g?sed$|^perl$|^ruby$/) && low.some((w) => /^-[a-z]*i|^--in-place/.test(w))) ||
     (has(/^g?awk$/) && low.includes("inplace")) ||
+    (has(/^g?sort$/) && low.some((w) => /^-[a-z]*o|^--output/.test(w))) ||
     (has(/^find$/) && low.some((w) => /^-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)$/.test(w))) ||
     (has(/^(?:node|deno|bun|python[\d.]*|perl|ruby|php|osascript|sh|bash|zsh|dash|ksh|fish|pwsh|powershell)$/) && low.some((w) => /^-(?:[a-z]*[ce]|p|-eval|-print|command)$/.test(w))) ||
     /^(?:eval|source|\.|exec)$/.test(base[low.findIndex((w) => !/^\w+=/.test(w))] ?? "")
   );
-}
-/**
- * The text of a command line that can say where it writes. When its only writes are the redirections of readers (grep …
- * | head > notes), a reader's arguments only name what it reads, so they are left out (T83-N4); its redirections and
- * every other command stay. A line with another write, or that the hook cannot read, is kept whole.
- */
-function writeText(text) {
-  try {
-    const commands = shellCommands(text);
-    const reader = ({ words }) => READERS.test(basename(words.find((w) => !/^\w+=/.test(w)) ?? "").toLowerCase()) && !/^(?:cd|pushd)$/.test(words.find((w) => !/^\w+=/.test(w)));
-    if (commands.some((c) => !reader(c) && writesIn(c))) return text;
-    return commands.map((c) => [...(reader(c) ? c.words.slice(0, c.words.findIndex((w) => !/^\w+=/.test(w)) + 1) : [...c.words, ...c.bodies]), ...c.redirects].join(" ")).join("\n");
-  } catch {
-    return text;
-  }
 }
 /** Does one field of a command's text have a write form? A text that the hook cannot read counts as one (fail closed). */
 function writes(text) {
@@ -721,12 +693,13 @@ function underRoot(input) {
   const path = canonical(from(input.cwd ?? process.cwd(), String(ti.file_path ?? ti.notebook_path ?? "")));
   return path === root || path.startsWith(root + sep) ? `the sage root ${root} (${path})` : undefined;
 }
-/** Does a command tool's input write a logbook file? sage: in sage mode a logbook file's name counts too. */
+/** The word with which a command tool's input writes a logbook file, or undefined. sage: in sage mode a logbook file's name counts too. */
 function shellWrite(ti, sage, cwd) {
   const text = fields(ti);
   const all = text.join("\n");
   const words = partsOf(all);
-  return text.some(writes) && (namesRoot(all, words, rootsOf(false), cwd) || (sage && namesTable(words))) && !stateToolOnly(typeof ti.command === "string" ? ti.command : "");
+  if (!text.some(writes) || stateToolOnly(typeof ti.command === "string" ? ti.command : "")) return undefined;
+  return namesRoot(all, words, rootsOf(false), cwd) ?? (sage ? namesTable(words) : undefined);
 }
 /**
  * The chief's own tools change no logbook file either (S2): only sage.mjs does, so each change leaves its record. A file
@@ -744,7 +717,8 @@ function chiefProblem(input, sage) {
     }
   }
   if (!SHELL_TOOLS.test(input.tool_name ?? "")) return undefined;
-  return shellWrite(input.tool_input ?? {}, sage, input.cwd ?? process.cwd()) ? "the chief never writes, moves or removes a logbook file from the shell." : undefined;
+  const word = shellWrite(input.tool_input ?? {}, sage, input.cwd ?? process.cwd());
+  return word && `the chief never writes, moves or removes a logbook file from the shell (${quoted(word)} names the logbook).`;
 }
 /**
  * Does a command's text run the state tool ("tool") or the PR script ("pr")? It decides on the programs that run
@@ -752,16 +726,11 @@ function chiefProblem(input, sage) {
  * a mention, so a read, a diff or a commit message that names sage.mjs passes (T83-C2). A program runs the file when it is
  * the file, or when it is an interpreter (node, python, ...) whose words up to its script, whose heredoc or whose piped
  * input name the file; a shell does when its heredoc or piped input names it. A variable or substitution in such a place
- * runs the file when the text names it anywhere, and so does text that the hook cannot read. Two reads pass:
- * node --check <file>, and python code that imports only READ_MODULES and has no exec, eval, compile or "__".
- * Deliberate forgery past this is the sandbox's job.
+ * runs the file when the text names it anywhere, and so does text that the hook cannot read. Deliberate forgery past
+ * this is the sandbox's job.
  */
 const kind = (text) => (/sage-pr\.mjs/i.test(text) ? "pr" : /sage\.mjs/i.test(text) ? "tool" : undefined);
 const INTERPRETERS = /^(?:node|nodejs|deno|bun|python[\d.]*|perl|ruby|php|osascript|source|\.)$/;
-const READ_MODULES = /^(?:re|json|difflib|textwrap|collections|itertools|hashlib|pathlib)$/;
-/** Python code that cannot start a program: it imports only READ_MODULES, and has no exec, eval, compile or "__". */
-const pythonReads = (code) =>
-  !/__|\b(?:exec|eval|compile)\b/.test(code) && [...code.matchAll(/\b(?:from|import)\s+([\w., \t]+)/g)].every(([, names]) => names.split(/[\s,]+/).filter(Boolean).every((n) => READ_MODULES.test(n) || n === "import"));
 function scriptRun(text, cwd) {
   const named = kind(text.replace(/['"\\]/g, ""));
   if (!named) return undefined;
@@ -780,13 +749,10 @@ function scriptRun(text, cwd) {
       const run = stdin.map(kind).sort()[0]; // programsRun reads their -c text and eval's words
       if (run) return run;
     } else if (INTERPRETERS.test(name)) {
-      if (/^node(?:js)?$/.test(name) && /^(?:-c|--check)$/.test(args[0] ?? "") && !(args[1] ?? "-").startsWith("-")) continue; // a syntax check only
       const script = args.findIndex((w) => !w.startsWith("-"));
       const head = script < 0 ? args : args.slice(0, script + 1);
       if (head.some((w) => w.includes("$"))) return named;
-      const code = [...head, ...stdin];
-      if (/^python[\d.]*$/.test(name) && pythonReads(code.join("\n"))) continue;
-      const run = code.map(kind).sort()[0];
+      const run = [...head, ...stdin].map(kind).sort()[0];
       if (run) return run;
     }
   }
@@ -827,7 +793,9 @@ function agentCheck(input, file) {
   }
   const text = fields(ti);
   const cwd = input.cwd ?? process.cwd();
-  return text.some(writes) && (nearLogbook(text.map(writeText).join("\n"), roots, cwd) || text.some((t) => linksNear(t, roots[1], cwd))) ? "an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it." : undefined;
+  if (!text.some(writes)) return undefined;
+  const word = nearLogbook(text.join("\n"), roots, cwd) ?? text.map((t) => linksNear(t, roots[1], cwd)).find(Boolean);
+  return word && `an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it. ${quoted(word)} makes this command near the logbook: change or remove it.`;
 }
 
 /**
