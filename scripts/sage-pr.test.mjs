@@ -21,7 +21,8 @@ const timeout = 20_000;
  * The fake gh: it records each call (arguments, folder, the folder's entries, token, config folder, the names of its
  * environment's variables, the repository that git finds in its folder after a git status, as real gh's git calls would,
  * and the mode of a --body-file) and plays GitHub's pull requests on the bare repository, as gh and GitHub do: list is
- * newest first; view of a branch takes the newest open pull request, else the newest (gh's findForBranch); create
+ * newest first, at most --limit entries (default 30, as gh's), filtered by the branch name only, so forks' pull requests
+ * count towards the limit, as in GitHub's API; view of a branch takes the newest open pull request, else the newest (gh's findForBranch); create
  * refuses a second open pull request of one branch into one base in the repository itself (GitHub's 422). A pull
  * request in FAKE_GH_STATE may have base (default main), cross (from a fork) and owner (its head repository's owner,
  * default "owner"); its headRefOid is oid (set by merge), else the branch's tip in the bare repository.
@@ -53,7 +54,7 @@ const json = (p) => { const all = { number: p.number, state: p.state, url: url(p
 const newest = (list) => [...list].sort((a, b) => b.number - a.number);
 if (args[1] === env.FAKE_GH_FAIL) { console.error(env.FAKE_GH_ERR ?? "HTTP 502: Bad Gateway (https://api.github.com/graphql)"); process.exit(1); }
 const pick = () => (/^[0-9]+$/.test(after) ? prs.find((x) => x.number === Number(after)) : newest(prs.filter((x) => x.head === after)).sort((a, b) => (b.state === "OPEN") - (a.state === "OPEN"))[0]);
-if (args[1] === "list") console.log(JSON.stringify(newest(prs.filter((p) => p.head === flag("head") && (p.base ?? "main") === flag("base") && (flag("state") === "all" || p.state === flag("state").toUpperCase()))).map(json)));
+if (args[1] === "list") console.log(JSON.stringify(newest(prs.filter((p) => p.head === flag("head") && (p.base ?? "main") === flag("base") && (flag("state") === "all" || p.state === flag("state").toUpperCase()))).slice(0, Number(flag("limit") ?? 30)).map(json)));
 else if (args[1] === "create") {
   if (prs.some((p) => p.state === "OPEN" && p.head === flag("head") && (p.base ?? "main") === flag("base") && !p.cross)) { console.error("pull request create failed: GraphQL: A pull request already exists for owner:" + flag("head") + ". (createPullRequest)"); process.exit(1); }
   prs.push({ number: prs.length + 1, head: flag("head"), base: flag("base"), state: "OPEN" }); save(); console.log(env.FAKE_GH_CREATE_OUT ?? url(prs.length));
@@ -197,7 +198,7 @@ test("create pushes the reviewed head and opens one pull request, with gh in an 
   assert.equal(w.remote("refs/heads/claude/t1"), head);
   const calls = w.calls();
   assert.deepEqual(calls.map((c) => c.args.slice(0, -1).concat(c.args.at(-1).startsWith("--body-file=") ? ["--body-file=<temp>"] : c.args.at(-1))), [
-    ["pr", "list", "--repo=owner/repo", "--head=claude/t1", "--base=main", "--state=all", "--json=number,url,state,headRefOid,isCrossRepository,headRepositoryOwner"],
+    ["pr", "list", "--repo=owner/repo", "--head=claude/t1", "--base=main", "--state=all", "--limit=100", "--json=number,url,state,headRefOid,isCrossRepository"],
     ["pr", "create", "--repo=owner/repo", "--base=main", "--head=claude/t1", "--title=T1: Add b", "--body-file=<temp>"],
   ]);
   for (const c of calls) {
@@ -561,9 +562,12 @@ test("T96-S2: no message prints the origin's user or password, nor the arguments
   refused(r, /the origin of .*\/project is not a GitHub repository/);
   assert.doesNotMatch(r.stderr, /s3cret/);
   w.env.SAGE_REPO = "owner/repo";
-  const secret = "https://user:s3cret-token@github.com/owner/repo.git";
-  w.p("remote", "set-url", "origin", secret);
-  w.route(`${w.at("nowhere")}//user:s3cret-token@host/repo.git`, secret); // a local path: the fetch fails with no network
+  w.p("remote", "set-url", "origin", "https://user:s3cret-token@github.com/owner/repo.git");
+  r = w.pr("create", "T1");
+  refused(r, /the origin of .*\/project is not a GitHub repository/);
+  assert.doesNotMatch(r.stderr, /s3cret/);
+  w.p("remote", "set-url", "origin", ORIGIN);
+  w.route(`${w.at("nowhere")}//user:s3cret-token@host/repo.git`); // a local path: the fetch fails with no network
   r = w.pr("create", "T1");
   assert.equal(r.status, 2, r.stderr);
   assert.equal(r.stderr, "sage-pr: failed: git fetch failed with exit 128\n");
@@ -583,7 +587,7 @@ test("T96-S4: a fork's open pull request with the task's branch name is not the 
 
 test("T96-S5: SAGE_REPO that is not the GitHub origin's repository refuses before gh", () => {
   const w = world();
-  for (const url of ["https://github.com/other/repo.git", "https://x-access-token:s3cret@github.com/other/repo.git", "git@github.com:other/repo.git"]) {
+  for (const url of ["https://github.com/other/repo.git", "ssh://git@github.com/other/repo", "git@github.com:other/repo.git"]) {
     w.p("remote", "set-url", "origin", url);
     const r = w.pr("view", "T1");
     refused(r, /SAGE_REPO is not the origin's repository other\/repo, so gh and git would act on two repositories\. Unset SAGE_REPO, or set it to other\/repo/);
@@ -716,7 +720,7 @@ test("T96-R3-NEXTSTEP3: each refusal names the next step", () => {
   w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
   rmSync(w.mirror, { recursive: true });
   writeFileSync(w.mirror, "");
-  refused(w.pr("create", "T1"), /^sage-pr: refused: .*\/mirror\.git is not a folder: ask the user to remove it\n$/);
+  refused(w.pr("create", "T1"), /^sage-pr: refused: .*\/mirror\.git is not a bare git repository: ask the user to remove it\. The next call then makes a new mirror\n$/);
   w.p("remote", "remove", "origin");
   refused(w.pr("view", "T1"), /^sage-pr: refused: the project (.*\/project) has no origin remote: git -C \1 remote add origin <address>\n$/);
   assert.deepEqual(w.calls().map((c) => c.args[1]), ["list"], "only before the mirror check");
@@ -1141,4 +1145,110 @@ test("T170: the project must be the logbook's checkout, outside the worktree roo
   w.p("remote", "set-url", "origin", ORIGIN);
   assert.equal(w.pr("create", "T1").status, 0);
   assert.equal(w.remote("refs/heads/claude/t1"), head);
+});
+
+test("T165-Q4-MIRRORPARENT: a mirror.git that is not a bare repository refuses, and git never uses a repository above it", () => {
+  const w = world();
+  const head = w.commit("b.txt");
+  w.sage("verdict", "T1", "--sha", head, "--kind", "checks-pass");
+  // The sage root is a repository with its own main (a dotfiles repository, say), routed to the stand-in so that the old
+  // script's fetch reaches no network.
+  const parent = w.at("sage");
+  w.git("init", "-q", "-b", "main", parent);
+  w.git("-C", parent, "commit", "-q", "--allow-empty", "-m", "dotfiles");
+  w.git("-C", parent, "config", `url.${w.at("remote.git")}.insteadOf`, ORIGIN);
+  w.git("-C", parent, "config", "--add", `url.${w.at("nowhere")}/.insteadOf`, "https://github.com/");
+  const before = w.git("-C", parent, "for-each-ref");
+  const why = /^sage-pr: refused: .*\/mirror\.git is not a bare git repository: ask the user to remove it\. The next call then makes a new mirror\n$/;
+  rmSync(w.mirror, { recursive: true });
+  mkdirSync(w.mirror); // an empty folder
+  refused(w.pr("create", "T1"), why);
+  assert.equal(w.git("-C", parent, "for-each-ref"), before, "the parent repository's refs are untouched");
+  assert.deepEqual(readdirSync(w.mirror), [], "the script leaves the folder as it was");
+  w.git("init", "-q", w.mirror); // a repository with a work tree, not bare
+  refused(w.pr("create", "T1"), why);
+  rmSync(w.mirror, { recursive: true, force: true });
+  w.git("init", "-q", "--bare", w.mirror);
+  w.git("--git-dir", w.mirror, "config", "core.bare", "false"); // a git folder that says it is not bare
+  refused(w.pr("create", "T1"), why);
+  rmSync(join(parent, ".git"), { recursive: true }); // no repository above: the same refusal, not "git fetch failed"
+  rmSync(w.mirror, { recursive: true });
+  mkdirSync(w.mirror);
+  refused(w.pr("create", "T1"), why);
+  assert.equal(w.remote("refs/heads/claude/t1"), "", "nothing was pushed");
+});
+
+test("T165-Q4-MIRRORINIT: with no mirror, create makes a bare one in the logbook folder and leaves no work folder", () => {
+  const { w, head } = ready();
+  rmSync(w.mirror, { recursive: true });
+  // An ssh origin and an ssh on PATH that serves the stand-in: the new mirror has no config that routes https.
+  w.p("remote", "set-url", "origin", "ssh://git@github.com/owner/repo.git");
+  writeFileSync(w.at("bin", "ssh"), `#!/bin/sh\nfor a; do last="$a"; done\ncase "$last" in\n  git-upload-pack*) exec git upload-pack ${w.at("remote.git")} ;;\n  git-receive-pack*) exec git receive-pack ${w.at("remote.git")} ;;\nesac\nexit 1\n`);
+  chmodSync(w.at("bin", "ssh"), 0o755);
+  const r = w.pr("create", "T1");
+  assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; opened https://github.com/owner/repo/pull/1; T1 has PR 1 in the logbook\n`, r.stderr);
+  assert.equal(w.remote("refs/heads/claude/t1"), head);
+  assert.equal(w.git("--git-dir", w.mirror, "rev-parse", "--is-bare-repository"), "true");
+  assert.equal(w.git("--git-dir", w.mirror, "rev-parse", "refs/heads/main"), w.remote("refs/heads/main"));
+  assert.deepEqual(readdirSync(w.logbook).filter((n) => n.startsWith(".sage-pr-")), []);
+});
+
+test("T165-C2-ORIGINHASH: only the exact GitHub forms are an origin; a user part, '#', '?', a port or another host refuses", () => {
+  const w = world();
+  delete w.env.SAGE_REPO;
+  const no = /^sage-pr: refused: the origin of .*\/project is not a GitHub repository, and sage-pr pushes only to GitHub: git -C .*\/project remote set-url origin https:\/\/github\.com\/<owner>\/<name>\.git\n$/;
+  for (const url of [
+    "https://evil.example#@github.com/owner/repo.git",
+    "https://evil.example?@github.com/owner/repo.git",
+    "https://github.com/owner/repo.git#frag",
+    "https://github.com/owner/repo.git?x=1",
+    "https://user@github.com/owner/repo.git",
+    "https://x-access-token:s3cret@github.com/owner/repo.git",
+    "https://github.com:8443/owner/repo.git",
+    "https://github.com:443/owner/repo.git",
+    "https://github.com.evil.example/owner/repo.git",
+    "https://evilgithub.com/owner/repo.git",
+    "https://GitHub.com/owner/repo.git", // upper case refuses too: only the form that GitHub prints passes
+    "https://github.com/owner/repo/extra.git",
+    "https://github.com/owner/..",
+    "https://github.com/../repo.git",
+    "ssh://git@github.com:2222/owner/repo.git",
+    "ssh://git@evil.example/owner/repo.git",
+    "ssh://evil@github.com/owner/repo.git",
+    "git@evil.example:owner/repo.git",
+    "git@github.com:owner/repo#x",
+    "http://github.com/owner/repo.git",
+  ]) {
+    w.p("remote", "set-url", "origin", url);
+    const r = w.pr("view", "T1");
+    refused(r, no);
+    assert.doesNotMatch(r.stderr, /evil|s3cret/, url);
+  }
+  assert.deepEqual(w.calls(), [], "no gh call for a refused origin");
+  for (const url of ["https://github.com/owner/repo.git", "https://github.com/owner/repo", "https://github.com/owner/repo/", "ssh://git@github.com/owner/repo.git", "git@github.com:owner/repo.git", "git@github.com:owner/repo"]) {
+    w.p("remote", "set-url", "origin", url);
+    const r = w.pr("view", "T1");
+    assert.equal(r.stderr, 'sage-pr: failed: gh pr view failed: no pull requests found for branch "claude/t1"\n', url);
+    assert.deepEqual(w.calls().at(-1).args.slice(0, 3), ["pr", "view", "--repo=owner/repo"], url);
+  }
+});
+
+test("T165-S2-LIMIT: 30 or more fork pull requests with the task's branch name do not hide the task's own; a full list refuses", () => {
+  const { w, head } = ready();
+  const forks = (n) => Array.from({ length: n }, (_, i) => ({ number: i + 2, head: "claude/t1", state: "OPEN", cross: true, owner: `stranger${i}` }));
+  writeFileSync(w.at("gh.json"), JSON.stringify([{ number: 1, head: "claude/t1", state: "OPEN" }, ...forks(40)]));
+  let r = w.pr("create", "T1");
+  assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; pull request #1 https://github.com/owner/repo/pull/1 is open; T1 has PR 1 in the logbook\n`, r.stderr);
+  writeFileSync(w.at("gh.json"), JSON.stringify([{ number: 1, head: "claude/t1", state: "OPEN" }, ...forks(99)]));
+  r = w.pr("create", "T1");
+  refused(r, /^sage-pr: refused: GitHub lists 100 or more pull requests of claude\/t1 into main \(forks' pull requests with the same branch name count too\), so the task's own can be missing from the list: ask the user\n$/);
+  assert.equal(w.calls().filter((c) => c.args[1] === "create").length, 0, "no pull request was opened");
+});
+
+test("T165-C3-OWNER: the task's own pull request counts after the owner is renamed (its head owner's name differs from the origin's)", () => {
+  const { w, head } = ready();
+  writeFileSync(w.at("gh.json"), JSON.stringify([{ number: 1, head: "claude/t1", state: "OPEN", owner: "old-name" }]));
+  const r = w.pr("create", "T1");
+  assert.equal(r.stdout, `pushed ${short(head)} to claude/t1; pull request #1 https://github.com/owner/repo/pull/1 is open; T1 has PR 1 in the logbook\n`, r.stderr);
+  assert.equal(w.calls().filter((c) => c.args[1] === "create").length, 0, "no second pull request");
 });

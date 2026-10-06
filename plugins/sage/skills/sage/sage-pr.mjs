@@ -15,7 +15,7 @@
 // script's own checks), 2 failed (git or gh failed, or the logbook stayed busy), 3 merged but the mirror refresh failed
 // (run merge again later). A folder that the script cannot remove at the end gives a warning, never another exit code.
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PR, git, mergeCheck, ofTask, projectRoot, read, sage, storeDir, withLock, worktreeRoot } from "./sage.mjs";
@@ -25,8 +25,18 @@ const BASE = "main";
 export const BUNDLE_MAX = 100 * 1024 * 1024;
 const VERBS = ["create", "view", "merge"];
 const TASK = /^T[1-9][0-9]{0,5}$/;
-/** owner/name of a GitHub repository, from an https (also with a user or token), ssh or scp-form origin. */
-const GITHUB = /^(?:https:\/\/(?:[^/@\s]+@)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
+/**
+ * owner and name of a GitHub repository, from an origin in exactly one of three forms, each with an optional .git and /:
+ * https://github.com/<owner>/<name>, ssh://git@github.com/<owner>/<name> and git@github.com:<owner>/<name>. The whole
+ * address must match, so a user or token, a port, a query, a fragment, another host and an upper-case host refuse: a '#'
+ * or '?' in a user part puts another host in front of github.com (https://evil.example#@github.com/o/r).
+ */
+const GITHUB = /^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
+/** owner/name of a GitHub origin, or undefined. A part of only dots is no name: git would read it as a parent folder. */
+const repoOf = (url) => {
+  const m = GITHUB.exec(url);
+  return m && !/^\.+$/.test(m[1]) && !/^\.+$/.test(m[2]) ? `${m[1]}/${m[2]}` : undefined;
+};
 
 /** The variables that hold a gh token: their values never print. Read once at the start, before the environment is cleaned. */
 const SECRETS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"].map((v) => process.env[v]).filter(Boolean);
@@ -128,8 +138,7 @@ export function record(task, verb, env = process.env) {
     no(`the project ${project} has no origin remote: git -C ${project} remote add origin <address>`);
   }
   if (!url || url.startsWith("-")) no(`the origin of ${project} is not a repository address: git -C ${project} remote set-url origin <address>`);
-  // owner/name only: the pattern takes no user, password or host
-  const repo = GITHUB.exec(url)?.[1] ?? no(`the origin of ${project} is not a GitHub repository, and sage-pr pushes only to GitHub: git -C ${root} remote set-url origin https://github.com/<owner>/<name>.git`);
+  const repo = repoOf(url) ?? no(`the origin of ${project} is not a GitHub repository, and sage-pr pushes only to GitHub: git -C ${root} remote set-url origin https://github.com/<owner>/<name>.git`);
   if (env.SAGE_REPO !== undefined && env.SAGE_REPO.toLowerCase() !== repo.toLowerCase()) no(`SAGE_REPO is not the origin's repository ${repo}, so gh and git would act on two repositories. Unset SAGE_REPO, or set it to ${repo}`);
   return { project, dir, t, branch, head, url, repo };
 }
@@ -146,15 +155,28 @@ function run(args, env) {
     throw Object.assign(new Error(`git ${command} failed with exit ${e.status ?? e.code}`), { status: e.status });
   }
 }
-/** git in the mirror. */
-const inMirror = (mirror, args, env) => run(["-C", mirror, ...args], env);
+/** git in the mirror, named with --git-dir: git then never looks for a repository in a folder above it. */
+const inMirror = (mirror, args, env) => run([`--git-dir=${mirror}`, ...args], env);
 
-/** The mirror: a bare repository in the logbook folder that only this script writes, with main fetched from the origin now. */
-function mirrorOf(dir, url, env) {
+/**
+ * The mirror: a bare repository in the logbook folder that only this script writes, with main fetched from the origin now.
+ * A new mirror is made in the script's folder and then moved in whole, so a stopped call leaves no half-made mirror (the
+ * next call removes the script's old folders). Anything else at the mirror's path (a file, a link, an empty or other
+ * folder, a repository that is not bare) refuses: it is the user's to remove, and the script removes no data it did not make.
+ */
+function mirrorOf(dir, url, temp, env) {
   const mirror = join(dir, "mirror.git");
   const st = lstatSync(mirror, { throwIfNoEntry: false });
-  if (st && !st.isDirectory()) no(`${mirror} is not a folder: ask the user to remove it`);
-  if (!st) run(["init", "-q", "--bare", mirror], env);
+  if (!st) {
+    run(["init", "-q", "--bare", join(temp, "mirror.git")], env);
+    renameSync(join(temp, "mirror.git"), mirror);
+  } else {
+    let bare;
+    try {
+      bare = st.isDirectory() && inMirror(mirror, ["rev-parse", "--is-bare-repository"], env);
+    } catch {}
+    if (bare !== "true") no(`${mirror} is not a bare git repository: ask the user to remove it. The next call then makes a new mirror`);
+  }
   rmSync(join(mirror, "FETCH_HEAD"), { force: true }); // an older script's, with the origin's address in it
   inMirror(mirror, ["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", url, `+refs/heads/${BASE}:refs/heads/${BASE}`], env);
   return mirror;
@@ -239,14 +261,18 @@ function gh(args, temp, env) {
 /** A merged pull request of the task is done only when GitHub merged the reviewed head; any other head refuses. */
 const sameHead = (p, head) => p.headRefOid === head || no(`pull request #${p.number} merged ${short(p.headRefOid)}, not the reviewed head ${short(head)}: ask the user`);
 
+/** The most pull requests that one lookup reads: one page of GitHub's API. */
+export const LIMIT = 100;
 /**
  * The pull requests of the branch into main in the repository itself, in every state, newest first: a fork's pull request
- * with the same branch name is not the task's. GitHub keeps at most one of them open (it refuses a second with 422).
+ * with the same branch name is not the task's (isCrossRepository is true; the owner's name is not compared, because it
+ * changes when the owner is renamed). GitHub keeps at most one of them open (it refuses a second with 422). GitHub filters
+ * by the branch name only, so forks' pull requests count towards the limit: a full list can hide the task's own, and refuses.
  */
 function mine(repo, branch, temp, env) {
-  const owner = repo.split("/")[0].toLowerCase();
-  const all = JSON.parse(gh(["pr", "list", `--repo=${repo}`, `--head=${branch}`, `--base=${BASE}`, "--state=all", "--json=number,url,state,headRefOid,isCrossRepository,headRepositoryOwner"], temp, env) || "[]");
-  return all.filter((p) => p.isCrossRepository === false && p.headRepositoryOwner?.login?.toLowerCase() === owner);
+  const all = JSON.parse(gh(["pr", "list", `--repo=${repo}`, `--head=${branch}`, `--base=${BASE}`, "--state=all", `--limit=${LIMIT}`, "--json=number,url,state,headRefOid,isCrossRepository"], temp, env) || "[]");
+  if (all.length >= LIMIT) no(`GitHub lists ${LIMIT} or more pull requests of ${branch} into ${BASE} (forks' pull requests with the same branch name count too), so the task's own can be missing from the list: ask the user`);
+  return all.filter((p) => p.isCrossRepository === false);
 }
 
 
@@ -266,7 +292,7 @@ function create({ dir, t, branch, head, url, repo }, temp, env) {
     const done = merged.find((p) => p.headRefOid === head) ?? sameHead(merged[0], head); // sameHead refuses here
     no(`already merged as PR #${done.number}: nothing to create. Mark the task merged: sage task ${t.id} set state=merged`);
   }
-  const mirror = mirrorOf(dir, url, env);
+  const mirror = mirrorOf(dir, url, temp, env);
   const ref = `refs/sage/${t.id}`;
   const bad = `the bundle is not a git bundle of the branch ${branch} that fits main (git bundle create <file> main..${branch})`;
   let heads;
@@ -327,7 +353,7 @@ function merge({ dir, t, branch, head, url, repo }, temp, env) {
   const p = find() ?? no(`pull request #${pr} is not a pull request of ${branch} into ${BASE} in ${repo} (GitHub has no such pull request, or it is another branch's or a fork's): run sage-pr create ${t.id}, which records the task's own, or sage task ${t.id} set pr=<n>`);
   const refresh = (done) => {
     try {
-      return `${done}; the mirror's ${BASE} is now ${short(inMirror(mirrorOf(dir, url, env), ["rev-parse", `refs/heads/${BASE}`], env))}`;
+      return `${done}; the mirror's ${BASE} is now ${short(inMirror(mirrorOf(dir, url, temp, env), ["rev-parse", `refs/heads/${BASE}`], env))}`;
     } catch (e) {
       throw new Merged(`${done}; the mirror refresh failed: ${e.message.replace(/^refused: /, "")}. Run sage-pr merge ${t.id} again later: it reports "already merged" and refreshes the mirror`);
     }
