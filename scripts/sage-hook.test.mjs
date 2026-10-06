@@ -2677,51 +2677,96 @@ test("R5-SORTABBR: sort takes a shortened long option, so --out=FILE and --outp=
   assert.equal(denied(s.send(bash("sort --out=sorted.txt rows.txt", FEATURE, AGENT))), undefined, "sort into a project file");
 });
 
-test("PRE-GLOBRUN: a pattern in the path of a program, or of the script that node, python or a shell runs, is refused and named (T83 round 6)", () => {
+test("R7-A: the pattern rule is gone: [ ], [[ ]], if [[ ]], || mkdir and $(( )) pass for an agent (T83 round 7, T83-R6-BRACKET, T83-R6-ARITH)", () => {
   const s = session();
-  const dir = dirname(TOOL);
-  const refused = [
-    [`node ${dir}/sag?.mjs verdict T2 --kind qa-pass --sha ${SHA}`, '"sag?.mjs"'],
-    [`node ${dir}/sag[e].mjs status`, '"sag[e].mjs"'],
-    ["python3 scripts/t*.py", '"t*.py"'],
-    ["bash scripts/t*.sh", '"t*.sh"'],
-    ["./scripts/run-*.sh", '"run-*.sh"'],
-  ];
-  for (const [command, word] of refused) {
-    const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
-    assert.match(answer, /never runs a program or a script through a pattern/, command);
-    assert.ok(answer.includes(word), `${command}: ${answer}`);
-  }
-  for (const command of ['node -e "console.log(a ? 1 : 2)"', "ls tests/*.mjs", "grep -n 'a?b' src/x.js", `node ${TOOL} status`]) {
+  for (const command of ["[ -f x ] && echo y", "[[ -f x ]]", "if [[ -d d ]]; then echo y; fi", "[ -d d ] || mkdir -p d", "echo $(( 2 * 3 ))", "python3 scripts/t*.py", "ls tests/*.mjs"]) {
     assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
   }
 });
 
-test("Q3-N1WORD: every refusal of a hidden state-tool run names the word that hides it, and the plain way (T83 round 6)", () => {
+test("R7-B: a text that names sage.mjs or sage-pr.mjs runs only plain readers; node, python or a shell with it is refused and named, whatever the options (T83 round 7, T83-R6-OPTVALUE)", () => {
+  const s = session();
+  const dir = dirname(TOOL);
+  const write = `verdict T2 --kind qa-pass --sha ${SHA}`;
+  const refused = [
+    [`node -r dotenv/config ${TOOL} ${write}`, '"node"', ONLY_CHIEF],
+    [`node --env-file .env ${TOOL} ${write}`, '"node"', ONLY_CHIEF],
+    [`node --max-old-space-size 4096 ${TOOL} ${write}`, '"node"', ONLY_CHIEF],
+    [`node --inspect-port 9229 ${TOOL} init`, '"node"', ONLY_CHIEF],
+    [`node --title x ${dir}/sage-pr.mjs merge 36`, "PR script", /only the chief runs the PR script/],
+    [`python3 -W ignore -c "import os; os.system('node ${TOOL} ${write}')"`, '"python3"', ONLY_CHIEF],
+    [`bash -o pipefail -c "node ${TOOL} ${write}"`, '"bash"', ONLY_CHIEF],
+    [`sed -i s/a/b/ ${TOOL}`, '"sed"', ONLY_CHIEF],
+    [`awk -i inplace '{print}' ${TOOL}`, '"awk"', ONLY_CHIEF],
+    [`git -c core.editor=x commit -m "fix sage.mjs"`, '"git"', ONLY_CHIEF],
+    [`git checkout -- ${TOOL}`, '"git"', ONLY_CHIEF],
+    [`echo "node ${TOOL} status"`, '"echo"', ONLY_CHIEF],
+    [`S=${TOOL}; $S status`, '"$S"', ONLY_CHIEF],
+  ];
+  for (const [command, word, re] of refused) {
+    const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
+    assert.match(answer, re, command);
+    assert.ok(answer.includes(word), `${command}: ${answer}`);
+    if (re === ONLY_CHIEF) assert.match(answer, /To run a read command of the state tool, run node <path to skills\/sage\/sage\.mjs> status \(or merge-check, logbook, standing, config\) alone; to read the file, use cat <path> or git show <sha>:<path>\./, command);
+  }
+  const readers = [`shasum -a 256 ${TOOL}`, `jq . x.json | grep sage.mjs`, `awk '{print}' ${TOOL} | head`, `sed -n 1,5p ${TOOL}`, `git log --oneline -- ${TOOL}`, `git -C ${s.dir} show main:plugins/sage/skills/sage/sage.mjs`, `git add ${TOOL} && git commit -m "fix sage.mjs"`, `rg -n READS ${TOOL}`, `wc -l ${TOOL} ${dir}/sage-pr.mjs`, `grep -i sage.mjs x.txt`, `ls -la ${dir}/SAGE.MJS`, `node ${TOOL} status --project ${s.dir}`];
+  for (const command of readers) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+  assert.equal(denied(s.send(bash(`node -r dotenv/config ${TOOL} ${write} --project ${s.dir}`))), undefined, "the chief");
+});
+
+test("R7-C: a redirection to the logbook with no command word is refused, also after ; or |, for an agent and the chief (T83 round 7, T83-R6-BAREREDIRECT)", () => {
+  const s = session();
+  s.send(prompt("sage mode"));
+  const root = s.vars.SAGE_HOME;
+  const forms = [
+    ">~/.claude/sage/sage-abc/ledger.tsv",
+    "> ~/.claude/sage/sage-abc/ledger.tsv",
+    ">> ~/.claude/sage/sage-abc/ledger.tsv",
+    `> ${root}/p/ledger.tsv`,
+    "ls; > ~/.claude/sage/sage-abc/ledger.tsv",
+    "> $HOME/.claude/sage/sage-abc/ledger.tsv",
+    "ls | > ~/.claude/sage/sage-abc/ledger.tsv",
+    `> ~/.claude/sage/sage-abc/ledger.tsv < ${s.dir}/x`,
+    `2> ${root}/p/tasks.tsv`,
+    `&> ${root}/p/tasks.tsv`,
+    `>| ${root}/p/tasks.tsv`,
+    ": > ~/.claude/sage/sage-abc/ledger.tsv",
+  ];
+  for (const command of forms) {
+    assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, `agent: ${command}`);
+    assert.match(denied(s.send(bash(command))) ?? "", /names the logbook/, `chief: ${command}`);
+  }
+  assert.match(denied(s.send(bash("> ledger.tsv"))) ?? "", /"ledger.tsv" names the logbook/, "chief, in sage mode, by the file's name");
+  for (const command of [`> ${s.dir}/notes.txt`, "> /dev/null", "2>&1", "ls > out.txt"]) assert.equal(denied(s.send(bash(command, FEATURE, AGENT))), undefined, command);
+});
+
+test("Q3-N1WORD: every refusal of a hidden state-tool run names the program that runs it, and the plain way (T83 round 6, round 7)", () => {
   const s = session();
   const write = `node ${TOOL} verdict T2 --kind qa-pass --sha ${SHA}`;
   const path = "plugins/sage/skills/sage/sage.mjs";
   const cases = [
-    [`for k in a b; do node ${TOOL} verdict T2 --kind $k --sha ${SHA}; done`, '"for"'],
-    [`while true; do ${write}; done`, '"while"'],
-    [`if true; then ${write}; fi`, '"if"'],
-    [`case x in x) ${write};; esac`, '"case"'],
-    [`{ ${write}; }`, '"{"'],
-    [`! ${write}`, '"!"'],
-    [`sudo -u root ${write}`, '"sudo"'],
-    [`timeout -s KILL 5 ${write}`, '"timeout"'],
-    [`env -u X ${write}`, '"env"'],
-    [`npx -p x ${write}`, '"npx"'],
+    [`for k in a b; do node ${TOOL} verdict T2 --kind $k --sha ${SHA}; done`, '"node"'],
+    [`while true; do ${write}; done`, '"true"'],
+    [`if true; then ${write}; fi`, '"true"'],
+    [`case x in x) ${write};; esac`, '"node"'],
+    [`{ ${write}; }`, '"node"'],
+    [`! ${write}`, '"node"'],
+    [`sudo -u root ${write}`, '"node"'],
+    [`timeout -s KILL 5 ${write}`, '"node"'],
+    [`env -u X ${write}`, '"node"'],
+    [`npx -p x ${write}`, '"node"'],
     [`python3 -c "import json; print(len(open('${path}').read()))"`, '"python3"'],
-    [`node --check ${path} && node ${TOOL} init`, '"--check"'],
-    [`node -e "import('${TOOL}')"`, '"-e"'],
-    [`node ${TOOL} status; node ${TOOL} init`, '";"'],
+    [`node --check ${path} && node ${TOOL} init`, '"node"'],
+    [`node -e "import('${TOOL}')"`, '"node"'],
+    [`node ${TOOL} status; node ${TOOL} init`, '"node"'],
+    [`echo init | xargs node ${TOOL}`, '"echo"'],
+    [`node ${TOOL} status <<'EOF'\n"open\nEOF\n"`, '"sage.mjs"'],
   ];
   for (const [command, word] of cases) {
     const answer = denied(s.send(bash(command, FEATURE, AGENT))) ?? "";
     assert.match(answer, ONLY_CHIEF, command);
     assert.ok(answer.includes(`${word} is not that`), `${command}: ${answer}`);
-    assert.match(answer, /plain cat <path> or git show <sha>:<path>/, command);
+    assert.match(answer, /run node <path to skills\/sage\/sage\.mjs> status \(or merge-check, logbook, standing, config\) alone; to read the file, use cat <path> or git show <sha>:<path>/, command);
   }
 });
 

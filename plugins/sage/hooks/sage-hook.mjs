@@ -723,43 +723,32 @@ function chiefProblem(input, sage) {
   return word && `the chief never writes, moves or removes a logbook file from the shell (${quoted(word)} names the logbook).`;
 }
 /**
- * Does a command's text run the state tool ("tool") or the PR script ("pr")? It decides on the programs that run
- * (programsRun: after shell keywords, assignments, wrappers and their option values, in -c text, eval and -exec), not on
- * a mention, so a read, a diff or a commit message that names sage.mjs passes (T83-C2). A program runs the file when it is
- * the file, or when it is an interpreter (node, python, ...) whose words up to its script, whose heredoc or whose piped
- * input name the file; a shell does when its heredoc or piped input names it. A variable or substitution in such a place
- * runs the file when the text names it anywhere, and so does text that the hook cannot read. Deliberate forgery past
- * this is the sandbox's job.
+ * The name rule (T83 round 7, G84): for an agent, a text that names sage.mjs or sage-pr.mjs (in any case, after its
+ * quotes) may run only plain readers. Any other program in it is refused, also an interpreter, a shell, eval or a
+ * variable: the hook does not look for the script among a program's options. Returns the word of the first program
+ * that is not a plain reader, the name when the hook cannot read the text (fail closed), or undefined.
  */
-const kind = (text) => (/sage-pr\.mjs/i.test(text) ? "pr" : /sage\.mjs/i.test(text) ? "tool" : undefined);
-const INTERPRETERS = /^(?:node|nodejs|deno|bun|python[\d.]*|perl|ruby|php|osascript|source|\.)$/;
-function scriptRun(text, cwd) {
-  const named = kind(unquote(text));
-  if (!named) return undefined;
+const TOOL_NAME = /sage(?:-pr)?\.mjs/i;
+const READER = /^(?:cat|grep|egrep|fgrep|rg|head|tail|wc|ls|diff|shasum|sha\d*sum|jq|g?awk|g?sed|git)$/;
+const GIT_PLAIN = /^(?:show|log|diff|status|blame|grep|ls-files|add|commit)$/;
+function runsNamed(text, cwd) {
+  const name = TOOL_NAME.exec(unquote(text))?.[0];
+  if (!name) return undefined;
   let runs;
   try {
     runs = programsRun(text, cwd);
   } catch {
-    return named;
+    return name;
   }
-  for (const { word, args, stdin } of runs) {
-    if (word.includes("$")) return named;
-    const name = basename(word).toLowerCase();
-    if (/^sage(?:-pr)?\.mjs$/.test(name)) return kind(name);
-    if (SHELLS.test(name) || /^(?:eval|pwsh|powershell)(?:\.exe)?$/.test(name)) {
-      if (args.some((w) => w.includes("$"))) return named;
-      const run = stdin.map(kind).sort()[0]; // programsRun reads their -c text and eval's words
-      if (run) return run;
-    } else if (INTERPRETERS.test(name)) {
-      const script = args.findIndex((w) => !w.startsWith("-"));
-      const head = script < 0 ? args : args.slice(0, script + 1);
-      if (head.some((w) => w.includes("$"))) return named;
-      const run = [...head, ...stdin].map(kind).sort()[0];
-      if (run) return run;
-    }
+  for (const { word, args } of runs) {
+    const base = basename(word).toLowerCase();
+    if (word.includes("$") || !READER.test(base)) return word;
+    if (/^g?(?:sed|awk)$/.test(base) && args.some((a) => /^-[a-z]*i|^--in-place|^inplace$/i.test(a))) return word;
+    if (base === "git" && (!GIT_PLAIN.test(subcommand(args, 0)) || args.some((a) => /^(?:-c|--exec-path)/.test(a)))) return word;
   }
   return undefined;
 }
+const READ_WAY = "To run a read command of the state tool, run node <path to skills/sage/sage.mjs> status (or merge-check, logbook, standing, config) alone; to read the file, use cat <path> or git show <sha>:<path>.";
 /** An agent's check fails closed: when it throws, the agent's command or file change is refused. */
 function agentWriteProblem(input) {
   const file = FILE_TOOLS.test(input.tool_name ?? "");
@@ -779,13 +768,15 @@ function agentCheck(input, file) {
   }
   if (ti.dangerouslyDisableSandbox) return "an agent never runs a command outside the sandbox (dangerouslyDisableSandbox).";
   const command = typeof ti.command === "string" ? ti.command : "";
-  const run = fields(ti).map((t) => scriptRun(t, input.cwd ?? process.cwd())).sort()[0]; // "pr" sorts before "tool"
-  if (run === "pr") return "only the chief runs the PR script (sage-pr.mjs).";
-  if (run === "tool") {
+  const cwd = input.cwd ?? process.cwd();
+  const texts = fields({ ...ti, description: undefined }); // a description runs nothing
+  const named = texts.map((t) => runsNamed(t, cwd)).find(Boolean);
+  if (named) {
+    if (texts.some((t) => /sage-pr\.mjs/i.test(unquote(t)))) return "only the chief runs the PR script (sage-pr.mjs).";
     const [node, path, cmd, ...args] = command.trim().split(/[ \t]+/);
     const own = PLAIN.test(command.trim()) && node === "node" && /(?:^|\/)skills\/sage\/sage\.mjs$/.test(path) && !path.split("/").includes("..");
-    if (!own || canonical(resolve(input.cwd ?? process.cwd(), path)) !== canonical(TOOL)) {
-      return `an agent runs the state tool only as one plain command, with nothing before or after it, and only the copy that this hook loads: ${quoted(hidesTool(command))} is not that. ${PLAIN_WAY}`;
+    if (!own || canonical(resolve(cwd, path)) !== canonical(TOOL)) {
+      return `an agent runs the state tool only as one plain command, with nothing before or after it, and only the copy that this hook loads: ${quoted(named)} is not that. ${READ_WAY}`;
     }
     // The words that are not options or option values, read as the state tool reads them (sage.mjs parse).
     const pos = [];
@@ -796,45 +787,13 @@ function agentCheck(input, file) {
     return Object.hasOwn(READS, cmd ?? "") && READS[cmd](pos) ? undefined : `"${[cmd, ...pos.slice(0, 1)].join(" ")}" writes the logbook, or is not a read command of the state tool.`;
   }
   const text = fields(ti);
-  const cwd = input.cwd ?? process.cwd();
-  const glob = text.map((t) => globRun(t, cwd)).find(Boolean);
-  if (glob) return `an agent never runs a program or a script through a pattern, because the hook cannot tell which file runs: ${quoted(glob)} has one. Write the path in full.`;
   if (!text.some(writes)) return undefined;
   const word = nearLogbook(text.join("\n"), roots, cwd) ?? text.map((t) => linksNear(t, roots[1], cwd)).find(Boolean);
   const hint = word && /\$\?/.test(word) ? " The hook does not expand $?, so its ? is a pattern character: to show an exit code, write || echo FAIL or ; echo done after the command instead." : "";
   return word && `an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it. ${quoted(word)} makes this command near the logbook: change or remove it.${hint}`;
 }
-/**
- * The word that keeps a state-tool run from being one plain command (T83-Q3-N1WORD): the keyword, wrapper or program
- * before it (for, {, !, sudo, npx, python3), node's option (--check, -e) or its other path, or else the first text that
- * is not plain (a quote, ;, &&, |, $, a newline).
- */
-function hidesTool(command) {
-  const [first, second = ""] = command.trim().split(/[ \t]+/);
-  if (first !== "node") return first;
-  if (!/(?:^|\/)skills\/sage\/sage\.mjs$/.test(second) || second.split("/").includes("..")) return second;
-  return /[^\w./=:@,+ \t-]+/.exec(command)?.[0] ?? second;
-}
-const PLAIN_WAY = "To read sage.mjs, use a plain cat <path> or git show <sha>:<path>.";
 /** An option that gives an interpreter or a shell its code (-c, -e, -p, --eval, --print, -Command): the word after it is code, not a script. */
 const CODE = /^-(?:[a-z]*[ce]|p|-eval|-print|command)$/;
-/**
- * The word of a program, or of the script that an interpreter or a shell runs, that has a pattern character (T83-PRE-
- * GLOBRUN: node <plugin>/skills/sage/sag?.mjs runs the state tool). The hook does not expand a pattern, so it cannot tell
- * which file runs. Throws when the shell reader cannot read the line, and the agent's check then fails closed.
- */
-function globRun(text, cwd) {
-  const part = (path) => path.split("/").find((p) => GLOB.test(p)); // the part with the pattern: a long path is cut in the refusal
-  for (const { word, args } of programsRun(text, cwd)) {
-    if (GLOB.test(word)) return part(word);
-    const name = basename(word).toLowerCase();
-    if (!INTERPRETERS.test(name) && !SHELLS.test(name)) continue;
-    if (args.some((a) => CODE.test(a))) continue;
-    const script = args.find((a) => !a.startsWith("-"));
-    if (script && GLOB.test(script)) return part(script);
-  }
-  return undefined;
-}
 
 /**
  * The canonical path for a compare: the real path of its longest part that exists (a link is followed, also when its
@@ -1193,7 +1152,7 @@ function readCommands(src, i, close, out, host) {
     endWord();
     if (target) throw new Error("a redirection with no target");
     cmd.grouped ||= depth > 0;
-    if ((cmd.words.length || cmd.heredoc) && !arm()?.pattern) out.push(cmd);
+    if ((cmd.words.length || cmd.heredoc || cmd.redirects.length) && !arm()?.pattern) out.push(cmd); // a bare "> file" is a command: it writes (T83-R6-BAREREDIRECT)
     cmd = fresh();
   };
   const here = () => ({ cmd, index: cmd.words.length });
