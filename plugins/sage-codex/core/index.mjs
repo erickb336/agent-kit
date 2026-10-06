@@ -2,3 +2,4 @@
 export { createStateTool } from "./state.mjs";
 export { applyPrinciples, MOMENTS, fingerprint } from "./principles.mjs";
 export { createAssignment, correlateReport } from "./assignments.mjs";
+export { configureAdmission, activateAdmission, reserveAdmission, readAdmission } from "./admission.mjs";

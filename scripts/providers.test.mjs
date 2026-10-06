@@ -263,3 +263,165 @@ test("assignment boundaries reject missing, malformed and extra identity fields"
     assert.throws(() => correlateReport(input), /turn/);
   }
 });
+
+const admissionApi = () => import("../packages/sage-core/index.mjs");
+const admissionConfig = { total: 3, projects: [{ project: "one", limit: 2 }, { project: "two", limit: 2 }] };
+const admissionOwner = { project: "one", session: "session-one", activation: "11111111-1111-4111-8111-111111111111" };
+const admissionDispatch = { tool: "native-spawn", turn: "parent-turn", name: "worker", argumentsHash: "a".repeat(64) };
+const admissionRequest = (call) => ({ task: "T1", run: "R1", issuer: "session-one", call });
+const admissionScope = (owner) => ({ project: owner.project, session: owner.session, epoch: owner.epoch });
+function admissionTemp(t) {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-admission-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+async function admissionFixture(t) {
+  const api = await admissionApi(), dir = admissionTemp(t);
+  api.configureAdmission(dir, admissionConfig);
+  const owner = api.activateAdmission(dir, admissionOwner);
+  return { api, dir, owner, scope: admissionScope(owner) };
+}
+
+test("admission initializes one immutable configuration and idempotent session ownership", async (t) => {
+  const { api, dir, owner } = await admissionFixture(t);
+  assert.deepEqual(api.configureAdmission(dir, { ...admissionConfig, projects: [...admissionConfig.projects].reverse() }), admissionConfig);
+  const ordered = api.configureAdmission(admissionTemp(t), { total: 2, projects: [{ project: "a", limit: 1 }, { project: "B", limit: 1 }] });
+  assert.deepEqual(ordered.projects.map(row => row.project), ["B", "a"]);
+  assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
+  assert.match(owner.epoch, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(api.readAdmission(dir), { config: admissionConfig, sessions: [owner], reservations: [] });
+  assert.throws(() => api.configureAdmission(dir, { ...admissionConfig, total: 4 }), /configuration differs/);
+  assert.throws(() => api.activateAdmission(dir, { ...admissionOwner, activation: "22222222-2222-4222-8222-222222222222" }), /already has an owner/);
+});
+
+test("admission permits dispatch once and holds the reservation across a fresh reader", async (t) => {
+  const { api, dir, scope } = await admissionFixture(t);
+  const first = api.reserveAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch);
+  assert.equal(first.decision, "permit-once");
+  assert.deepEqual(api.reserveAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch), { decision: "already-reserved", assignment: first.assignment });
+  assert.deepEqual(api.readAdmission(dir).reservations, [{ assignment: first.assignment, dispatch: admissionDispatch }]);
+  const reader = spawnSync(process.execPath, ["--input-type=module", "-e", `import {readAdmission} from ${JSON.stringify(pathToFileURL(join(ROOT, "packages/sage-core/index.mjs")).href)}; process.stdout.write(JSON.stringify(readAdmission(process.argv[1])));`, dir], { encoding: "utf8", env: process.env });
+  assert.equal(reader.status, 0, reader.stderr);
+  assert.deepEqual(JSON.parse(reader.stdout).reservations, [{ assignment: first.assignment, dispatch: admissionDispatch }]);
+});
+
+test("admission refuses changed duplicate task, run, tool, turn, name or argument identity", async (t) => {
+  const { api, dir, scope } = await admissionFixture(t);
+  api.reserveAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch);
+  for (const change of [{ task: "T2" }, { run: "R2" }]) assert.throws(() => api.reserveAdmission(dir, scope, { ...admissionRequest("call-1"), ...change }, admissionDispatch), /different work/);
+  for (const change of [{ tool: "other-tool" }, { turn: "other-turn" }, { name: "other-name" }, { argumentsHash: "b".repeat(64) }]) assert.throws(() => api.reserveAdmission(dir, scope, admissionRequest("call-1"), { ...admissionDispatch, ...change }), /different work/);
+  assert.equal(api.readAdmission(dir).reservations.length, 1);
+});
+
+test("admission enforces both project and participating-store capacity", async (t) => {
+  const { api, dir, scope } = await admissionFixture(t);
+  api.reserveAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch);
+  api.reserveAdmission(dir, scope, admissionRequest("call-2"), admissionDispatch);
+  assert.throws(() => api.reserveAdmission(dir, scope, admissionRequest("call-3"), admissionDispatch), /project capacity/);
+  const other = api.activateAdmission(dir, { ...admissionOwner, project: "two", session: "session-two" });
+  api.reserveAdmission(dir, admissionScope(other), { ...admissionRequest("call-3"), issuer: "session-two" }, admissionDispatch);
+  assert.throws(() => api.reserveAdmission(dir, admissionScope(other), { ...admissionRequest("call-4"), issuer: "session-two" }, admissionDispatch), /total capacity/);
+  assert.equal(api.readAdmission(dir).reservations.length, 3);
+});
+
+test("admission rejects absent owners, stale epochs, unknown projects and invalid limits", async (t) => {
+  const { api, dir, scope } = await admissionFixture(t);
+  for (const change of [{ session: "unowned" }, { epoch: "33333333-3333-4333-8333-333333333333" }, { project: "unknown" }]) assert.throws(() => api.reserveAdmission(dir, { ...scope, ...change }, admissionRequest("call-1"), admissionDispatch), /owner|project/);
+  for (const total of [0, 51, 1.5, "3"]) assert.throws(() => api.configureAdmission(admissionTemp(t), { ...admissionConfig, total }), /capacity/);
+  assert.throws(() => api.configureAdmission(admissionTemp(t), { total: 3, projects: [{ project: "one", limit: 1 }, { project: "one", limit: 2 }] }), /duplicate project/);
+  const sparse = admissionTemp(t);
+  assert.throws(() => api.configureAdmission(sparse, { total: 2, projects: new Array(1) }), /record fields/);
+  const { readdirSync } = await import("node:fs");
+  assert.deepEqual(readdirSync(sparse), []);
+  assert.equal(api.readAdmission(dir).reservations.length, 0);
+});
+
+test("admission rejects a corrupt tail, missing revision, symbolic link and malformed record", async (t) => {
+  const { symlinkSync, unlinkSync } = await import("node:fs");
+  for (const damage of ["corrupt", "gap", "link", "shape"]) {
+    const { api, dir, scope } = await admissionFixture(t);
+    const target = join(dir, "00000001.json"), bytes = readFileSync(target, "utf8");
+    if (damage === "gap") unlinkSync(join(dir, "00000000.json"));
+    else if (damage === "link") { writeFileSync(join(dir, ".pending-11111111-1111-4111-8111-111111111111"), bytes); unlinkSync(target); symlinkSync(join(dir, ".pending-11111111-1111-4111-8111-111111111111"), target); }
+    else writeFileSync(target, damage === "corrupt" ? bytes.replace("session-one", "session-two") : "{}\n");
+    assert.throws(() => api.reserveAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch));
+  }
+});
+
+test("admission ignores unpublished pending bytes but never turns them into capacity", async (t) => {
+  const { api, dir, scope } = await admissionFixture(t);
+  writeFileSync(join(dir, ".pending-11111111-1111-4111-8111-111111111111"), "incomplete temporary record");
+  const result = api.reserveAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch);
+  assert.equal(result.decision, "permit-once");
+  assert.equal(api.readAdmission(dir).reservations.length, 1);
+});
+
+test("admission concurrent writers never grant duplicate dispatch or exceed capacity", async (t) => {
+  const { spawn } = await import("node:child_process");
+  const { api, dir, scope } = await admissionFixture(t);
+  const module = pathToFileURL(join(ROOT, "packages/sage-core/index.mjs")).href;
+  const program = `import {reserveAdmission} from ${JSON.stringify(module)}; process.send({ready:true}); process.once('message', value=>{try{process.send({result:reserveAdmission(value.dir,value.scope,value.request,value.dispatch)});}catch(error){process.send({error:error.message});}process.disconnect();});`;
+  const batch = async (calls) => {
+    const children = calls.map((call) => {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", program], { stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env });
+      let result, stderr = "", stdout = "";
+      child.stderr.on("data", data => { stderr += data; }); child.stdout.on("data", data => { stdout += data; });
+      const ready = new Promise((resolve, reject) => { child.once("error", reject); child.once("message", value => value.ready ? resolve() : reject(Error("worker not ready"))); });
+      child.on("message", value => { if (!value.ready) result = value; });
+      const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => { try { assert.equal(code, 0, stderr); assert.equal(signal, null); assert.equal(stderr, ""); assert.equal(stdout, ""); assert(result); resolve(result); } catch (error) { reject(error); } }); });
+      return { child, call, ready, closed };
+    });
+    await Promise.all(children.map(c => c.ready));
+    for (const c of children) c.child.send({ dir, scope, request: admissionRequest(c.call), dispatch: admissionDispatch });
+    return Promise.all(children.map(c => c.closed));
+  };
+  const same = await batch(Array(6).fill("same-call"));
+  assert.equal(same.filter(row => row.result?.decision === "permit-once").length, 1);
+  assert.equal(same.filter(row => row.result?.decision === "already-reserved").length, 5);
+  assert.equal(new Set(same.map(row => row.result.assignment.id)).size, 1);
+  const distinct = await batch(Array.from({ length: 6 }, (_, i) => `distinct-${i}`));
+  assert.equal(distinct.filter(row => row.result?.decision === "permit-once").length, 1);
+  assert.equal(distinct.filter(row => /project capacity/.test(row.error)).length, 5);
+  assert.equal(api.readAdmission(dir).reservations.length, 2);
+});
+
+test("admission failure after publication keeps its slot and never reissues permission", async (t) => {
+  const { api, dir, scope } = await admissionFixture(t);
+  const module = pathToFileURL(join(ROOT, "packages/sage-core/index.mjs")).href;
+  const program = `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+    const link=fs.linkSync,sync=fs.fsyncSync; let linked=false,failed=false;
+    fs.linkSync=(...args)=>{link(...args);linked=true;};
+    fs.fsyncSync=(fd)=>{if(linked&&!failed){failed=true;throw Error('injected_sync_failure');}return sync(fd);};
+    syncBuiltinESMExports(); const api=await import(${JSON.stringify(module)});
+    const [dir,scope,request,dispatch]=JSON.parse(process.argv[1]); let first;
+    try{first=api.reserveAdmission(dir,scope,request,dispatch);}catch(error){first={error:error.message};}
+    fs.linkSync=link;fs.fsyncSync=sync;syncBuiltinESMExports();
+    process.stdout.write(JSON.stringify({first,failed,retry:api.reserveAdmission(dir,scope,request,dispatch)}));`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", program, JSON.stringify([dir, scope, admissionRequest("call-1"), admissionDispatch])], { encoding: "utf8", env: process.env });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual(output.first, { error: "injected_sync_failure" });
+  assert.equal(output.failed, true);
+  assert.equal(output.retry.decision, "already-reserved");
+  assert.deepEqual(api.readAdmission(dir).reservations, [{ assignment: output.retry.assignment, dispatch: admissionDispatch }]);
+});
+
+test("admission rejects correctly hashed records that violate replay rules", async (t) => {
+  const { createHash } = await import("node:crypto");
+  for (const violation of ["duplicate", "capacity"]) {
+    const { api, dir, scope } = await admissionFixture(t);
+    let revision = 2, previous = JSON.parse(readFileSync(join(dir, "00000001.json"), "utf8"));
+    let data = previous.data;
+    if (violation === "capacity") {
+      api.reserveAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch);
+      api.reserveAdmission(dir, scope, admissionRequest("call-2"), admissionDispatch);
+      revision = 4; previous = JSON.parse(readFileSync(join(dir, "00000003.json"), "utf8"));
+      data = { ...previous.data, assignment: { ...previous.data.assignment, id: "33333333-3333-4333-8333-333333333333", call: "call-3" } };
+    }
+    const body = { schema: 1, revision, previous: previous.hash, data };
+    const record = { ...body, hash: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
+    writeFileSync(join(dir, `${String(revision).padStart(8, "0")}.json`), JSON.stringify(record) + "\n");
+    assert.throws(() => api.readAdmission(dir), violation === "duplicate" ? /duplicate transition/ : /project capacity/);
+    assert.throws(() => api.reserveAdmission(dir, scope, admissionRequest("next-call"), admissionDispatch));
+  }
+});

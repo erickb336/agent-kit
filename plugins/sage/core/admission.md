@@ -1,0 +1,20 @@
+# Atomic admission
+
+This store records session ownership and reserves capacity before a dispatch. It covers only sessions that use this same canonical local directory. It does not enforce role permissions, validate native identity, release capacity, or recover a session automatically.
+
+The trusted adapter uses four operations:
+
+1. `configureAdmission(directory, {total, projects})` fixes the store and project limits. Each project entry has `project` and `limit`. Repeated equal configuration is safe; changed limits require reconciliation.
+2. `activateAdmission(directory, {project, session, activation})` records a scoped activation and creates its epoch. The adapter must obtain activation authority through the verified entry path. The same request returns the same owner. Another activation cannot replace it.
+3. `reserveAdmission(directory, scope, request, dispatch)` saves an assignment and consumes its single dispatch permit atomically. Scope and request use the assignment API. Dispatch contains the native `tool`, parent `turn`, requested child `name`, and `argumentsHash` of all relevant native arguments.
+4. `readAdmission(directory)` returns the configuration, session records, and held reservations.
+
+Only a newly committed reservation returns `decision: "permit-once"`. An exact retry returns `"already-reserved"` with the saved assignment. It must not permit another native call. Changed arguments, tool, turn, name, task, or run are refused. After an uncertain result, keep the reservation held; do not invent another call identity to repeat the same work.
+
+All reserved assignments count toward both limits. A report submission, native stop, elapsed time, or new activation does not release one. Project and session names are identity keys, not paths. The adapter must validate issuer rights separately and convert every refusal or storage error into an explicit native denial. Throwing from a hook alone might not deny the tool.
+
+The journal consists of immutable, numbered, hash-linked records. Each reader checks the complete prefix and its state transitions. A writer syncs the pending record before linking it to the next revision. Only one concurrent writer can publish that revision. A loser reads again and rechecks capacity. Directory sync precedes permission, including when a retry finds an existing reservation. A failure after publication keeps the record and its reservation.
+
+The journal permits 4,096 records and 64 KiB per record. Unpublished pending files do not change state, but count toward the scan bound. Gaps, invalid files, conflicting records, exhausted bounds, or excessive contention cause refusal. No PID probe, process signal, timeout expiry, or shared mutable lock file is used.
+
+This requires a local filesystem with atomic hard links and directory sync. The containing directory must remain controlled by the caller. Hostile replacement of ancestor directories by another same-user process is outside this API's boundary. Tests cover local concurrency and an injected sync failure; they do not simulate physical power loss. Production activation, native denial, completion, and recovery need their own integration checks. No installed hook calls this API yet.

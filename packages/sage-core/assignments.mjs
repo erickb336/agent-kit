@@ -26,7 +26,7 @@ export function createAssignment(scope, dispatch) {
 /** Native identity and a report's reference are separate inputs. Neither can supply authority. */
 export function correlateReport({ scope, assignment, binding, native, reference }) {
   const current = record(scope, SCOPE);
-  const intent = record(assignment, INTENT);
+  const intent = parseAssignment(assignment);
   const bound = record(binding, { ...SCOPE, assignment: UUID, issuer: KEY, call: KEY, child: KEY });
   const origin = record(native, { session: KEY, child: KEY, turn: KEY });
   const report = record(reference, { assignment: UUID, task: TASK, run: RUN });
@@ -41,3 +41,6 @@ export function correlateReport({ scope, assignment, binding, native, reference 
   return { schema: 1, kind: "report-submission", ...current, assignment: intent.id,
     task: intent.task, run: intent.run, issuer: intent.issuer, call: intent.call, child: origin.child, turn: origin.turn };
 }
+
+// Internal core decoder for assignments read from the admission journal.
+export const parseAssignment = (input) => record(input, INTENT);
