@@ -22,7 +22,7 @@ The model for this skill is pstack's `poteto-help` skill, by Lauren Tan (poteto)
 This skill is a map. Each section holds the facts that its answer must carry: give them, also when you do not read a source. The sources hold the details, and they change, so this map can be out of date. Do these steps for every question, also when this map seems to hold the answer:
 
 1. Find the section of this map that the question goes to.
-2. Do the read that the section's **Read** line names. Make it your first tool call, before you write any of the answer.
+2. Do the read that the section's **Read** line names. Make it your first tool call, before you write any of the answer. A section with no **Read** line has no read: answer from its text alone.
 3. Answer from what you read and from the section's facts. When the source disagrees with this map, trust the source.
 
 **Never give the user a state-tool command.** This rule wins over the source. Do not give `pages`, `init`, `task`, `gate`, `logbook`, `board` or any other command of the state tool, and no `node …sage.mjs …` command, also when the README or another source names one. Only the chief runs the state tool. Where the source names such a command, write "ask the chief" and say what the chief does. A phrase that the user sends, such as "show board", is not a command: give it as the section says.
@@ -78,7 +78,7 @@ The chief asks at most once per task, in one batch of product questions. Each qu
 
 ## What sage does alone, and what it asks
 
-**Read:** `<base directory>/../../agents/chief-of-staff.md`, and the README, section "FAQ" (the question "Is it safe to let it work alone?").
+**Read:** the README, section "FAQ" (the question "Is it safe to let it work alone?").
 
 The chief decides the engineering choices, runs the team, and tells the user the results with evidence. The user decides the product questions. With autopilot on, a verified pull request merges after its clean cycles.
 
@@ -113,7 +113,7 @@ A hook gives each principle at the moment that it applies, so the user seldom lo
 
 ## Fix a run that went wrong
 
-**Read:** the README, sections "What to say", "A task's life" and "Rules held in code", and `<base directory>/../../agents/chief-of-staff.md`.
+**Read:** the README, sections "What to say" and "A task's life".
 
 | The user sees | What to do |
 | --- | --- |
@@ -127,9 +127,7 @@ A hook gives each principle at the moment that it applies, so the user seldom lo
 
 ## Where sage keeps things
 
-**Read:** the README, section "How it works".
-
-Give these paths, and no state-tool command (see the rule above).
+This section has no read: the README and the chief's instructions name state-tool commands here. Answer from this text alone. Give these paths, and no state-tool command (see the rule above).
 
 - **The logbook** of each project, in `~/.claude/sage/<project>-<hash>/`: its tasks, runs, findings, verdicts, the user's answers and the decision trail. In sage mode, the user can ask the chief to print the exact folder.
 - **The hook's state**, in `~/.claude/sage/.hooks/`: the modes, autopilot and the agent slots.
