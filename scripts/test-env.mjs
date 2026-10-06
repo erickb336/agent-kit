@@ -4,3 +4,7 @@
 // Two stay, SAGE_HOME and GH_CONFIG_DIR: a test that forgot its own must not fall back to the real ~/.claude or gh login.
 const LEAKS = /^(?:SAGE_(?!HOME$)|GIT_|GH_(?!CONFIG_DIR$)|GITHUB_|CLAUDE_|AGENT_KIT_|FAKE_GH_|PSTACK_)/;
 for (const name of Object.keys(process.env)) if (LEAKS.test(name)) delete process.env[name];
+// Git reads the developer's global config (~/.gitconfig or $XDG_CONFIG_HOME/git/config) and the system one: a
+// commit.gpgsign or core.hooksPath there fails every commit a test makes (R679). /dev/null replaces both global files.
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_NOSYSTEM = "1";

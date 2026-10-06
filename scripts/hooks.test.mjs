@@ -183,3 +183,20 @@ test("the hook runs also when its path goes through a symbolic link", () => {
   const r = spawnSync("node", [join(link, "hooks/principles-hook.mjs")], { input: JSON.stringify({ session_id: "l", ...prompt("Design the data model") }), encoding: "utf8", env: { ...process.env, AGENT_KIT_HOOKS_STATE: mkdtempSync(join(tmpdir(), "agent-kit-state-")) } });
   assert.match(context(JSON.parse(r.stdout || "{}")), /# Exhaust the design space/);
 });
+
+test("T184: a developer's global git config (commit.gpgsign) does not fail a test's commit", () => {
+  const home = mkdtempSync(join(tmpdir(), "agent-kit-gpg-home-"));
+  writeFileSync(join(home, ".gitconfig"), "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent/gpg\n");
+  const env = { ...process.env, HOME: home }; // as a developer's shell: no override of the global config yet
+  delete env.GIT_CONFIG_GLOBAL;
+  delete env.GIT_CONFIG_NOSYSTEM;
+  const code = `import "${join(ROOT, "scripts/test-env.mjs")}";
+    import { execFileSync } from "node:child_process";
+    const repo = process.argv[1];
+    execFileSync("git", ["-C", repo, "init", "-q"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+    process.stdout.write(execFileSync("git", ["-C", repo, "log", "--format=%s"], { encoding: "utf8" }));`;
+  const r = spawnSync("node", ["--input-type=module", "-e", code, mkdtempSync(join(tmpdir(), "agent-kit-gpg-repo-"))], { encoding: "utf8", env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "start\n");
+});
