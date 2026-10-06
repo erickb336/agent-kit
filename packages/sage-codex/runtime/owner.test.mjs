@@ -87,3 +87,15 @@ test("fresh runtime does not turn saved metadata or a prompt into runtime eviden
   assert.equal(freshRuntime(startup), null);
   assert.equal(freshRuntime({ ...startup, source: "resume" }, { metadata }), null);
 });
+
+
+test("initial runtime cannot authorize a resumed prompt with a different native turn", async () => {
+  const { initialRuntime, initialOwnerPrompt } = await load();
+  const runtime = initialRuntime(startup, { metadata, turn });
+  assert.equal(initialOwnerPrompt(input, { runtime, metadata })?.turn, turn);
+  assert.equal(initialOwnerPrompt({ ...input, turn_id: child }, { runtime, metadata }), null);
+  assert.equal(initialOwnerPrompt({ ...input, session_id: child }, { runtime, metadata }), null);
+  assert.equal(initialRuntime(startup, { metadata }), null);
+  assert.equal(initialRuntime({ ...startup, source: "resume" }, { metadata, turn }), null);
+  assert.equal(initialOwnerPrompt(input, { runtime: { kind: "fresh-runtime", session: root, version: "0.160.0" }, metadata }), null);
+});

@@ -33,3 +33,16 @@ export function freshRuntime(input, { metadata } = {}) {
     || metadata.cli_version !== RUNTIME_VERSION || Object.hasOwn(metadata, "parent_thread_id") || Object.hasOwn(metadata, "agent_path")) return null;
   return { kind: "fresh-runtime", session: input.session_id, version: metadata.cli_version };
 }
+
+
+/** Bind fresh creation evidence to its first native turn, without reusable session authority. */
+export function initialRuntime(input, { metadata, turn } = {}) {
+  const runtime = freshRuntime(input, { metadata });
+  if (!runtime || !text(turn, 36) || !UUID.test(turn)) return null;
+  return { ...runtime, kind: "initial-runtime", turn };
+}
+
+export function initialOwnerPrompt(input, { runtime, metadata } = {}) {
+  if (!record(runtime) || runtime.kind !== "initial-runtime" || runtime.session !== input?.session_id || runtime.turn !== input?.turn_id) return null;
+  return ownerPrompt(input, { version: runtime.version, metadata });
+}

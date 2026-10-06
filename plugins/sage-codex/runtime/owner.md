@@ -18,3 +18,12 @@ The function does not interpret mode phrases, retain text, create ownership, res
 This is evidence at fresh creation, not permanent runtime authority. The caller must receive the native callback and use the bounded metadata reader. Arbitrary JSON remains unauthenticated. Never reconstruct this evidence from a saved header alone. A later SessionStart must invalidate previous runtime authority before any new decision; resume, fork, clear, and unknown starts require separate verification. This function does not persist authority or implement that invalidation. No installed hook calls it.
 
 Sources: [session history and start source](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/session/session.rs), [metadata creation](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/rollout/src/recorder.rs).
+
+
+## Initial turn boundary
+
+A native fault test proves that an exception before resume invalidation leaves a saved session receipt usable. Codex continues to the next prompt after that hook failure. Do not use `freshRuntime` alone as persisted authority.
+
+`initialRuntime` adds the first native turn from `readInitialSession` to fresh startup evidence. `initialOwnerPrompt` requires that session and turn to match the prompt. A saved receipt cannot authorize a resumed prompt with a different turn, even if invalidation fails. These functions still require native callback provenance and a trusted transcript directory. They do not authenticate arbitrary caller-supplied objects.
+
+This boundary supports only initial-turn activation. Later prompts, child turns, restored in-flight turns, and full restart recovery require separate evidence. It is not full Sage session continuity. No installed hook calls these functions.

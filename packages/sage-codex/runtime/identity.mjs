@@ -11,7 +11,7 @@ const pathValue = (value) => typeof value === "string" && value.length <= 4096 &
 const refuse = () => { throw new Error("Codex session identity is unavailable"); };
 
 /** sessionsDir must be a trusted, canonical native profile directory supplied by the caller. */
-export function readSessionIdentity(transcriptPath, { sessionsDir } = {}) {
+function readSessionRecords(transcriptPath, { sessionsDir } = {}, count = 1) {
   let fd;
   try {
     if (!pathValue(sessionsDir) || !pathValue(transcriptPath)) refuse();
@@ -28,21 +28,46 @@ export function readSessionIdentity(transcriptPath, { sessionsDir } = {}) {
     fd = openSync(transcriptPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     if (!fstatSync(fd).isFile()) refuse();
     const bytes = Buffer.alloc(LIMIT);
-    let used = 0, end = -1;
-    while (used < LIMIT && end < 0) {
-      const count = readSync(fd, bytes, used, Math.min(4096, LIMIT - used), used);
-      if (count === 0) break;
-      end = bytes.subarray(used, used + count).indexOf(10);
-      if (end >= 0) end += used;
-      used += count;
+    let used = 0, start = 0;
+    const ends = [];
+    while (used < LIMIT && ends.length < count) {
+      const size = readSync(fd, bytes, used, Math.min(4096, LIMIT - used), used);
+      if (size === 0) break;
+      used += size;
+      let end;
+      while (ends.length < count && (end = bytes.subarray(start, used).indexOf(10)) >= 0) {
+        start += end + 1;
+        ends.push(start - 1);
+      }
     }
-    if (end < 0) refuse();
-    const header = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)));
+    if (ends.length !== count) refuse();
+    let offset = 0;
+    const rows = ends.map((end) => {
+      const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(offset, end)));
+      offset = end + 1;
+      return row;
+    });
+    const header = rows[0];
     if (!record(header) || header.type !== "session_meta" || !record(header.payload)) refuse();
-    return Object.fromEntries(FIELDS.filter((field) => Object.hasOwn(header.payload, field)).map((field) => [field, header.payload[field]]));
+    return rows;
   } catch {
     refuse();
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+
+const identity = (header) => Object.fromEntries(FIELDS.filter((field) => Object.hasOwn(header.payload, field)).map((field) => [field, header.payload[field]]));
+
+export function readSessionIdentity(transcriptPath, options) {
+  return identity(readSessionRecords(transcriptPath, options)[0]);
+}
+
+/** Read the initial native turn only. Never infer the current turn from later transcript content. */
+export function readInitialSession(transcriptPath, options) {
+  const [header, first] = readSessionRecords(transcriptPath, options, 2);
+  if (!record(first) || first.type !== "event_msg" || !record(first.payload) || first.payload.type !== "task_started"
+    || typeof first.payload.turn_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(first.payload.turn_id)) refuse();
+  return { metadata: identity(header), turn: first.payload.turn_id };
 }

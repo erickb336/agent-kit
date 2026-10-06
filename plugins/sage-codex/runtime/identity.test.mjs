@@ -55,3 +55,25 @@ test("identity errors omit filesystem details and metadata stays subject to call
   writeFileSync(f.file, header({ id: { malformed: true }, parent_thread_id: null }));
   assert.deepEqual(f.read(), { id: { malformed: true }, parent_thread_id: null });
 });
+
+
+const firstTurn = "33333333-3333-4333-8333-333333333333";
+const started = (turn = firstTurn) => JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: turn } }) + "\n";
+
+test("initial session reads exactly the metadata and first native turn", async (t) => {
+  const f = await fixture(t);
+  const { readInitialSession } = await import("./identity.mjs");
+  writeFileSync(f.file, header({ id: "root", instructions: "private" }) + started() + "invalid later content");
+  assert.deepEqual(readInitialSession(f.file, f), { metadata: { id: "root" }, turn: firstTurn });
+});
+
+test("initial session refuses missing or ambiguous first turn and ignores later replacements", async (t) => {
+  const f = await fixture(t);
+  const { readInitialSession } = await import("./identity.mjs");
+  for (const suffix of ["", started("invalid"), "{}\n" + started(), started().trimEnd(), " ".repeat(256 * 1024) + started()]) {
+    writeFileSync(f.file, header({}) + suffix);
+    assert.throws(() => readInitialSession(f.file, f), /identity is unavailable/);
+  }
+  writeFileSync(f.file, header({}) + started() + started("44444444-4444-4444-8444-444444444444"));
+  assert.equal(readInitialSession(f.file, f).turn, firstTurn);
+});

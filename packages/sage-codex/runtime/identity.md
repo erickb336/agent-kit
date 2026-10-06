@@ -7,3 +7,6 @@ The reader refuses paths outside that directory, links in any path component, no
 Field values still require validation by `ownerPrompt` or `decodeEvent`. Missing fields remain missing; null parent fields remain present. The reader does not authenticate arbitrary JSON, verify the running executable, or grant ownership.
 
 The native profile directory and its ancestors must remain controlled by the caller. This check does not defend against another local writer who replaces an ancestor between inspection and opening the file. No installed hook calls this reader yet.
+
+
+`readInitialSession` reads exactly the first two complete records within the same 256 KiB total limit. It requires session metadata followed by the native `event_msg` named `task_started`, with a UUID turn ID. It returns projected metadata and that initial turn. It never scans for a later replacement or claims that the initial turn is still current. Unknown ordering refuses the request.
