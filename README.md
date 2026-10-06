@@ -211,6 +211,7 @@ When a design has no clear answer, the chief can run an **arena**. You can also 
 
 ## What's new
 
+- **A guide for project READMEs.** The `readme-guide` skill, built from `writing/readme.md`, gives the order of sections, what the top 10 lines must answer, rules for diagrams and commands, examples of great READMEs, and a checklist. The hook gives it when an agent is about to write or change a README.
 - **The PR script imports before the reviews.** `sage-pr import <task>` copies the agent's bundle into the logbook and writes a review copy (`review/<task>-<sha>/` and `review/<task>-<sha>.diff`) that agents cannot change. `create` and `merge` refuse a commit whose review copy is not older than its first verdict.
 - **A bundle is at most 10 MiB, and a slow bundle stops.** Each git call on the bundle stops after 120 s with exit 2, so a bundle that expands to gigabytes cannot hold the logbook's lock.
 - **A passing git failure is no refusal.** Only git's own answer that the mirror or the bundle is not one refuses; any other git failure is exit 2: run the call again.
@@ -318,6 +319,7 @@ Agents seldom load a skill by themselves, so a **hook** gives the principle at t
 | The request asks for a refactor or a cleanup | subtract-before-you-add, laziness-protocol, migrate-callers-then-delete-legacy-apis |
 | The agent is about to change a test file | test-behavior-not-implementation |
 | The agent is about to write a document | contextualize-and-write-for-the-reader |
+| The agent is about to write or change a README | readme-guide (not a principle: the README guide) |
 | The agent is about to commit | sequence-verifiable-units |
 | A check fails | fix-root-causes |
 | Two changes in a row do not make the same check pass | attack-the-premise |
@@ -412,11 +414,12 @@ While the server runs, your claude.ai account can start sessions on your compute
 | Path | What it is |
 | --- | --- |
 | `plugins/sage/agents/` | Sage mode's team. |
-| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard (generated), `remote-control`, `sage-help`, the state tool `sage`, and `report`. |
+| `plugins/sage/skills/` | The skills: one per principle (generated), the writing standard and the README guide (generated), `remote-control`, `sage-help`, the state tool `sage`, and `report`. |
 | `plugins/sage/hooks/` | `hooks.json`: the principle hooks. `claude.json`: the sage mode hook. |
 | `principles/` | My principles: my own, and my versions of pstack's. |
 | `upstream/pstack/` | pstack's principles, kept up to date by the sync. |
 | `writing/ste-80.md` | The writing standard: about 80% of ASD-STE100, Simplified Technical English. |
+| `writing/readme.md` | The README guide: how to write a project README, with examples and a checklist. |
 | `preferences/`, `instructions/core.md` | How I work with agents, and the always-on file made from it. |
 | `docs/` | The design, the dry run reports, and the README's graphics. |
 | `scripts/graphics.mjs` | Draws the graphics in this README, the toad sage too, in light and dark. |
