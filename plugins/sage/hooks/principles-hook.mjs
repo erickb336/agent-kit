@@ -21,7 +21,7 @@ export const MOMENTS = {
   refactor: { why: "the request asks for a refactor or a cleanup", skills: ["principle-subtract-before-you-add", "principle-laziness-protocol", "principle-migrate-callers-then-delete-legacy-apis"] },
   testEdit: { why: "you are about to change a test file", skills: ["principle-test-behavior-not-implementation"] },
   docEdit: { why: "you are about to write a document for a person", skills: ["principle-contextualize-and-write-for-the-reader"] },
-  readmeEdit: { why: "you are about to write or change a README", skills: ["readme-guide"] },
+  readmeEdit: { why: "you are about to write or change a README", skills: ["principle-contextualize-and-write-for-the-reader", "readme-guide"] },
   commit: { why: "you are about to commit", skills: ["principle-sequence-verifiable-units"] },
   checkFailed: { why: "a check failed", skills: ["principle-fix-root-causes"] },
   fixesFailed: { why: "two changes in a row did not make the same check pass", skills: ["principle-attack-the-premise"] },
@@ -32,7 +32,8 @@ const DESIGN = /\b(design\w*|architect\w*|new feature|prototype|data model|schem
 const REFACTOR = /\b(refactor\w*|clean(ing)?[ -]?up|simplif\w*|rewrite|restructur\w*|dead code|deprecat\w*|legacy)\b/i;
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.\w+$|_test\.\w+$|(^|\/)test_[^/]+\.py$/i;
 const DOC_FILE = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
-const README_FILE = /(^|\/)readme(\.\w+)?$/i;
+/** A README document: no extension, or a document extension after an optional language part (README.zh-CN.md). Not code such as readme.rs. */
+const README_FILE = /(^|\/)readme((\.[a-z]{2,3}([-_][a-z0-9]+)?)?\.(md|mdx|markdown|rst|adoc|txt))?$/i;
 const COMMIT = /\bgit\s+(-C\s+\S+\s+)?commit\b/;
 /** A shell command that checks the code. The match is the check's name, so "npm test | tail" and "npm test" are one check. */
 const CHECK =

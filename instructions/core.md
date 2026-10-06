@@ -35,7 +35,7 @@ These preferences apply to every agent that works for me.
 - Give each decision with its options and the reason.
 - Say what you need from me, or say that you need nothing.
 - Write at 80% of Simplified Technical English (see `writing/ste-80.md`).
-- For a README, follow the README guide (see `writing/readme.md`).
+- For a README, follow the README guide (the `readme-guide` skill).
 
 **Tools**
 
