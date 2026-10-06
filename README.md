@@ -120,7 +120,7 @@ There are two loops:
 </picture>
 </a>
 
-The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work. Two more folders hold the rest: the hook keeps the mode, autopilot and the agent slots in `~/.claude/sage/.hooks/`, and agents save their pages (research, designs) in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook (`sage pages <task>` makes and prints the folder).
+The state lives in the logbook: plain files in `~/.claude/sage/<project>-<hash>/`. It holds the tasks, the agent runs, the findings, the verdicts, your answers and the decision trail. So you can leave and come back from another device, and a new session continues the work. Two more folders hold the rest: the hook keeps the mode, autopilot and the agent slots in `~/.claude/sage/.hooks/`, and agents save their pages (research, designs) in `~/sage-worktrees/<project>-<hash>/pages/<task>/`, outside the logbook (the chief makes the folder and prints its path).
 
 ### The team
 
