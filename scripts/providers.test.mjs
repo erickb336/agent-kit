@@ -425,3 +425,32 @@ test("admission rejects correctly hashed records that violate replay rules", asy
     assert.throws(() => api.reserveAdmission(dir, scope, admissionRequest("next-call"), admissionDispatch));
   }
 });
+
+test("a missing shared file policy still refuses active chief edits without disabling the hook", async (t) => {
+  const { dir, plugin } = isolated(t, "claude");
+  rmSync(join(plugin, "hooks/file-policy.mjs"), { force: true });
+  const { handle: check } = await import(pathToFileURL(join(plugin, "hooks/sage-hook.mjs")).href);
+  const input = { hook_event_name: "PreToolUse", tool_name: "Edit", session_id: "fixture", cwd: dir, tool_input: { file_path: join(dir, "sample.txt") } };
+  const result = check(input, { sage: true }, {});
+  assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(result.hookSpecificOutput.permissionDecisionReason, /file policy cannot load/);
+  assert.equal(check(input, { sage: false }, {}), undefined);
+});
+
+const filePolicyApi = () => import("../plugins/sage-codex/runtime/file-policy.mjs");
+
+test("the Codex direct edit gate denies the active chief but leaves child and inactive checks available", async () => {
+  const { directEditDecision } = await filePolicyApi();
+  const patch = { tool_name: "apply_patch", tool_input: { input: "*** Begin Patch\n*** Add File: sample.txt\n+sample\n*** End Patch" } };
+  assert.equal(directEditDecision(patch, { sage: true, chief: true }).decision, "deny");
+  assert.deepEqual(directEditDecision(patch, { sage: true, chief: false }), { decision: "pass" });
+  assert.deepEqual(directEditDecision(patch, { sage: false, chief: true }), { decision: "pass" });
+  assert.deepEqual(directEditDecision({ tool_name: "collaborationlist_agents" }, { sage: true, chief: true }), { decision: "pass" });
+});
+
+test("the Codex direct edit gate refuses unverified mode or chief context", async () => {
+  const { directEditDecision } = await filePolicyApi();
+  for (const context of [undefined, null, {}, { sage: true }, { chief: true }, { sage: "on", chief: true }]) {
+    assert.throws(() => directEditDecision({ tool_name: "apply_patch" }, context));
+  }
+});

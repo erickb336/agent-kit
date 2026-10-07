@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 // The state tool. When it cannot load, the hook still runs: its merge check refuses every merge, and it starts no new agent.
 const stateTool = await import("../skills/sage/sage.mjs").catch((error) => ({ error }));
 const boardTool = await import("../skills/sage/board.mjs").catch((error) => ({ error }));
+const filePolicy = await import("./file-policy.mjs").catch((error) => ({ error }));
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // The mode phrases, in a message from the user (promptOf). "sage mode" (also "sage mode on"), "sage mode off" and
 // "autopilot on" count only at the start of the message, so that a mention or a quote switches nothing: "sage mode
@@ -271,7 +272,10 @@ export function handle(input, state, slots) {
 
   const tool = input.tool_name ?? "";
   const ti = input.tool_input ?? {};
-  if (main && FILE_TOOLS.test(tool)) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with a message that starts with "sage mode off".');
+  if (FILE_TOOLS.test(tool)) {
+    if (filePolicy.error) return deny(event, "the file policy cannot load, so this file change is refused. Reinstall or update the sage plugin.");
+    if (filePolicy.chiefEditDenied({ sage: state.sage, chief: main })) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with a message that starts with "sage mode off".');
+  }
   if (main && AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
     if (missing.length) return deny(event, `the brief has no ${missing.join(", ")}. Every brief has all of ${BRIEF_FIELDS.join(", ")}, each at the start of a line. A tiny task may keep each field to one line.`);
