@@ -336,4 +336,3 @@ function readBodies(src, i, heredocs, out) {
   }
   return Math.min(i, src.length);
 }
-
