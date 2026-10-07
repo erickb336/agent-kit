@@ -27,3 +27,12 @@ A native fault test proves that an exception before resume invalidation leaves a
 `initialRuntime` adds the first native turn from `readInitialSession` to fresh startup evidence. `initialOwnerPrompt` requires that session and turn to match the prompt. A saved receipt cannot authorize a resumed prompt with a different turn, even if invalidation fails. These functions still require native callback provenance and a trusted transcript directory. They do not authenticate arbitrary caller-supplied objects.
 
 This boundary supports only initial-turn activation. Later prompts, child turns, restored in-flight turns, and full restart recovery require separate evidence. It is not full Sage session continuity. No installed hook calls these functions.
+
+
+## Native MCP connection
+
+`nativeOwnerPrompt(input, context, metadata)` requires the current connection's initialization version and the callback's native actor. Its context has exactly `version` and `actor`. The actor must match the root session. It applies the same prompt-frame and root-metadata checks as `ownerPrompt`.
+
+Supply the version from `initialize.clientInfo.version` and the actor from the hook call's `_meta.threadId`. Read metadata with `readSessionIdentity`. Never reconstruct this context from a saved receipt or model arguments. A new connection must establish its version again. Keep the hook server hidden-hook-only, required, and ready at connection startup.
+
+This path can classify a resumed owner prompt with fresh connection evidence. It does not restore mode, authorize a child, parse a mode phrase, or reconcile old work. Native execution and delivery failures remain outside this classifier's control. No installed hook uses it yet.

@@ -99,3 +99,33 @@ test("initial runtime cannot authorize a resumed prompt with a different native 
   assert.equal(initialRuntime({ ...startup, source: "resume" }, { metadata, turn }), null);
   assert.equal(initialOwnerPrompt(input, { runtime: { kind: "fresh-runtime", session: root, version: "0.160.0" }, metadata }), null);
 });
+
+
+test("native owner prompt uses current connection context on each resumed turn", async () => {
+  const { nativeOwnerPrompt } = await load();
+  for (const turn_id of [turn, child]) {
+    assert.deepEqual(nativeOwnerPrompt({ ...input, turn_id }, { version: "0.160.0", actor: root }, metadata),
+      { kind: "owner-prompt", session: root, turn: turn_id, text: "sage mode" });
+  }
+  assert.equal(nativeOwnerPrompt(input, { version: "0.160.1", actor: root }, metadata), null);
+});
+
+test("native owner prompt rejects child callbacks and missing connection context", async () => {
+  const { nativeOwnerPrompt } = await load();
+  for (const context of [null, {}, [], { version: "0.160.0" }, { actor: root },
+    { version: "0.160.0", actor: child }, { version: "0.160.0", actor: "invalid" },
+    { version: "0.160.0", actor: root, receipt: "saved" }]) {
+    assert.equal(nativeOwnerPrompt(input, context, metadata), null);
+  }
+});
+
+test("native owner prompt still requires root metadata and a captured prompt frame", async () => {
+  const { nativeOwnerPrompt } = await load();
+  const context = { version: "0.160.0", actor: root };
+  for (const bad of [undefined, { ...metadata, id: child }, { ...metadata, parent_thread_id: root }]) {
+    assert.equal(nativeOwnerPrompt(input, context, bad), null);
+  }
+  for (const bad of [null, { ...input, hook_event_name: "Stop" }, { ...input, actor: root }]) {
+    assert.equal(nativeOwnerPrompt(bad, context, metadata), null);
+  }
+});

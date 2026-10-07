@@ -46,3 +46,12 @@ export function initialOwnerPrompt(input, { runtime, metadata } = {}) {
   if (!record(runtime) || runtime.kind !== "initial-runtime" || runtime.session !== input?.session_id || runtime.turn !== input?.turn_id) return null;
   return ownerPrompt(input, { version: runtime.version, metadata });
 }
+
+/** Native connection version and callback actor must accompany every prompt. */
+export function nativeOwnerPrompt(input, context, metadata) {
+  if (!record(context) || Object.keys(context).length !== 2
+    || !Object.hasOwn(context, "version") || !Object.hasOwn(context, "actor")
+    || context.version !== RUNTIME_VERSION || typeof context.actor !== "string"
+    || !UUID.test(context.actor) || context.actor !== input?.session_id) return null;
+  return ownerPrompt(input, { version: context.version, metadata });
+}
