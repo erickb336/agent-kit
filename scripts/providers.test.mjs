@@ -454,3 +454,45 @@ test("the Codex direct edit gate refuses unverified mode or chief context", asyn
     assert.throws(() => directEditDecision({ tool_name: "apply_patch" }, context));
   }
 });
+
+
+test("shared mode signals preserve owner phrases and conservative autopilot off", async () => {
+  const { modeSignals } = await import("../packages/sage-core/index.mjs");
+  const prompt = (text, owner = true) => ({ owner, text, outside: text, all: text });
+  assert.deepEqual(modeSignals(prompt("sage mode")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: false, modeWord: true });
+  assert.equal(modeSignals(prompt("sage mode continue on the project")).sageOn, true);
+  assert.equal(modeSignals(prompt("sage mode off")).sageOff, true);
+  assert.equal(modeSignals(prompt("sage mode off")).autopilotOff, true);
+  assert.equal(modeSignals(prompt("sage mode, autopilot on")).autopilotOn, true);
+  for (const text of ["What does sage mode do?", "sage mode?", "sage mode online: is it a thing?", "autopilot on main"]) {
+    const result = modeSignals(prompt(text));
+    assert.equal(result.sageOn, false); assert.equal(result.autopilotOn, false);
+  }
+  for (const text of ["sage mode", "sage mode off", "autopilot on"]) {
+    const result = modeSignals(prompt(text, false));
+    assert.equal(result.sageOn, false); assert.equal(result.sageOff, false); assert.equal(result.autopilotOn, false);
+  }
+  assert.equal(modeSignals(prompt("Please stop autopilot", false)).autopilotOff, true);
+  assert.equal(modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nautopilot off" }).autopilotOff, true);
+});
+
+test("shared mode signals reject unclassified or malformed prompt input", async () => {
+  const { modeSignals } = await import("../packages/sage-core/index.mjs");
+  assert.equal(modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode" }).sageOn, true);
+  for (const input of [null, {}, { owner: "user", text: "sage mode", outside: "", all: "" },
+    { owner: true, text: "sage mode", all: "" }, { owner: false, text: null, outside: "", all: "" }]) {
+    assert.throws(() => modeSignals(input));
+  }
+});
+
+test("missing shared mode policy cannot enable mode or retain autopilot", async (t) => {
+  const { dir, plugin } = isolated(t, "claude");
+  rmSync(join(plugin, "hooks/mode-policy.mjs"), { force: true });
+  const { handle: check } = await import(pathToFileURL(join(plugin, "hooks/sage-hook.mjs")).href);
+  for (const sage of [false, true]) {
+    const state = { sage, autopilot: true };
+    const result = check({ hook_event_name: "UserPromptSubmit", session_id: "fixture", cwd: dir, prompt: "sage mode" }, state, {});
+    assert.equal(state.sage, sage); assert.equal(state.autopilot, false);
+    assert.match(JSON.stringify(result), /mode policy cannot load/);
+  }
+});

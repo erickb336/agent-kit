@@ -34,40 +34,12 @@ import { fileURLToPath } from "node:url";
 // The state tool. When it cannot load, the hook still runs: its merge check refuses every merge, and it starts no new agent.
 const stateTool = await import("../skills/sage/sage.mjs").catch((error) => ({ error }));
 const boardTool = await import("../skills/sage/board.mjs").catch((error) => ({ error }));
+const modePolicy = await import("./mode-policy.mjs").catch((error) => ({ error }));
 const filePolicy = await import("./file-policy.mjs").catch((error) => ({ error }));
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-// The mode phrases, in a message from the user (promptOf). "sage mode" (also "sage mode on"), "sage mode off" and
-// "autopilot on" count only at the start of the message, so that a mention or a quote switches nothing: "sage mode
-// off" also drops the git rules. "sage mode" may stand alone, end at ".", ",", ":", ";", "!" or the end of its line, or
-// go on with a space and more words ("sage mode continue on the sage project"), as long as its line has no "?" and the
-// next word is not "off": "sage mode?" and "sage mode online: is it a thing?" switch nothing (T194). "autopilot on" stays
-// strict: it must stand alone or end at that punctuation or its line, so "autopilot on?" and "autopilot on main" switch
-// nothing. "sage mode off" must not run on into a longer word ("sage mode off-topic"), and its line must have no "?"
-// ("sage mode off? what does it do?"). Because a missed off is the unsafe one, any line that starts with "sage mode off"
-// or "autopilot off" switches autopilot off, even as a question or in a frame. The owner's own text also switches it
-// off when it mentions autopilot and has an off word anywhere. A frame does not, because its boilerplate has off words
-// ("NOT a message from the user"). Off wins over on. Only OFF_LINE has the m flag: with it, "^" also matches the start
-// of each later line.
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
-// A prefix that stays on its line. With the m flag, "^" matches after each line break, so a prefix that also matched
-// line breaks would read each run of blank lines again from each of its lines: quadratic time on a long report (T34).
-const LINE_START = String.raw`^(?:${SP}|["'“‘*_>-])*`;
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
-const SAGE = String.raw`(?:enter${SP}+)?sage${SP}+mode(?:${SP}+on)?`;
-const AND_AUTOPILOT = String.raw`(?:${SP}+autopilot|(?:${SP}*[.,:;!]${SP}*|${SP}+)autopilot${SP}+on)`; // "sage mode autopilot", "sage mode, autopilot on"
-// The two lookaheads come before the space run, so that one space and two spaces give the same answer, and so that the
-// run never backtracks into a re-scan of the line: a lookahead after a greedy run reads the line again at each step of the
-// run, quadratic time on a long first line (T34, T194 cycle 1). The off guard blocks only the exact off word: "sage mode
-// offline" and "sage mode office hours" turn the mode on, as any other word after the phrase does; "sage mode off-topic"
-// is an off word with a hyphen, so OFF_LINE reads it as an autopilot off and SAGE_ON does not turn the mode on.
-const SAGE_ON = new RegExp(`${START}${SAGE}${AND_AUTOPILOT}?(?:${END}|(?!${SP}*off\\b)(?!.*[?？])${SP}+)`, "i"); // "." stops at a line break
-const OFF_LINE = new RegExp(`${LINE_START}(?:sage${SP}+mode|autopilot)${SP}+off\\b`, "im"); // in any text, at the start of any line
-const SAGE_OFF = new RegExp(`${START}sage${SP}+mode${SP}+off(?![\\p{L}\\p{N}-])(?!.*\\?)`, "iu"); // "." stops at a line break
-const AUTOPILOT_ON = new RegExp(`${START}(?:autopilot${SP}+on|${SAGE}${AND_AUTOPILOT})${END}`, "i");
-// A first line that starts with a mode word but matches no rule gets a note (switchModes), so that a miss is never silent.
-const MODE_WORD = new RegExp(`${START}(?:sage${SP}+mode|autopilot)(?![\\p{L}\\p{N}])`, "iu");
-// The word autopilot, and the off words in any form ("no more", "turn off", "switch off" and "hold off" have one too).
 // "show board", "show board for this project", "show board for all (projects)", "show board for <project>": at the start of the
 // owner's own text only, like the mode phrases, so a quote or an agent's report shows no board. The phrase may be in bold
 // or italics. A project name is up to 8 words of letters (any script), digits, "_", "." and "-"; a word may hold inner
@@ -77,9 +49,6 @@ const NAME_WORD = String.raw`[\p{L}\p{N}](?:[\p{L}\p{N}_.-]{0,62}[\p{L}\p{N}_-])
 // in the full-width "？", "！" or "。", and "？" may take "！" or "。" after it as "?" does (G68).
 const BOARD_END = String.raw`(?:[?？][!.！。]?[*_]{0,3}${SP}*(?=[\r\n\u2028\u2029]|$)|[*_]{0,3}(?:${END}|(?=${SP}*[！。])))`;
 const BOARD = new RegExp(`${START}show${SP}+board(?:${SP}+for${SP}+(${NAME_WORD}(?:${SP}+${NAME_WORD}){0,7}))?${BOARD_END}`, "iu");
-const AUTOPILOT = /\bauto[-\s]?pilots?\b/i;
-const OFF_WORD = /\b(?:off|no|without|don['’]?t|do\s+not|end(?:s|ed|ing)?|quit(?:s|ting)?|exit(?:s|ed|ing)?)\b|\b(?:stop|disabl|paus|cancel|kill|halt|deactivat|abort|suspend)|\bauto[-\s]?pilots?\s*=\s*false\b/i;
-const broadOff = (text) => OFF_LINE.test(text) || (AUTOPILOT.test(text) && OFF_WORD.test(text));
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
 /** The tools that run a command. The PreToolUse matcher in claude.json names each of them. */
@@ -163,18 +132,23 @@ export function promptOf(input) {
  * the text outside the frames (in the whole prompt when the hook cannot read the frames), and an off line anywhere. A sage mode off that is not the owner's switches only autopilot off, so that the git rules stay.
  */
 function switchModes({ owner, text, outside, all }, state) {
+  if (modePolicy.error) {
+    state.autopilot = false;
+    return ["sage: the mode policy cannot load. Autopilot is off. Reinstall or update the sage plugin."];
+  }
+  const signals = modePolicy.modeSignals({ owner, text, outside, all });
   const notes = [];
   let matched = true; // false only when no rule read the message; a rule that kept the state as it was counts as read
-  if (owner && SAGE_OFF.test(text)) {
+  if (signals.sageOff) {
     Object.assign(state, { sage: false, given: false, autopilot: false });
     notes.push("sage: sage mode is off. You may change files yourself again.");
-  } else if (owner && SAGE_ON.test(text)) state.sage = true;
+  } else if (signals.sageOn) state.sage = true;
   else matched = false;
-  if (OFF_LINE.test(all) || broadOff(owner ? outside : all)) {
+  if (signals.autopilotOff) {
     if (state.autopilot) notes.push("sage: autopilot is off. Work stops at verified, and the user merges.");
     state.autopilot = false;
     matched = true;
-  } else if (owner && state.sage && AUTOPILOT_ON.test(text)) {
+  } else if (state.sage && signals.autopilotOn) {
     matched = true;
     state.autopilot = true;
     const c = stateTool.config();
@@ -186,7 +160,7 @@ function switchModes({ owner, text, outside, all }, state) {
   // The owner's message starts with a mode word, and no rule read it: say so. A silent miss left a session's hook off
   // for two days (T194): the owner's first message had words after the on phrase, and nothing told the chief. Only the
   // owner's text gets the note, never an agent's, and a message that a rule read keeps no note, also when it changed nothing.
-  if (owner && !matched && MODE_WORD.test(text)) notes.push('sage: this message did not switch anything. The phrases are "sage mode", "sage mode on", "sage mode off", "autopilot on" and "autopilot off", at the start of the message.');
+  if (owner && !matched && signals.modeWord) notes.push('sage: this message did not switch anything. The phrases are "sage mode", "sage mode on", "sage mode off", "autopilot on" and "autopilot off", at the start of the message.');
   return notes;
 }
 
