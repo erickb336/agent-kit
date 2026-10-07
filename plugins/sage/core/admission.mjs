@@ -48,10 +48,12 @@ function action(input) {
     return { kind: "configure", config: configuration(input.config) };
   }
   if (input?.kind === "activate") {
-    fields(input, ["kind", "owner"]);
+    const hasMode = Object.hasOwn(input, "sage");
+    fields(input, hasMode ? ["kind", "owner", "sage"] : ["kind", "owner"]);
+    if (hasMode && typeof input.sage !== "boolean") refuse("invalid initial mode");
     fields(input.owner, ["project", "session", "activation", "epoch"]);
     const { epoch, ...request } = input.owner;
-    return { kind: "activate", owner: { ...activation(request), epoch: word(epoch, "epoch", UUID) } };
+    return { kind: "activate", owner: { ...activation(request), epoch: word(epoch, "epoch", UUID) }, ...(hasMode ? { sage: input.sage } : {}) };
   }
   if (input?.kind === "mode") {
     fields(input, ["kind", "change"]);
@@ -80,11 +82,13 @@ function apply(state, event) {
   if (event.kind === "activate") {
     if (owner) {
       if (owner.activation !== value.activation) refuse("session already has an owner; reconcile before a new activation");
+      const initial = copy.modes.find(m => m.project === owner.project && m.session === owner.session && m.epoch === owner.epoch && m.after === null);
+      if (initial.sage !== (event.sage ?? true)) refuse("activation has a different initial mode");
       return { state, result: owner, changed: false };
     }
     copy.sessions.push(value);
     copy.modes.push({ project: value.project, session: value.session, epoch: value.epoch,
-      after: null, turn: value.activation, sage: true });
+      after: null, turn: value.activation, sage: event.sage ?? true });
     return { state: copy, result: value, changed: true };
   }
   if (!owner || owner.epoch !== value.epoch) refuse("assignment has no current session owner");
@@ -211,7 +215,10 @@ function commit(dir, input, create = false) {
 
 export const configureAdmission = (dir, config) => commit(dir, { kind: "configure", config }, true);
 /** Activation must come from the trusted entry path, never a model-supplied ownership claim. */
-export const activateAdmission = (dir, request) => commit(dir, { kind: "activate", owner: { ...activation(request), epoch: randomUUID() } });
+export const activateAdmission = (dir, request, options = { sage: true }) => {
+  fields(options, ["sage"]);
+  return commit(dir, { kind: "activate", owner: { ...activation(request), epoch: randomUUID() }, sage: options.sage });
+};
 /** A verified owner prompt supplies the new turn and the expected previous mode turn. */
 export const changeAdmissionMode = (dir, request) => commit(dir, { kind: "mode", change: request });
 export const reserveAdmission = (dir, scope, request, dispatch) => commit(dir, { kind: "reserve", assignment: createAssignment(scope, request), dispatch });

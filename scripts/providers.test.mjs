@@ -1,7 +1,7 @@
 import "./test-env.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -565,4 +565,101 @@ test("admission mode concurrent changes require the same unchanged prior turn", 
   assert.equal(results.filter(r => /mode changed/.test(r.error)).length, 1);
   assert.deepEqual(api.readAdmission(dir).modes.at(-1), results.find(r => r.result).result.mode);
   assert.equal(api.readAdmission(dir).modes.length, 2);
+});
+
+
+async function nativeModeFixture(t) {
+  const { dir, plugin } = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(plugin, "runtime/mode.mjs")).href);
+  const core = await import(pathToFileURL(join(plugin, "core/index.mjs")).href);
+  const directory = join(dir, "admission"), projectDirectory = join(dir, "workspace"), sessionsDir = join(dir, "sessions");
+  mkdirSync(projectDirectory); mkdirSync(sessionsDir);
+  core.configureAdmission(directory, { total: 3, projects: [{ project: "one", limit: 3 }, { project: "two", limit: 3 }] });
+  const session = "11111111-1111-4111-8111-111111111111";
+  const transcript = join(sessionsDir, "root.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "session_meta", payload: { id: session, session_id: session, cli_version: "0.160.0" } }) + "\n");
+  const input = { hook_event_name: "UserPromptSubmit", session_id: session, turn_id: modeTurn, cwd: projectDirectory,
+    transcript_path: transcript, model: "fixture", permission_mode: "default", prompt: "sage mode" };
+  return { api, core, input, context: { version: "0.160.0", actor: session },
+    options: { directory, project: "one", projectDirectory, sessionsDir } };
+}
+
+test("Codex mode adapter persists verified phrases and keeps autopilot disabled", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  assert.equal(api.updateOwnerMode({ ...input, prompt: "What does sage mode do?" }, context, options).sage, false);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  const active = api.updateOwnerMode({ ...input, prompt: "sage mode, autopilot on" }, context, options);
+  assert.equal(active.sage, true); assert.equal(active.autopilot, false); assert.equal(active.signals.autopilotOn, true);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn, prompt: "continue" }, context, options).sage, true);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options).sage, false);
+  assert.equal(api.readMode(options.directory, options.project, input.session_id).sage, false);
+  assert.equal(core.readAdmission(options.directory).modes.length, 2);
+});
+
+test("Codex mode adapter never replays old activation or mode prompts over off", async (t) => {
+  const { api, input, context, options } = await nativeModeFixture(t);
+  api.updateOwnerMode(input, context, options);
+  const on = { ...input, turn_id: modeNextTurn };
+  api.updateOwnerMode(on, context, options);
+  api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options);
+  assert.equal(api.updateOwnerMode(input, context, options).sage, false);
+  assert.equal(api.updateOwnerMode(on, context, options).sage, false);
+  assert.throws(() => api.updateOwnerMode({ ...input, prompt: "sage mode off" }, context, options), /different mode request/);
+  assert.throws(() => api.updateOwnerMode({ ...on, prompt: "sage mode off" }, context, options), /different mode request/);
+  assert.equal(api.readMode(options.directory, options.project, input.session_id).modes.length, 3);
+});
+
+test("Codex mode adapter requires exact project and native owner identity before writes", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  for (const native of [null, { ...context, actor: modeTurn }, { ...context, version: "0.160.1" }]) {
+    assert.equal(api.updateOwnerMode(input, native, options), null);
+  }
+  assert.equal(api.updateOwnerMode({ ...input, cwd: options.sessionsDir }, context, options), null);
+  assert.equal(api.updateOwnerMode({ ...input, agent_id: input.session_id }, context, options), null);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  api.updateOwnerMode(input, context, options);
+  assert.equal(core.readAdmission(options.directory).sessions[0].session, `codex:${input.session_id}`);
+  assert.equal(api.readMode(options.directory, "two", input.session_id).sage, false);
+  assert.throws(() => api.readMode(options.directory, "absent", input.session_id), /not configured/);
+});
+
+test("Codex mode adapter refuses damaged storage and foreign metadata", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  writeFileSync(input.transcript_path, JSON.stringify({ type: "session_meta", payload: { id: modeNextTurn, session_id: modeNextTurn, cli_version: "0.160.0" } }) + "\n");
+  assert.equal(api.updateOwnerMode(input, context, options), null);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  assert.throws(() => api.updateOwnerMode({ ...input, transcript_path: join(options.projectDirectory, "outside.jsonl") }, context, options));
+  writeFileSync(join(options.directory, "00000000.json"), "broken");
+  assert.throws(() => api.readMode(options.directory, options.project, input.session_id));
+});
+
+
+test("Codex mode adapter records an initial off so its retry cannot replace later on", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  const off = { ...input, prompt: "sage mode off" };
+  assert.equal(api.updateOwnerMode(off, context, options).sage, false);
+  assert.equal(core.readAdmission(options.directory).modes.length, 1);
+  const owner = core.readAdmission(options.directory).sessions[0];
+  const initial = { project: owner.project, session: owner.session, activation: owner.activation };
+  assert.throws(() => core.activateAdmission(options.directory, initial), /different initial mode/);
+  assert.throws(() => core.activateAdmission(options.directory, initial, { sage: "off" }), /invalid initial mode/);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn }, context, options).sage, true);
+  assert.equal(api.updateOwnerMode(off, context, options).sage, true);
+  assert.equal(core.readAdmission(options.directory).modes.length, 2);
+  assert.throws(() => api.updateOwnerMode(input, context, options), /different mode request/);
+});
+
+
+test("admission retains the original on meaning of earlier activation records", async (t) => {
+  const { createHash } = await import("node:crypto");
+  const { api, dir, owner, scope } = await admissionFixture(t);
+  const path = join(dir, "00000001.json");
+  const record = JSON.parse(readFileSync(path, "utf8"));
+  delete record.data.sage;
+  const { hash, ...body } = record;
+  writeFileSync(path, JSON.stringify({ ...body, hash: createHash("sha256").update(JSON.stringify(body)).digest("hex") }) + "\n");
+  assert.equal(api.readAdmission(dir).modes.at(-1).sage, true);
+  assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
+  api.changeAdmissionMode(dir, { ...scope, after: owner.activation, turn: modeTurn, sage: false });
+  assert.equal(api.readAdmission(dir).modes.at(-1).sage, false);
 });
