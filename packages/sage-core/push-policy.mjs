@@ -1,13 +1,6 @@
 import { resolve } from "node:path";
 import { shellCommands } from "./command-reader.mjs";
-import { createCommandPolicy } from "./command-policy.mjs";
-
-/** git's options before its subcommand, and the ones that take the next word as their value. */
-const GIT_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)$/;
-export const gitSubcommand = (words, k) => {
-  while (words[k]?.startsWith("-")) k += GIT_VALUE.test(words[k]) ? 2 : 1;
-  return words[k] ?? "";
-};
+import { createCommandPolicy, GIT_VALUE, gitSubcommand } from "./command-policy.mjs";
 
 /** Shared push rules. The provider supplies a synchronous reader of the checkout's current branch.
  * This module never executes a command or offers a first-upload exception.
@@ -103,7 +96,6 @@ export function createPushPolicy({ stateToolPath, readBranch, mainReason = "work
   const REFS_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/git\/refs(?:\/|$)/;
   /** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
   const MAIN_FIELD = /^(?:-[fF]|--(?:raw-)?field=)?ref=(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
-
 
   return Object.freeze({ pushProblem });
 }

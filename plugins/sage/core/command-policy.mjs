@@ -13,8 +13,8 @@ export const mentionsMerge = (text) =>
   (/\bgh\b/i.test(text) && /\bmerge\b/i.test(text)) || (/\bpulls\//i.test(text) && /\/merge\b/i.test(text)) || /\/merges\b|\b(?:mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b/i.test(text);
 
 /** git's options before its subcommand, and the ones that take the next word as their value. */
-const GIT_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)$/;
-const subcommand = (words, k) => {
+export const GIT_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)$/;
+export const gitSubcommand = (words, k) => {
   while (words[k]?.startsWith("-")) k += GIT_VALUE.test(words[k]) ? 2 : 1;
   return words[k] ?? "";
 };
@@ -42,7 +42,7 @@ export function createCommandPolicy({ stateToolPath, prPattern = PR } = {}) {
       const name = word.split("/").pop();
       // A shell can run text from a pipe, including through filters. Its output is unknown: refuse expansion in that text.
       if (piped && commandText(name, args, stdin) === stdin && runnable(shellCommands(command)).some(({ words, bodies }) => [...words, ...bodies].some(expands))) return reason;
-      if (name === "git" && expansion.test(subcommand(args, 0))) return reason;
+      if (name === "git" && expansion.test(gitSubcommand(args, 0))) return reason;
       if (name !== "gh") continue;
       let k = 0;
       for (let n = 0; n < 2; n++) {
@@ -133,7 +133,6 @@ export function createCommandPolicy({ stateToolPath, prPattern = PR } = {}) {
     runnable(commands)
       .map(({ words, bodies }) => [...(words[0] === "git" && /^merge(?:-base|-file|-tree)?$/.test(words[1] ?? "") ? [words[0], ...words.slice(2)] : words), ...bodies].join(" "))
       .join("\n");
-
 
   return Object.freeze({ expansionProblem, mergeIn, runnable });
 }
