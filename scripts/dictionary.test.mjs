@@ -3,7 +3,7 @@
 import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "node:test";
@@ -52,6 +52,7 @@ test("in a page or a graphic, the text counts, and code, scripts and tags do not
 function copy() {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-dictionary-")); // the real path, so that build.mjs sees that it runs as the script
   cpSync(ROOT, dir, { recursive: true, filter: (src) => ![".git", ".claude", "node_modules"].includes(relative(ROOT, src)) });
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   const run = (script) => spawnSync("node", [join(dir, "scripts", `${script}.mjs`)], { encoding: "utf8" });
   // These tests edit authored text. Keep its assembled copy in step; generated skills
   // still change only through build, so stale-output tests retain their meaning.

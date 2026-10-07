@@ -1,11 +1,12 @@
 import "./test-env.mjs";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
+import { createInterface } from "node:readline";
 import { ROOT, filesUnder, outputs } from "./build.mjs";
 import { createStateTool, applyPrinciples } from "../packages/sage-core/index.mjs";
 import { handle, patchPaths, stateKey } from "../plugins/sage-codex/hooks/principles-hook.mjs";
@@ -141,6 +142,7 @@ test("check rejects a foreign file and build removes it from an assembled plugin
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-build-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   const foreign = join(dir, "plugins/sage/hooks/codex-only.mjs");
   writeFileSync(foreign, "throw new Error('foreign adapter');\n");
   const run = (name) => spawnSync(process.execPath, [join(dir, "scripts", `${name}.mjs`)], { encoding: "utf8" });
@@ -158,6 +160,7 @@ test("a mismatched core pin fails the build before replacing plugin files", (t) 
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-pin-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   const manifest = join(dir, "packages/sage-codex/package.json");
   const meta = JSON.parse(readFileSync(manifest, "utf8"));
   meta.dependencies["sage-core"] = "999.0.0";
@@ -174,6 +177,7 @@ test("check rejects a hook change made only in the generated Claude plugin", (t)
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-stale-hook-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   const hook = join(dir, "plugins/sage/hooks/sage-hook.mjs");
   writeFileSync(hook, `${readFileSync(hook, "utf8")}\n// A change in the old source path.\n`);
   const checked = spawnSync(process.execPath, [join(dir, "scripts/check.mjs")], { encoding: "utf8" });
@@ -662,4 +666,76 @@ test("admission retains the original on meaning of earlier activation records", 
   assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
   api.changeAdmissionMode(dir, { ...scope, after: owner.activation, turn: modeTurn, sage: false });
   assert.equal(api.readAdmission(dir).modes.at(-1).sage, false);
+});
+
+
+test("Codex bundles the MCP SDK with native identity and hidden tool metadata intact", async (t) => {
+  const { dir, plugin } = isolated(t, "codex");
+  assert.ok(existsSync(join(plugin, "runtime/mcp-sdk.mjs")));
+  assert.equal(existsSync(join(dir, "node_modules")), false);
+  const entry = join(dir, "server.mjs");
+  writeFileSync(entry, `
+    import { McpServer, serveStdio, z } from './plugin/runtime/mcp-sdk.mjs';
+    serveStdio(() => {
+      const server = new McpServer({ name: 'sage-test', version: '0.1.0' });
+      server.registerTool('sage_native_hook', {
+        inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ['app'] } },
+      }, async (input, context) => ({ content: [{ type: 'text', text: JSON.stringify({
+        version: server.server.getClientVersion()?.version,
+        actor: context.mcpReq._meta?.threadId, input,
+      }) }] }));
+      return server;
+    });
+  `);
+  const child = spawn(process.execPath, [entry], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+  t.after(() => child.stdin.end());
+  let stderr = '', sequence = 0;
+  const pending = new Map();
+  const closed = new Promise(resolve => child.once('close', (code, signal) => {
+    for (const { reject } of pending.values()) reject(Error('MCP server closed before its response'));
+    resolve({ code, signal });
+  }));
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  createInterface({ input: child.stdout }).on('line', line => {
+    try {
+      const message = JSON.parse(line);
+      pending.get(message.id)?.resolve(message);
+      pending.delete(message.id);
+    } catch (error) {
+      for (const { reject } of pending.values()) reject(error);
+      child.stdin.end();
+    }
+  });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++sequence;
+    pending.set(id, { resolve, reject });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+  const init = await request('initialize', {
+    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codex', version: '0.160.0' },
+  });
+  assert.equal(init.result.protocolVersion, '2025-06-18');
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  const listed = await request('tools/list', {});
+  assert.equal(listed.result.tools.length, 1);
+  assert.deepEqual(listed.result.tools[0]._meta.ui.visibility, ['app']);
+  const actor = 'd72422c7-509c-43aa-8c42-827c556f8a57';
+  const input = { hook_event_name: 'PreToolUse', extra: { retained: true }, actor: 'forged', version: 'forged' };
+  const called = await request('tools/call', { name: 'sage_native_hook', arguments: input, _meta: { threadId: actor } });
+  assert.deepEqual(JSON.parse(called.result.content[0].text), { version: '0.160.0', actor, input });
+  const absent = await request('tools/call', { name: 'sage_native_hook', arguments: input });
+  assert.equal(Object.hasOwn(JSON.parse(absent.result.content[0].text), 'actor'), false);
+  child.stdin.end();
+  assert.deepEqual(await closed, { code: 0, signal: null });
+  assert.equal(stderr, '');
+});
+
+test("Codex includes each bundled MCP dependency license", (t) => {
+  const { plugin } = isolated(t, "codex");
+  for (const name of ['@modelcontextprotocol-server', '@modelcontextprotocol-core', 'zod',
+    'ajv', 'ajv-formats', 'fast-deep-equal', 'fast-uri', 'json-schema-traverse', 'content-type']) {
+    const text = readFileSync(join(plugin, 'licenses', name + '.txt'), 'utf8');
+    assert.match(text, name.startsWith('@modelcontextprotocol') ? /Apache License/ : /MIT|Permission is hereby granted/);
+    assert.match(text, /[Cc]opyright/);
+  }
 });
