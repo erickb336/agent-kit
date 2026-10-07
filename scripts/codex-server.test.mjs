@@ -43,7 +43,7 @@ function fixture(t, policy = "normal") {
 const patch = (turn = turns[0]) => ({ hook_event_name: "PreToolUse", session_id: session, turn_id: turn,
   tool_name: "apply_patch", tool_use_id: "call-1", tool_input: { patch: "fixed input" } });
 
-async function connect(t, fixture, version = "0.160.0", expectedStderr = "") {
+async function connect(t, fixture, version = "0.160.0", expectedStderr = "", toolName = "sage_native_hook") {
   const child = spawn(process.execPath, [fixture.entry], { cwd: fixture.dir, stdio: ["pipe", "pipe", "pipe"], shell: false });
   t.after(() => child.stdin.end());
   let stderr = "", nextId = 0;
@@ -66,12 +66,15 @@ async function connect(t, fixture, version = "0.160.0", expectedStderr = "") {
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const listed = await request("tools/list", {});
   assert.equal(listed.result.tools.length, 1);
-  assert.deepEqual(listed.result.tools[0]._meta.ui.visibility, ["app"]);
+  assert.equal(listed.result.tools[0].name, toolName);
+  if (toolName === "sage_native_hook") assert.deepEqual(listed.result.tools[0]._meta.ui.visibility, ["app"]);
+  else assert.equal(listed.result.tools[0]._meta?.ui?.visibility, undefined);
   return {
     call: async (input, actor = session) => {
-      const response = await request("tools/call", { name: "sage_native_hook", arguments: input, _meta: { threadId: actor } });
+      const response = await request("tools/call", { name: toolName, arguments: input, _meta: { threadId: actor } });
       assert.equal(response.error, undefined);
-      assert.equal(response.result.isError, undefined, "policy denials must be successful MCP results");
+      if (toolName === "sage_native_hook") assert.equal(response.result.isError, undefined, "policy denials must be successful MCP results");
+      else if (response.result.isError) return { error: response.result.content[0].text };
       assert.doesNotMatch(JSON.stringify(response), /private loader detail/);
       return JSON.parse(response.result.content[0].text);
     },
@@ -374,4 +377,123 @@ test("packaged child start rejects inherited policy fields instead of delivering
     assert.equal((await client.call(f.start(), childActor)).decision, "block");
     await client.close();
   }
+});
+
+async function preparationServerFixture(t) {
+  const f = fixture(t);
+  assert.ok(existsSync(join(f.plugin, "runtime/preparation-server.mjs")), "the separate preparation server must ship");
+  const core = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  const events = await import(pathToFileURL(join(f.plugin, "runtime/events.mjs")));
+  const api = await import(pathToFileURL(join(f.plugin, "runtime/preparation.mjs")));
+  const options = { directory: f.mode.directory, project: f.mode.project, observationsRoot: join(f.dir, "observations") };
+  core.configureAdmission(options.directory, { total: 5, projects: [{ project: options.project, limit: 5 }] });
+  const owner = core.activateAdmission(options.directory, { project: options.project, session: `codex:${session}`, activation: turns[0] });
+  const scope = { project: owner.project, session: owner.session, epoch: owner.epoch };
+  writeFileSync(f.entry, `import { servePreparations } from './plugin/runtime/preparation-server.mjs'; servePreparations(${JSON.stringify(options)});`);
+  const brief = Object.fromEntries(["GOAL", "SCOPE", "CONTEXT", "DECISIONS", "ACCEPTANCE", "VERIFY", "BUDGET", "FORBIDDEN", "REPORT", "STANDING"].map(key => [key, "Complete the fixture task."]));
+  const input = { task: "T1", run: "R1", name: "fixture_lead", role: "lead", brief };
+  const native = actor => ({ version: "0.160.0", actor });
+  const spawnInput = (name = input.name, call = "spawn-1") => ({ hook_event_name: "PreToolUse", session_id: session,
+    turn_id: turns[0], tool_name: "collaborationspawn_agent", tool_use_id: call, tool_input: { task_name: name, message: "opaque native input" } });
+  const bindLead = () => {
+    api.prepareNativeTask(input, native(session), options);
+    const admitted = api.reservePreparedSpawn(spawnInput(), native(session), options);
+    events.publish(join(options.observationsRoot, session), { schema: 1, runtime: "0.160.0", session,
+      kind: "spawn-result", actor: session, call: "spawn-1", turn: turns[0], path: "/root/fixture_lead" });
+    events.publish(join(options.observationsRoot, session), { schema: 1, runtime: "0.160.0", session,
+      kind: "child-start", child: childActor, parent: session, path: "/root/fixture_lead", turn: turns[1] });
+    core.bindAdmission(options.directory, { ...scope, assignment: admitted.assignment.id, issuer: session,
+      call: "spawn-1", child: childActor, turn: turns[1] });
+  };
+  const connectVisible = version => connect(t, f, version, "", "sage_prepare_task");
+  return { ...f, core, events, api, options, scope, input, native, spawnInput, bindLead, connectVisible };
+}
+
+test("visible preparation server saves the native owner's brief without dispatch or capacity", async t => {
+  const f = await preparationServerFixture(t); const client = await f.connectVisible();
+  const saved = await client.call(f.input);
+  assert.equal(saved.decision, "prepared");
+  assert.deepEqual(Object.keys(saved).sort(), ["decision", "preparation", "task", "run", "name", "role"].sort());
+  assert.equal(saved.name, f.input.name);
+  assert.equal((await client.call(f.input)).preparation, saved.preparation);
+  await client.close();
+  const state = f.core.readAdmission(f.options.directory);
+  assert.equal(state.preparations.length, 1);
+  assert.equal(state.preparations[0].issuer, session);
+  assert.deepEqual(state.preparations[0].brief, f.input.brief);
+  assert.deepEqual(state.reservations, []);
+  assert.equal(existsSync(f.options.observationsRoot), false);
+});
+
+test("visible preparation server refuses forged identity unsupported versions and invalid work", async t => {
+  const f = await preparationServerFixture(t); const client = await f.connectVisible();
+  for (const [input, actor] of [[f.input, childActor], [f.input, null], [{ ...f.input, issuer: session }, session],
+    [{ ...f.input, role: "chief-of-staff" }, session], [{ ...f.input, name: "root" }, session],
+    [{ ...f.input, name: "../other" }, session], [{ ...f.input, brief: { ...f.input.brief, GOAL: "" } }, session],
+    [{ ...f.input, brief: { ...f.input.brief, GOAL: "x".repeat(32769) } }, session]]) {
+    assert.equal(typeof (await client.call(input, actor)).error, "string");
+  }
+  await client.close();
+  const unsupported = await f.connectVisible("old");
+  assert.equal(typeof (await unsupported.call(f.input)).error, "string"); await unsupported.close();
+  assert.deepEqual(f.core.readAdmission(f.options.directory).preparations, []);
+});
+
+test("visible preparation server uses a verified lead binding and rejects ambiguous native history", async t => {
+  const f = await preparationServerFixture(t); f.bindLead(); const client = await f.connectVisible();
+  const task = { ...f.input, name: "qa_child", role: "qa" };
+  assert.equal((await client.call(task, childActor)).decision, "prepared");
+  assert.equal(typeof (await client.call({ ...task, name: "nested_lead", role: "lead" }, childActor)).error, "string");
+  f.events.publish(join(f.options.observationsRoot, session), { schema: 1, runtime: "0.160.0", session,
+    kind: "spawn-request", actor: session, call: "reused-path", turn: turns[2], name: "fixture_lead" });
+  assert.equal(typeof (await client.call({ ...task, name: "another_qa" }, childActor)).error, "string");
+  await client.close();
+  assert.equal(f.core.readAdmission(f.options.directory).preparations.length, 2);
+});
+
+test("native prepared spawn consumes only matching authenticated work and keeps rejected observations", async t => {
+  const f = await preparationServerFixture(t); const client = await f.connectVisible();
+  const saved = await client.call(f.input); await client.close();
+  assert.throws(() => f.api.reservePreparedSpawn(f.spawnInput(), f.native(childActor), f.options));
+  const first = f.api.reservePreparedSpawn(f.spawnInput(), f.native(session), f.options);
+  assert.equal(first.decision, "permit-once");
+  assert.equal(f.api.reservePreparedSpawn(f.spawnInput(), f.native(session), f.options).decision, "already-reserved");
+  assert.throws(() => f.api.reservePreparedSpawn(f.spawnInput(f.input.name, "another-call"), f.native(session), f.options), /already has a dispatch/);
+  assert.throws(() => f.api.reservePreparedSpawn(f.spawnInput("unprepared", "unknown"), f.native(session), f.options));
+  const state = f.core.readAdmission(f.options.directory);
+  assert.equal(state.reservations.length, 1); assert.equal(state.reservations[0].preparation, saved.preparation);
+  assert.deepEqual(state.reservations[0].brief, f.input.brief);
+  const observed = f.events.readObservations(join(f.options.observationsRoot, session));
+  assert.equal(observed.length, 4);
+  assert.doesNotMatch(JSON.stringify(observed), /opaque native input/);
+});
+
+test("native prepared spawn refuses mode-off and changed scope and keeps the prepared work", async t => {
+  const f = await preparationServerFixture(t);
+  f.api.prepareNativeTask(f.input, f.native(session), f.options);
+  const other = "d72422c7-509c-43aa-8c42-827c556f8a58";
+  assert.throws(() => f.api.reservePreparedSpawn({ ...f.spawnInput(), session_id: other }, f.native(session), f.options));
+  f.core.changeAdmissionMode(f.options.directory, { ...f.scope, after: turns[0], turn: turns[1], sage: false });
+  assert.throws(() => f.api.reservePreparedSpawn(f.spawnInput(), f.native(session), f.options), /mode is off/);
+  const client = await f.connectVisible();
+  assert.equal(typeof (await client.call({ ...f.input, name: "other" })).error, "string");
+  assert.equal((await client.call(f.input)).decision, "already-prepared"); await client.close();
+  assert.equal(f.core.readAdmission(f.options.directory).preparations.length, 1);
+  assert.deepEqual(f.core.readAdmission(f.options.directory).reservations, []);
+});
+
+test("visible preparation server contains missing modules and unavailable storage", async t => {
+  for (const failure of ["module", "journal"]) {
+    const f = await preparationServerFixture(t); const client = await f.connectVisible();
+    if (failure === "module") rmSync(join(f.plugin, "runtime/preparation.mjs"));
+    else writeFileSync(join(f.options.directory, "00000000.json"), "private storage error");
+    const output = await client.call(f.input);
+    assert.deepEqual(output, { error: "Sage could not prepare this task. Check the active role, task brief, and unique agent name." });
+    await client.close();
+  }
+  const specialist = await preparationServerFixture(t); specialist.input.role = "qa"; specialist.bindLead();
+  const client = await specialist.connectVisible();
+  assert.equal(typeof (await client.call({ ...specialist.input, name: "third_layer" }, childActor)).error, "string");
+  await client.close();
+  assert.equal(specialist.core.readAdmission(specialist.options.directory).preparations.length, 1);
 });
