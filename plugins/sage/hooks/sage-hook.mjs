@@ -36,7 +36,16 @@ const stateTool = await import("../skills/sage/sage.mjs").catch((error) => ({ er
 const boardTool = await import("../skills/sage/board.mjs").catch((error) => ({ error }));
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const commandReader = await import("./command-reader.mjs").catch((error) => ({ error }));
-const commandPolicy = await import("./command-policy.mjs").catch((error) => ({ error }));
+const TOOL = join(ROOT, "skills/sage/sage.mjs");
+/** The one command that can create main or master (firstUpload). */
+const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
+const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief tries to turn on branch protection for that branch.)`;
+const commandPolicy = await import("./command-policy.mjs")
+  .then((module) => ({ ...module,
+    commands: module.createCommandPolicy({ stateToolPath: TOOL, prPattern: stateTool.PR ?? null }),
+    pushes: module.createPushPolicy({ stateToolPath: TOOL, readBranch: branchAt, mainReason: TO_MAIN }),
+  }))
+  .catch((error) => ({ error }));
 // The mode phrases, in a message from the user (promptOf). "sage mode" (also "sage mode on"), "sage mode off" and
 // "autopilot on" count only at the start of the message, so that a mention or a quote switches nothing: "sage mode
 // off" also drops the git rules. "sage mode" may stand alone, end at ".", ",", ":", ";", "!" or the end of its line, or
@@ -302,96 +311,17 @@ export function handle(input, state, slots) {
   return undefined;
 }
 
-/**
- * The push rule is an allow-list, as the merge rule is. A command that runs git push anywhere in a command line (also
- * behind a wrapper such as sudo, nice, xargs or timeout, or a shell keyword such as if, !, do or {), or that gives push
- * text to another program (sh -c, eval, a heredoc), is refused unless it is the one push form: a command of its own
- * that pushes the literal name of a branch that is not main or master, from a checkout that is not on main or master.
- * Undefined when the command line has no push, or only pushes in that form; else the reason for the refusal.
- */
-const PUSH_FORM = 'git [-C <dir>] push [-u] [--follow-tags] [-o <option>] origin <branch>, as a command of its own, with the literal name of the task\'s branch: not main or master, HEAD, @, a pattern, a variable, or a refspec with ":" or "+". To delete a branch: git push --delete origin <branch>';
+/** Shared push classification. Branch reads and the first-upload exception stay in the provider. */
+function pushProblem(command, cwd) {
+  if (commandPolicy.error) return "the command policy cannot load, so this push is refused.";
+  return commandPolicy.pushes.pushProblem(command, cwd);
+}
+const subcommand = (words, k) => commandPolicy.gitSubcommand(words, k);
 /** The word git, and then a later word: one linear scan from the first git (T34, T100-N5). */
 const gitThen = (text, word) => new RegExp(`\\b${word}\\b`, "i").test(/\bgit\b([\s\S]*)/i.exec(text)?.[1] ?? "");
 const pushText = (text) => gitThen(text, "push");
 /** A command line without quotes, backslashes and line joins: the text that the rules test when the reader cannot read the line (fail closed). */
 const bare = (text) => text.replace(/\\\n/g, "").replace(/['"\\]/g, "");
-const refuse = (why) => `${why} Push only with ${PUSH_FORM}.`;
-function pushProblem(command, cwd) {
-  let commands;
-  try {
-    commands = shellCommands(command);
-  } catch (e) {
-    return pushText(bare(command)) ? refuse(`the hook cannot read this command (${e.message}), so it refuses it. Close each quote, substitution and heredoc.`) : undefined;
-  }
-  let dir = cwd;
-  for (const { cmd, words, bodies } of runnable(commands)) {
-    if (cmd.words[0] === "cd" && cmd.words.length === 2) dir = resolve(dir, cmd.words[1]);
-    const git = words.findIndex((w, k) => /(?:^|\/)git$/.test(w) && /^push$/i.test(subcommand(words, k + 1)));
-    const why = git >= 0 ? pushForm(words, git, dir) : ghApi(words) && words.some((w) => REFS_ENDPOINT.test(w)) && words.some((w) => MAIN_FIELD.test(w)) ? TO_MAIN : [...words, ...bodies].some((w) => /\s/.test(w) && pushText(w)) ? "this command gives push text to another program (a shell, eval or a script), so the hook cannot read the push." : undefined;
-    if (why) return refuse(why);
-  }
-  return undefined;
-}
-
-/** git's options before its subcommand, and the ones that take the next word as their value. */
-const GIT_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)$/;
-const subcommand = (words, k) => {
-  while (words[k]?.startsWith("-")) k += GIT_VALUE.test(words[k]) ? 2 : 1;
-  return words[k] ?? "";
-};
-/** A ref that git reads as main or master: main, heads/main, refs/heads/main. */
-const MAIN_REF = /^(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
-/** A branch name with no expansion, pattern or special ref in it: not HEAD, @, a variable, a glob or a refspec. */
-const LITERAL = /^(?!-)(?!(?:.*\/)?HEAD$)[^$`*?[\]:+~^\\{}<>|&;!@'"()]+$/i;
-const PUSH_OPTIONS = /^(?:-u|--set-upstream|--follow-tags|-q|--quiet|--no-verify|--delete|-d|-o.*|--push-option=.*)$/;
-/** git accepts a long option by any unambiguous start of its name, such as --forc. */
-const longOption = (word, names) => {
-  const name = word.split("=")[0];
-  return name.length > 3 && names.some((n) => n.startsWith(name));
-};
-const FORCE = "sage mode never force-pushes. Push a new commit instead.";
-/** The one command that can create main or master (firstUpload). */
-const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
-const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief tries to turn on branch protection for that branch.)`;
-
-/** Why the git push at words[git] is not the push form, or undefined. dir is where the command runs. */
-function pushForm(words, git, dir) {
-  let force = false;
-  let main = false;
-  let remove = false;
-  let other = git > 0 ? `"${words.slice(0, git).join(" ")}" runs this push; the hook reads a push only as a command of its own.` : undefined;
-  const names = [];
-  let k = git + 1;
-  for (; !/^push$/i.test(words[k]); k++) {
-    if (words[k] === "-C") dir = resolve(dir, words[k + 1]);
-    else other ??= `"${words[k]}" is not part of the push form.`;
-    if (GIT_VALUE.test(words[k])) k++;
-  }
-  for (k++; k < words.length; k++) {
-    let w = words[k];
-    // A redirection, such as 2>&1, ">/dev/null" or "main>/dev/null": keep only the word before it.
-    const r = w.search(/&?[<>]/);
-    if (r >= 0) {
-      if (w.length === r + /^&?[<>]+&?/.exec(w.slice(r))[0].length) k++; // its target is the next word
-      w = /^\d*$/.test(w.slice(0, r)) ? "" : w.slice(0, r);
-      if (!w) continue;
-    }
-    if (w.startsWith("--") ? longOption(w, ["--force", "--force-with-lease", "--force-if-includes"]) : /^-[^-o]*f/.test(w) || w.startsWith("+")) force = true;
-    else if (longOption(w, ["--mirror", "--all", "--branches"]) || (!w.startsWith("-") && MAIN_REF.test(w.slice(w.indexOf(":") + 1)))) main = true;
-    else if (w === "--delete" || w === "-d") remove = true;
-    else if (w === "-o" || w === "--push-option") k++;
-    else if (w.startsWith("-") ? !PUSH_OPTIONS.test(w) : names.length && !LITERAL.test(w)) other ??= `"${w}" is not part of the push form.`;
-    if (!w.startsWith("-")) names.push(w);
-  }
-  if (force) return FORCE;
-  if (main) return TO_MAIN;
-  if (other) return other;
-  if (names.length < 2) return "name the remote and the branch: a push with no branch pushes what the checkout's settings say, which can be main.";
-  if (names[0] !== "origin") return `push to origin, not to "${names[0]}".`;
-  if (remove) return undefined;
-  const branch = branchAt(dir);
-  return branch && MAIN_REF.test(branch) ? `this checkout is on ${branch}. Push from the task's worktree, on the task's branch.` : undefined;
-}
 
 /** The branch that the checkout at dir is on, or undefined when git cannot read it. */
 function branchAt(dir) {
@@ -401,18 +331,6 @@ function branchAt(dir) {
     return undefined;
   }
 }
-
-/** Whether the command is gh api: gh as the command word, as gh or a path that ends in /gh, after any NAME=value, env and command. */
-function ghApi(words) {
-  let k = 0;
-  while (/^(?:[A-Za-z_]\w*=|env$|command$)/.test(words[k] ?? "")) k++;
-  return /(?:^|\/)gh$/.test(words[k] ?? "") && words[k + 1] === "api";
-}
-
-/** A gh api endpoint of git refs: repos/<o>/<r>/git/refs or repos/<o>/<r>/git/refs/<ref>. */
-const REFS_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/git\/refs(?:\/|$)/;
-/** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
-const MAIN_FIELD = /^(?:-[fF]|--(?:raw-)?field=)?ref=(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
 
 /**
  * The one exception to the push rule: the first creation of main or master on GitHub, for a blank project. The whole
@@ -844,8 +762,6 @@ function real(path) {
   }
 }
 
-const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
-
 const expansionProblem = (command, cwd) => sharedCommands.expansionProblem(command, cwd);
 
 function gitGate(event, command, state, cwd, main) {
@@ -918,63 +834,14 @@ export function programsRun(command, cwd, path = process.env.PATH ?? "") {
   return commandReader.programsRun(command, cwd, path);
 }
 
-/**
- * Text that names a merge: the word gh and the word merge in any order (so also "$G pr merge" or "gh pr $(echo merge)"),
- * a merge path of the REST API, or a GraphQL merge mutation. Each test is one linear scan.
- */
-const mentionsMerge = (text) =>
-  (/\bgh\b/i.test(text) && /\bmerge\b/i.test(text)) || (/\bpulls\//i.test(text) && /\/merge\b/i.test(text)) || /\/merges\b|\b(?:mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b/i.test(text);
-const CANNOT = `the hook cannot prove that this command is only the merge command, so it refuses it. Merge only with ${MERGE_FORM}, as a command of its own: not through the GitHub API, a variable, a script or another program. Merge text may stand only in the text of echo, printf, cat, grep, git commit, gh pr create, comment, view or edit, or the state tool, and not piped on or written to a file that a later command could run.`;
-
-/**
- * The merge in a Bash command, by an allow-list. Undefined when the command names no merge outside harmless text.
- * Else { pr, sha } when the whole command is the one merge form, which the merge check then decides, or { problem }.
- */
+/** Shared merge classification. The role, mode and ledger checks remain in gitGate. */
 export function mergeIn(command) {
-  const form = mergeForm(command);
-  if (form) return form;
-  let commands;
-  try {
-    commands = shellCommands(command);
-  } catch (e) {
-    return mentionsMerge(bare(command)) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
-  }
-  return mentionsMerge(codeText(commands)) || commands.some(expandedMerge) ? { problem: CANNOT } : undefined;
+  if (commandPolicy.error) return { problem: "the command policy cannot load, so the merge is refused." };
+  return sharedCommands.mergeIn(command);
 }
+const mentionsMerge = (text) => commandPolicy.error || commandPolicy.mentionsMerge(text);
 
-/** A command whose name comes from an expansion ($'…', $( ), a backtick or $VAR), with the word merge in its words. */
-const expandedMerge = ({ words, bodies }) => /\$/.test(words.find((w) => !/^\w+=/.test(w)) ?? "") && /\bmerge\b/i.test([...words, ...bodies].join(" "));
-
-/** The merge form, when the command is one gh pr merge with plain words only: { pr, sha }, or { problem }. */
-function mergeForm(command) {
-  const text = command.trim();
-  const words = text.split(/[ \t]+/);
-  if (words.slice(0, 3).join(" ") !== "gh pr merge" || /[^\w \t=-]/.test(text)) return undefined;
-  const [, , , pr, ...flags] = words;
-  // The state tool's one PR-number rule. When the state tool cannot load, the merge check refuses every merge anyway.
-  if (stateTool.PR && !stateTool.PR.test(pr ?? "")) return { problem: `name the pull request by its number (digits, no leading zero): ${MERGE_FORM}.` };
-  const shas = [];
-  const modes = new Set();
-  for (let k = 0; k < flags.length; k++) {
-    const f = flags[k];
-    if (f === "--match-head-commit") shas.push(flags[++k] ?? "");
-    else if (f.startsWith("--match-head-commit=")) shas.push(f.slice(f.indexOf("=") + 1));
-    else if (f === "--squash" || f === "--delete-branch") modes.add(f);
-    else return { problem: `merge only with ${MERGE_FORM}; "${f}" is not part of it.` };
-  }
-  if (!shas.length) return { problem: "merge only the checked commit: add --match-head-commit <the head SHA that the ledger verified>." };
-  if (shas.length > 1) return { problem: `give --match-head-commit once, not ${shas.length} times: gh uses the last one, and the merge check reads one.` };
-  if (!/^[0-9a-f]{40}$/i.test(shas[0])) return { problem: `--match-head-commit needs the full 40-character head SHA that the ledger verified, not "${shas[0]}".` };
-  if (modes.size < 2) return { problem: `merge only with ${MERGE_FORM}: add --squash and --delete-branch.` };
-  return { pr, sha: shas[0] };
-}
-
-/**
- * The known-harmless commands, which never run their arguments: the number of words of the command's name, or 0.
- * printf -v sets a variable, so it is not harmless.
- */
-const TOOL = join(ROOT, "skills/sage/sage.mjs");
-const sharedCommands = commandPolicy.error ? undefined : commandPolicy.createCommandPolicy({ stateToolPath: TOOL });
+const sharedCommands = commandPolicy.commands;
 /**
  * The chief's spelling of a state tool command: node and the tool's absolute path, unquoted, the one form that the
  * sandbox's excluded entry matches (a quoted path stays in the sandbox). A path with a space has no such form, so
@@ -983,14 +850,6 @@ const sharedCommands = commandPolicy.error ? undefined : commandPolicy.createCom
  */
 export const stateCommand = (args) => (/\s/.test(TOOL) ? `node "${TOOL}" ${args}` : `node ${TOOL} ${args}`);
 const SPACE_NOTE = /\s/.test(TOOL) ? "The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. " : "";
-const runnable = (commands) => sharedCommands.runnable(commands);
-
-/** The text of a command line that can run. A local "git merge" is not a merge of a pull request, so its subcommand word is left out. */
-const codeText = (commands) =>
-  runnable(commands)
-    .map(({ words, bodies }) => [...(words[0] === "git" && /^merge(?:-base|-file|-tree)?$/.test(words[1] ?? "") ? [words[0], ...words.slice(2)] : words), ...bodies].join(" "))
-    .join("\n");
-
 /** Shared shell parsing; never executes a command. */
 export function shellCommands(src) {
   if (commandReader.error) throw commandReader.error;
