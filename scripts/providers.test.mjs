@@ -289,7 +289,7 @@ test("admission initializes one immutable configuration and idempotent session o
   assert.deepEqual(ordered.projects.map(row => row.project), ["B", "a"]);
   assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
   assert.match(owner.epoch, /^[0-9a-f-]{36}$/);
-  assert.deepEqual(api.readAdmission(dir), { config: admissionConfig, sessions: [owner], reservations: [] });
+  assert.deepEqual(api.readAdmission(dir), { config: admissionConfig, sessions: [owner], reservations: [], modes: [{ ...admissionScope(owner), after: null, turn: owner.activation, sage: true }] });
   assert.throws(() => api.configureAdmission(dir, { ...admissionConfig, total: 4 }), /configuration differs/);
   assert.throws(() => api.activateAdmission(dir, { ...admissionOwner, activation: "22222222-2222-4222-8222-222222222222" }), /already has an owner/);
 });
@@ -495,4 +495,74 @@ test("missing shared mode policy cannot enable mode or retain autopilot", async 
     assert.equal(state.sage, sage); assert.equal(state.autopilot, false);
     assert.match(JSON.stringify(result), /mode policy cannot load/);
   }
+});
+
+
+const modeTurn = "22222222-2222-4222-8222-222222222222";
+const modeNextTurn = "33333333-3333-4333-8333-333333333333";
+
+test("admission mode persists off and on without releasing held work", async (t) => {
+  const { api, dir, scope, owner } = await admissionFixture(t);
+  api.reserveAdmission(dir, scope, admissionRequest("held-call"), admissionDispatch);
+  const off = api.changeAdmissionMode(dir, { ...scope, after: owner.activation, turn: modeTurn, sage: false });
+  assert.equal(off.decision, "changed"); assert.equal(off.mode.sage, false);
+  assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
+  assert.equal(api.readAdmission(dir).modes.at(-1).sage, false);
+  assert.equal(api.readAdmission(dir).reservations.length, 1);
+  assert.equal(api.reserveAdmission(dir, scope, admissionRequest("held-call"), admissionDispatch).decision, "already-reserved");
+  assert.throws(() => api.reserveAdmission(dir, scope, admissionRequest("off-call"), admissionDispatch), /mode is off/);
+  const on = api.changeAdmissionMode(dir, { ...scope, after: modeTurn, turn: modeNextTurn, sage: true });
+  assert.equal(on.mode.sage, true);
+  assert.equal(api.reserveAdmission(dir, scope, admissionRequest("next-call"), admissionDispatch).decision, "permit-once");
+  assert.equal(api.readAdmission(dir).reservations.length, 2);
+});
+
+test("admission mode retries cannot replay an old on over a later off", async (t) => {
+  const { api, dir, scope, owner } = await admissionFixture(t);
+  const request = { ...scope, after: owner.activation, turn: modeTurn, sage: true };
+  api.changeAdmissionMode(dir, request);
+  const off = api.changeAdmissionMode(dir, { ...scope, after: modeTurn, turn: modeNextTurn, sage: false });
+  const retry = api.changeAdmissionMode(dir, request);
+  assert.deepEqual(retry, { decision: "already-recorded", mode: off.mode });
+  assert.equal(api.readAdmission(dir).modes.length, 3);
+  assert.throws(() => api.changeAdmissionMode(dir, { ...request, sage: false }), /different mode request/);
+  assert.throws(() => api.changeAdmissionMode(dir, { ...request, turn: "44444444-4444-4444-8444-444444444444" }), /mode changed/);
+});
+
+test("admission mode refuses missing owners, stale epochs and invalid mode fields", async (t) => {
+  const { api, dir, scope, owner } = await admissionFixture(t);
+  const request = { ...scope, after: owner.activation, turn: modeTurn, sage: false };
+  assert.equal(typeof api.changeAdmissionMode, "function");
+  for (const change of [{ session: "absent" }, { epoch: modeNextTurn }, { project: "absent" },
+    { sage: "off" }, { sage: null }, { turn: "bad" }, { after: "bad" }, { extra: true }]) {
+    assert.throws(() => api.changeAdmissionMode(dir, { ...request, ...change }));
+  }
+  assert.equal(api.readAdmission(dir).modes.length, 1);
+});
+
+
+test("admission mode concurrent changes require the same unchanged prior turn", async (t) => {
+  const { spawn } = await import("node:child_process");
+  const { api, dir, scope, owner } = await admissionFixture(t);
+  const module = pathToFileURL(join(ROOT, "packages/sage-core/index.mjs")).href;
+  const program = `import {changeAdmissionMode} from ${JSON.stringify(module)}; process.send({ready:true}); process.once('message', value=>{try{process.send({result:changeAdmissionMode(value.dir,value.request)});}catch(error){process.send({error:error.message});}process.disconnect();});`;
+  const children = [modeTurn, modeNextTurn].map((turn, index) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", program], { stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env });
+    let result, stderr = "", stdout = "";
+    child.stderr.on("data", data => { stderr += data; }); child.stdout.on("data", data => { stdout += data; });
+    const ready = new Promise((resolve, reject) => { child.once("error", reject); child.once("message", value => value.ready ? resolve() : reject(Error("worker not ready"))); });
+    child.on("message", value => { if (!value.ready) result = value; });
+    const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => {
+      try { assert.equal(code, 0, stderr); assert.equal(signal, null); assert.equal(stderr, ""); assert.equal(stdout, ""); assert(result); resolve(result); }
+      catch (error) { reject(error); }
+    }); });
+    return { child, ready, closed, request: { ...scope, after: owner.activation, turn, sage: index === 0 } };
+  });
+  await Promise.all(children.map(c => c.ready));
+  for (const c of children) c.child.send({ dir, request: c.request });
+  const results = await Promise.all(children.map(c => c.closed));
+  assert.equal(results.filter(r => r.result?.decision === "changed").length, 1);
+  assert.equal(results.filter(r => /mode changed/.test(r.error)).length, 1);
+  assert.deepEqual(api.readAdmission(dir).modes.at(-1), results.find(r => r.result).result.mode);
+  assert.equal(api.readAdmission(dir).modes.length, 2);
 });

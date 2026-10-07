@@ -30,6 +30,13 @@ function activation(input) {
   fields(input, ["project", "session", "activation"]);
   return { project: word(input.project, "project"), session: word(input.session, "session"), activation: word(input.activation, "activation", UUID) };
 }
+function modeChange(input) {
+  fields(input, ["project", "session", "epoch", "after", "turn", "sage"]);
+  if (typeof input.sage !== "boolean") refuse("invalid mode value");
+  return { project: word(input.project, "project"), session: word(input.session, "session"),
+    epoch: word(input.epoch, "epoch", UUID), after: word(input.after, "prior mode turn", UUID),
+    turn: word(input.turn, "mode turn", UUID), sage: input.sage };
+}
 function dispatchIdentity(input) {
   fields(input, ["tool", "turn", "name", "argumentsHash"]);
   return { tool: word(input.tool, "tool"), turn: word(input.turn, "turn"), name: word(input.name, "name"),
@@ -45,6 +52,10 @@ function action(input) {
     fields(input.owner, ["project", "session", "activation", "epoch"]);
     const { epoch, ...request } = input.owner;
     return { kind: "activate", owner: { ...activation(request), epoch: word(epoch, "epoch", UUID) } };
+  }
+  if (input?.kind === "mode") {
+    fields(input, ["kind", "change"]);
+    return { kind: "mode", change: modeChange(input.change) };
   }
   if (input?.kind === "reserve") {
     fields(input, ["kind", "assignment", "dispatch"]);
@@ -63,7 +74,7 @@ function apply(state, event) {
     return { state: copy, result: event.config, changed: true };
   }
   if (!copy.config) refuse("store is not configured");
-  const value = event.kind === "activate" ? event.owner : event.assignment;
+  const value = event.kind === "activate" ? event.owner : event.kind === "mode" ? event.change : event.assignment;
   if (!copy.config.projects.some((p) => p.project === value.project)) refuse("project is not configured");
   const owner = copy.sessions.find((s) => s.project === value.project && s.session === value.session);
   if (event.kind === "activate") {
@@ -72,15 +83,30 @@ function apply(state, event) {
       return { state, result: owner, changed: false };
     }
     copy.sessions.push(value);
+    copy.modes.push({ project: value.project, session: value.session, epoch: value.epoch,
+      after: null, turn: value.activation, sage: true });
     return { state: copy, result: value, changed: true };
   }
   if (!owner || owner.epoch !== value.epoch) refuse("assignment has no current session owner");
+  const modes = copy.modes.filter(m => m.project === value.project && m.session === value.session && m.epoch === value.epoch);
+  const mode = modes.at(-1);
+  if (event.kind === "mode") {
+    const previous = modes.find(m => m.turn === value.turn);
+    if (previous) {
+      if (json(previous) !== json(value)) refuse("turn already has a different mode request");
+      return { state, result: { decision: "already-recorded", mode }, changed: false };
+    }
+    if (mode.turn !== value.after) refuse("mode changed; read the current mode before a new request");
+    copy.modes.push(value);
+    return { state: copy, result: { decision: "changed", mode: value }, changed: true };
+  }
   const prior = copy.reservations.find(({ assignment: a }) => a.project === value.project && a.session === value.session
     && a.epoch === value.epoch && a.issuer === value.issuer && a.call === value.call);
   if (prior) {
     if (["task", "run"].some((key) => prior.assignment[key] !== value[key]) || json(prior.dispatch) !== json(event.dispatch)) refuse("dispatch call already names different work");
     return { state, result: { decision: "already-reserved", assignment: prior.assignment }, changed: false };
   }
+  if (!mode.sage) refuse("Sage mode is off");
   if (copy.reservations.some(({ assignment: a }) => a.id === value.id)) refuse("assignment ID already exists");
   if (copy.reservations.length >= copy.config.total) refuse("total capacity is occupied");
   const projectLimit = copy.config.projects.find((p) => p.project === value.project).limit;
@@ -142,7 +168,7 @@ function read(dir) {
       maximum = Math.max(maximum, revision);
     }
   } finally { stream.closeSync(); }
-  let state = { config: null, sessions: [], reservations: [] }, previous = null;
+  let state = { config: null, sessions: [], reservations: [], modes: [] }, previous = null;
   for (let revision = 0; revision <= maximum; revision++) {
     const bytes = bytesAt(join(dir, filename(revision)));
     let record;
@@ -186,6 +212,8 @@ function commit(dir, input, create = false) {
 export const configureAdmission = (dir, config) => commit(dir, { kind: "configure", config }, true);
 /** Activation must come from the trusted entry path, never a model-supplied ownership claim. */
 export const activateAdmission = (dir, request) => commit(dir, { kind: "activate", owner: { ...activation(request), epoch: randomUUID() } });
+/** A verified owner prompt supplies the new turn and the expected previous mode turn. */
+export const changeAdmissionMode = (dir, request) => commit(dir, { kind: "mode", change: request });
 export const reserveAdmission = (dir, scope, request, dispatch) => commit(dir, { kind: "reserve", assignment: createAssignment(scope, request), dispatch });
 export function readAdmission(dir) {
   const { state } = read(dir);
