@@ -10,6 +10,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, renameSync, wr
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
+import { renderRoleInstructions, renderReportInstructions } from "../packages/sage-core/index.mjs";
 import { checkWords, withWordTable, wordTable } from "./dictionary.mjs";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -102,7 +103,12 @@ function packageOutputs(generated) {
       if (rel === "package.json") continue;
       // Resolve the one public dependency at build time; installed plugins need no npm install.
       const specifier = relative(dirname(rel), "core/index.mjs").replaceAll("\\", "/");
-      const text = readFileSync(file, "utf8");
+      let text = readFileSync(file, "utf8");
+      if (/<!-- sage-core-(?:role: |report)/.test(text)) {
+        const bindings = JSON.parse(readFileSync(join(source, "role-bindings.json"), "utf8"));
+        text = text.replace(/<!-- sage-core-role: ([a-z-]+) -->/g, (_, role) => renderRoleInstructions(role, { ...bindings.common, ...bindings[role] }))
+          .replace(/<!-- sage-core-report -->/g, () => renderReportInstructions(bindings.report));
+      }
       if (provider === "codex" && rel === "runtime/mcp-sdk.mjs") {
         const result = buildSync({
           absWorkingDir: ROOT, entryPoints: [relative(ROOT, file)], bundle: true,

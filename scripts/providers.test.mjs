@@ -1256,3 +1256,105 @@ test("prepared admission gives one preparation and one dispatch to concurrent ca
   assert.equal(dispatched.filter(row => /already has a dispatch/.test(row.refused)).length, 1);
   assert.equal(f.api.readAdmission(f.journal).reservations.length, 1);
 });
+
+async function roleInstructionsFixture(t, provider = "codex") {
+  const f = isolated(t, provider);
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderRoleInstructions, "function", "shared role instructions must ship in core");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "role-bindings.json"), "utf8"));
+  for (const role of Object.keys(bindings).filter(key => !["common", "report"].includes(key))) {
+    bindings[role] = { ...bindings.common, ...bindings[role] };
+  }
+  return { ...f, api, bindings };
+}
+
+test("shared role instructions ship outside the checkout and generate existing specialist bodies", async t => {
+  const roles = ["implementer", "pe", "designer", "arena-judge", "code-reviewer", "security-reviewer", "ux-reviewer", "qa"];
+  for (const provider of ["claude", "codex"]) {
+    const f = await roleInstructionsFixture(t, provider);
+    for (const role of [...roles, "lead"]) {
+      const text = f.api.renderRoleInstructions(role, f.bindings[role] ?? {});
+      assert(text.startsWith("# "));
+      assert.match(text, /report/);
+      if (provider === "codex") {
+        assert.doesNotMatch(text, /sage:report/);
+        assert.match(text, /report format included below/);
+      }
+      assert.doesNotMatch(text, /\{\{|sage-core-role/);
+      if (provider === "claude" && role !== "lead") {
+        const body = readFileSync(join(f.plugin, "agents", `${role}.md`), "utf8").split("\n---\n")[1].trim();
+        assert.equal(body, text);
+      }
+    }
+    const qa = f.api.renderRoleInstructions("qa", f.bindings.qa);
+    assert.match(qa, /You do not fix anything/);
+    assert.match(qa, /PASS or FAIL/);
+    const lead = f.api.renderRoleInstructions("lead", f.bindings.lead);
+    assert.match(lead, /at most three children/);
+    assert.match(lead, /code review for every change/);
+    assert.match(lead, /fresh lead after/);
+  }
+});
+
+test("shared role instructions require exact packaged provider bindings and refuse unknown roles", async t => {
+  const f = await roleInstructionsFixture(t);
+  for (const role of ["chief-of-staff", "../state", "report", null, {}, "unknown"]) assert.throws(() => f.api.renderRoleInstructions(role), /Unknown child role/);
+  for (const bindings of [{}, null, [], { ...f.bindings.implementer, EXTRA: "wrong" },
+    { ...f.bindings.implementer, DELIVERY_STEP: "" }, { ...f.bindings.implementer, DELIVERY_STEP: "{{UNKNOWN}}" },
+    Object.create(f.bindings.implementer)]) assert.throws(() => f.api.renderRoleInstructions("implementer", bindings), /exact provider bindings/);
+  const text = f.api.renderRoleInstructions("implementer", f.bindings.implementer);
+  assert.match(text, /Never run `gh`/);
+  assert.match(text, /The chief handles the pull request/);
+  assert.doesNotMatch(text, /\.claude|CLAUDE\.md|gh pr create/);
+});
+
+test("shared role report keeps every field and separates the provider's gate statement", async t => {
+  const f = await roleInstructionsFixture(t);
+  const report = f.api.renderReportInstructions(f.bindings.report);
+  const fields = /```\n([\s\S]*?)```/.exec(report)[1].trim().split("\n").map(line => line.split(/\s{2,}/)[0]);
+  assert.deepEqual(fields, ["STATUS", "RESULT", "EVIDENCE", "FINDINGS", "QUESTIONS", "NOT VERIFIED", "BRANCH"]);
+  assert.doesNotMatch(report, /hook does not let you finish/);
+  const claude = await roleInstructionsFixture(t, "claude");
+  assert.equal(readFileSync(join(claude.plugin, "skills/report/SKILL.md"), "utf8").split("\n---\n")[1].trim(),
+    claude.api.renderReportInstructions(claude.bindings.report));
+  assert.throws(() => f.api.renderReportInstructions({}), /exact provider bindings/);
+});
+
+test("shared role delivery joins verified lead and QA instructions with their own saved briefs", async t => {
+  const instructions = await roleInstructionsFixture(t);
+  const f = await nativeBindingFixture(t);
+  const { boundChildInstructions } = await import(new URL("../runtime/instructions.mjs", f.url));
+  const options = { directory: f.journal, project: f.scope.project, observationsDirectory: f.observationsDirectory };
+  const lead = f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", true, completeBrief("Lead the task."));
+  const first = boundChildInstructions(options, f.identity());
+  assert.equal(first.decision, "deliver");
+  assert(first.brief.includes(`Role: lead\nAssignment: ${lead.id}\nTask: T1\nRun: R1`));
+  assert(first.brief.includes(f.api.renderRoleInstructions("lead", instructions.bindings.lead)));
+  assert(first.brief.includes(f.api.renderBrief(completeBrief("Lead the task."))));
+  const qa = f.reserve(2, "qa", "lead", f.lead, "agent_2", true, completeBrief("Check the task."));
+  const identity = f.identity(f.child, f.lead, "/root/agent_1/agent_2"); f.observeStart(identity);
+  const second = boundChildInstructions(options, identity);
+  assert(second.brief.includes(`Role: qa\nAssignment: ${qa.id}\nTask: T1\nRun: R2`));
+  assert(second.brief.includes(f.api.renderRoleInstructions("qa", instructions.bindings.qa)));
+  assert(second.brief.includes("NOT VERIFIED"));
+  assert(second.brief.includes(f.api.renderBrief(completeBrief("Check the task."))));
+  assert.doesNotMatch(second.brief, /Lead the task/);
+  assert.deepEqual(boundChildInstructions(options, identity), second);
+  assert.throws(() => boundChildInstructions(options, { ...identity, path: "/root/other" }));
+});
+
+test("shared role delivery refuses absent saved briefs and missing instruction assets", async t => {
+  const instructions = await roleInstructionsFixture(t);
+  const f = await nativeBindingFixture(t);
+  const { boundChildInstructions } = await import(new URL("../runtime/instructions.mjs", f.url));
+  const options = { directory: f.journal, project: f.scope.project, observationsDirectory: f.observationsDirectory };
+  f.reserve(1, "lead", "chief-of-staff");
+  assert.throws(() => boundChildInstructions(options, f.identity()), /no saved task brief/);
+  const other = await nativeBindingFixture(t);
+  const api = await import(new URL("../runtime/instructions.mjs", other.url));
+  other.reserve(1, "lead", "chief-of-staff", other.root, "agent_1", true, completeBrief("Preserve this task."));
+  rmSync(new URL("./roles/lead.md", other.url));
+  assert.throws(() => api.boundChildInstructions({ directory: other.journal, project: other.scope.project,
+    observationsDirectory: other.observationsDirectory }, other.identity()));
+  assert.equal(other.api.readAdmission(other.journal).reservations.length, 1, "an instruction error does not release capacity");
+});
