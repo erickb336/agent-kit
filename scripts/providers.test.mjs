@@ -184,3 +184,45 @@ test("check rejects a hook change made only in the generated Claude plugin", (t)
   const current = spawnSync(process.execPath, [join(dir, "scripts/check.mjs")], { encoding: "utf8" });
   assert.equal(current.status, 0, current.stderr);
 });
+
+test("shared command extraction parses executable text in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.shellCommands, "function");
+    assert.equal(typeof api.programsRun, "function");
+    const command = "echo fixture | sh";
+    const parsed = api.shellCommands(command);
+    assert.deepEqual(parsed.map(c => c.words), [["echo", "fixture"], ["sh"]]);
+    assert.equal(parsed[0].pipeTo, parsed[1]);
+    const runs = api.programsRun(command, f.dir, "");
+    assert.deepEqual(runs.map(({ word, stdin, piped }) => ({ word, stdin, piped })), [
+      { word: "echo", stdin: [], piped: false }, { word: "sh", stdin: ["echo fixture"], piped: true },
+    ]);
+    assert.throws(() => api.shellCommands("echo 'open"), /open quote/);
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.shellCommands(command), parsed);
+      assert.deepEqual(hook.programsRun(command, f.dir, ""), runs);
+    }
+  }
+});
+
+test("shared command extraction preserves T199 and harmless arguments in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.createCommandPolicy, "function");
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const policy = api.createCommandPolicy({ stateToolPath: tool });
+    for (const command of ["g{h,h} pr view 1", "git pu{s,s}h origin topic", "gh pr {m,m}erge 1",
+      "printf 'gh pr {m,m}erge 1' | cat | sh"]) {
+      assert.match(policy.expansionProblem(command, f.dir), /shell expansion can hide the command/);
+    }
+    for (const command of ["echo '{sample}'", "git add '*.mjs'", "gh pr view 1", "[ -f '*.txt' ]", "[[ -f '*.txt' ]]"]) {
+      assert.equal(policy.expansionProblem(command, f.dir), undefined, command);
+    }
+    const rows = policy.runnable(api.shellCommands(`node '${tool}' log --why 'gh pr merge'; git push origin topic`));
+    assert.deepEqual(rows.map(r => r.words), [["node", tool], ["git", "push", "origin", "topic"]]);
+  }
+});
