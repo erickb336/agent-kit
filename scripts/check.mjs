@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { GENERATED, ROOT, outputs, filesUnder, parseSource } from "./build.mjs";
 import { checkWords, flaggedWords, yamlText } from "./dictionary.mjs";
 import { MOMENTS } from "../plugins/sage/hooks/principles-hook.mjs";
+import { BRIEF_FIELDS as CORE_BRIEF_FIELDS } from "../packages/sage-core/index.mjs";
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
 import { files as graphics } from "./graphics.mjs";
@@ -68,6 +69,7 @@ for (const f of agents) {
 // The chief's brief template and the report skill list the same fields as the hook's gates, in the same order.
 const template = /## The brief[\s\S]*?```\n([\s\S]*?)```/.exec(frontmatter(join(PLUGIN, "agents/chief-of-staff.md"))?.[2] ?? "")?.[1] ?? "";
 const briefFields = template.split("\n").map((l) => l.split(/\s+/)[0]).filter(Boolean);
+if (CORE_BRIEF_FIELDS.join(" ") !== BRIEF_FIELDS.join(" ")) problems.push("the core brief fields differ from the hook contract");
 if (briefFields.join(" ") !== BRIEF_FIELDS.join(" ")) problems.push(`agents/chief-of-staff.md: the brief template has ${briefFields.join(" ")}, the hook checks ${BRIEF_FIELDS.join(" ")}`);
 const report = /```\n([\s\S]*?)```/.exec(readFileSync(join(skillsDir, "report/SKILL.md"), "utf8"))?.[1] ?? "";
 const reportFields = report.split("\n").map((l) => l.split(/\s{2,}/)[0].trim()).filter(Boolean);

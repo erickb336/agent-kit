@@ -27,5 +27,11 @@ initial identities cannot both win.
 The result contains the saved assignment, binding, and role. It is not permission
 to run tools or proof of instruction delivery. The trusted start policy must load
 the matching durable brief, and tool policy must check current mode, task scope,
-and role. Those policies and durable brief storage remain integration work.
+and role. Those policies and the visible preparation tool remain integration work.
 The adapter does not start agents or clear reservations.
+
+A reservation made through `reserveBriefAdmission` adds its saved structured brief
+to the binding result. The snapshot is part of the same immutable reservation as
+the role. Legacy reservations return no brief. The delivery policy must refuse
+missing instructions when the task requires a brief; it must not fill the gap
+with unverified new input.

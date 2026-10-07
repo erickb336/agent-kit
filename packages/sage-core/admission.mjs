@@ -4,6 +4,7 @@ import { closeSync, constants, fsyncSync, fstatSync, linkSync, lstatSync, mkdirS
 import { isAbsolute, join, parse, resolve, sep } from "node:path";
 import { createAssignment, parseAssignment } from "./assignments.mjs";
 import { parseRolePlan, checkRoleReservation } from "./role-policy.mjs";
+import { parseBrief } from "./brief.mjs";
 
 const KEY = /^[A-Za-z0-9_.:-]{1,256}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -70,10 +71,12 @@ function action(input) {
   if (input?.kind === "reserve") {
     const hasRole = Object.hasOwn(input, "rolePlan");
     const uniqueName = Object.hasOwn(input, "uniqueName");
-    fields(input, ["kind", "assignment", "dispatch", ...(hasRole ? ["rolePlan"] : []), ...(uniqueName ? ["uniqueName"] : [])]);
+    const hasBrief = Object.hasOwn(input, "brief");
+    fields(input, ["kind", "assignment", "dispatch", ...(hasRole ? ["rolePlan"] : []), ...(uniqueName ? ["uniqueName"] : []), ...(hasBrief ? ["brief"] : [])]);
     if (uniqueName && (!hasRole || input.uniqueName !== true)) refuse("invalid unique-name rule");
+    if (hasBrief && (!hasRole || !uniqueName)) refuse("a brief requires a role and unique child name");
     return { kind: "reserve", assignment: parseAssignment(input.assignment), dispatch: dispatchIdentity(input.dispatch),
-      ...(hasRole ? { rolePlan: parseRolePlan(input.rolePlan) } : {}), ...(uniqueName ? { uniqueName: true } : {}) };
+      ...(hasRole ? { rolePlan: parseRolePlan(input.rolePlan) } : {}), ...(uniqueName ? { uniqueName: true } : {}), ...(hasBrief ? { brief: parseBrief(input.brief) } : {}) };
   }
   if (input?.kind === "bind-child") {
     fields(input, ["kind", "binding"]);
@@ -140,7 +143,7 @@ function apply(state, event) {
   const prior = copy.reservations.find(({ assignment: a }) => a.project === value.project && a.session === value.session
     && a.epoch === value.epoch && a.issuer === value.issuer && a.call === value.call);
   if (prior) {
-    if (["task", "run"].some((key) => prior.assignment[key] !== value[key]) || json(prior.dispatch) !== json(event.dispatch) || json(prior.rolePlan) !== json(event.rolePlan)) refuse("dispatch call already names different work");
+    if (["task", "run"].some((key) => prior.assignment[key] !== value[key]) || json(prior.dispatch) !== json(event.dispatch) || json(prior.rolePlan) !== json(event.rolePlan) || json(prior.brief) !== json(event.brief)) refuse("dispatch call already names different work");
     return { state, result: { decision: "already-reserved", assignment: prior.assignment }, changed: false };
   }
   if (!mode.sage) refuse("Sage mode is off");
@@ -154,7 +157,7 @@ function apply(state, event) {
   if (copy.reservations.length >= copy.config.total) refuse("total capacity is occupied");
   const projectLimit = copy.config.projects.find((p) => p.project === value.project).limit;
   if (copy.reservations.filter(({ assignment: a }) => a.project === value.project).length >= projectLimit) refuse("project capacity is occupied");
-  copy.reservations.push({ assignment: value, dispatch: event.dispatch, ...(event.rolePlan ? { rolePlan: event.rolePlan } : {}) });
+  copy.reservations.push({ assignment: value, dispatch: event.dispatch, ...(event.rolePlan ? { rolePlan: event.rolePlan } : {}), ...(event.brief ? { brief: event.brief } : {}) });
   return { state: copy, result: { decision: "permit-once", assignment: value }, changed: true };
 }
 function syncDirectory(path) {
@@ -264,6 +267,9 @@ export const reserveAdmission = (dir, scope, request, dispatch) => commit(dir, {
 /** The adapter must verify the issuer role before it requests this atomic reservation. */
 export const reserveRoleAdmission = (dir, scope, request, dispatch, rolePlan) => commit(dir,
   { kind: "reserve", assignment: createAssignment(scope, request), dispatch, rolePlan: parseRolePlan(rolePlan), uniqueName: true });
+/** Save role, brief, and capacity together before permitting the initial dispatch. */
+export const reserveBriefAdmission = (dir, scope, request, dispatch, rolePlan, brief) => commit(dir,
+  { kind: "reserve", assignment: createAssignment(scope, request), dispatch, rolePlan: parseRolePlan(rolePlan), uniqueName: true, brief: parseBrief(brief) });
 /** Record a verified initial child identity. This neither permits dispatch nor releases capacity. */
 export const bindAdmission = (dir, binding) => commit(dir, { kind: "bind-child", binding });
 export function readAdmission(dir) {

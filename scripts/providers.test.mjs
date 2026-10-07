@@ -921,9 +921,10 @@ async function nativeBindingFixture(t) {
   const child = "33333333-3333-4333-8333-333333333333";
   const owner = f.api.activateAdmission(f.journal, { project: f.scope.project, session: `codex:${root}`, activation: f.activation });
   const scope = { project: owner.project, session: owner.session, epoch: owner.epoch };
-  const reserve = (index, role, issuerRole, issuer = root, name = `agent_${index}`, confirm = true) => {
+  const reserve = (index, role, issuerRole, issuer = root, name = `agent_${index}`, confirm = true, brief) => {
     const args = f.args(index, issuer, scope); args[3].name = name; args[3].tool = "collaborationspawn_agent";
-    const assignment = f.api.reserveRoleAdmission(...args, { issuerRole, role }).assignment;
+    const assignment = (brief === undefined ? f.api.reserveRoleAdmission(...args, { issuerRole, role })
+      : f.api.reserveBriefAdmission(...args, { issuerRole, role }, brief)).assignment;
     const base = { schema: 1, runtime: "0.160.0", session: root, actor: issuer, call: assignment.call, turn: f.activation };
     events.publish(observationsDirectory, { ...base, kind: "spawn-request", name });
     if (confirm) events.publish(observationsDirectory, { ...base, kind: "spawn-result", path: issuer === root ? `/root/${name}` : `/root/agent_1/${name}` });
@@ -1033,4 +1034,96 @@ test("native child binding refuses a reused name before the later spawn result a
     call: "later-call", turn: f.activation, kind: "spawn-request", name: "agent_1" });
   assert.throws(() => f.bind(f.identity()), /could not bind/);
   assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+const completeBrief = goal => Object.fromEntries(["GOAL", "SCOPE", "CONTEXT", "DECISIONS", "ACCEPTANCE", "VERIFY", "BUDGET", "FORBIDDEN", "REPORT", "STANDING"]
+  .map(field => [field, field === "GOAL" ? goal : "none"]));
+
+test("brief admission uses the existing field contract and preserves readable text", async t => {
+  const f = await roleAdmissionFixture(t);
+  const { BRIEF_FIELDS } = await import("../plugins/sage/hooks/sage-hook.mjs");
+  assert.deepEqual(f.api.BRIEF_FIELDS, BRIEF_FIELDS);
+  assert.equal(Object.isFrozen(f.api.BRIEF_FIELDS), true);
+  const brief = completeBrief("Build the fixed fixture.\nKeep the second line.");
+  assert.deepEqual(f.api.parseBrief(brief), brief);
+  const rendered = f.api.renderBrief(brief);
+  assert(rendered.startsWith("GOAL\nBuild the fixed fixture.\nKeep the second line.\n\nSCOPE\nnone"));
+  assert(rendered.endsWith("STANDING\nnone"));
+});
+
+test("brief admission rejects missing, inherited, invalid, and oversized fields", async t => {
+  const f = await roleAdmissionFixture(t); const brief = completeBrief("A complete task.");
+  const inherited = Object.assign(Object.create({ GOAL: brief.GOAL }), brief); delete inherited.GOAL;
+  for (const value of [null, [], {}, inherited, { ...brief, extra: "unexpected" }, { ...brief, GOAL: "  " },
+    { ...brief, SCOPE: null }, { ...brief, VERIFY: "bad\0text" }, { ...brief, GOAL: "\ud800" }, { ...brief, GOAL: "x".repeat(33 * 1024) }, { ...brief, CONTEXT: "\n".repeat(20_000) }]) {
+    assert.throws(() => f.api.parseBrief(value));
+    assert.throws(() => f.api.reserveBriefAdmission(...f.args(1), { issuerRole: "chief-of-staff", role: "lead" }, value));
+  }
+  assert.deepEqual(f.api.readAdmission(f.journal).reservations, []);
+});
+
+test("brief admission saves role and instructions together and copies caller values", async t => {
+  const f = await roleAdmissionFixture(t); const brief = completeBrief("The original task.");
+  const result = f.api.reserveBriefAdmission(...f.args(1), { issuerRole: "chief-of-staff", role: "lead" }, brief);
+  assert.equal(result.decision, "permit-once");
+  brief.GOAL = "Changed after admission.";
+  const row = f.api.readAdmission(f.journal).reservations[0];
+  assert.equal(row.assignment.id, result.assignment.id); assert.equal(row.rolePlan.role, "lead");
+  assert.equal(row.brief.GOAL, "The original task.");
+  row.brief.GOAL = "Changed snapshot.";
+  assert.equal(f.api.readAdmission(f.journal).reservations[0].brief.GOAL, "The original task.");
+});
+
+test("brief admission retries cannot change, add, or remove saved instructions", async t => {
+  const f = await roleAdmissionFixture(t); const brief = completeBrief("The fixed task.");
+  const role = { issuerRole: "chief-of-staff", role: "lead" };
+  const first = f.api.reserveBriefAdmission(...f.args(1), role, brief);
+  const reordered = Object.fromEntries(Object.entries(brief).reverse());
+  assert.equal(f.api.reserveBriefAdmission(...f.args(1), role, reordered).assignment.id, first.assignment.id);
+  assert.throws(() => f.api.reserveBriefAdmission(...f.args(1), role, { ...brief, GOAL: "Different task." }), /different work/);
+  assert.throws(() => f.api.reserveRoleAdmission(...f.args(1), role), /different work/);
+  assert.throws(() => f.api.reserveAdmission(...f.args(1)), /different work/);
+  f.reserve(2);
+  assert.throws(() => f.api.reserveBriefAdmission(...f.args(2), role, brief), /different work/);
+  f.api.changeAdmissionMode(f.journal, { ...f.scope, after: f.activation, turn: "b72422c7-509c-43aa-8c42-827c556f8a57", sage: false });
+  assert.equal(f.api.reserveBriefAdmission(...f.args(1), role, brief).decision, "already-reserved");
+  assert.equal(f.api.readAdmission(f.journal).reservations.length, 2);
+});
+
+test("brief admission keeps capacity limits and publishes no failed reservation", async t => {
+  const f = await roleAdmissionFixture(t, { total: 1, projects: [{ project: "project-a", limit: 1 }] });
+  const role = { issuerRole: "chief-of-staff", role: "lead" };
+  f.api.reserveBriefAdmission(...f.args(1), role, completeBrief("First task."));
+  assert.throws(() => f.api.reserveBriefAdmission(...f.args(2), role, completeBrief("Second task.")), /capacity/);
+  const rows = f.api.readAdmission(f.journal).reservations;
+  assert.equal(rows.length, 1); assert.equal(rows[0].brief.GOAL, "First task.");
+});
+
+test("brief admission permits only one of two concurrent instructions for the same call", async t => {
+  const f = await roleAdmissionFixture(t);
+  const script = `const input=JSON.parse(process.argv[1]);const api=await import(input.url);
+    try { console.log(JSON.stringify(api.reserveBriefAdmission(...input.args,{issuerRole:'chief-of-staff',role:'lead'},input.brief))); }
+    catch(error) { console.log(JSON.stringify({refused:error.message})); }`;
+  const run = goal => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script,
+      JSON.stringify({ url: f.url, args: f.args(1), brief: completeBrief(goal) })], { shell: false });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", b => { stdout += b; }); child.stderr.on("data", b => { stderr += b; });
+    child.once("error", reject); child.once("close", code => {
+      try { assert.equal(code, 0, stderr); assert.equal(stderr, ""); resolve(JSON.parse(stdout)); } catch (e) { reject(e); }
+    }); child.stdin.end();
+  });
+  const results = await Promise.all([run("First proposed task."), run("Second proposed task.")]);
+  assert.equal(results.filter(row => row.decision === "permit-once").length, 1);
+  assert.equal(results.filter(row => /different work/.test(row.refused)).length, 1);
+  assert.equal(f.api.readAdmission(f.journal).reservations.length, 1);
+});
+
+test("brief admission returns the saved instructions with the verified native binding", async t => {
+  const f = await nativeBindingFixture(t); const brief = completeBrief("Deliver these saved instructions.");
+  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", true, brief);
+  const result = f.bind(f.identity());
+  assert.equal(result.role, "lead"); assert.deepEqual(result.brief, brief);
+  assert(f.api.renderBrief(result.brief).includes("GOAL\nDeliver these saved instructions."));
+  assert.deepEqual(f.bind(f.identity()).brief, brief);
 });

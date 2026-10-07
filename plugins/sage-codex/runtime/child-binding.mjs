@@ -45,5 +45,5 @@ export function bindNativeChild({ directory, project, observationsDirectory }, i
   if (requests.length !== 1 || requests[0].call !== observed.call || row.dispatch.turn !== requests[0].turn) refuse();
   const result = bindAdmission(directory, { project, session, epoch: owner.epoch, assignment: row.assignment.id,
     issuer: identity.parent, call: row.assignment.call, child: identity.child, turn: identity.turn });
-  return { ...result, assignment: row.assignment };
+  return { ...result, assignment: row.assignment, ...(row.brief ? { brief: row.brief } : {}) };
 }

@@ -91,3 +91,24 @@ or prove that a brief arrived. The trusted adapter must authenticate the child,
 namespace sessions by provider, verify the parent and child address, and apply
 current mode and task policy before allowing tools. Initial binding does not
 implement later tasks, agent reuse, or recovery.
+
+## Durable task briefs
+
+`reserveBriefAdmission` takes the same arguments as `reserveRoleAdmission`, then
+a structured brief. It saves the assignment, role, brief, and capacity in one
+journal event before it returns the single dispatch permit. Every brief has the
+existing ten Sage fields, each with nonempty text. Its canonical JSON is at most
+32 KiB, uses valid Unicode text, and contains no NUL bytes. `parseBrief` validates and copies those fields;
+`renderBrief` produces their text in the fixed field order.
+
+An exact retry retains the saved brief. Changing it, adding it to an earlier
+reservation, or dropping it through an older API fails. Older reservations retain
+their format and remain readable. They do not acquire instructions automatically.
+Invalid briefs and capacity failures publish no reservation.
+
+The bound Codex result includes the saved brief when present. A trusted delivery
+policy must use that brief, rather than a fresh model-supplied replacement. Brief
+text is task context, not role authority or permission to run a command. Native
+context limits must fit the rendered brief and the role instructions together.
+The visible preparation tool, instruction assembly, and complete delivery policy
+remain integration work. State files stay private to the local Sage store.
