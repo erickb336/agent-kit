@@ -88,6 +88,7 @@ test("a record that points outside the cache, through a symbolic link that leave
 test("the real hook, run through the launcher from an old session, names the newest install's state tool", () => {
   const h = home();
   copyFileSync(join(HOOKS, HOOK), join(h.newer, "hooks", HOOK));
+  cpSync(join(HOOKS, "../core"), join(h.newer, "core"), { recursive: true });
   mkdirSync(join(h.newer, "agents"));
   copyFileSync(join(HOOKS, "../agents/chief-of-staff.md"), join(h.newer, "agents", "chief-of-staff.md"));
   h.record(h.newer);

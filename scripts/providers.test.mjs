@@ -1799,3 +1799,109 @@ test("shared merge and push extraction keeps transitive module failures closed a
   const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: candidate } }, { sage: true, autopilot: true }, {});
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /the merge check refuses: it could not run \(fixture broken state tool\)/);
 });
+
+test("shared file and mode extraction applies the chief edit rule in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(api.chiefEditDenied({ sage: true, chief: true }), true);
+    for (const context of [{ sage: true, chief: false }, { sage: false, chief: true }, { sage: false, chief: false }]) {
+      assert.equal(api.chiefEditDenied(context), false);
+    }
+    for (const context of [{}, { sage: true }, { sage: "on", chief: true }]) assert.throws(() => api.chiefEditDenied(context), /Invalid edit policy context/);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/file-policy.mjs")));
+      assert.equal(adapter.chiefEditDenied({ sage: true, chief: true }), true);
+      assert.equal(adapter.chiefEditDenied({ sage: true, chief: false }), false);
+      const hooks = join(f.dir, "hook-state");
+      mkdirSync(hooks);
+      for (const sage of [true, 1, "on", false, 0, ""]) for (const tool_name of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+        writeFileSync(join(hooks, "fixture.json"), JSON.stringify({ sage }));
+        const result = spawnSync(process.execPath, [join(f.plugin, "hooks/sage-hook.mjs")], {
+          input: JSON.stringify({ session_id: "fixture", hook_event_name: "PreToolUse", tool_name, cwd: f.dir,
+            tool_input: { file_path: join(f.dir, "sample.txt"), notebook_path: join(f.dir, "sample.ipynb") } }),
+          encoding: "utf8", env: { ...process.env, SAGE_HOOKS_STATE: hooks, SAGE_HOME: join(f.dir, "logbooks") },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        const output = JSON.parse(result.stdout || "{}");
+        assert.equal(output.hookSpecificOutput?.permissionDecision, sage ? "deny" : undefined, `${tool_name}: persisted sage=${JSON.stringify(sage)}`);
+      }
+    }
+  }
+});
+
+test("shared file and mode extraction preserves classified mode phrases in both isolated bundles", async t => {
+  const prompt = (text, owner = true) => ({ owner, text, outside: text, all: text });
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.deepEqual(api.modeSignals(prompt("sage mode")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: false, modeWord: true });
+    assert.deepEqual(api.modeSignals(prompt("sage mode off")), { sageOff: true, sageOn: false, autopilotOff: true, autopilotOn: false, modeWord: true });
+    assert.deepEqual(api.modeSignals(prompt("sage mode, autopilot on")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: true, modeWord: true });
+    assert.equal(api.modeSignals(prompt("sage mode continue on the project")).sageOn, true);
+    for (const text of ["What does sage mode do?", "sage mode?", "sage mode online: is it a thing?", "autopilot on main"]) {
+      const signals = api.modeSignals(prompt(text));
+      assert.equal(signals.sageOn, false, text);
+      assert.equal(signals.autopilotOn, false, text);
+    }
+    for (const text of ["sage mode", "sage mode off", "autopilot on"]) {
+      const signals = api.modeSignals(prompt(text, false));
+      assert.equal(signals.sageOn, false, text);
+      assert.equal(signals.sageOff, false, text);
+      assert.equal(signals.autopilotOn, false, text);
+    }
+    assert.equal(api.modeSignals(prompt("Please stop autopilot", false)).autopilotOff, true);
+    assert.equal(api.modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nautopilot off" }).autopilotOff, true);
+    assert.equal(api.modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nReport: no autopilot changes" }).autopilotOff, false);
+    for (const input of [{}, { owner: "user", text: "sage mode", outside: "", all: "" }, { owner: true, text: "sage mode", all: "" }]) assert.throws(() => api.modeSignals(input), /Invalid mode prompt/);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/mode-policy.mjs")));
+      assert.equal(adapter.modeSignals(prompt("sage mode")).sageOn, true);
+      assert.equal(adapter.modeSignals(prompt("sage mode", false)).sageOn, false);
+    }
+  }
+});
+
+test("shared file and mode extraction refuses active edits when the file policy is missing", async t => {
+  for (const missing of ["hooks/file-policy.mjs", "core/file-policy.mjs"]) {
+    const f = isolated(t, "claude");
+    rmSync(join(f.plugin, missing), { force: true });
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const tool_name of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+      const input = { hook_event_name: "PreToolUse", tool_name, cwd: f.dir, tool_input: { file_path: join(f.dir, "sample.txt"), notebook_path: join(f.dir, "sample.ipynb") } };
+      const output = hook.handle(input, { sage: true }, {});
+      assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${missing}: ${tool_name}`);
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /file policy cannot load/);
+      assert.equal(hook.handle(input, { sage: false }, {}), undefined);
+    }
+    if (missing.startsWith("core/")) {
+      const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh api repos/o/r/git/refs -f ref=refs/heads/main" } }, { sage: false }, {});
+      assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /command modules could not load/);
+    }
+  }
+});
+
+test("shared file and mode extraction clears cached autopilot before tool checks when the mode policy is missing", async t => {
+  for (const missing of ["hooks/mode-policy.mjs", "core/mode-policy.mjs"]) {
+    const f = isolated(t, "claude");
+    rmSync(join(f.plugin, missing), { force: true });
+    // A passing fixture ledger makes a stale autopilot flag an actual bypass; no real logbook is read.
+    writeFileSync(join(f.plugin, "skills/sage/sage.mjs"), `export const sageRoot = () => ${JSON.stringify(join(f.dir, "logbooks"))};\nexport const mergeCheck = () => ({ ok: true });\n`);
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    const state = { sage: true, autopilot: true };
+    const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", cwd: f.dir,
+      tool_input: { command: `gh pr merge 12 --squash --delete-branch --match-head-commit ${"a".repeat(40)}` } }, state, {});
+    assert.equal(state.autopilot, false, missing);
+    assert.equal(state.sage, true, "the existing Sage restrictions stay active");
+    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, missing.startsWith("core/") ? /command modules could not load/ : /autopilot is off/);
+    for (const sage of [false, true]) {
+      const state = { sage, given: true, autopilot: true };
+      const output = hook.handle({ hook_event_name: "UserPromptSubmit", prompt: "sage mode", cwd: f.dir }, state, {});
+      assert.equal(state.sage, sage, "missing policy cannot start Sage mode");
+      assert.equal(state.autopilot, false);
+      assert.match(context(output), /mode policy cannot load/);
+    }
+  }
+});

@@ -210,6 +210,8 @@ const running = (n) => `${n} sage ${n === 1 ? "agent is" : "agents are"} running
 
 export function handle(input, state, slots) {
   const event = input.hook_event_name;
+  // A tool event can arrive before another prompt. Missing mode rules must not leave cached autopilot enabled.
+  if (modePolicy.error) state.autopilot = false;
   if (event === "PreToolUse" && SHELL_TOOLS.test(input.tool_name ?? "") && (commandReader.error || commandPolicy.error)) {
     return deny(event, "the command modules could not load, so the hook refuses this command. Restore the complete plugin and try again.");
   }
@@ -263,7 +265,7 @@ export function handle(input, state, slots) {
   const ti = input.tool_input ?? {};
   if (FILE_TOOLS.test(tool)) {
     if (filePolicy.error) return deny(event, "the file policy cannot load, so this file change is refused. Reinstall or update the sage plugin.");
-    if (filePolicy.chiefEditDenied({ sage: state.sage, chief: main })) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with a message that starts with "sage mode off".');
+    if (filePolicy.chiefEditDenied({ sage: Boolean(state.sage), chief: main })) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with a message that starts with "sage mode off".');
   }
   if (main && AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
