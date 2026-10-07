@@ -226,3 +226,86 @@ test("shared command extraction preserves T199 and harmless arguments in both is
     assert.deepEqual(rows.map(r => r.words), [["node", tool], ["git", "push", "origin", "topic"]]);
   }
 });
+
+test("shared merge and push extraction classifies merges in both isolated bundles", async t => {
+  const sha = "a".repeat(40);
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const policy = api.createCommandPolicy({ stateToolPath: tool });
+    const candidate = `gh pr merge 12 --squash --delete-branch --match-head-commit ${sha}`;
+    assert.deepEqual(policy.mergeIn(candidate), { pr: "12", sha });
+    for (const text of [candidate.replace(" 12 ", " 012 "), candidate.replace(sha, "abc"), `${candidate} --admin`,
+      `sh -c '${candidate}'`, `echo '${candidate}' | sh`, `echo '${candidate}' > run; sh run`,
+      "gh api repos/o/r/pulls/12/merge", "gh pr 'merge", "$(echo gh) pr merge 12"]) {
+      assert.equal(typeof policy.mergeIn(text)?.problem, "string", text);
+    }
+    for (const text of ["git status", "git merge topic", `echo '${candidate}'`, `echo '${candidate}' | head -1`,
+      `node '${tool}' log --why '${candidate}'`]) assert.equal(policy.mergeIn(text), undefined, text);
+    assert.match(policy.mergeIn(`node '/other/sage.mjs' log --why '${candidate}'`).problem, /cannot prove/);
+    assert.equal(api.mentionsMerge("gh api graphql -f query=mergePullRequest"), true);
+    assert.equal(api.mentionsMerge("git merge topic"), false);
+    assert.equal(api.PR.test("12"), true);
+    assert.equal(api.PR.test("012"), false);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/command-policy.mjs")));
+      assert.deepEqual(adapter.createCommandPolicy({ stateToolPath: tool }).mergeIn(candidate), { pr: "12", sha });
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.mergeIn(candidate), { pr: "12", sha });
+    }
+  }
+});
+
+test("shared merge and push extraction applies push rules and injected branch evidence in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const policy = api.createPushPolicy({ stateToolPath: tool, readBranch: dir => dir === join(f.dir, "project/nested") ? "main" : "topic" });
+    for (const text of ["git push origin topic", "git push -u --follow-tags origin topic", "git push --delete origin topic",
+      "echo 'git push origin main'", "git status", `node '${tool}' log --why 'git push origin main'`]) {
+      assert.equal(policy.pushProblem(text, f.dir), undefined, text);
+    }
+    for (const text of ["git push origin main", "git push origin refs/heads/master", "git push origin topic:main",
+      "git push -f origin topic", "git push --force-with-lease origin topic", "git push --forc origin topic",
+      "git push --mirror origin", "git push origin HEAD", "git push origin", "git push upstream topic",
+      "git push origin '$BRANCH'", "sudo git push origin topic", "sh -c 'git push origin topic'",
+      "echo 'git push origin main' | sh", "git push 'origin", "gh api repos/o/r/git/refs -f ref=refs/heads/main",
+      "node /other/sage.mjs log --why 'git push origin main'"]) {
+      assert.equal(typeof policy.pushProblem(text, f.dir), "string", text);
+    }
+    assert.match(policy.pushProblem("cd project; git -C nested push origin topic", f.dir), /checkout is on main/);
+    assert.equal(policy.pushProblem("cd project; git -C nested push --delete origin topic", f.dir), undefined);
+    assert.match(api.createPushPolicy({ readBranch: () => "topic", mainReason: "Use a reviewed pull request." }).pushProblem("git push origin main", f.dir), /^Use a reviewed pull request\./);
+    assert.equal(api.createPushPolicy({ readBranch: () => undefined }).pushProblem("git push origin topic", f.dir), undefined);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/command-policy.mjs")));
+      assert.match(adapter.createPushPolicy({ readBranch: () => "main" }).pushProblem("git push origin topic", f.dir), /checkout is on main/);
+    }
+  }
+});
+
+test("shared merge and push extraction keeps transitive module failures closed and broken-state merge diagnostics", async t => {
+  for (const missing of ["core/push-policy.mjs", "core/pull-request.mjs"]) {
+    const f = isolated(t, "claude");
+    rmSync(join(f.plugin, missing), { force: true });
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const sage of [false, true]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+      for (const actor of [{}, { agent_id: "fixture-child" }]) {
+        const output = hook.handle({ hook_event_name: "PreToolUse", tool_name,
+          tool_input: { command: "gh api repos/o/r/git/refs -f ref=refs/heads/main" }, ...actor }, { sage }, {});
+        assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${missing}: ${tool_name}`);
+        assert.match(output.hookSpecificOutput.permissionDecisionReason, /command modules could not load/);
+      }
+    }
+  }
+  const f = isolated(t, "claude");
+  writeFileSync(join(f.plugin, "skills/sage/sage.mjs"), 'throw new Error("fixture broken state tool");\n');
+  const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+  const sha = "a".repeat(40);
+  const candidate = `gh pr merge 012 --squash --delete-branch --match-head-commit ${sha}`;
+  assert.deepEqual(hook.mergeIn(candidate), { pr: "012", sha }, "a broken state tool preserves the old diagnostic order");
+  const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: candidate } }, { sage: true, autopilot: true }, {});
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /the merge check refuses: it could not run \(fixture broken state tool\)/);
+});
