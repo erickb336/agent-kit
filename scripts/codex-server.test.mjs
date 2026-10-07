@@ -567,3 +567,130 @@ test("shared server configuration leaves invalid preparation connections unavail
   assert.equal((await repaired.call(input)).decision, "prepared");
   await repaired.close();
 });
+
+async function composedPolicyFixture(t) {
+  const f = await preparationServerFixture(t);
+  const module = join(f.plugin, "runtime/policy.mjs");
+  assert.ok(existsSync(module), "the composed native policy must ship");
+  const { createNativePolicy } = await import(pathToFileURL(module));
+  const { nativeToolEvent } = await import(pathToFileURL(join(f.plugin, "runtime/native-tool.mjs")));
+  const evaluate = (policy, input = f.spawnInput(), actor = session) => policy.evaluate(nativeToolEvent(input, f.native(actor), "PreToolUse"), f.native(actor));
+  const identity = { session, child: childActor, parent: session, path: "/root/fixture_lead", turn: turns[1] };
+  const result = { schema: 1, runtime: "0.160.0", session, kind: "spawn-result", actor: session, call: "spawn-1", turn: turns[0], path: identity.path };
+  return { ...f, createNativePolicy, evaluate, identity, result };
+}
+
+test("composed native policy connects configured preparation spawn and nested child instructions", async t => {
+  const f = await composedPolicyFixture(t);
+  mkdirSync(f.options.observationsRoot);
+  const config = join(f.dir, "policy.json");
+  writeFileSync(config, JSON.stringify({ version: 2, mode: { ...f.mode, observationsRoot: f.options.observationsRoot } }));
+  const hiddenEntry = join(f.dir, "hidden.mjs");
+  writeFileSync(hiddenEntry, `import { serveConfiguredHooks } from './plugin/runtime/configuration.mjs';
+    import { createNativePolicy } from './plugin/runtime/policy.mjs';
+    serveConfiguredHooks(${JSON.stringify(config)}, options => createNativePolicy(options, (input, context) =>
+      input.tool_name === 'apply_patch' && context.sage && context.actor === input.session_id
+        ? { decision: 'deny', reason: 'The fixture chief cannot edit.' } : { decision: 'pass' }));`);
+  writeFileSync(f.entry, `import { serveConfiguredPreparations } from './plugin/runtime/configuration.mjs'; serveConfiguredPreparations(${JSON.stringify(config)});`);
+  const visible = await f.connectVisible();
+  const hooks = await connect(t, { ...f, entry: hiddenEntry });
+  const qa = "a22422c7-509c-43aa-8c42-827c556f8a59";
+  const start = (child, parent, path, turn) => {
+    const transcript = join(f.mode.sessionsDir, `${child}.jsonl`);
+    writeFileSync(transcript, JSON.stringify({ type: "session_meta", payload: { id: child, session_id: session,
+      parent_thread_id: parent, agent_path: path, cli_version: "0.160.0" } }) + "\n");
+    return { hook_event_name: "SubagentStart", session_id: session, agent_id: child, turn_id: turn, transcript_path: transcript };
+  };
+  for (const [request, actor, child, path, turn] of [
+    [f.input, session, childActor, "/root/fixture_lead", turns[1]],
+    [{ ...f.input, name: "qa_child", role: "qa" }, childActor, qa, "/root/fixture_lead/qa_child", turns[2]],
+  ]) {
+    assert.equal((await visible.call(request, actor)).decision, "prepared");
+    const spawn = f.spawnInput(request.name, request.name);
+    assert.deepEqual(await hooks.call(spawn, actor), {});
+    assert.equal((await hooks.call(spawn, actor)).hookSpecificOutput.permissionDecision, "deny");
+    assert.deepEqual(await hooks.call({ ...spawn, hook_event_name: "PostToolUse", tool_response: { task_name: path } }, actor), {});
+    const delivered = await hooks.call(start(child, actor, path, turn), child);
+    assert.match(delivered.hookSpecificOutput.additionalContext, new RegExp(`Role: ${request.role}`));
+    assert.match(delivered.hookSpecificOutput.additionalContext, /# Task brief/);
+    assert.match(delivered.hookSpecificOutput.additionalContext, /Complete the fixture task/);
+  }
+  assert.equal((await hooks.call(patch())).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(f.core.readAdmission(f.options.directory).reservations.length, 2);
+  assert.equal(f.core.readAdmission(f.options.directory).bindings.length, 2);
+  assert.equal(f.events.readObservations(join(f.options.observationsRoot, session)).length, 6);
+  await visible.close(); await hooks.close();
+});
+
+test("composed native policy captures inactive and denied attempts without consuming capacity", async t => {
+  const f = await composedPolicyFixture(t);
+  f.api.prepareNativeTask(f.input, f.native(session), f.options);
+  const denied = f.createNativePolicy(f.options, () => ({ decision: "deny", reason: "Fixture denial." }));
+  assert.deepEqual(await f.evaluate(denied), { decision: "deny", reason: "Fixture denial." });
+  assert.equal(f.core.readAdmission(f.options.directory).reservations.length, 0);
+  f.core.changeAdmissionMode(f.options.directory, { ...f.scope, after: turns[0], turn: turns[1], sage: false });
+  const policy = f.createNativePolicy(f.options, () => ({ decision: "pass" }));
+  assert.deepEqual(await f.evaluate(policy, f.spawnInput("inactive", "off-call")), { decision: "pass" });
+  assert.deepEqual(policy.startChild(f.identity), { decision: "pass" });
+  assert.deepEqual(policy.recordDispatchResult(f.result), { decision: "recorded" });
+  assert.deepEqual(f.events.readObservations(join(f.options.observationsRoot, session)).map(row => row.kind).sort(),
+    ["child-start", "spawn-request", "spawn-request", "spawn-result"]);
+  assert.equal(f.core.readAdmission(f.options.directory).reservations.length, 0);
+  assert.equal(f.core.readAdmission(f.options.directory).bindings.length, 0);
+});
+
+test("composed native policy requires exact tool decisions and authenticated derived actors", async t => {
+  const f = await composedPolicyFixture(t);
+  assert.throws(() => f.createNativePolicy(f.options));
+  f.api.prepareNativeTask(f.input, f.native(session), f.options);
+  for (const value of [Object.assign(Object.create({ decision: "pass" }), { unrelated: true }), undefined, {}, { decision: "allow" }, { decision: "pass", extra: true }, { decision: "deny", reason: "" }]) {
+    const policy = f.createNativePolicy(f.options, () => value);
+    await assert.rejects(f.evaluate(policy));
+  }
+  const policy = f.createNativePolicy(f.options, () => { throw Error("private detail"); });
+  await assert.rejects(f.evaluate(policy));
+  const passing = f.createNativePolicy(f.options, () => ({ decision: "pass" }));
+  await assert.rejects(passing.evaluate({ ...f.spawnInput(), agent_id: childActor }, f.native(session)));
+  await assert.rejects(passing.evaluate(f.spawnInput(), f.native(childActor)));
+  await assert.rejects(passing.evaluate(f.spawnInput(), { ...f.native(session), version: "unsupported" }));
+  assert.equal(f.core.readAdmission(f.options.directory).reservations.length, 0);
+});
+
+test("composed native policy keeps the admitted input private and refuses a changed mode", async t => {
+  const f = await composedPolicyFixture(t);
+  f.api.prepareNativeTask(f.input, f.native(session), f.options);
+  const options = { ...f.options };
+  const policy = f.createNativePolicy(options, input => {
+    input.tool_input.task_name = "mutated";
+    return { decision: "pass" };
+  });
+  options.directory = "not-the-journal";
+  assert.deepEqual(await f.evaluate(policy), { decision: "pass" });
+  assert.equal(f.core.readAdmission(f.options.directory).reservations[0].dispatch.name, f.input.name);
+  assert.equal((await f.evaluate(policy)).decision, "deny");
+  const changed = f.createNativePolicy(f.options, () => {
+    f.core.changeAdmissionMode(f.options.directory, { ...f.scope, after: turns[0], turn: turns[1], sage: false });
+    return { decision: "pass" };
+  });
+  await assert.rejects(f.evaluate(changed, f.spawnInput("next", "next-call")));
+  assert.equal(f.core.readAdmission(f.options.directory).reservations.length, 1);
+});
+
+test("composed native policy holds incomplete child evidence until the matching result is recorded", async t => {
+  const f = await composedPolicyFixture(t);
+  f.api.prepareNativeTask(f.input, f.native(session), f.options);
+  const policy = f.createNativePolicy(f.options, () => ({ decision: "pass" }));
+  await f.evaluate(policy);
+  assert.throws(() => policy.startChild(f.identity));
+  assert.equal(f.core.readAdmission(f.options.directory).reservations.length, 1);
+  assert.equal(f.core.readAdmission(f.options.directory).bindings.length, 0);
+  assert.throws(() => policy.recordDispatchResult({ ...f.result, kind: "spawn-request", name: "invalid" }));
+  policy.recordDispatchResult(f.result);
+  assert.equal(policy.startChild(f.identity).decision, "deliver");
+  assert.equal(f.core.readAdmission(f.options.directory).bindings.length, 1);
+  // A new call reusing the path makes further delivery ambiguous, even though it was denied.
+  const denied = f.createNativePolicy(f.options, () => ({ decision: "deny", reason: "Fixture denial." }));
+  await f.evaluate(denied, f.spawnInput(f.input.name, "reused-call"));
+  assert.throws(() => policy.startChild(f.identity));
+  assert.equal(f.core.readAdmission(f.options.directory).reservations.length, 1);
+});
