@@ -1,7 +1,7 @@
 import "./test-env.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -43,7 +43,7 @@ function fixture(t, policy = "normal") {
 const patch = (turn = turns[0]) => ({ hook_event_name: "PreToolUse", session_id: session, turn_id: turn,
   tool_name: "apply_patch", tool_use_id: "call-1", tool_input: { patch: "fixed input" } });
 
-async function connect(t, fixture, version = "0.160.0") {
+async function connect(t, fixture, version = "0.160.0", expectedStderr = "") {
   const child = spawn(process.execPath, [fixture.entry], { cwd: fixture.dir, stdio: ["pipe", "pipe", "pipe"], shell: false });
   t.after(() => child.stdin.end());
   let stderr = "", nextId = 0;
@@ -75,7 +75,7 @@ async function connect(t, fixture, version = "0.160.0") {
       assert.doesNotMatch(JSON.stringify(response), /private loader detail/);
       return JSON.parse(response.result.content[0].text);
     },
-    close: async () => { child.stdin.end(); assert.deepEqual(await closed, { code: 0, signal: null }); assert.equal(stderr, ""); },
+    close: async () => { child.stdin.end(); assert.deepEqual(await closed, { code: 0, signal: null }); assert.equal(stderr, expectedStderr); },
   };
 }
 
@@ -134,4 +134,100 @@ test("packaged native server turns missing policy modules into explicit denials"
   const next = await connect(t, f);
   assert.equal((await next.call(f.prompt("sage mode"))).decision, "block");
   await next.close();
+});
+
+
+async function configured(t) {
+  const f = fixture(t);
+  const core = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  core.configureAdmission(f.mode.directory, { total: 3, projects: [{ project: "fixture", limit: 3 }] });
+  const configFile = join(f.dir, "native.json");
+  const config = { version: 1, mode: { ...f.mode } };
+  writeFileSync(configFile, JSON.stringify(config));
+  const api = await import(pathToFileURL(join(f.plugin, "runtime/configuration.mjs")));
+  const entry = readFileSync(f.entry, "utf8")
+    .replace("import { serveHooks } from './plugin/runtime/mcp-server.mjs';", "import { serveConfiguredHooks } from './plugin/runtime/configuration.mjs';")
+    .replace("serveHooks({ mode, loadPolicy: async () => {", `serveConfiguredHooks(${JSON.stringify(configFile)}, async mode => {`)
+    .replace("    } });", "    });");
+  writeFileSync(f.entry, entry);
+  return { ...f, ...api, configFile, config };
+}
+const configDenied = error => error.message === "Sage native hook configuration is unavailable.";
+
+test("native launcher configuration reads fixed project settings without changing the journal", async t => {
+  const f = await configured(t);
+  const before = readdirSync(f.mode.directory).sort().map(name => [name, readFileSync(join(f.mode.directory, name), "utf8")]);
+  const mode = f.readHookConfiguration(f.configFile);
+  assert.deepEqual(mode, f.mode);
+  assert.equal(Object.isFrozen(mode), true);
+  assert.deepEqual(readdirSync(f.mode.directory).sort().map(name => [name, readFileSync(join(f.mode.directory, name), "utf8")]), before);
+  const client = await connect(t, f);
+  assert.deepEqual(await client.call(f.prompt("sage mode")), {});
+  assert.equal((await client.call(patch())).hookSpecificOutput.permissionDecision, "deny");
+  // A connection keeps its verified configuration even if the file changes later.
+  writeFileSync(f.configFile, "invalid");
+  assert.deepEqual(await client.call(f.prompt("sage mode off", turns[1])), {});
+  assert.deepEqual(await client.call(patch(turns[1])), {});
+  await client.close();
+});
+
+test("native launcher configuration rejects unknown fields and unconfigured paths without creating state", async t => {
+  const f = await configured(t);
+  const missing = join(f.dir, "must-not-be-created");
+  for (const config of [null, [], {}, { ...f.config, version: 2 }, { ...f.config, loader: "untrusted.mjs" },
+    { ...f.config, mode: { ...f.mode, extra: true } }, { ...f.config, mode: { ...f.mode, project: "other" } },
+    { ...f.config, mode: { ...f.mode, directory: missing } }, { ...f.config, mode: { ...f.mode, directory: f.dir } },
+    { ...f.config, mode: { ...f.mode, sessionsDir: f.configFile } }, { ...f.config, mode: { ...f.mode, projectDirectory: "." } }]) {
+    writeFileSync(f.configFile, JSON.stringify(config));
+    assert.throws(() => f.readHookConfiguration(f.configFile), configDenied);
+  }
+  assert.equal(existsSync(missing), false);
+});
+
+test("native launcher configuration rejects links, oversized files, invalid bytes, and non-files", async t => {
+  const f = await configured(t);
+  const linked = join(f.dir, "linked.json"); symlinkSync(f.configFile, linked);
+  const linkedDir = join(f.dir, "linked-directory"); symlinkSync(f.dir, linkedDir, "dir");
+  for (const path of [linked, join(linkedDir, "native.json"), f.dir, "native.json"]) {
+    assert.throws(() => f.readHookConfiguration(path), configDenied);
+  }
+  writeFileSync(f.configFile, JSON.stringify({ ...f.config, mode: { ...f.mode, sessionsDir: linkedDir } }));
+  assert.throws(() => f.readHookConfiguration(f.configFile), configDenied);
+  for (const bytes of [Buffer.from([0xff]), Buffer.from("{}".padEnd(64 * 1024 + 1, " "))]) {
+    writeFileSync(f.configFile, bytes);
+    assert.throws(() => f.readHookConfiguration(f.configFile), configDenied);
+  }
+});
+
+test("invalid native launcher configuration blocks prompts and tools until a new connection", async t => {
+  const f = await configured(t);
+  const marker = join(f.dir, "loader-called");
+  writeFileSync(f.entry, "import {writeFileSync} from 'node:fs';\n" + readFileSync(f.entry, "utf8")
+    .replace("async mode => {", `async mode => { writeFileSync(${JSON.stringify(marker)}, 'called');`));
+  writeFileSync(f.configFile, "invalid");
+  const client = await connect(t, f, "0.160.0", "Sage native hook configuration is unavailable.\n");
+  assert.equal((await client.call(f.prompt("sage mode"))).decision, "block");
+  assert.equal((await client.call(patch())).hookSpecificOutput.permissionDecision, "deny");
+  writeFileSync(f.configFile, JSON.stringify(f.config));
+  assert.equal((await client.call(f.prompt("sage mode"))).decision, "block");
+  assert.equal((await client.call(patch())).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(existsSync(marker), false, "invalid configuration must not invoke policy loading");
+  await client.close();
+  const repaired = await connect(t, f);
+  assert.deepEqual(await repaired.call(f.prompt("sage mode")), {});
+  assert.equal((await repaired.call(patch())).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(readFileSync(marker, "utf8"), "called");
+  await repaired.close();
+});
+
+
+test("native launcher configuration permits a not-yet-created session directory but rejects dangling links", async t => {
+  const f = await configured(t);
+  rmSync(f.mode.sessionsDir, { recursive: true });
+  assert.deepEqual(f.readHookConfiguration(f.configFile), f.mode);
+  assert.equal(existsSync(f.mode.sessionsDir), false, "configuration must not create the native session directory");
+  symlinkSync(join(f.dir, "absent-target"), f.mode.sessionsDir, "dir");
+  assert.throws(() => f.readHookConfiguration(f.configFile), configDenied);
+  writeFileSync(f.configFile, JSON.stringify({ ...f.config, mode: { ...f.mode, sessionsDir: f.mode.sessionsDir + "/" } }));
+  assert.throws(() => f.readHookConfiguration(f.configFile), configDenied);
 });
