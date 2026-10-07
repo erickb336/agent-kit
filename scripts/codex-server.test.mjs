@@ -231,3 +231,95 @@ test("native launcher configuration permits a not-yet-created session directory 
   writeFileSync(f.configFile, JSON.stringify({ ...f.config, mode: { ...f.mode, sessionsDir: f.mode.sessionsDir + "/" } }));
   assert.throws(() => f.readHookConfiguration(f.configFile), configDenied);
 });
+
+function childFixture(t, outcome = { decision: "deliver", brief: "Role: implementer\nTask: the fixed fixture task." }) {
+  const f = fixture(t);
+  const transcript = join(f.mode.sessionsDir, "child.jsonl");
+  const metadata = { id: childActor, session_id: session, parent_thread_id: session,
+    agent_path: "/root/fixture", cli_version: "0.160.0" };
+  const writeMetadata = (value = metadata, turn = turns[0]) => writeFileSync(transcript,
+    JSON.stringify({ type: "session_meta", payload: value }) + "\n"
+    + JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: turn } }) + "\n");
+  writeMetadata();
+  const marker = join(f.dir, "start-policy.json");
+  writeFileSync(f.entry, "import { writeFileSync } from 'node:fs';\n" + readFileSync(f.entry, "utf8")
+    .replace("return { evaluate:", `return { startChild: identity => {
+      if (!Object.isFrozen(identity)) throw Error('private unfrozen identity');
+      writeFileSync(${JSON.stringify(marker)}, JSON.stringify(identity));
+      return ${JSON.stringify(outcome)};
+    }, evaluate:`));
+  return { ...f, transcript, metadata, marker, writeMetadata, start: () => ({ hook_event_name: "SubagentStart",
+    session_id: session, turn_id: turns[0], agent_id: childActor, transcript_path: transcript }) };
+}
+
+test("packaged child start delivers policy instructions only after native identity verification", async t => {
+  const f = childFixture(t); const client = await connect(t, f);
+  assert.deepEqual(await client.call(f.start(), childActor), { hookSpecificOutput: {
+    hookEventName: "SubagentStart", additionalContext: "Role: implementer\nTask: the fixed fixture task." } });
+  assert.deepEqual(JSON.parse(readFileSync(f.marker, "utf8")), { session, child: childActor,
+    parent: session, path: "/root/fixture", turn: turns[0] });
+  await client.close();
+});
+
+test("packaged child start rejects mismatched native actors and metadata before policy invocation", async t => {
+  const f = childFixture(t); const client = await connect(t, f);
+  for (const [input, actor] of [[f.start(), session], [f.start(), null],
+    [{ ...f.start(), role: "lead" }, childActor], [{ ...f.start(), turn_id: "invalid" }, childActor],
+    [{ ...f.start(), transcript_path: f.prompt("test").transcript_path }, childActor]]) {
+    assert.equal((await client.call(input, actor)).decision, "block");
+    assert.equal(existsSync(f.marker), false);
+  }
+  for (const change of [{ cli_version: "old" }, { session_id: childActor }, { id: session },
+    { parent_thread_id: childActor }, { parent_thread_id: null }, { agent_path: "/root" }]) {
+    f.writeMetadata({ ...f.metadata, ...change });
+    assert.equal((await client.call(f.start(), childActor)).decision, "block");
+    assert.equal(existsSync(f.marker), false);
+  }
+  f.writeMetadata();
+  await client.close();
+  const unsupported = await connect(t, f, "old");
+  assert.equal((await unsupported.call(f.start(), childActor)).decision, "block");
+  assert.equal(existsSync(f.marker), false);
+  await unsupported.close();
+});
+
+test("packaged child start refuses missing identity and invalid briefs without protocol errors", async t => {
+  for (const outcome of [null, { decision: "allow" }, { decision: "deliver", brief: "" },
+    { decision: "deliver", brief: "x".repeat(64 * 1024 + 1) }, { decision: "deliver", brief: "x\0y" },
+    { decision: "pass", brief: "unexpected" }]) {
+    const f = childFixture(t, outcome); const client = await connect(t, f);
+    assert.deepEqual(await client.call(f.start(), childActor), { decision: "block", reason: "Sage could not verify this hook request." });
+    await client.close();
+  }
+  const f = childFixture(t); const client = await connect(t, f);
+  rmSync(f.transcript);
+  assert.equal((await client.call(f.start(), childActor)).decision, "block");
+  assert.equal(existsSync(f.marker), false);
+  await client.close();
+});
+
+test("packaged child start supports explicit no-instruction policy and contains loader failures", async t => {
+  const f = childFixture(t, { decision: "pass" }); const client = await connect(t, f);
+  assert.deepEqual(await client.call(f.start(), childActor), {});
+  await client.close();
+  for (const replacement of ["throw Error('private loader detail');", "return {};",
+    "return { startChild() { throw Error('private loader detail'); } };"]) {
+    const failed = childFixture(t);
+    writeFileSync(failed.entry, readFileSync(failed.entry, "utf8").replace("loadPolicy: async () => {", `loadPolicy: async () => { ${replacement}`));
+    const next = await connect(t, failed);
+    assert.equal((await next.call(failed.start(), childActor)).decision, "block");
+    await next.close();
+  }
+});
+
+test("packaged child start uses child metadata and native turn when history contains parent records", async t => {
+  const f = childFixture(t);
+  writeFileSync(f.transcript, JSON.stringify({ type: "session_meta", payload: f.metadata }) + "\n"
+    + JSON.stringify({ type: "session_meta", payload: { id: session, session_id: session, cli_version: "0.160.0" } }) + "\n"
+    + JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: turns[0] } }) + "\n");
+  const client = await connect(t, f);
+  const result = await client.call({ ...f.start(), turn_id: turns[1] }, childActor);
+  assert.equal(result.hookSpecificOutput?.additionalContext, "Role: implementer\nTask: the fixed fixture task.");
+  assert.equal(JSON.parse(readFileSync(f.marker, "utf8")).turn, turns[1]);
+  await client.close();
+});

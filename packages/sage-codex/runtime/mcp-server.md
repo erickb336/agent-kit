@@ -7,7 +7,10 @@ and a policy loader. Tool arguments cannot replace that configuration.
 The server exposes one hidden hook tool, `sage_native_hook`. It snapshots the
 native connection version and request actor before it loads the policy.
 `UserPromptSubmit` uses the verified owner adapter. `PreToolUse` uses the tool
-policy boundary. Unknown events, missing modules, invalid input, and policy
+policy boundary. `SubagentStart` verifies native child identity before the policy
+supplies instructions, as described in `child-start.md`. This event cannot stop
+the child: admission belongs in the parent tool policy, and child tool calls
+require a completed binding. Unknown events, missing modules, invalid input, and policy
 errors return explicit denial JSON inside a successful MCP result. Error text
 never enters that result. The server grants no native approval override.
 

@@ -26,6 +26,10 @@ export function createHookServer({ mode, loadPolicy } = {}) {
         const { mcpPreToolResult } = await import("./mcp-policy.mjs");
         return await mcpPreToolResult(raw, native, loadPolicy);
       }
+      if (input.hook_event_name === "SubagentStart") {
+        const { childStartOutput } = await import("./child-start.mjs");
+        return result(await childStartOutput(input, native, configuredMode, loadPolicy));
+      }
       if (input.hook_event_name === "UserPromptSubmit") {
         const { updateOwnerMode } = await import("./mode.mjs");
         const updated = updateOwnerMode(input, native, configuredMode);
