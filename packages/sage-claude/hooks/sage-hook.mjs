@@ -287,7 +287,21 @@ export function handle(input, state, slots) {
       return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
     }
   }
-  if (SHELL_TOOLS.test(tool)) return gitGate(event, [].concat(ti.command ?? []).join(" "), state, input.cwd ?? process.cwd(), main);
+  if (SHELL_TOOLS.test(tool)) {
+    const cwd = /^mcp__terminal__/.test(tool) && ti.cwd !== undefined ? ti.cwd : input.cwd ?? process.cwd();
+    if (typeof cwd !== "string" || !cwd) return deny(event, "the command folder is not a path, so the hook cannot check this command.");
+    const commands = [...new Set(commandFields(ti))];
+    if (main && commands.filter(command => firstUpload(command)).length > 1) {
+      return deny(event, "the input names more than one first-upload command. Send one command so the user approves one destination.");
+    }
+    let answer;
+    for (const command of commands) {
+      const result = gitGate(event, command, state, cwd, main, tool);
+      if (result?.hookSpecificOutput?.permissionDecision === "deny") return result;
+      answer ??= result;
+    }
+    return answer;
+  }
   return undefined;
 }
 
@@ -744,7 +758,23 @@ function real(path) {
 
 const expansionProblem = (command, cwd) => sharedCommands.expansionProblem(command, cwd);
 
-function gitGate(event, command, state, cwd, main) {
+/** Preserve command arrays while checking every other string, including nested tool inputs. */
+function commandFields(ti) {
+  const text = fields(ti);
+  if (Array.isArray(ti.command)) text.push(ti.command.join(" "));
+  return text;
+}
+
+/** PowerShell expansions cannot be judged by the shared shell reader. Refuse protected words conservatively. */
+function powerShellProblem(command) {
+  return /[`(]/.test(command) && /\b(?:gh|git|pr|merge|push)\b/i.test(command.replace(/`/g, ""))
+    ? "PowerShell expansion can hide a protected command. Use literal git and gh commands without backticks or parentheses."
+    : undefined;
+}
+
+function gitGate(event, command, state, cwd, main, tool) {
+  const powerShell = tool === "PowerShell" && powerShellProblem(command);
+  if (powerShell) return deny(event, powerShell);
   const expansion = expansionProblem(command, cwd);
   if (expansion) return deny(event, expansion);
   const first = main ? firstUpload(command) : undefined; // an agent never gets the exception
@@ -1011,7 +1041,8 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
     if (output) process.stdout.write(JSON.stringify(output));
   } catch (e) {
     // Never break the session, but never let a merge or a push through because the hook failed.
-    const command = [].concat(input?.tool_input?.command ?? []).join(" ");
+    let commands;
+    try { commands = commandFields(input?.tool_input ?? {}); } catch {} // unreadable input must still produce a refusal
     const tools = (re) => re.test(input?.tool_name ?? "");
     const agentWrite = agentEvent(input) && (tools(FILE_TOOLS) || tools(SHELL_TOOLS)); // fail closed: an agent does nothing unchecked
     let chiefWrite;
@@ -1020,7 +1051,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
     } catch {
       chiefWrite = tools(SHELL_TOOLS);
     }
-    if (input?.hook_event_name === "PreToolUse" && (mentionsMerge(command) || pushText(command) || agentWrite || chiefWrite)) {
+    if (input?.hook_event_name === "PreToolUse" && ((!commands && tools(SHELL_TOOLS)) || commands?.some(command => mentionsMerge(command) || pushText(command) || (input.tool_name === "PowerShell" && powerShellProblem(command))) || agentWrite || chiefWrite)) {
       process.stdout.write(JSON.stringify(deny("PreToolUse", `the hook could not check this command (${e?.message ?? e}), so it refuses it. Tell the user.`)));
     }
   }
