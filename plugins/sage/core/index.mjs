@@ -5,3 +5,5 @@ export { shellCommands, programsRun } from "./command-reader.mjs";
 export { createCommandPolicy, mentionsMerge, gitSubcommand } from "./command-policy.mjs";
 export { createPushPolicy } from "./push-policy.mjs";
 export { PR } from "./pull-request.mjs";
+export { chiefEditDenied } from "./file-policy.mjs";
+export { modeSignals } from "./mode-policy.mjs";
