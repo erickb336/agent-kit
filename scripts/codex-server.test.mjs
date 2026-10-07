@@ -497,3 +497,73 @@ test("visible preparation server contains missing modules and unavailable storag
   await client.close();
   assert.equal(specialist.core.readAdmission(specialist.options.directory).preparations.length, 1);
 });
+
+async function sharedConfiguration(t) {
+  const f = await configured(t);
+  const observationsRoot = join(f.dir, "observations"); mkdirSync(observationsRoot);
+  const config = { version: 2, mode: { ...f.mode, observationsRoot } };
+  writeFileSync(f.configFile, JSON.stringify(config));
+  const preparationEntry = join(f.dir, "preparation.mjs");
+  writeFileSync(preparationEntry, `import { serveConfiguredPreparations } from './plugin/runtime/configuration.mjs'; serveConfiguredPreparations(${JSON.stringify(f.configFile)});`);
+  return { ...f, config, preparationEntry };
+}
+
+test("shared server configuration fixes the same journal project and event store for both launchers", async t => {
+  const f = await sharedConfiguration(t);
+  assert.deepEqual(f.readHookConfiguration(f.configFile), f.config.mode);
+  assert.equal(Object.isFrozen(f.readHookConfiguration(f.configFile)), true);
+  const loaded = join(f.dir, "loaded-config.json");
+  writeFileSync(f.entry, "import { writeFileSync } from 'node:fs';\n" + readFileSync(f.entry, "utf8")
+    .replace("async mode => {", `async mode => { writeFileSync(${JSON.stringify(loaded)}, JSON.stringify(mode));`));
+  const hooks = await connect(t, f);
+  assert.deepEqual(await hooks.call(f.prompt("sage mode")), {});
+  const visible = await connect(t, { ...f, entry: f.preparationEntry }, "0.160.0", "", "sage_prepare_task");
+  // Both connections retain their startup values after the file changes.
+  writeFileSync(f.configFile, "invalid");
+  const core = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  const brief = Object.fromEntries(core.BRIEF_FIELDS.map(field => [field, "Fixed fixture value."]));
+  const prepared = await visible.call({ task: "T1", run: "R1", name: "lead_1", role: "lead", brief });
+  assert.equal(prepared.decision, "prepared");
+  const state = core.readAdmission(f.mode.directory);
+  assert.equal(state.preparations.length, 1);
+  assert.equal(state.preparations[0].project, f.mode.project);
+  assert.equal(state.reservations.length, 0);
+  assert.deepEqual(readdirSync(f.config.mode.observationsRoot), []);
+  assert.equal((await hooks.call(patch())).hookSpecificOutput.permissionDecision, "deny");
+  assert.deepEqual(JSON.parse(readFileSync(loaded, "utf8")), f.config.mode);
+  await visible.close(); await hooks.close();
+});
+
+test("shared server configuration rejects missing linked or unknown observation settings", async t => {
+  const f = await sharedConfiguration(t);
+  const root = f.config.mode.observationsRoot;
+  const linked = join(f.dir, "linked-observations"); symlinkSync(root, linked, "dir");
+  const missing = join(f.dir, "missing-observations");
+  for (const config of [{ ...f.config, version: 3 },
+    { version: 1, mode: f.config.mode }, { version: 2, mode: f.mode },
+    ...[linked, missing, f.configFile, "relative", f.mode.directory, f.dir].map(observationsRoot => ({ ...f.config, mode: { ...f.config.mode, observationsRoot } }))]) {
+    writeFileSync(f.configFile, JSON.stringify(config));
+    assert.throws(() => f.readHookConfiguration(f.configFile), configDenied);
+  }
+  assert.equal(existsSync(missing), false);
+});
+
+test("shared server configuration leaves invalid preparation connections unavailable until restart", async t => {
+  const f = await sharedConfiguration(t);
+  assert.equal(typeof f.serveConfiguredPreparations, "function");
+  const core = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  const hooks = await connect(t, f);
+  await hooks.call(f.prompt("sage mode")); await hooks.close();
+  const input = { task: "T1", run: "R1", name: "lead_1", role: "lead",
+    brief: Object.fromEntries(core.BRIEF_FIELDS.map(field => [field, "Fixed fixture value."])) };
+  writeFileSync(f.configFile, JSON.stringify({ version: 1, mode: f.mode }));
+  const visible = await connect(t, { ...f, entry: f.preparationEntry }, "0.160.0", "Sage native hook configuration is unavailable.\n", "sage_prepare_task");
+  assert.match((await visible.call(input)).error, /could not prepare/);
+  writeFileSync(f.configFile, JSON.stringify(f.config));
+  assert.match((await visible.call(input)).error, /could not prepare/);
+  assert.equal(core.readAdmission(f.mode.directory).preparations.length, 0);
+  await visible.close();
+  const repaired = await connect(t, { ...f, entry: f.preparationEntry }, "0.160.0", "", "sage_prepare_task");
+  assert.equal((await repaired.call(input)).decision, "prepared");
+  await repaired.close();
+});

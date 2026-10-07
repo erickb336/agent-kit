@@ -1,8 +1,9 @@
 import { constants, openSync, closeSync, fstatSync, readSync, realpathSync, statSync, lstatSync } from "node:fs";
-import { isAbsolute, resolve, dirname } from "node:path";
+import { isAbsolute, resolve, dirname, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { readAdmission } from "sage-core";
 import { serveHooks } from "./mcp-server.mjs";
+import { servePreparations } from "./preparation-server.mjs";
 
 const LIMIT = 64 * 1024;
 const message = "Sage native hook configuration is unavailable.";
@@ -12,6 +13,10 @@ const fields = (value, keys) => value !== null && typeof value === "object" && !
 const pathSyntax = path => typeof path === "string" && path.length <= 4096 && !/\p{Cc}/u.test(path)
   && isAbsolute(path) && resolve(path) === path;
 const canonical = path => pathSyntax(path) && realpathSync(path) === path;
+const contains = (parent, child) => {
+  const part = relative(parent, child);
+  return part === "" || (part !== ".." && !part.startsWith(`..${sep}`) && !isAbsolute(part));
+};
 // Codex can start MCP before it creates this leaf directory. Prompt-time identity
 // checks still validate every actual directory component and the transcript.
 const nativeSessions = path => {
@@ -37,13 +42,16 @@ export function readHookConfiguration(file) {
     }
     if (used > LIMIT) refuse();
     const config = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, used)));
-    if (!fields(config, ["version", "mode"]) || config.version !== 1
-      || !fields(config.mode, ["directory", "project", "projectDirectory", "sessionsDir"])) refuse();
+    if (!fields(config, ["version", "mode"]) || ![1, 2].includes(config.version)
+      || !fields(config.mode, ["directory", "project", "projectDirectory", "sessionsDir",
+        ...(config.version === 2 ? ["observationsRoot"] : [])])) refuse();
     const mode = config.mode;
-    for (const key of ["directory", "projectDirectory"]) {
+    for (const key of ["directory", "projectDirectory", ...(config.version === 2 ? ["observationsRoot"] : [])]) {
       if (!canonical(mode[key]) || !statSync(mode[key]).isDirectory()) refuse();
     }
     if (!nativeSessions(mode.sessionsDir)) refuse();
+    if (config.version === 2 && (contains(mode.directory, mode.observationsRoot)
+      || contains(mode.observationsRoot, mode.directory))) refuse();
     if (typeof mode.project !== "string" || !/^[A-Za-z0-9_.:-]{1,256}$/.test(mode.project)) refuse();
     const journal = readAdmission(mode.directory);
     if (!journal.config.projects.some(row => row.project === mode.project)) refuse();
@@ -65,4 +73,18 @@ export function serveConfiguredHooks(file, loadPolicy) {
     if (!mode) refuse();
     return await loadPolicy(mode);
   } });
+}
+
+/** The visible preparation server uses the same owner-controlled file as the hook server. */
+export function serveConfiguredPreparations(file) {
+  let options;
+  try {
+    options = readHookConfiguration(file);
+    if (!options.observationsRoot) refuse();
+  } catch {
+    options = undefined;
+    console.error(message);
+  }
+  // An invalid snapshot stays unavailable for this connection. No request can supply its paths.
+  return servePreparations(options);
 }
