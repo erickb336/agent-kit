@@ -71,7 +71,7 @@ Give each round to a fresh agent, with the original brief, the later decisions a
 ## Cycles and merges
 
 - A cycle is one full set of fresh reviews and QA on one head SHA. A new commit starts again from cycle 1.
-- **Verified** needs one clean cycle: `sage task <T> set state=verified` checks it. A `findings`, `qa-fail` or `checks-fail` verdict moves a verified task back to reviewing and records the reason in the decision trail. Do not run more cycles unless autopilot is on.
+- **Verified** needs one clean cycle: `sage task <T> set state=verified` checks it. A `findings`, `qa-fail` or `checks-fail` verdict moves a verified or pr-ready task back to reviewing and records the reason in the decision trail. Do not run more cycles unless autopilot is on.
 - **A merge** needs the task's clean cycles on its head SHA: 1 for a tiny or small task, 2 for a large task, and 2 for any task with a risk flag. `sage config` holds the counts (cycles.small, cycles.large, cycles.risk).
 - **A repair round** re-runs only the roles that `sage round` names, on the repair's diff. Then the task needs its clean cycles on the final SHA, with every role.
 - **Autopilot off** (the start): the work stops at verified, and the user merges the pull request.
