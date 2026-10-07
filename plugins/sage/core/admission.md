@@ -112,3 +112,31 @@ text is task context, not role authority or permission to run a command. Native
 context limits must fit the rendered brief and the role instructions together.
 The visible preparation tool, instruction assembly, and complete delivery policy
 remain integration work. State files stay private to the local Sage store.
+
+## Prepare a task before dispatch
+
+`prepareAdmission(directory, scope, request, rolePlan, brief)` saves the task,
+run, issuer, unique child name, role plan, and complete brief. The request has
+`task`, `run`, `issuer`, and `name`. The trusted adapter supplies the current
+scope and issuer role. A preparation ID is a reference, not proof of authority.
+
+Preparation creates no assignment, occupies no agent slot, and grants no spawn
+permission. It checks the role relationship and requires Sage mode. An exact
+retry returns the original preparation, even after mode turns off. A changed
+task, role, run, or brief needs a new child name. The journal bounds apply to
+preparations too; this API does not provide deletion or reclamation.
+
+`reservePreparedAdmission(directory, scope, request, dispatch, issuerRole)`
+consumes the saved work at the actual native dispatch. Its request has
+`preparation`, `issuer`, and `call`. The adapter must establish these values
+from trusted runtime evidence and verify the current issuer role again.
+The transaction checks scope, issuer, child name, role, mode, and capacity.
+It copies the saved brief and links the resulting assignment to its preparation.
+Only one call can consume a preparation. An exact retry returns the existing
+assignment and grants no additional permission.
+
+Legacy events retain their bytes and semantics. Callers that use the older
+reservation APIs do not automatically enforce preparation. A production adapter
+must use the prepared path consistently. The model-visible preparation server,
+its native identity checks, and the spawn correlation policy remain separate
+integration work. These core APIs do not start native agents.

@@ -51,6 +51,12 @@ function childBinding(input) {
     issuer: word(input.issuer, "issuer"), call: word(input.call, "call"),
     child: word(input.child, "child"), turn: word(input.turn, "turn") };
 }
+function preparation(input) {
+  fields(input, ["project", "session", "epoch", "id", "task", "run", "issuer", "name", "rolePlan", "brief"]);
+  const { name, rolePlan, brief, ...identity } = input;
+  const { call, ...parsed } = parseAssignment({ ...identity, call: name });
+  return { ...parsed, name: call, rolePlan: parseRolePlan(rolePlan), brief: parseBrief(brief) };
+}
 function action(input) {
   if (input?.kind === "configure") {
     fields(input, ["kind", "config"]);
@@ -68,15 +74,22 @@ function action(input) {
     fields(input, ["kind", "change"]);
     return { kind: "mode", change: modeChange(input.change) };
   }
+  if (input?.kind === "prepare") {
+    fields(input, ["kind", "preparation"]);
+    return { kind: "prepare", preparation: preparation(input.preparation) };
+  }
   if (input?.kind === "reserve") {
     const hasRole = Object.hasOwn(input, "rolePlan");
     const uniqueName = Object.hasOwn(input, "uniqueName");
     const hasBrief = Object.hasOwn(input, "brief");
-    fields(input, ["kind", "assignment", "dispatch", ...(hasRole ? ["rolePlan"] : []), ...(uniqueName ? ["uniqueName"] : []), ...(hasBrief ? ["brief"] : [])]);
+    const hasPreparation = Object.hasOwn(input, "preparation");
+    fields(input, ["kind", "assignment", "dispatch", ...(hasRole ? ["rolePlan"] : []), ...(uniqueName ? ["uniqueName"] : []), ...(hasBrief ? ["brief"] : []), ...(hasPreparation ? ["preparation"] : [])]);
     if (uniqueName && (!hasRole || input.uniqueName !== true)) refuse("invalid unique-name rule");
     if (hasBrief && (!hasRole || !uniqueName)) refuse("a brief requires a role and unique child name");
+    if (hasPreparation && !hasBrief) refuse("prepared dispatch requires its saved brief");
     return { kind: "reserve", assignment: parseAssignment(input.assignment), dispatch: dispatchIdentity(input.dispatch),
-      ...(hasRole ? { rolePlan: parseRolePlan(input.rolePlan) } : {}), ...(uniqueName ? { uniqueName: true } : {}), ...(hasBrief ? { brief: parseBrief(input.brief) } : {}) };
+      ...(hasRole ? { rolePlan: parseRolePlan(input.rolePlan) } : {}), ...(uniqueName ? { uniqueName: true } : {}), ...(hasBrief ? { brief: parseBrief(input.brief) } : {}),
+      ...(hasPreparation ? { preparation: word(input.preparation, "preparation", UUID) } : {}) };
   }
   if (input?.kind === "bind-child") {
     fields(input, ["kind", "binding"]);
@@ -95,7 +108,7 @@ function apply(state, event) {
     return { state: copy, result: event.config, changed: true };
   }
   if (!copy.config) refuse("store is not configured");
-  const value = event.kind === "activate" ? event.owner : event.kind === "mode" ? event.change : event.kind === "bind-child" ? event.binding : event.assignment;
+  const value = event.kind === "activate" ? event.owner : event.kind === "mode" ? event.change : event.kind === "bind-child" ? event.binding : event.kind === "prepare" ? event.preparation : event.assignment;
   if (!copy.config.projects.some((p) => p.project === value.project)) refuse("project is not configured");
   const owner = copy.sessions.find((s) => s.project === value.project && s.session === value.session);
   if (event.kind === "activate") {
@@ -123,6 +136,23 @@ function apply(state, event) {
     copy.modes.push(value);
     return { state: copy, result: { decision: "changed", mode: value }, changed: true };
   }
+  if (event.kind === "prepare") {
+    const previous = copy.preparations.find(row => ["project", "session", "epoch", "issuer", "name"].every(key => row[key] === value[key]));
+    if (previous) {
+      const { id: oldId, ...oldWork } = previous;
+      const { id: newId, ...newWork } = value;
+      if (json(oldWork) !== json(newWork)) refuse("child name already prepares different work");
+      return { state, result: { decision: "already-prepared", preparation: previous }, changed: false };
+    }
+    if (!mode.sage) refuse("Sage mode is off");
+    if (copy.preparations.some(row => row.id === value.id)) refuse("preparation ID already exists");
+    if (copy.reservations.some(row => ["project", "session", "epoch", "issuer"].every(key => row.assignment[key] === value[key])
+      && row.dispatch.name === value.name)) refuse("child dispatch name is already reserved");
+    // Preparation checks the role relationship. Dispatch checks occupied slots again.
+    checkRoleReservation([], value, value.rolePlan);
+    copy.preparations.push(value);
+    return { state: copy, result: { decision: "prepared", preparation: value }, changed: true };
+  }
   if (event.kind === "bind-child") {
     const reserved = copy.reservations.find(row => row.assignment.id === value.assignment);
     if (!reserved || ["project", "session", "epoch", "issuer", "call"].some(key => reserved.assignment[key] !== value[key])) refuse("child binding has no matching reservation");
@@ -143,10 +173,17 @@ function apply(state, event) {
   const prior = copy.reservations.find(({ assignment: a }) => a.project === value.project && a.session === value.session
     && a.epoch === value.epoch && a.issuer === value.issuer && a.call === value.call);
   if (prior) {
-    if (["task", "run"].some((key) => prior.assignment[key] !== value[key]) || json(prior.dispatch) !== json(event.dispatch) || json(prior.rolePlan) !== json(event.rolePlan) || json(prior.brief) !== json(event.brief)) refuse("dispatch call already names different work");
+    if (["task", "run"].some((key) => prior.assignment[key] !== value[key]) || json(prior.dispatch) !== json(event.dispatch) || json(prior.rolePlan) !== json(event.rolePlan) || json(prior.brief) !== json(event.brief) || prior.preparation !== event.preparation) refuse("dispatch call already names different work");
     return { state, result: { decision: "already-reserved", assignment: prior.assignment }, changed: false };
   }
   if (!mode.sage) refuse("Sage mode is off");
+  if (event.preparation) {
+    const prepared = copy.preparations.find(row => row.id === event.preparation);
+    if (!prepared || ["project", "session", "epoch", "task", "run", "issuer"].some(key => prepared[key] !== value[key])
+      || prepared.name !== event.dispatch.name || json(prepared.rolePlan) !== json(event.rolePlan)
+      || json(prepared.brief) !== json(event.brief)) refuse("dispatch differs from its preparation");
+    if (copy.reservations.some(row => row.preparation === event.preparation)) refuse("preparation already has a dispatch");
+  }
   if (copy.reservations.some(({ assignment: a }) => a.id === value.id)) refuse("assignment ID already exists");
   if (event.rolePlan) {
     if (event.uniqueName && copy.reservations.some(row => row.assignment.project === value.project && row.assignment.session === value.session
@@ -157,7 +194,7 @@ function apply(state, event) {
   if (copy.reservations.length >= copy.config.total) refuse("total capacity is occupied");
   const projectLimit = copy.config.projects.find((p) => p.project === value.project).limit;
   if (copy.reservations.filter(({ assignment: a }) => a.project === value.project).length >= projectLimit) refuse("project capacity is occupied");
-  copy.reservations.push({ assignment: value, dispatch: event.dispatch, ...(event.rolePlan ? { rolePlan: event.rolePlan } : {}), ...(event.brief ? { brief: event.brief } : {}) });
+  copy.reservations.push({ assignment: value, dispatch: event.dispatch, ...(event.rolePlan ? { rolePlan: event.rolePlan } : {}), ...(event.brief ? { brief: event.brief } : {}), ...(event.preparation ? { preparation: event.preparation } : {}) });
   return { state: copy, result: { decision: "permit-once", assignment: value }, changed: true };
 }
 function syncDirectory(path) {
@@ -214,7 +251,7 @@ function read(dir) {
       maximum = Math.max(maximum, revision);
     }
   } finally { stream.closeSync(); }
-  let state = { config: null, sessions: [], reservations: [], modes: [], bindings: [] }, previous = null;
+  let state = { config: null, sessions: [], reservations: [], modes: [], bindings: [], preparations: [] }, previous = null;
   for (let revision = 0; revision <= maximum; revision++) {
     const bytes = bytesAt(join(dir, filename(revision)));
     let record;
@@ -270,6 +307,22 @@ export const reserveRoleAdmission = (dir, scope, request, dispatch, rolePlan) =>
 /** Save role, brief, and capacity together before permitting the initial dispatch. */
 export const reserveBriefAdmission = (dir, scope, request, dispatch, rolePlan, brief) => commit(dir,
   { kind: "reserve", assignment: createAssignment(scope, request), dispatch, rolePlan: parseRolePlan(rolePlan), uniqueName: true, brief: parseBrief(brief) });
+/** Save instructions before the native dispatch call exists. No capacity or permission is granted. */
+export function prepareAdmission(dir, scope, request, rolePlan, brief) {
+  fields(request, ["task", "run", "issuer", "name"]);
+  const { call, ...identity } = createAssignment(scope, { task: request.task, run: request.run, issuer: request.issuer, call: request.name });
+  return commit(dir, { kind: "prepare", preparation: { ...identity, name: call, rolePlan, brief } });
+}
+/** The adapter verifies the current issuer and role, then supplies the actual native call and dispatch. */
+export function reservePreparedAdmission(dir, scope, request, dispatch, issuerRole) {
+  fields(request, ["preparation", "issuer", "call"]);
+  word(request.preparation, "preparation", UUID);
+  const prepared = readAdmission(dir).preparations.find(row => row.id === request.preparation);
+  if (!prepared) refuse("preparation is unavailable");
+  return commit(dir, { kind: "reserve", assignment: createAssignment(scope,
+    { task: prepared.task, run: prepared.run, issuer: request.issuer, call: request.call }), dispatch,
+    rolePlan: { issuerRole, role: prepared.rolePlan.role }, uniqueName: true, brief: prepared.brief, preparation: prepared.id });
+}
 /** Record a verified initial child identity. This neither permits dispatch nor releases capacity. */
 export const bindAdmission = (dir, binding) => commit(dir, { kind: "bind-child", binding });
 export function readAdmission(dir) {

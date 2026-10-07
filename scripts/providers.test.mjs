@@ -293,7 +293,7 @@ test("admission initializes one immutable configuration and idempotent session o
   assert.deepEqual(ordered.projects.map(row => row.project), ["B", "a"]);
   assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
   assert.match(owner.epoch, /^[0-9a-f-]{36}$/);
-  assert.deepEqual(api.readAdmission(dir), { config: admissionConfig, sessions: [owner], reservations: [], bindings: [], modes: [{ ...admissionScope(owner), after: null, turn: owner.activation, sage: true }] });
+  assert.deepEqual(api.readAdmission(dir), { config: admissionConfig, sessions: [owner], reservations: [], bindings: [], preparations: [], modes: [{ ...admissionScope(owner), after: null, turn: owner.activation, sage: true }] });
   assert.throws(() => api.configureAdmission(dir, { ...admissionConfig, total: 4 }), /configuration differs/);
   assert.throws(() => api.activateAdmission(dir, { ...admissionOwner, activation: "22222222-2222-4222-8222-222222222222" }), /already has an owner/);
 });
@@ -1126,4 +1126,133 @@ test("brief admission returns the saved instructions with the verified native bi
   assert.equal(result.role, "lead"); assert.deepEqual(result.brief, brief);
   assert(f.api.renderBrief(result.brief).includes("GOAL\nDeliver these saved instructions."));
   assert.deepEqual(f.bind(f.identity()).brief, brief);
+});
+
+async function preparationFixture(t, limits) {
+  const { plugin } = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(plugin, "core/index.mjs")));
+  assert.equal(typeof api.prepareAdmission, "function", "durable task preparation must ship in core");
+  assert.equal(typeof api.reservePreparedAdmission, "function", "prepared dispatch consumption must ship in core");
+  const f = await roleAdmissionFixture(t, limits);
+  const role = { issuerRole: "chief-of-staff", role: "lead" };
+  const request = { task: "T1", run: "R1", issuer: "root", name: "agent-1" };
+  const prepare = (changes = {}, brief = completeBrief("Complete the fixture task."), plan = role) =>
+    f.api.prepareAdmission(f.journal, f.scope, { ...request, ...changes }, plan, brief);
+  const reserve = (id, call = "spawn-1", dispatch = f.args(1)[3], issuerRole = role.issuerRole, issuer = "root", scope = f.scope) =>
+    f.api.reservePreparedAdmission(f.journal, scope, { preparation: id, issuer, call }, dispatch, issuerRole);
+  return { ...f, role, request, prepare, reserve };
+}
+
+test("prepared admission saves immutable work before the native call without taking capacity", async t => {
+  const f = await preparationFixture(t, { total: 1, projects: [{ project: "project-a", limit: 1 }] });
+  const brief = completeBrief("The saved task.");
+  const first = f.prepare({}, brief);
+  assert.equal(first.decision, "prepared");
+  f.prepare({ name: "second" });
+  brief.GOAL = "Caller changed it."; first.preparation.brief.GOAL = "Receipt changed it.";
+  const snapshot = f.api.readAdmission(f.journal);
+  assert.equal(snapshot.preparations.length, 2);
+  assert.equal(snapshot.preparations[0].brief.GOAL, "The saved task.");
+  assert.deepEqual(snapshot.reservations, []);
+  const admitted = f.reserve(first.preparation.id);
+  assert.equal(admitted.decision, "permit-once");
+  const row = f.api.readAdmission(f.journal).reservations[0];
+  assert.equal(row.preparation, first.preparation.id);
+  assert.equal(row.brief.GOAL, "The saved task.");
+  assert.equal(row.assignment.call, "spawn-1");
+  assert.notEqual(row.assignment.id, first.preparation.id);
+});
+
+test("prepared admission retries preserve the original task role and every brief field", async t => {
+  const f = await preparationFixture(t); const first = f.prepare();
+  assert.deepEqual(f.prepare(), { decision: "already-prepared", preparation: first.preparation });
+  for (const changes of [{ task: "T2" }, { run: "R2" }]) assert.throws(() => f.prepare(changes), /different work/);
+  for (const key of f.api.BRIEF_FIELDS) {
+    assert.throws(() => f.prepare({}, { ...completeBrief("Complete the fixture task."), [key]: "Replacement text." }), /different work/);
+  }
+  assert.throws(() => f.prepare({}, completeBrief("Complete the fixture task."), { issuerRole: "chief-of-staff", role: "qa" }), /different work/);
+  assert.equal(f.api.readAdmission(f.journal).preparations.length, 1);
+  const admitted = f.reserve(first.preparation.id);
+  assert.equal(f.reserve(first.preparation.id).assignment.id, admitted.assignment.id);
+  assert.equal(f.reserve(first.preparation.id).decision, "already-reserved");
+  assert.throws(() => f.reserve(first.preparation.id, "spawn-2"), /already has a dispatch/);
+  assert.throws(() => f.api.reserveBriefAdmission(...f.args(1), f.role, completeBrief("Complete the fixture task.")), /different work/);
+});
+
+test("prepared admission refuses invalid briefs roles and requests without publishing", async t => {
+  const f = await preparationFixture(t);
+  for (const brief of [{}, { ...completeBrief("Complete the fixture task."), GOAL: "" }, { ...completeBrief("Complete the fixture task."), GOAL: "x\0y" },
+    { ...completeBrief("Complete the fixture task."), GOAL: "x".repeat(32769) }]) assert.throws(() => f.prepare({}, brief));
+  for (const plan of [{ issuerRole: "qa", role: "qa" }, { issuerRole: "lead", role: "lead" },
+    { issuerRole: "chief-of-staff", role: "chief-of-staff" }]) assert.throws(() => f.prepare({}, completeBrief("Complete the fixture task."), plan));
+  for (const changes of [{ task: "bad" }, { run: "bad" }, { name: "" }, { issuer: null }, { extra: true }]) {
+    assert.throws(() => f.prepare(changes));
+  }
+  assert.deepEqual(f.api.readAdmission(f.journal).preparations, []);
+});
+
+test("prepared admission requires matching scope issuer name and current issuer role at dispatch", async t => {
+  const f = await preparationFixture(t); const first = f.prepare(); const id = first.preparation.id;
+  assert.throws(() => f.reserve(id, "spawn-1", { ...f.args(1)[3], name: "other" }), /differs from its preparation/);
+  assert.throws(() => f.reserve(id, "spawn-1", f.args(1)[3], "lead"), /differs from its preparation/);
+  assert.throws(() => f.reserve(id, "spawn-1", f.args(1)[3], "chief-of-staff", "other"), /differs from its preparation/);
+  const owner = f.api.activateAdmission(f.journal, { project: "project-b", session: "root", activation: f.activation });
+  assert.throws(() => f.reserve(id, "spawn-1", f.args(1)[3], "chief-of-staff", "root",
+    { project: owner.project, session: owner.session, epoch: owner.epoch }), /differs from its preparation/);
+  assert.throws(() => f.reserve("00000000-0000-0000-0000-000000000000"), /unavailable/);
+  assert.deepEqual(f.api.readAdmission(f.journal).reservations, []);
+});
+
+test("prepared admission enforces mode capacity and role limits again at dispatch", async t => {
+  const f = await preparationFixture(t, { total: 1, projects: [{ project: "project-a", limit: 1 }] });
+  const first = f.prepare();
+  f.api.changeAdmissionMode(f.journal, { ...f.scope, after: f.activation, turn: "b72422c7-509c-43aa-8c42-827c556f8a57", sage: false });
+  assert.equal(f.prepare().decision, "already-prepared");
+  assert.throws(() => f.prepare({ name: "other" }), /mode is off/);
+  assert.throws(() => f.reserve(first.preparation.id), /mode is off/);
+  f.api.changeAdmissionMode(f.journal, { ...f.scope, after: "b72422c7-509c-43aa-8c42-827c556f8a57", turn: "c72422c7-509c-43aa-8c42-827c556f8a57", sage: true });
+  f.api.reserveRoleAdmission(...f.args(2), f.role);
+  assert.throws(() => f.reserve(first.preparation.id), /capacity/);
+  const leads = await preparationFixture(t); const prepared = leads.prepare();
+  for (let n = 2; n <= 4; n++) leads.api.reserveRoleAdmission(...leads.args(n), leads.role);
+  assert.throws(() => leads.reserve(prepared.preparation.id), /three lead slots/);
+  assert.equal(leads.api.readAdmission(leads.journal).reservations.length, 3);
+});
+
+test("prepared admission refuses an already dispatched name and preserves legacy reservations", async t => {
+  const f = await preparationFixture(t);
+  f.api.reserveAdmission(...f.args(1));
+  assert.throws(() => f.prepare(), /already reserved/);
+  assert.deepEqual(f.api.readAdmission(f.journal).preparations, []);
+  const row = f.api.readAdmission(f.journal).reservations[0];
+  assert.equal(Object.hasOwn(row, "preparation"), false);
+  assert.equal(Object.hasOwn(row, "brief"), false);
+  const prepared = f.prepare({ name: "agent-2" });
+  f.api.reserveAdmission(...f.args(2));
+  assert.throws(() => f.reserve(prepared.preparation.id, "another-call", f.args(2)[3]), /already reserved/);
+});
+
+test("prepared admission gives one preparation and one dispatch to concurrent callers", async t => {
+  const f = await preparationFixture(t);
+  const script = `const input=JSON.parse(process.argv[1]);const api=await import(input.url);
+    try { console.log(JSON.stringify(api[input.method](...input.args))); }
+    catch(error) { console.log(JSON.stringify({refused:error.message})); }`;
+  const run = (method, args) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script, JSON.stringify({ url: f.url, method, args })], { shell: false });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", b => { stdout += b; }); child.stderr.on("data", b => { stderr += b; });
+    child.once("error", reject); child.once("close", code => {
+      try { assert.equal(code, 0, stderr); assert.equal(stderr, ""); resolve(JSON.parse(stdout)); } catch (e) { reject(e); }
+    }); child.stdin.end();
+  });
+  const proposed = await Promise.all(["First work.", "Other work."].map(goal => run("prepareAdmission",
+    [f.journal, f.scope, f.request, f.role, completeBrief(goal)])));
+  assert.equal(proposed.filter(row => row.decision === "prepared").length, 1);
+  assert.equal(proposed.filter(row => /different work/.test(row.refused)).length, 1);
+  const id = proposed.find(row => row.decision === "prepared").preparation.id;
+  const dispatched = await Promise.all(["call-1", "call-2"].map(call => run("reservePreparedAdmission",
+    [f.journal, f.scope, { preparation: id, issuer: "root", call }, f.args(1)[3], "chief-of-staff"])));
+  assert.equal(dispatched.filter(row => row.decision === "permit-once").length, 1);
+  assert.equal(dispatched.filter(row => /already has a dispatch/.test(row.refused)).length, 1);
+  assert.equal(f.api.readAdmission(f.journal).reservations.length, 1);
 });
