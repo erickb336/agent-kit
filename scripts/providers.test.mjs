@@ -1358,3 +1358,52 @@ test("shared role delivery refuses absent saved briefs and missing instruction a
     observationsDirectory: other.observationsDirectory }, other.identity()));
   assert.equal(other.api.readAdmission(other.journal).reservations.length, 1, "an instruction error does not release capacity");
 });
+
+test("shared chief instructions preserve the packaged agent and every brief field", async t => {
+  const f = isolated(t, "claude");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderChiefInstructions, "function");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "chief-bindings.json"), "utf8"));
+  const text = api.renderChiefInstructions(bindings);
+  const agent = readFileSync(join(f.plugin, "agents/chief-of-staff.md"), "utf8");
+  assert.equal(agent.split("\n---\n")[1].trim(), text);
+  const fields = /```\n(GOAL[\s\S]*?)```/.exec(text)[1].trim().split("\n").map(line => line.split(/\s{2,}/)[0]);
+  assert.deepEqual(fields, api.BRIEF_FIELDS);
+  assert.match(agent, /disallowedTools: Edit, Write, MultiEdit, NotebookEdit/);
+  assert.match(text, /The hook refuses a brief without them/);
+  assert.match(text, /model fable/);
+});
+
+test("shared chief Codex instructions keep unsupported routes and automatic merges inactive", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderChiefInstructions, "function");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "chief-bindings.json"), "utf8"));
+  const text = api.renderChiefInstructions(bindings);
+  const prepared = readFileSync(join(f.plugin, "runtime/chief-instructions.md"), "utf8");
+  assert(prepared.endsWith(text + "\n"));
+  assert.match(prepared, /not loaded by the installed manual preview or the current mode hook/);
+  assert.match(text, /the chief starts a lead, and the lead starts its permitted team/);
+  assert.match(text, /a tiny task goes through a lead to an implementer/);
+  assert.match(text, /Wait for a successful preparation receipt before the native spawn call/);
+  assert.match(text, /same unique name/);
+  assert.match(text, /does not create an assignment, start an agent, or grant a slot/);
+  assert.match(text, /PE, designer, and arena-judge routes are not yet integrated and verified/);
+  assert.match(text, /Autopilot remains off/);
+  assert.match(text, /Never merge, push to the main branch, or force-push/);
+  assert.match(text, /state tool checks at least one cycle/);
+  assert.doesNotMatch(text, /CLAUDE\.md|~\/workspace|\.claude|sage:report|model fable|opus|sonnet|gh pr merge|gh api|gate G15|\{\{|sage-core-chief/);
+  // Rendering this document must not register the chief as an admitted child role.
+  assert.throws(() => api.renderRoleInstructions("chief-of-staff", bindings), /Unknown child role/);
+});
+
+test("shared chief instructions reject incomplete or substituted provider bindings", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderChiefInstructions, "function");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "chief-bindings.json"), "utf8"));
+  for (const invalid of [{}, null, [], Object.create(bindings), { ...bindings, EXTRA: "value" },
+    { ...bindings, DISPATCH: "" }, { ...bindings, TEAM: "{{TASK}}" }, { ...bindings, TEAM: "bad\0text" }]) {
+    assert.throws(() => api.renderChiefInstructions(invalid), /exact provider bindings/);
+  }
+});

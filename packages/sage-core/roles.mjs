@@ -20,3 +20,8 @@ export function renderRoleInstructions(role, bindings = {}) {
 export function renderReportInstructions(bindings) {
   return render("report", bindings);
 }
+
+/** The owner adapter supplies packaged bindings; this is not a child role. */
+export function renderChiefInstructions(bindings) {
+  return render("chief-of-staff", bindings);
+}
