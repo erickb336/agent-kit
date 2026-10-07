@@ -30,3 +30,37 @@ An exact retry returns `already-recorded` and the current mode, which may differ
 Off mode refuses new admission without releasing any held reservation. An exact reservation retry still returns its saved receipt, never another dispatch permit. On restores admission under the existing limits and epoch. Neither transition revokes an already-issued native call, proves a child stopped, or permits a merge. Autopilot remains separate. The adapter must partition native session identity by provider and verify ownership before it calls this API.
 
 The journal reader reconstructs mode from activation and subsequent changes after restart. The same atomic publication and sync rules cover these records. Existing records without an explicit initial mode retain their original on meaning. Older readers refuse the new activation fields or an unknown mode record, so update participating adapters together before sharing a store. No installed automatic hook uses this API yet.
+
+
+## Role reservations
+
+`reserveRoleAdmission(directory, scope, request, dispatch, rolePlan)` applies the
+lead-build rules in the same atomic transaction as project and total capacity.
+`rolePlan` has exactly `issuerRole` and `role`. The adapter must establish the
+issuer's role from verified native binding and saved assignment evidence.
+An agent's name, tool arguments, or message cannot establish that role.
+
+Only the chief can start leads. A lead can start implementer, code-reviewer,
+security-reviewer, ux-reviewer, and qa. Specialists cannot start agents.
+The chief may still start the existing specialist roles directly for framing
+and other current workflows. The chief itself is the owner session, never a
+child role.
+
+The project holds at most three leads across its participating sessions. Each
+lead holds at most three children in its session and epoch. All reservations
+also count toward project and total limits, so the lowest applicable limit wins.
+No stop, report, or mode change releases these slots. Completion and recovery
+still need their separate protocol.
+
+Legacy reservations retain their original shape and consume normal capacity.
+Their role is unknown, so each also counts as a possible lead for the three-lead
+limit. They confer no role authority. The legacy reservation API remains for
+existing callers; an adapter that enforces roles must use `reserveRoleAdmission`.
+A retry cannot change or remove a recorded role plan, and it never permits a
+second dispatch. Older readers reject role-bearing records rather than ignore
+the new rule. Update all participants before sharing this journal.
+
+This API checks supplied role facts; it does not authenticate them. Native role
+binding, readable briefs, report acceptance, and launcher integration remain
+required before automatic Sage activation. Claude hook wiring stays in its
+separate lead-build issue.

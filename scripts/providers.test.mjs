@@ -739,3 +739,109 @@ test("Codex includes each bundled MCP dependency license", (t) => {
     assert.match(text, /[Cc]opyright/);
   }
 });
+
+
+async function roleAdmissionFixture(t, limits = { total: 50, projects: [{ project: "project-a", limit: 50 }, { project: "project-b", limit: 50 }] }) {
+  const { dir, plugin } = isolated(t, "codex");
+  const url = pathToFileURL(join(plugin, "core/index.mjs")).href;
+  const api = await import(url);
+  assert.equal(typeof api.reserveRoleAdmission, "function");
+  const journal = join(dir, "admission");
+  api.configureAdmission(journal, limits);
+  const activation = "a72422c7-509c-43aa-8c42-827c556f8a57";
+  const owner = api.activateAdmission(journal, { project: "project-a", session: "root", activation });
+  const scope = { project: owner.project, session: owner.session, epoch: owner.epoch };
+  const args = (index, issuer = "root", current = scope) => [journal, current,
+    { task: "T1", run: `R${index}`, issuer, call: `spawn-${index}` },
+    { tool: "spawn", turn: activation, name: `agent-${index}`, argumentsHash: "a".repeat(64) }];
+  const reserve = (index, role = "lead", issuerRole = "chief-of-staff", issuer = "root", current = scope) =>
+    api.reserveRoleAdmission(...args(index, issuer, current), { issuerRole, role });
+  return { api, url, journal, scope, activation, args, reserve };
+}
+
+test("role admission preserves chief specialist workflows and records the role plan", async t => {
+  const f = await roleAdmissionFixture(t);
+  const roles = ["lead", "pe", "designer", "arena-judge", "implementer", "code-reviewer", "security-reviewer", "ux-reviewer", "qa"];
+  roles.forEach((role, index) => assert.equal(f.reserve(index + 1, role).decision, "permit-once"));
+  assert.deepEqual(f.api.readAdmission(f.journal).reservations.map(row => row.rolePlan), roles.map(role => ({ issuerRole: "chief-of-staff", role })));
+});
+
+test("role admission refuses a third layer, a lead outside its team, and a child chief", async t => {
+  const f = await roleAdmissionFixture(t);
+  for (const issuerRole of ["pe", "designer", "arena-judge", "implementer", "code-reviewer", "security-reviewer", "ux-reviewer", "qa"]) {
+    assert.throws(() => f.reserve(1, "qa", issuerRole, "specialist"), /specialist cannot start/);
+  }
+  for (const role of ["lead", "pe", "designer", "arena-judge"]) assert.throws(() => f.reserve(1, role, "lead", "lead-1"), /only its permitted team/);
+  assert.throws(() => f.reserve(1, "chief-of-staff"), /owner session/);
+  for (const role of [undefined, "unknown", "sage:qa", 7]) assert.throws(() => f.api.reserveRoleAdmission(...f.args(1), { issuerRole: "lead", role }), /Invalid role plan/);
+  assert.deepEqual(f.api.readAdmission(f.journal).reservations, []);
+});
+
+test("role admission enforces three leads across project sessions and retains other project capacity", async t => {
+  const f = await roleAdmissionFixture(t);
+  for (let i = 1; i <= 3; i++) f.reserve(i);
+  const other = f.api.activateAdmission(f.journal, { project: "project-a", session: "other-root", activation: f.activation });
+  assert.throws(() => f.reserve(4, "lead", "chief-of-staff", "other-root", { project: other.project, session: other.session, epoch: other.epoch }), /three lead slots/);
+  const b = f.api.activateAdmission(f.journal, { project: "project-b", session: "root-b", activation: f.activation });
+  assert.equal(f.reserve(5, "lead", "chief-of-staff", "root-b", { project: b.project, session: b.session, epoch: b.epoch }).decision, "permit-once");
+  assert.equal(f.api.readAdmission(f.journal).reservations.length, 4);
+});
+
+test("role admission counts each lead's children separately and keeps the lower capacity limit", async t => {
+  const f = await roleAdmissionFixture(t);
+  for (let i = 1; i <= 3; i++) f.reserve(i, ["implementer", "code-reviewer", "qa"][i - 1], "lead", "lead-1");
+  assert.throws(() => f.reserve(4, "qa", "lead", "lead-1"), /three child slots/);
+  assert.equal(f.reserve(5, "security-reviewer", "lead", "lead-2").decision, "permit-once");
+  assert.equal(f.reserve(6, "ux-reviewer", "lead", "lead-2").decision, "permit-once");
+  const small = await roleAdmissionFixture(t, { total: 50, projects: [{ project: "project-a", limit: 1 }] });
+  small.reserve(1);
+  assert.throws(() => small.reserve(2), /project capacity/);
+  const total = await roleAdmissionFixture(t, { total: 1, projects: [{ project: "project-a", limit: 50 }] });
+  total.reserve(1);
+  assert.throws(() => total.reserve(2, "qa", "lead", "lead-1"), /total capacity/);
+});
+
+test("role admission conservatively counts legacy roles and never changes a retry's role plan", async t => {
+  const f = await roleAdmissionFixture(t);
+  for (let i = 1; i <= 3; i++) f.api.reserveAdmission(...f.args(i));
+  assert.throws(() => f.reserve(4), /three lead slots/);
+  assert.throws(() => f.reserve(1), /different work/);
+  const known = await roleAdmissionFixture(t);
+  for (let i = 1; i <= 3; i++) known.reserve(i, "qa");
+  assert.equal(known.reserve(4).decision, "permit-once", "known specialists do not take lead slots");
+  const first = known.reserve(5, "qa", "lead", "lead-1");
+  assert.equal(known.reserve(5, "qa", "lead", "lead-1").decision, "already-reserved");
+  assert.throws(() => known.reserve(5, "implementer", "lead", "lead-1"), /different work/);
+  assert.throws(() => known.api.reserveAdmission(...known.args(5, "lead-1")), /different work/);
+  known.api.changeAdmissionMode(known.journal, { ...known.scope, after: known.activation, turn: "b72422c7-509c-43aa-8c42-827c556f8a57", sage: false });
+  assert.equal(known.reserve(5, "qa", "lead", "lead-1").assignment.id, first.assignment.id);
+  assert.throws(() => known.reserve(6), /mode is off/);
+  assert.equal(known.api.readAdmission(known.journal).reservations.length, 5);
+});
+
+test("role admission grants only one remaining lead slot to concurrent callers", async t => {
+  const f = await roleAdmissionFixture(t);
+  f.reserve(1); f.reserve(2);
+  const script = `
+    const input = JSON.parse(process.argv[1]);
+    const api = await import(input.url);
+    try { console.log(JSON.stringify({ decision: api.reserveRoleAdmission(...input.args, { issuerRole: 'chief-of-staff', role: 'lead' }).decision })); }
+    catch (error) { console.log(JSON.stringify({ refused: error.message })); }
+  `;
+  const run = index => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script, JSON.stringify({ url: f.url, args: f.args(index) })], { shell: false });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", code => {
+      try { assert.equal(code, 0, stderr); assert.equal(stderr, ""); resolve(JSON.parse(stdout)); }
+      catch (error) { reject(error); }
+    });
+    child.stdin.end();
+  });
+  const results = await Promise.all([run(3), run(4)]);
+  assert.equal(results.filter(row => row.decision === "permit-once").length, 1);
+  assert.equal(results.filter(row => /three lead slots/.test(row.refused)).length, 1);
+  assert.equal(f.api.readAdmission(f.journal).reservations.length, 3);
+});

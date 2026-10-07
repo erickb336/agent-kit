@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, parse, resolve, sep } from "node:path";
 import { createAssignment, parseAssignment } from "./assignments.mjs";
+import { parseRolePlan, checkRoleReservation } from "./role-policy.mjs";
 
 const KEY = /^[A-Za-z0-9_.:-]{1,256}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -60,8 +61,10 @@ function action(input) {
     return { kind: "mode", change: modeChange(input.change) };
   }
   if (input?.kind === "reserve") {
-    fields(input, ["kind", "assignment", "dispatch"]);
-    return { kind: "reserve", assignment: parseAssignment(input.assignment), dispatch: dispatchIdentity(input.dispatch) };
+    const hasRole = Object.hasOwn(input, "rolePlan");
+    fields(input, hasRole ? ["kind", "assignment", "dispatch", "rolePlan"] : ["kind", "assignment", "dispatch"]);
+    return { kind: "reserve", assignment: parseAssignment(input.assignment), dispatch: dispatchIdentity(input.dispatch),
+      ...(hasRole ? { rolePlan: parseRolePlan(input.rolePlan) } : {}) };
   }
   return refuse("unknown action");
 }
@@ -107,15 +110,16 @@ function apply(state, event) {
   const prior = copy.reservations.find(({ assignment: a }) => a.project === value.project && a.session === value.session
     && a.epoch === value.epoch && a.issuer === value.issuer && a.call === value.call);
   if (prior) {
-    if (["task", "run"].some((key) => prior.assignment[key] !== value[key]) || json(prior.dispatch) !== json(event.dispatch)) refuse("dispatch call already names different work");
+    if (["task", "run"].some((key) => prior.assignment[key] !== value[key]) || json(prior.dispatch) !== json(event.dispatch) || json(prior.rolePlan) !== json(event.rolePlan)) refuse("dispatch call already names different work");
     return { state, result: { decision: "already-reserved", assignment: prior.assignment }, changed: false };
   }
   if (!mode.sage) refuse("Sage mode is off");
   if (copy.reservations.some(({ assignment: a }) => a.id === value.id)) refuse("assignment ID already exists");
+  if (event.rolePlan) checkRoleReservation(copy.reservations, value, event.rolePlan);
   if (copy.reservations.length >= copy.config.total) refuse("total capacity is occupied");
   const projectLimit = copy.config.projects.find((p) => p.project === value.project).limit;
   if (copy.reservations.filter(({ assignment: a }) => a.project === value.project).length >= projectLimit) refuse("project capacity is occupied");
-  copy.reservations.push({ assignment: value, dispatch: event.dispatch });
+  copy.reservations.push({ assignment: value, dispatch: event.dispatch, ...(event.rolePlan ? { rolePlan: event.rolePlan } : {}) });
   return { state: copy, result: { decision: "permit-once", assignment: value }, changed: true };
 }
 function syncDirectory(path) {
@@ -222,6 +226,9 @@ export const activateAdmission = (dir, request, options = { sage: true }) => {
 /** A verified owner prompt supplies the new turn and the expected previous mode turn. */
 export const changeAdmissionMode = (dir, request) => commit(dir, { kind: "mode", change: request });
 export const reserveAdmission = (dir, scope, request, dispatch) => commit(dir, { kind: "reserve", assignment: createAssignment(scope, request), dispatch });
+/** The adapter must verify the issuer role before it requests this atomic reservation. */
+export const reserveRoleAdmission = (dir, scope, request, dispatch, rolePlan) => commit(dir,
+  { kind: "reserve", assignment: createAssignment(scope, request), dispatch, rolePlan: parseRolePlan(rolePlan) });
 export function readAdmission(dir) {
   const { state } = read(dir);
   if (!state.config) refuse("store is not configured");
