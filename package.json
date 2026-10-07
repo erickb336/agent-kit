@@ -7,12 +7,24 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
-    "test": "env -u NODE_TEST_CONTEXT node --test scripts/board.test.mjs scripts/dictionary.test.mjs scripts/hooks.test.mjs scripts/launcher.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs scripts/sage-pr.test.mjs scripts/sync-pstack.test.mjs scripts/providers.test.mjs",
+    "test": "env -u NODE_TEST_CONTEXT node --test scripts/board.test.mjs scripts/dictionary.test.mjs scripts/hooks.test.mjs scripts/launcher.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs scripts/sage-pr.test.mjs scripts/sync-pstack.test.mjs scripts/providers.test.mjs scripts/codex-server.test.mjs packages/sage-codex/runtime/*.test.mjs",
     "sync": "node scripts/sync-pstack.mjs",
     "graphics": "node scripts/graphics.mjs",
     "check:codex": "node scripts/check-codex.mjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "ajv": "8.18.0",
+    "ajv-formats": "3.0.1",
+    "content-type": "1.0.5",
+    "es-module-lexer": "3.0.3",
+    "esbuild": "0.28.2",
+    "fast-deep-equal": "3.1.3",
+    "fast-uri": "3.1.0",
+    "json-schema-traverse": "1.0.0",
+    "zod": "4.6.5"
   }
 }

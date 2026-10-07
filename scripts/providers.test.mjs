@@ -1,11 +1,12 @@
 import "./test-env.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
+import { createInterface } from "node:readline";
 import { ROOT, filesUnder, outputs } from "./build.mjs";
 import { createStateTool, applyPrinciples } from "../packages/sage-core/index.mjs";
 import { handle, patchPaths, stateKey } from "../plugins/sage-codex/hooks/principles-hook.mjs";
@@ -141,6 +142,7 @@ test("check rejects a foreign file and build removes it from an assembled plugin
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-build-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   const foreign = join(dir, "plugins/sage/hooks/codex-only.mjs");
   writeFileSync(foreign, "throw new Error('foreign adapter');\n");
   const run = (name) => spawnSync(process.execPath, [join(dir, "scripts", `${name}.mjs`)], { encoding: "utf8" });
@@ -158,6 +160,7 @@ test("a mismatched core pin fails the build before replacing plugin files", (t) 
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-pin-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   const manifest = join(dir, "packages/sage-codex/package.json");
   const meta = JSON.parse(readFileSync(manifest, "utf8"));
   meta.dependencies["sage-core"] = "999.0.0";
@@ -174,6 +177,7 @@ test("check rejects a hook change made only in the generated Claude plugin", (t)
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "sage-stale-hook-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(ROOT, dir, { recursive: true, filter: (path) => ![".git", "node_modules"].includes(relative(ROOT, path)) });
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   const hook = join(dir, "plugins/sage/hooks/sage-hook.mjs");
   writeFileSync(hook, `${readFileSync(hook, "utf8")}\n// A change in the old source path.\n`);
   const checked = spawnSync(process.execPath, [join(dir, "scripts/check.mjs")], { encoding: "utf8" });
@@ -1166,4 +1170,501 @@ test("prepared admission gives one preparation and one dispatch to concurrent ca
   assert.equal(dispatched.filter(row => row.decision === "permit-once").length, 1);
   assert.equal(dispatched.filter(row => /already has a dispatch/.test(row.refused)).length, 1);
   assert.equal(f.api.readAdmission(f.journal).reservations.length, 1);
+});
+
+const filePolicyApi = () => import("../plugins/sage-codex/runtime/file-policy.mjs");
+
+test("the Codex direct edit gate denies the active chief but leaves child and inactive checks available", async () => {
+  const { directEditDecision } = await filePolicyApi();
+  const patch = { tool_name: "apply_patch", tool_input: { input: "*** Begin Patch\n*** Add File: sample.txt\n+sample\n*** End Patch" } };
+  assert.equal(directEditDecision(patch, { sage: true, chief: true }).decision, "deny");
+  assert.deepEqual(directEditDecision(patch, { sage: true, chief: false }), { decision: "pass" });
+  assert.deepEqual(directEditDecision(patch, { sage: false, chief: true }), { decision: "pass" });
+  assert.deepEqual(directEditDecision({ tool_name: "collaborationlist_agents" }, { sage: true, chief: true }), { decision: "pass" });
+});
+
+test("the Codex direct edit gate refuses unverified mode or chief context", async () => {
+  const { directEditDecision } = await filePolicyApi();
+  for (const context of [undefined, null, {}, { sage: true }, { chief: true }, { sage: "on", chief: true }]) {
+    assert.throws(() => directEditDecision({ tool_name: "apply_patch" }, context));
+  }
+});
+
+
+async function nativeModeFixture(t) {
+  const { dir, plugin } = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(plugin, "runtime/mode.mjs")).href);
+  const core = await import(pathToFileURL(join(plugin, "core/index.mjs")).href);
+  const directory = join(dir, "admission"), projectDirectory = join(dir, "workspace"), sessionsDir = join(dir, "sessions");
+  mkdirSync(projectDirectory); mkdirSync(sessionsDir);
+  core.configureAdmission(directory, { total: 3, projects: [{ project: "one", limit: 3 }, { project: "two", limit: 3 }] });
+  const session = "11111111-1111-4111-8111-111111111111";
+  const transcript = join(sessionsDir, "root.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "session_meta", payload: { id: session, session_id: session, cli_version: "0.160.0" } }) + "\n");
+  const input = { hook_event_name: "UserPromptSubmit", session_id: session, turn_id: modeTurn, cwd: projectDirectory,
+    transcript_path: transcript, model: "fixture", permission_mode: "default", prompt: "sage mode" };
+  return { api, core, input, context: { version: "0.160.0", actor: session },
+    options: { directory, project: "one", projectDirectory, sessionsDir } };
+}
+
+test("Codex mode adapter persists verified phrases and keeps autopilot disabled", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  assert.equal(api.updateOwnerMode({ ...input, prompt: "What does sage mode do?" }, context, options).sage, false);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  const active = api.updateOwnerMode({ ...input, prompt: "sage mode, autopilot on" }, context, options);
+  assert.equal(active.sage, true); assert.equal(active.autopilot, false); assert.equal(active.signals.autopilotOn, true);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn, prompt: "continue" }, context, options).sage, true);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options).sage, false);
+  assert.equal(api.readMode(options.directory, options.project, input.session_id).sage, false);
+  assert.equal(core.readAdmission(options.directory).modes.length, 2);
+});
+
+test("Codex mode adapter never replays old activation or mode prompts over off", async (t) => {
+  const { api, input, context, options } = await nativeModeFixture(t);
+  api.updateOwnerMode(input, context, options);
+  const on = { ...input, turn_id: modeNextTurn };
+  api.updateOwnerMode(on, context, options);
+  api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options);
+  assert.equal(api.updateOwnerMode(input, context, options).sage, false);
+  assert.equal(api.updateOwnerMode(on, context, options).sage, false);
+  assert.throws(() => api.updateOwnerMode({ ...input, prompt: "sage mode off" }, context, options), /different mode request/);
+  assert.throws(() => api.updateOwnerMode({ ...on, prompt: "sage mode off" }, context, options), /different mode request/);
+  assert.equal(api.readMode(options.directory, options.project, input.session_id).modes.length, 3);
+});
+
+test("Codex mode adapter requires exact project and native owner identity before writes", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  for (const native of [null, { ...context, actor: modeTurn }, { ...context, version: "0.160.1" }]) {
+    assert.equal(api.updateOwnerMode(input, native, options), null);
+  }
+  assert.equal(api.updateOwnerMode({ ...input, cwd: options.sessionsDir }, context, options), null);
+  assert.equal(api.updateOwnerMode({ ...input, agent_id: input.session_id }, context, options), null);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  api.updateOwnerMode(input, context, options);
+  assert.equal(core.readAdmission(options.directory).sessions[0].session, `codex:${input.session_id}`);
+  assert.equal(api.readMode(options.directory, "two", input.session_id).sage, false);
+  assert.throws(() => api.readMode(options.directory, "absent", input.session_id), /not configured/);
+});
+
+test("Codex mode adapter refuses damaged storage and foreign metadata", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  writeFileSync(input.transcript_path, JSON.stringify({ type: "session_meta", payload: { id: modeNextTurn, session_id: modeNextTurn, cli_version: "0.160.0" } }) + "\n");
+  assert.equal(api.updateOwnerMode(input, context, options), null);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  assert.throws(() => api.updateOwnerMode({ ...input, transcript_path: join(options.projectDirectory, "outside.jsonl") }, context, options));
+  writeFileSync(join(options.directory, "00000000.json"), "broken");
+  assert.throws(() => api.readMode(options.directory, options.project, input.session_id));
+});
+
+
+test("Codex mode adapter records an initial off so its retry cannot replace later on", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  const off = { ...input, prompt: "sage mode off" };
+  assert.equal(api.updateOwnerMode(off, context, options).sage, false);
+  assert.equal(core.readAdmission(options.directory).modes.length, 1);
+  const owner = core.readAdmission(options.directory).sessions[0];
+  const initial = { project: owner.project, session: owner.session, activation: owner.activation };
+  assert.throws(() => core.activateAdmission(options.directory, initial), /different initial mode/);
+  assert.throws(() => core.activateAdmission(options.directory, initial, { sage: "off" }), /invalid initial mode/);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn }, context, options).sage, true);
+  assert.equal(api.updateOwnerMode(off, context, options).sage, true);
+  assert.equal(core.readAdmission(options.directory).modes.length, 2);
+  assert.throws(() => api.updateOwnerMode(input, context, options), /different mode request/);
+});
+
+
+test("Codex bundles the MCP SDK with native identity and hidden tool metadata intact", async (t) => {
+  const { dir, plugin } = isolated(t, "codex");
+  assert.ok(existsSync(join(plugin, "runtime/mcp-sdk.mjs")));
+  assert.equal(existsSync(join(dir, "node_modules")), false);
+  const entry = join(dir, "server.mjs");
+  writeFileSync(entry, `
+    import { McpServer, serveStdio, z } from './plugin/runtime/mcp-sdk.mjs';
+    serveStdio(() => {
+      const server = new McpServer({ name: 'sage-test', version: '0.1.0' });
+      server.registerTool('sage_native_hook', {
+        inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ['app'] } },
+      }, async (input, context) => ({ content: [{ type: 'text', text: JSON.stringify({
+        version: server.server.getClientVersion()?.version,
+        actor: context.mcpReq._meta?.threadId, input,
+      }) }] }));
+      return server;
+    });
+  `);
+  const child = spawn(process.execPath, [entry], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+  t.after(() => child.stdin.end());
+  let stderr = '', sequence = 0;
+  const pending = new Map();
+  const closed = new Promise(resolve => child.once('close', (code, signal) => {
+    for (const { reject } of pending.values()) reject(Error('MCP server closed before its response'));
+    resolve({ code, signal });
+  }));
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  createInterface({ input: child.stdout }).on('line', line => {
+    try {
+      const message = JSON.parse(line);
+      pending.get(message.id)?.resolve(message);
+      pending.delete(message.id);
+    } catch (error) {
+      for (const { reject } of pending.values()) reject(error);
+      child.stdin.end();
+    }
+  });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++sequence;
+    pending.set(id, { resolve, reject });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+  const init = await request('initialize', {
+    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codex', version: '0.160.0' },
+  });
+  assert.equal(init.result.protocolVersion, '2025-06-18');
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  const listed = await request('tools/list', {});
+  assert.equal(listed.result.tools.length, 1);
+  assert.deepEqual(listed.result.tools[0]._meta.ui.visibility, ['app']);
+  const actor = 'd72422c7-509c-43aa-8c42-827c556f8a57';
+  const input = { hook_event_name: 'PreToolUse', extra: { retained: true }, actor: 'forged', version: 'forged' };
+  const called = await request('tools/call', { name: 'sage_native_hook', arguments: input, _meta: { threadId: actor } });
+  assert.deepEqual(JSON.parse(called.result.content[0].text), { version: '0.160.0', actor, input });
+  const absent = await request('tools/call', { name: 'sage_native_hook', arguments: input });
+  assert.equal(Object.hasOwn(JSON.parse(absent.result.content[0].text), 'actor'), false);
+  child.stdin.end();
+  assert.deepEqual(await closed, { code: 0, signal: null });
+  assert.equal(stderr, '');
+});
+
+test("Codex includes each bundled MCP dependency license", (t) => {
+  const { plugin } = isolated(t, "codex");
+  for (const name of ['@modelcontextprotocol-server', '@modelcontextprotocol-core', 'zod',
+    'ajv', 'ajv-formats', 'fast-deep-equal', 'fast-uri', 'json-schema-traverse', 'content-type']) {
+    const text = readFileSync(join(plugin, 'licenses', name + '.txt'), 'utf8');
+    assert.match(text, name.startsWith('@modelcontextprotocol') ? /Apache License/ : /MIT|Permission is hereby granted/);
+    assert.match(text, /[Cc]opyright/);
+  }
+});
+
+
+async function nativeBindingFixture(t) {
+  const f = await roleAdmissionFixture(t);
+  const api = await import(new URL("../runtime/child-binding.mjs", f.url));
+  const events = await import(new URL("../runtime/events.mjs", f.url));
+  const observationsDirectory = join(f.journal, "..", "observations");
+  const root = "11111111-1111-4111-8111-111111111111";
+  const lead = "22222222-2222-4222-8222-222222222222";
+  const child = "33333333-3333-4333-8333-333333333333";
+  const owner = f.api.activateAdmission(f.journal, { project: f.scope.project, session: `codex:${root}`, activation: f.activation });
+  const scope = { project: owner.project, session: owner.session, epoch: owner.epoch };
+  const reserve = (index, role, issuerRole, issuer = root, name = `agent_${index}`, confirm = true, brief) => {
+    const args = f.args(index, issuer, scope); args[3].name = name; args[3].tool = "collaborationspawn_agent";
+    const assignment = (brief === undefined ? f.api.reserveRoleAdmission(...args, { issuerRole, role })
+      : f.api.reserveBriefAdmission(...args, { issuerRole, role }, brief)).assignment;
+    const base = { schema: 1, runtime: "0.160.0", session: root, actor: issuer, call: assignment.call, turn: f.activation };
+    events.publish(observationsDirectory, { ...base, kind: "spawn-request", name });
+    if (confirm) events.publish(observationsDirectory, { ...base, kind: "spawn-result", path: issuer === root ? `/root/${name}` : `/root/agent_1/${name}` });
+    return assignment;
+  };
+  const identity = (id = lead, parent = root, path = "/root/agent_1") => ({ session: root, child: id, parent, path, turn: f.activation });
+  const observeStart = value => events.publish(observationsDirectory, { schema: 1, runtime: "0.160.0", kind: "child-start", ...value });
+  observeStart(identity());
+  const bind = value => api.bindNativeChild({ directory: f.journal, project: scope.project, observationsDirectory }, value);
+  return { ...f, root, lead, child, scope, reserve, identity, bind, observeStart, events, observationsDirectory };
+}
+
+test("native child binding connects a lead and its specialist to exact reserved roles", async t => {
+  const f = await nativeBindingFixture(t);
+  const lead = f.reserve(1, "lead", "chief-of-staff");
+  assert.equal(f.bind(f.identity()).assignment.id, lead.id);
+  const child = f.reserve(2, "qa", "lead", f.lead);
+  const native = f.identity(f.child, f.lead, "/root/agent_1/agent_2");
+  f.observeStart(native);
+  const result = f.bind(native);
+  assert.equal(result.role, "qa"); assert.equal(result.assignment.id, child.id);
+  assert.equal(result.binding.issuer, f.lead);
+  assert.equal(f.bind(native).decision, "already-bound");
+  assert.equal(f.api.readAdmission(f.journal).bindings.length, 2);
+});
+
+test("native child binding rejects unadmitted children and inconsistent parent paths or roles", async t => {
+  const f = await nativeBindingFixture(t);
+  assert.throws(() => f.bind(f.identity()));
+  f.reserve(1, "lead", "chief-of-staff");
+  for (const change of [{ path: "/root/other" }, { parent: f.child }, { child: f.root },
+    { turn: "invalid" }, { role: "lead" }, { session: f.child }]) {
+    assert.throws(() => f.bind({ ...f.identity(), ...change }));
+  }
+  f.bind(f.identity());
+  // A trusted caller still cannot bind an inconsistent recorded issuer role.
+  f.reserve(2, "qa", "chief-of-staff", f.lead);
+  f.observeStart(f.identity(f.child, f.lead, "/root/agent_1/agent_2"));
+  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_1/agent_2")));
+  f.reserve(3, "qa", "lead", f.lead);
+  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_3")));
+  assert.equal(f.api.readAdmission(f.journal).bindings.length, 1);
+});
+
+test("native child binding refuses a reservation for another dispatch tool", async t => {
+  const f = await nativeBindingFixture(t);
+  const args = f.args(1, f.root, f.scope); args[3].name = "agent_1"; args[3].tool = "collaborationfollowup_task";
+  f.api.reserveRoleAdmission(...args, { issuerRole: "chief-of-staff", role: "lead" });
+  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "spawn-1", turn: f.activation };
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => f.bind(f.identity()));
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+
+test("native child binding refuses a failed reservation later matched by an unadmitted spawn", async t => {
+  const f = await nativeBindingFixture(t);
+  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", false);
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "unadmitted", turn: f.activation };
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+test("native child binding refuses conflicting path reuse and a result from another parent turn", async t => {
+  const f = await nativeBindingFixture(t);
+  f.reserve(1, "lead", "chief-of-staff");
+  f.observeStart(f.identity(f.child));
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+  const other = await nativeBindingFixture(t);
+  other.reserve(1, "lead", "chief-of-staff", other.root, "agent_1", false);
+  other.events.publish(other.observationsDirectory, { schema: 1, runtime: "0.160.0", session: other.root,
+    actor: other.root, call: "spawn-1", turn: "99999999-9999-4999-8999-999999999999", kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => other.bind(other.identity()), /could not bind/);
+  assert.deepEqual(other.api.readAdmission(other.journal).bindings, []);
+});
+
+test("native child binding refuses a reused name before the later spawn result arrives", async t => {
+  const f = await nativeBindingFixture(t); f.reserve(1, "lead", "chief-of-staff");
+  f.events.publish(f.observationsDirectory, { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root,
+    call: "later-call", turn: f.activation, kind: "spawn-request", name: "agent_1" });
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+
+test("brief admission returns the saved instructions with the verified native binding", async t => {
+  const f = await nativeBindingFixture(t); const brief = completeBrief("Deliver these saved instructions.");
+  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", true, brief);
+  const result = f.bind(f.identity());
+  assert.equal(result.role, "lead"); assert.deepEqual(result.brief, brief);
+  assert(f.api.renderBrief(result.brief).includes("GOAL\nDeliver these saved instructions."));
+  assert.deepEqual(f.bind(f.identity()).brief, brief);
+});
+
+
+async function roleInstructionsFixture(t, provider = "codex") {
+  const f = isolated(t, provider);
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderRoleInstructions, "function", "shared role instructions must ship in core");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "role-bindings.json"), "utf8"));
+  for (const role of Object.keys(bindings).filter(key => !["common", "report"].includes(key))) {
+    bindings[role] = { ...bindings.common, ...bindings[role] };
+  }
+  return { ...f, api, bindings };
+}
+
+test("shared role instructions ship outside the checkout and generate existing specialist bodies", async t => {
+  const roles = ["implementer", "pe", "designer", "arena-judge", "code-reviewer", "security-reviewer", "ux-reviewer", "qa"];
+  for (const provider of ["claude", "codex"]) {
+    const f = await roleInstructionsFixture(t, provider);
+    for (const role of [...roles, "lead"]) {
+      const text = f.api.renderRoleInstructions(role, f.bindings[role] ?? {});
+      assert(text.startsWith("# "));
+      assert.match(text, /report/);
+      if (provider === "codex") {
+        assert.doesNotMatch(text, /sage:report/);
+        assert.match(text, /report format included below/);
+      }
+      assert.doesNotMatch(text, /\{\{|sage-core-role/);
+      if (provider === "claude" && role !== "lead") {
+        const body = readFileSync(join(f.plugin, "agents", `${role}.md`), "utf8").split("\n---\n")[1].trim();
+        assert.equal(body, text);
+      }
+    }
+    const qa = f.api.renderRoleInstructions("qa", f.bindings.qa);
+    assert.match(qa, /You do not fix anything/);
+    assert.match(qa, /PASS or FAIL/);
+    const lead = f.api.renderRoleInstructions("lead", f.bindings.lead);
+    assert.match(lead, /at most three children/);
+    assert.match(lead, /code review for every change/);
+    assert.match(lead, /fresh lead after/);
+  }
+});
+
+test("shared role instructions require exact packaged provider bindings and refuse unknown roles", async t => {
+  const f = await roleInstructionsFixture(t);
+  for (const role of ["chief-of-staff", "../state", "report", null, {}, "unknown"]) assert.throws(() => f.api.renderRoleInstructions(role), /Unknown child role/);
+  for (const bindings of [{}, null, [], { ...f.bindings.implementer, EXTRA: "wrong" },
+    { ...f.bindings.implementer, DELIVERY_STEP: "" }, { ...f.bindings.implementer, DELIVERY_STEP: "{{UNKNOWN}}" },
+    Object.create(f.bindings.implementer)]) assert.throws(() => f.api.renderRoleInstructions("implementer", bindings), /exact provider bindings/);
+  const text = f.api.renderRoleInstructions("implementer", f.bindings.implementer);
+  assert.match(text, /Never run `gh`/);
+  assert.match(text, /The chief handles the pull request/);
+  assert.doesNotMatch(text, /\.claude|CLAUDE\.md|gh pr create/);
+});
+
+test("shared role report keeps every field and separates the provider's gate statement", async t => {
+  const f = await roleInstructionsFixture(t);
+  const report = f.api.renderReportInstructions(f.bindings.report);
+  const fields = /```\n([\s\S]*?)```/.exec(report)[1].trim().split("\n").map(line => line.split(/\s{2,}/)[0]);
+  assert.deepEqual(fields, ["STATUS", "RESULT", "EVIDENCE", "FINDINGS", "QUESTIONS", "NOT VERIFIED", "BRANCH"]);
+  assert.doesNotMatch(report, /hook does not let you finish/);
+  const claude = await roleInstructionsFixture(t, "claude");
+  assert.equal(readFileSync(join(claude.plugin, "skills/report/SKILL.md"), "utf8").split("\n---\n")[1].trim(),
+    claude.api.renderReportInstructions(claude.bindings.report));
+  assert.throws(() => f.api.renderReportInstructions({}), /exact provider bindings/);
+});
+
+test("shared role delivery joins verified lead and QA instructions with their own saved briefs", async t => {
+  const instructions = await roleInstructionsFixture(t);
+  const f = await nativeBindingFixture(t);
+  const { boundChildInstructions } = await import(new URL("../runtime/instructions.mjs", f.url));
+  const options = { directory: f.journal, project: f.scope.project, observationsDirectory: f.observationsDirectory };
+  const lead = f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", true, completeBrief("Lead the task."));
+  const first = boundChildInstructions(options, f.identity());
+  assert.equal(first.decision, "deliver");
+  assert(first.brief.includes(`Role: lead\nAssignment: ${lead.id}\nTask: T1\nRun: R1`));
+  assert(first.brief.includes(f.api.renderRoleInstructions("lead", instructions.bindings.lead)));
+  assert(first.brief.includes(f.api.renderBrief(completeBrief("Lead the task."))));
+  const qa = f.reserve(2, "qa", "lead", f.lead, "agent_2", true, completeBrief("Check the task."));
+  const identity = f.identity(f.child, f.lead, "/root/agent_1/agent_2"); f.observeStart(identity);
+  const second = boundChildInstructions(options, identity);
+  assert(second.brief.includes(`Role: qa\nAssignment: ${qa.id}\nTask: T1\nRun: R2`));
+  assert(second.brief.includes(f.api.renderRoleInstructions("qa", instructions.bindings.qa)));
+  assert(second.brief.includes("NOT VERIFIED"));
+  assert(second.brief.includes(f.api.renderBrief(completeBrief("Check the task."))));
+  assert.doesNotMatch(second.brief, /Lead the task/);
+  assert.deepEqual(boundChildInstructions(options, identity), second);
+  assert.throws(() => boundChildInstructions(options, { ...identity, path: "/root/other" }));
+});
+
+test("shared role delivery refuses absent saved briefs and missing instruction assets", async t => {
+  const instructions = await roleInstructionsFixture(t);
+  const f = await nativeBindingFixture(t);
+  const { boundChildInstructions } = await import(new URL("../runtime/instructions.mjs", f.url));
+  const options = { directory: f.journal, project: f.scope.project, observationsDirectory: f.observationsDirectory };
+  f.reserve(1, "lead", "chief-of-staff");
+  assert.throws(() => boundChildInstructions(options, f.identity()), /no saved task brief/);
+  const other = await nativeBindingFixture(t);
+  const api = await import(new URL("../runtime/instructions.mjs", other.url));
+  other.reserve(1, "lead", "chief-of-staff", other.root, "agent_1", true, completeBrief("Preserve this task."));
+  rmSync(new URL("./roles/lead.md", other.url));
+  assert.throws(() => api.boundChildInstructions({ directory: other.journal, project: other.scope.project,
+    observationsDirectory: other.observationsDirectory }, other.identity()));
+  assert.equal(other.api.readAdmission(other.journal).reservations.length, 1, "an instruction error does not release capacity");
+});
+
+test("shared chief instructions preserve the packaged agent and every brief field", async t => {
+  const f = isolated(t, "claude");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderChiefInstructions, "function");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "chief-bindings.json"), "utf8"));
+  const text = api.renderChiefInstructions(bindings);
+  const agent = readFileSync(join(f.plugin, "agents/chief-of-staff.md"), "utf8");
+  assert.equal(agent.split("\n---\n")[1].trim(), text);
+  const fields = /```\n(GOAL[\s\S]*?)```/.exec(text)[1].trim().split("\n").map(line => line.split(/\s{2,}/)[0]);
+  assert.deepEqual(fields, api.BRIEF_FIELDS);
+  assert.match(agent, /disallowedTools: Edit, Write, MultiEdit, NotebookEdit/);
+  assert.match(text, /The hook refuses a brief without them/);
+  assert.match(text, /model fable/);
+});
+
+test("shared chief Codex instructions keep unsupported routes and automatic merges inactive", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderChiefInstructions, "function");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "chief-bindings.json"), "utf8"));
+  const text = api.renderChiefInstructions(bindings);
+  const prepared = readFileSync(join(f.plugin, "runtime/chief-instructions.md"), "utf8");
+  assert(prepared.endsWith(text + "\n"));
+  assert.match(prepared, /not loaded by the installed manual preview or the current mode hook/);
+  assert.match(text, /the chief starts a lead, and the lead starts its permitted team/);
+  assert.match(text, /a tiny task goes through a lead to an implementer/);
+  assert.match(text, /Wait for a successful preparation receipt before the native spawn call/);
+  assert.match(text, /same unique name/);
+  assert.match(text, /does not create an assignment, start an agent, or grant a slot/);
+  assert.match(text, /PE, designer, and arena-judge routes are not yet integrated and verified/);
+  assert.match(text, /Autopilot remains off/);
+  assert.match(text, /Never merge, push to the main branch, or force-push/);
+  assert.match(text, /state tool checks at least one cycle/);
+  assert.doesNotMatch(text, /CLAUDE\.md|~\/workspace|\.claude|sage:report|model fable|opus|sonnet|gh pr merge|gh api|gate G15|\{\{|sage-core-chief/);
+  // Rendering this document must not register the chief as an admitted child role.
+  assert.throws(() => api.renderRoleInstructions("chief-of-staff", bindings), /Unknown child role/);
+});
+
+test("shared chief instructions reject incomplete or substituted provider bindings", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.renderChiefInstructions, "function");
+  const bindings = JSON.parse(readFileSync(join(f.plugin, "chief-bindings.json"), "utf8"));
+  for (const invalid of [{}, null, [], Object.create(bindings), { ...bindings, EXTRA: "value" },
+    { ...bindings, DISPATCH: "" }, { ...bindings, TEAM: "{{TASK}}" }, { ...bindings, TEAM: "bad\0text" }]) {
+    assert.throws(() => api.renderChiefInstructions(invalid), /exact provider bindings/);
+  }
+});
+
+
+test("package boundaries allow public core imports and reject reverse private and cross-provider imports", async t => {
+  const module = join(ROOT, "scripts/package-boundaries.mjs");
+  assert.ok(existsSync(module), "package boundaries must have an executable check");
+  const { packageBoundaryProblems } = await import(pathToFileURL(module));
+  const f = isolated(t, "codex");
+  for (const name of ["sage-core", "sage-claude", "sage-codex"]) {
+    mkdirSync(join(f.dir, "packages", name), { recursive: true });
+    writeFileSync(join(f.dir, "packages", name, "index.mjs"), "export const value = 1;\n");
+  }
+  const write = (name, text) => writeFileSync(join(f.dir, "packages", name, "index.mjs"), text);
+  write("sage-claude", "export { value } from 'sage-core';");
+  write("sage-codex", "export { value } from 'sage-core';");
+  assert.deepEqual(packageBoundaryProblems(f.dir), []);
+  for (const [name, text] of [
+    ["sage-core", "export { value } from '../sage-codex/index.mjs';"],
+    ["sage-codex", "export { value } from '../sage-core/index.mjs';"],
+    ["sage-codex", "export { value } from 'sage-core/state.mjs';"],
+    ["sage-codex", "export { value } from '../sage-claude/index.mjs';"],
+    ["sage-claude", "export const value = import('sage-codex');"],
+    ["sage-claude", "export const value = require('sage-core/private.mjs');"],
+    ["sage-claude", "export const value = require('sage-core');"],
+    ["sage-claude", "export const value = import('file:///tmp/other-package.mjs').catch(() => null);"],
+  ]) {
+    write(name, text);
+    assert.ok(packageBoundaryProblems(f.dir).length > 0, `${name}: ${text}`);
+    write(name, "export const value = 1;\n");
+  }
+  assert.equal(existsSync(join(f.dir, ".package-boundary-check")), false);
+  assert.deepEqual(packageBoundaryProblems(ROOT), []);
+});
+
+test("package public imports package both quote styles and dynamic imports outside the checkout", async t => {
+  const module = join(ROOT, "scripts/package-imports.mjs");
+  assert.ok(existsSync(module), "packaging must parse public imports rather than replace one spelling");
+  const { rewriteCoreImports } = await import(pathToFileURL(module));
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const original = [
+      "import { shellCommands } from 'sage-core';",
+      'export { programsRun } from "sage-core";',
+      "export const loaded = import('sage-core');",
+      'export const data = \'from "sage-core"\';',
+      '// import { notCode } from "sage-core";',
+      "export const words = shellCommands('echo fixture')[0].words;",
+    ].join("\n");
+    const rewritten = rewriteCoreImports(original, "./core/index.mjs");
+    assert.match(rewritten, /from "sage-core"/); // Text data and comments remain unchanged.
+    const entry = join(f.plugin, "import-fixture.mjs"); writeFileSync(entry, rewritten);
+    const result = await import(pathToFileURL(entry));
+    assert.deepEqual(result.words, ["echo", "fixture"]);
+    assert.equal(typeof result.programsRun, "function");
+    assert.equal(typeof (await result.loaded).shellCommands, "function");
+    assert.equal(result.data, 'from "sage-core"');
+    const escaped = 'export { shellCommands } from "sage-\\u0063ore";';
+    assert.equal(rewriteCoreImports(escaped, "./core/index.mjs"), 'export { shellCommands } from "./core/index.mjs";');
+  }
 });

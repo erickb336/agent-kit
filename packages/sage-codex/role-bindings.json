@@ -1,0 +1,23 @@
+{
+  "implementer": {
+    "PROJECT_GUIDANCE": "`AGENTS.md` or `README.md`",
+    "WORKTREE_SETUP": "1. **Use the assigned worktree.** Work in the task branch and worktree from the brief. If they do not exist, use the approved worktree tool to create them. For a repair, use the same task branch. Use absolute paths.",
+    "DELIVERY_STEP": "6. **Commit the change.** Commit in small steps that each pass the checks. Report the branch, head SHA, and review evidence to the chief or lead. The chief handles the pull request. Never run `gh`, merge, push to the main branch, or force-push."
+  },
+  "pe": {
+    "PROJECT_GUIDANCE": "`AGENTS.md` or `README.md`"
+  },
+  "designer": {},
+  "arena-judge": {},
+  "code-reviewer": {},
+  "security-reviewer": {},
+  "ux-reviewer": {},
+  "qa": {},
+  "report": {
+    "REPORT_GATE": "Start each required field on its own line. The chief reviews the report before it accepts the result."
+  },
+  "lead": {},
+  "common": {
+    "REPORT_REFERENCE": "the report format included below"
+  }
+}
