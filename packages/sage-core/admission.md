@@ -64,3 +64,30 @@ This API checks supplied role facts; it does not authenticate them. Native role
 binding, readable briefs, report acceptance, and launcher integration remain
 required before automatic Sage activation. Claude hook wiring stays in its
 separate lead-build issue.
+
+## Initial child binding
+
+`bindAdmission(directory, binding)` records which verified child belongs to an
+admitted assignment. The binding carries project, session, epoch, assignment ID,
+issuer, dispatch call, child identity, and initial callback turn. It must match a
+reservation with a saved role. The result reports that role from the reservation;
+a caller cannot supply a replacement role. `readAdmission` now also returns
+`bindings`.
+
+Publication enforces one initial binding per assignment and one assignment per
+child within a provider session. Exact retries return the saved binding. Changed
+identities, reused child names, and self-binding fail. New role reservations
+cannot reuse a child name under the same issuer and scope. Older roleless APIs
+can still record ambiguous names; those records cannot produce a child binding.
+New role reservations carry an explicit unique-name rule. Older records retain
+both their bytes and their replay behavior, including reused names. An ambiguous
+old name cannot receive a new binding. An existing exact binding receipt remains
+readable after a later legacy name collision. Older readers reject the new rule
+and binding events.
+
+Binding records an already-admitted child even when Sage mode is now off. It does
+not grant another spawn permit, allow work, release capacity, accept a report,
+or prove that a brief arrived. The trusted adapter must authenticate the child,
+namespace sessions by provider, verify the parent and child address, and apply
+current mode and task policy before allowing tools. Initial binding does not
+implement later tasks, agent reuse, or recovery.

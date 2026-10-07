@@ -293,7 +293,7 @@ test("admission initializes one immutable configuration and idempotent session o
   assert.deepEqual(ordered.projects.map(row => row.project), ["B", "a"]);
   assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
   assert.match(owner.epoch, /^[0-9a-f-]{36}$/);
-  assert.deepEqual(api.readAdmission(dir), { config: admissionConfig, sessions: [owner], reservations: [], modes: [{ ...admissionScope(owner), after: null, turn: owner.activation, sage: true }] });
+  assert.deepEqual(api.readAdmission(dir), { config: admissionConfig, sessions: [owner], reservations: [], bindings: [], modes: [{ ...admissionScope(owner), after: null, turn: owner.activation, sage: true }] });
   assert.throws(() => api.configureAdmission(dir, { ...admissionConfig, total: 4 }), /configuration differs/);
   assert.throws(() => api.activateAdmission(dir, { ...admissionOwner, activation: "22222222-2222-4222-8222-222222222222" }), /already has an owner/);
 });
@@ -844,4 +844,193 @@ test("role admission grants only one remaining lead slot to concurrent callers",
   assert.equal(results.filter(row => row.decision === "permit-once").length, 1);
   assert.equal(results.filter(row => /three lead slots/.test(row.refused)).length, 1);
   assert.equal(f.api.readAdmission(f.journal).reservations.length, 3);
+});
+
+const bindingFor = (assignment, child = "child-1", turn = "child-turn") => ({ project: assignment.project,
+  session: assignment.session, epoch: assignment.epoch, assignment: assignment.id,
+  issuer: assignment.issuer, call: assignment.call, child, turn });
+
+test("child binding persists the reserved role without another permit and permits exact retries", async t => {
+  const f = await roleAdmissionFixture(t);
+  assert.equal(typeof f.api.bindAdmission, "function");
+  const first = f.reserve(1);
+  const binding = bindingFor(first.assignment);
+  assert.deepEqual(f.api.bindAdmission(f.journal, binding), { decision: "bound", binding, role: "lead" });
+  assert.deepEqual(f.api.bindAdmission(f.journal, binding), { decision: "already-bound", binding, role: "lead" });
+  f.api.changeAdmissionMode(f.journal, { ...f.scope, after: f.activation, turn: "b72422c7-509c-43aa-8c42-827c556f8a57", sage: false });
+  assert.equal(f.api.bindAdmission(f.journal, binding).decision, "already-bound");
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, [binding]);
+  assert.equal(f.api.readAdmission(f.journal).reservations.length, 1);
+  assert.equal(f.reserve(1).decision, "already-reserved");
+});
+
+test("child binding refuses changed scope, roleless reservations, self-binding, and replacement identities", async t => {
+  const f = await roleAdmissionFixture(t);
+  const a = f.reserve(1).assignment; const b = bindingFor(a);
+  for (const change of [{ project: "project-b" }, { session: "other" }, { epoch: f.activation },
+    { assignment: f.activation }, { issuer: "other" }, { call: "other" }, { child: a.issuer }, { role: "qa" }]) {
+    assert.throws(() => f.api.bindAdmission(f.journal, { ...b, ...change }));
+  }
+  const legacy = f.api.reserveAdmission(...f.args(2));
+  assert.throws(() => f.api.bindAdmission(f.journal, bindingFor(legacy.assignment)), /recorded role/);
+  f.api.bindAdmission(f.journal, b);
+  assert.throws(() => f.api.bindAdmission(f.journal, { ...b, child: "other-child" }), /different child binding/);
+  assert.throws(() => f.api.bindAdmission(f.journal, { ...b, turn: "later-turn" }), /different child binding/);
+  const second = f.reserve(3).assignment;
+  assert.throws(() => f.api.bindAdmission(f.journal, bindingFor(second)), /another assignment/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, [b]);
+});
+
+test("child binding refuses ambiguous names and role admission prevents name reuse", async t => {
+  const f = await roleAdmissionFixture(t);
+  const first = f.reserve(1);
+  const args = f.args(2); args[3].name = "agent-1";
+  assert.throws(() => f.api.reserveRoleAdmission(...args, { issuerRole: "chief-of-staff", role: "qa" }), /name is already reserved/);
+  f.api.reserveAdmission(...args);
+  assert.throws(() => f.api.bindAdmission(f.journal, bindingFor(first.assignment)), /name is ambiguous/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+test("child binding atomically selects one child when two callers claim the same assignment", async t => {
+  const f = await roleAdmissionFixture(t); const a = f.reserve(1).assignment;
+  const script = `const input=JSON.parse(process.argv[1]); const api=await import(input.url);
+    try { console.log(JSON.stringify(api.bindAdmission(input.dir,input.binding))); }
+    catch(error) { console.log(JSON.stringify({refused:error.message})); }`;
+  const run = childName => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script,
+      JSON.stringify({ url: f.url, dir: f.journal, binding: bindingFor(a, childName) })], { shell: false });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", b => { stdout += b; }); child.stderr.on("data", b => { stderr += b; });
+    child.once("error", reject); child.once("close", code => {
+      try { assert.equal(code, 0, stderr); assert.equal(stderr, ""); resolve(JSON.parse(stdout)); } catch (e) { reject(e); }
+    }); child.stdin.end();
+  });
+  const results = await Promise.all([run("child-a"), run("child-b")]);
+  assert.equal(results.filter(row => row.decision === "bound").length, 1);
+  assert.equal(results.filter(row => /different child binding/.test(row.refused)).length, 1);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, [results.find(row => row.binding).binding]);
+});
+
+async function nativeBindingFixture(t) {
+  const f = await roleAdmissionFixture(t);
+  const api = await import(new URL("../runtime/child-binding.mjs", f.url));
+  const events = await import(new URL("../runtime/events.mjs", f.url));
+  const observationsDirectory = join(f.journal, "..", "observations");
+  const root = "11111111-1111-4111-8111-111111111111";
+  const lead = "22222222-2222-4222-8222-222222222222";
+  const child = "33333333-3333-4333-8333-333333333333";
+  const owner = f.api.activateAdmission(f.journal, { project: f.scope.project, session: `codex:${root}`, activation: f.activation });
+  const scope = { project: owner.project, session: owner.session, epoch: owner.epoch };
+  const reserve = (index, role, issuerRole, issuer = root, name = `agent_${index}`, confirm = true) => {
+    const args = f.args(index, issuer, scope); args[3].name = name; args[3].tool = "collaborationspawn_agent";
+    const assignment = f.api.reserveRoleAdmission(...args, { issuerRole, role }).assignment;
+    const base = { schema: 1, runtime: "0.160.0", session: root, actor: issuer, call: assignment.call, turn: f.activation };
+    events.publish(observationsDirectory, { ...base, kind: "spawn-request", name });
+    if (confirm) events.publish(observationsDirectory, { ...base, kind: "spawn-result", path: issuer === root ? `/root/${name}` : `/root/agent_1/${name}` });
+    return assignment;
+  };
+  const identity = (id = lead, parent = root, path = "/root/agent_1") => ({ session: root, child: id, parent, path, turn: f.activation });
+  const observeStart = value => events.publish(observationsDirectory, { schema: 1, runtime: "0.160.0", kind: "child-start", ...value });
+  observeStart(identity());
+  const bind = value => api.bindNativeChild({ directory: f.journal, project: scope.project, observationsDirectory }, value);
+  return { ...f, root, lead, child, scope, reserve, identity, bind, observeStart, events, observationsDirectory };
+}
+
+test("native child binding connects a lead and its specialist to exact reserved roles", async t => {
+  const f = await nativeBindingFixture(t);
+  const lead = f.reserve(1, "lead", "chief-of-staff");
+  assert.equal(f.bind(f.identity()).assignment.id, lead.id);
+  const child = f.reserve(2, "qa", "lead", f.lead);
+  const native = f.identity(f.child, f.lead, "/root/agent_1/agent_2");
+  f.observeStart(native);
+  const result = f.bind(native);
+  assert.equal(result.role, "qa"); assert.equal(result.assignment.id, child.id);
+  assert.equal(result.binding.issuer, f.lead);
+  assert.equal(f.bind(native).decision, "already-bound");
+  assert.equal(f.api.readAdmission(f.journal).bindings.length, 2);
+});
+
+test("native child binding rejects unadmitted children and inconsistent parent paths or roles", async t => {
+  const f = await nativeBindingFixture(t);
+  assert.throws(() => f.bind(f.identity()));
+  f.reserve(1, "lead", "chief-of-staff");
+  for (const change of [{ path: "/root/other" }, { parent: f.child }, { child: f.root },
+    { turn: "invalid" }, { role: "lead" }, { session: f.child }]) {
+    assert.throws(() => f.bind({ ...f.identity(), ...change }));
+  }
+  f.bind(f.identity());
+  // A trusted caller still cannot bind an inconsistent recorded issuer role.
+  f.reserve(2, "qa", "chief-of-staff", f.lead);
+  f.observeStart(f.identity(f.child, f.lead, "/root/agent_1/agent_2"));
+  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_1/agent_2")));
+  f.reserve(3, "qa", "lead", f.lead);
+  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_3")));
+  assert.equal(f.api.readAdmission(f.journal).bindings.length, 1);
+});
+
+test("native child binding refuses a reservation for another dispatch tool", async t => {
+  const f = await nativeBindingFixture(t);
+  const args = f.args(1, f.root, f.scope); args[3].name = "agent_1"; args[3].tool = "collaborationfollowup_task";
+  f.api.reserveRoleAdmission(...args, { issuerRole: "chief-of-staff", role: "lead" });
+  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "spawn-1", turn: f.activation };
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => f.bind(f.identity()));
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+test("child binding keeps an exact receipt after a later legacy name collision", async t => {
+  const f = await roleAdmissionFixture(t); const a = f.reserve(1).assignment;
+  const b = bindingFor(a); f.api.bindAdmission(f.journal, b);
+  const args = f.args(2); args[3].name = "agent-1"; f.api.reserveAdmission(...args);
+  assert.deepEqual(f.api.bindAdmission(f.journal, b), { decision: "already-bound", binding: b, role: "lead" });
+});
+
+test("child binding reads prior role records with reused names but refuses a new ambiguous binding", async t => {
+  const { createHash } = await import("node:crypto");
+  const f = await roleAdmissionFixture(t); const first = f.reserve(1); f.reserve(2);
+  let previous = null;
+  for (let revision = 0; revision < 4; revision++) {
+    const path = join(f.journal, String(revision).padStart(8, "0") + ".json");
+    const prior = JSON.parse(readFileSync(path, "utf8"));
+    if (prior.data.kind === "reserve") { delete prior.data.uniqueName; prior.data.dispatch.name = "agent-1"; }
+    const body = { schema: prior.schema, revision, previous, data: prior.data };
+    previous = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+    writeFileSync(path, JSON.stringify({ ...body, hash: previous }) + "\n");
+  }
+  assert.equal(f.api.readAdmission(f.journal).reservations.length, 2);
+  assert.throws(() => f.api.bindAdmission(f.journal, bindingFor(first.assignment)), /name is ambiguous/);
+});
+
+test("native child binding refuses a failed reservation later matched by an unadmitted spawn", async t => {
+  const f = await nativeBindingFixture(t);
+  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", false);
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "unadmitted", turn: f.activation };
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+test("native child binding refuses conflicting path reuse and a result from another parent turn", async t => {
+  const f = await nativeBindingFixture(t);
+  f.reserve(1, "lead", "chief-of-staff");
+  f.observeStart(f.identity(f.child));
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+  const other = await nativeBindingFixture(t);
+  other.reserve(1, "lead", "chief-of-staff", other.root, "agent_1", false);
+  other.events.publish(other.observationsDirectory, { schema: 1, runtime: "0.160.0", session: other.root,
+    actor: other.root, call: "spawn-1", turn: "99999999-9999-4999-8999-999999999999", kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => other.bind(other.identity()), /could not bind/);
+  assert.deepEqual(other.api.readAdmission(other.journal).bindings, []);
+});
+
+test("native child binding refuses a reused name before the later spawn result arrives", async t => {
+  const f = await nativeBindingFixture(t); f.reserve(1, "lead", "chief-of-staff");
+  f.events.publish(f.observationsDirectory, { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root,
+    call: "later-call", turn: f.activation, kind: "spawn-request", name: "agent_1" });
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
 });

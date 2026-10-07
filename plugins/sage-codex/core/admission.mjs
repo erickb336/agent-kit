@@ -43,6 +43,13 @@ function dispatchIdentity(input) {
   return { tool: word(input.tool, "tool"), turn: word(input.turn, "turn"), name: word(input.name, "name"),
     argumentsHash: word(input.argumentsHash, "argumentsHash", /^[0-9a-f]{64}$/) };
 }
+function childBinding(input) {
+  fields(input, ["project", "session", "epoch", "assignment", "issuer", "call", "child", "turn"]);
+  return { project: word(input.project, "project"), session: word(input.session, "session"),
+    epoch: word(input.epoch, "epoch", UUID), assignment: word(input.assignment, "assignment", UUID),
+    issuer: word(input.issuer, "issuer"), call: word(input.call, "call"),
+    child: word(input.child, "child"), turn: word(input.turn, "turn") };
+}
 function action(input) {
   if (input?.kind === "configure") {
     fields(input, ["kind", "config"]);
@@ -62,9 +69,15 @@ function action(input) {
   }
   if (input?.kind === "reserve") {
     const hasRole = Object.hasOwn(input, "rolePlan");
-    fields(input, hasRole ? ["kind", "assignment", "dispatch", "rolePlan"] : ["kind", "assignment", "dispatch"]);
+    const uniqueName = Object.hasOwn(input, "uniqueName");
+    fields(input, ["kind", "assignment", "dispatch", ...(hasRole ? ["rolePlan"] : []), ...(uniqueName ? ["uniqueName"] : [])]);
+    if (uniqueName && (!hasRole || input.uniqueName !== true)) refuse("invalid unique-name rule");
     return { kind: "reserve", assignment: parseAssignment(input.assignment), dispatch: dispatchIdentity(input.dispatch),
-      ...(hasRole ? { rolePlan: parseRolePlan(input.rolePlan) } : {}) };
+      ...(hasRole ? { rolePlan: parseRolePlan(input.rolePlan) } : {}), ...(uniqueName ? { uniqueName: true } : {}) };
+  }
+  if (input?.kind === "bind-child") {
+    fields(input, ["kind", "binding"]);
+    return { kind: "bind-child", binding: childBinding(input.binding) };
   }
   return refuse("unknown action");
 }
@@ -79,7 +92,7 @@ function apply(state, event) {
     return { state: copy, result: event.config, changed: true };
   }
   if (!copy.config) refuse("store is not configured");
-  const value = event.kind === "activate" ? event.owner : event.kind === "mode" ? event.change : event.assignment;
+  const value = event.kind === "activate" ? event.owner : event.kind === "mode" ? event.change : event.kind === "bind-child" ? event.binding : event.assignment;
   if (!copy.config.projects.some((p) => p.project === value.project)) refuse("project is not configured");
   const owner = copy.sessions.find((s) => s.project === value.project && s.session === value.session);
   if (event.kind === "activate") {
@@ -107,6 +120,23 @@ function apply(state, event) {
     copy.modes.push(value);
     return { state: copy, result: { decision: "changed", mode: value }, changed: true };
   }
+  if (event.kind === "bind-child") {
+    const reserved = copy.reservations.find(row => row.assignment.id === value.assignment);
+    if (!reserved || ["project", "session", "epoch", "issuer", "call"].some(key => reserved.assignment[key] !== value[key])) refuse("child binding has no matching reservation");
+    if (!reserved.rolePlan) refuse("child binding requires a recorded role");
+    if (value.child === value.issuer) refuse("issuer cannot bind itself as a child");
+    const previous = copy.bindings.find(row => row.assignment === value.assignment);
+    if (previous) {
+      if (json(previous) !== json(value)) refuse("assignment already has a different child binding");
+      return { state, result: { decision: "already-bound", binding: previous, role: reserved.rolePlan.role }, changed: false };
+    }
+    if (copy.reservations.filter(row => row.assignment.project === value.project && row.assignment.session === value.session
+      && row.assignment.epoch === value.epoch && row.assignment.issuer === value.issuer
+      && row.dispatch.name === reserved.dispatch.name).length !== 1) refuse("child dispatch name is ambiguous");
+    if (copy.bindings.some(row => row.session === value.session && row.child === value.child)) refuse("child already belongs to another assignment");
+    copy.bindings.push(value);
+    return { state: copy, result: { decision: "bound", binding: value, role: reserved.rolePlan.role }, changed: true };
+  }
   const prior = copy.reservations.find(({ assignment: a }) => a.project === value.project && a.session === value.session
     && a.epoch === value.epoch && a.issuer === value.issuer && a.call === value.call);
   if (prior) {
@@ -115,7 +145,12 @@ function apply(state, event) {
   }
   if (!mode.sage) refuse("Sage mode is off");
   if (copy.reservations.some(({ assignment: a }) => a.id === value.id)) refuse("assignment ID already exists");
-  if (event.rolePlan) checkRoleReservation(copy.reservations, value, event.rolePlan);
+  if (event.rolePlan) {
+    if (event.uniqueName && copy.reservations.some(row => row.assignment.project === value.project && row.assignment.session === value.session
+      && row.assignment.epoch === value.epoch && row.assignment.issuer === value.issuer
+      && row.dispatch.name === event.dispatch.name)) refuse("child dispatch name is already reserved");
+    checkRoleReservation(copy.reservations, value, event.rolePlan);
+  }
   if (copy.reservations.length >= copy.config.total) refuse("total capacity is occupied");
   const projectLimit = copy.config.projects.find((p) => p.project === value.project).limit;
   if (copy.reservations.filter(({ assignment: a }) => a.project === value.project).length >= projectLimit) refuse("project capacity is occupied");
@@ -176,7 +211,7 @@ function read(dir) {
       maximum = Math.max(maximum, revision);
     }
   } finally { stream.closeSync(); }
-  let state = { config: null, sessions: [], reservations: [], modes: [] }, previous = null;
+  let state = { config: null, sessions: [], reservations: [], modes: [], bindings: [] }, previous = null;
   for (let revision = 0; revision <= maximum; revision++) {
     const bytes = bytesAt(join(dir, filename(revision)));
     let record;
@@ -228,7 +263,9 @@ export const changeAdmissionMode = (dir, request) => commit(dir, { kind: "mode",
 export const reserveAdmission = (dir, scope, request, dispatch) => commit(dir, { kind: "reserve", assignment: createAssignment(scope, request), dispatch });
 /** The adapter must verify the issuer role before it requests this atomic reservation. */
 export const reserveRoleAdmission = (dir, scope, request, dispatch, rolePlan) => commit(dir,
-  { kind: "reserve", assignment: createAssignment(scope, request), dispatch, rolePlan: parseRolePlan(rolePlan) });
+  { kind: "reserve", assignment: createAssignment(scope, request), dispatch, rolePlan: parseRolePlan(rolePlan), uniqueName: true });
+/** Record a verified initial child identity. This neither permits dispatch nor releases capacity. */
+export const bindAdmission = (dir, binding) => commit(dir, { kind: "bind-child", binding });
 export function readAdmission(dir) {
   const { state } = read(dir);
   if (!state.config) refuse("store is not configured");
