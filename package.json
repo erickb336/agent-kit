@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
-    "test": "env -u NODE_TEST_CONTEXT node --test scripts/board.test.mjs scripts/dictionary.test.mjs scripts/hooks.test.mjs scripts/launcher.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs scripts/sage-pr.test.mjs scripts/sync-pstack.test.mjs scripts/providers.test.mjs packages/sage-codex/runtime/*.test.mjs",
+    "test": "env -u NODE_TEST_CONTEXT node --test scripts/board.test.mjs scripts/dictionary.test.mjs scripts/hooks.test.mjs scripts/launcher.test.mjs scripts/remote-control.test.mjs scripts/sage.test.mjs scripts/sage-hook.test.mjs scripts/sage-pr.test.mjs scripts/sync-pstack.test.mjs scripts/providers.test.mjs scripts/codex-server.test.mjs packages/sage-codex/runtime/*.test.mjs",
     "sync": "node scripts/sync-pstack.mjs",
     "graphics": "node scripts/graphics.mjs",
     "check:codex": "node scripts/check-codex.mjs"
