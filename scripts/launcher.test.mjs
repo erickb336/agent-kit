@@ -162,6 +162,7 @@ test("a hook that throws on import falls back to the own hook, and when both thr
   h.record(h.newer);
   assert.equal(h.ran(), "old", "the own marker hook runs");
   copyFileSync(join(HOOKS, HOOK), join(h.old, "hooks", HOOK));
+  cpSync(join(HOOKS, "../core"), join(h.old, "core"), { recursive: true });
   mkdirSync(join(h.old, "agents"));
   copyFileSync(join(HOOKS, "../agents/chief-of-staff.md"), join(h.old, "agents", "chief-of-staff.md"));
   h.run(HOOK, { session_id: "s1", hook_event_name: "UserPromptSubmit", prompt: "sage mode. Ramen Finder: fix the crash" });
