@@ -7,7 +7,9 @@ and a policy loader. Tool arguments cannot replace that configuration.
 The server exposes one hidden hook tool, `sage_native_hook`. It snapshots the
 native connection version and request actor before it loads the policy.
 `UserPromptSubmit` uses the verified owner adapter. `PreToolUse` uses the tool
-policy boundary. `SubagentStart` verifies native child identity before the policy
+policy boundary. `PostToolUse` sends verified dispatch-result identity to the
+trusted publication policy, as described in `post-tool.md`. It cannot undo a
+completed tool. `SubagentStart` verifies native child identity before the policy
 supplies instructions, as described in `child-start.md`. This event cannot stop
 the child: admission belongs in the parent tool policy, and child tool calls
 require a completed binding. Unknown events, missing modules, invalid input, and policy

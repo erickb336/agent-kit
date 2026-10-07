@@ -27,9 +27,9 @@ export async function childStartOutput(input, context, mode, loadPolicy) {
   const identity = nativeChildStart(input, context, mode);
   const policy = await loadPolicy();
   const output = await policy.startChild(identity);
-  if (!record(output)) refuse();
+  if (!record(output) || !Object.hasOwn(output, "decision")) refuse();
   if (output.decision === "pass" && Object.keys(output).length === 1) return {};
-  if (Object.keys(output).length !== 2 || output.decision !== "deliver"
+  if (Object.keys(output).length !== 2 || !Object.hasOwn(output, "brief") || output.decision !== "deliver"
     || typeof output.brief !== "string" || output.brief.trim().length === 0
     || Buffer.byteLength(output.brief, "utf8") > 64 * 1024 || output.brief.includes("\0")) refuse();
   return { hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: output.brief } };

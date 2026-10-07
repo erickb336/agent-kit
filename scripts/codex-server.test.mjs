@@ -323,3 +323,55 @@ test("packaged child start uses child metadata and native turn when history cont
   assert.equal(JSON.parse(readFileSync(f.marker, "utf8")).turn, turns[1]);
   await client.close();
 });
+
+const postSpawn = () => ({ hook_event_name: "PostToolUse", session_id: session, turn_id: turns[0],
+  tool_name: "collaborationspawn_agent", tool_use_id: "spawn-1", tool_input: { task_name: "qa", message: "private task" },
+  tool_response: JSON.stringify({ task_name: "/root/qa", detail: "private result" }) });
+
+test("packaged native server records post-tool identity with a durable idempotent receipt", async t => {
+  const f = fixture(t); const observations = join(f.dir, "observations");
+  writeFileSync(f.entry, "import { publish } from './plugin/runtime/events.mjs';\n" + readFileSync(f.entry, "utf8")
+    .replace("return { evaluate:", `return { recordDispatchResult: record => {
+      publish(${JSON.stringify(observations)}, record); return { decision: 'recorded' };
+    }, evaluate:`));
+  const client = await connect(t, f);
+  for (const actor of [session, session, childActor]) assert.deepEqual(await client.call(postSpawn(), actor), {});
+  await client.close();
+  const { readObservations } = await import(pathToFileURL(join(f.plugin, "runtime/events.mjs")));
+  const records = readObservations(observations);
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.map(row => row.actor).sort(), [session, childActor].sort());
+  assert(records.every(row => row.kind === "spawn-result" && row.session === session && row.call === "spawn-1"));
+  assert.doesNotMatch(JSON.stringify(records), /private/);
+});
+
+test("packaged native server contains post-tool validation, loading, and publication failures", async t => {
+  const f = fixture(t, "throw"); const client = await connect(t, f);
+  for (const [input, actor] of [[postSpawn(), session], [postSpawn(), null],
+    [{ ...postSpawn(), agent_id: childActor }, session], [{ ...postSpawn(), tool_response: "malformed" }, session]]) {
+    assert.deepEqual(await client.call(input, actor), { decision: "block", reason: "Sage could not verify this hook request." });
+  }
+  await client.close();
+  const missing = fixture(t); rmSync(join(missing.plugin, "runtime/post-tool.mjs"));
+  const next = await connect(t, missing);
+  assert.equal((await next.call(postSpawn())).decision, "block");
+  await next.close();
+  const failed = fixture(t);
+  writeFileSync(failed.entry, readFileSync(failed.entry, "utf8").replace("return { evaluate:",
+    "return { recordDispatchResult() { throw Error('private loader detail'); }, evaluate:"));
+  const failedClient = await connect(t, failed);
+  assert.equal((await failedClient.call(postSpawn())).decision, "block");
+  await failedClient.close();
+});
+
+test("packaged child start rejects inherited policy fields instead of delivering an invalid brief", async t => {
+  for (const expression of ["Object.assign(Object.create({decision:'deliver'}),{brief:'invalid inherited decision',extra:true})",
+    "Object.assign(Object.create({brief:'invalid inherited brief'}),{decision:'deliver',extra:true})"]) {
+    const f = childFixture(t);
+    writeFileSync(f.entry, readFileSync(f.entry, "utf8").replace(
+      'return {"decision":"deliver","brief":"Role: implementer\\nTask: the fixed fixture task."};', `return ${expression};`));
+    const client = await connect(t, f);
+    assert.equal((await client.call(f.start(), childActor)).decision, "block");
+    await client.close();
+  }
+});
