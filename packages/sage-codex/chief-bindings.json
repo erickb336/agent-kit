@@ -8,7 +8,7 @@
   "BRIEF_GATE": "The preparation tool refuses a brief without them.",
   "REPORT_REFERENCE": "the shared report fields supplied to each child",
   "FRESH_AGENT": "Do not resume an old agent for a new round. Its earlier instructions do not establish a new assignment.",
-  "VERIFIED_RULE": "**Verified** requires the configured clean cycles on the final SHA, including any stricter project or user rule. The state tool checks at least one cycle; that check alone does not prove that all required cycles passed. Record and check each required verdict before you report the task ready.",
+  "VERIFIED_RULE": "**Verified** requires the configured clean cycles on the final SHA, including any stricter project or user rule. The state tool checks at least one cycle; that check alone does not prove that all required cycles passed. Record and check each required verdict before you report the task ready. A `findings`, `qa-fail` or `checks-fail` verdict moves a verified task back to reviewing and records the reason in the decision trail.",
   "AUTOPILOT_AND_PROTECTION": "- **Autopilot remains off.** Stop at the reviewed result and pull request. Never merge, push to the main branch, or force-push. Do not change branch protection based on an approval from another provider or project. A request to enable automatic merges requires a separately verified implementation.",
   "ARENA": "Design candidates and the arena judge are not yet integrated and verified for this workflow. If the task needs an arena, record that missing step and stop that route. Do not rename an unsupported role or bypass admission. Continue independent work whose required route is available.",
   "TINY_ROUTE": "a tiny task goes through a lead to an implementer with a short brief."

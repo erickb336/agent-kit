@@ -29,7 +29,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
 
 /**
  * The programs that a command line runs, for the hook's rules on agents (agentProblem) and on the state tool (T83).
- * Each is { word, file, args, dir }, in the order of the command line:
+ * Each is { word, file, args, dir, stdin, piped }, in the order of the command line:
  *   - word: the program as written, after shell keywords (if, while, do, !, {), assignments (X=1), redirections
  *     (2>/dev/null, >out) and wrappers with their options (sudo, env, timeout, xargs, nice, npx, npm exec, pnpm dlx,
  *     bunx and others in WRAPPER). After for, select and case come words, not a program; a case pattern is not one.
@@ -39,6 +39,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  *   - args: the words after the program, without their quotes and redirections.
  *   - dir: the folder it runs in, after an earlier "cd <dir>" of the same line.
  *   - stdin: its heredoc and here-string bodies, and the words of the command piped into it.
+ *   - piped: whether another command supplies its stdin through a pipe; a heredoc alone is not a pipe.
  * It also reads the text that other programs run as commands, up to 3 levels deep: the -c text of a shell (sh, bash,
  * zsh, dash, ksh, fish) and its stdin heredoc when it has no script, the words of eval, PowerShell's -Command text,
  * the program of find -exec, and a program word with spaces that a wrapper such as watch gives to sh -c. The words
@@ -85,13 +86,14 @@ function readPrograms(command, dir, path, depth, found) {
         break;
       }
       const args = words.slice(k + 1);
-      const stdin = [...bodies, ...commands.filter((p) => p.pipeTo === c).map((p) => p.words.join(" "))];
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, stdin });
+      const pipes = commands.filter((p) => p.pipeTo === c);
+      const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, stdin, piped: pipes.length > 0 });
       for (const text of commandText(name, args, bodies)) inner(text, dir, here);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, stdin: [] });
+        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, stdin: [], piped: false });
       }
       break;
     }
@@ -100,7 +102,7 @@ function readPrograms(command, dir, path, depth, found) {
 }
 
 /** The text that a shell, eval or PowerShell runs as commands: -c text, eval's words, or stdin when there is no script. */
-function commandText(name, args, bodies) {
+export function commandText(name, args, bodies) {
   if (name === "eval") return [args.join(" ")];
   if (/^(?:pwsh|powershell)(?:\.exe)?$/i.test(name)) {
     const c = args.findIndex((a) => /^-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?$/i.test(a));

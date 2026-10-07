@@ -742,7 +742,38 @@ function real(path) {
   }
 }
 
+/** Expansion in a command word can hide git, gh, push or merge. Arguments keep their ordinary braces and globs. */
+function expansionProblem(command, cwd) {
+  const expansion = /[{[*?]/;
+  const expands = (word) => !/^(?:[{}]|\[\[?)$/.test(word) && expansion.test(word); // literal groups and test commands
+  const reason = "shell expansion can hide the command. Use literal program and git or gh subcommand words, without {, [, * or ?.";
+  let runs;
+  try {
+    runs = programsRun(command, cwd);
+  } catch (e) {
+    return expansion.test(command) ? `${reason} The hook cannot read this command (${e.message}).` : undefined;
+  }
+  for (const { word, args, stdin, piped } of runs) {
+    if (expands(word)) return reason;
+    const name = word.split("/").pop();
+    // A shell can run text from a pipe, including through filters. Its output is unknown: refuse expansion in that text.
+    if (piped && commandText(name, args, stdin) === stdin && runnable(shellCommands(command)).some(({ words, bodies }) => [...words, ...bodies].some(expands))) return reason;
+    if (name === "git" && expansion.test(subcommand(args, 0))) return reason;
+    if (name !== "gh") continue;
+    let k = 0;
+    for (let n = 0; n < 2; n++) {
+      while (args[k]?.startsWith("-")) k += /^(?:-R|--repo)$/.test(args[k]) ? 2 : 1;
+      const sub = args[k++] ?? "";
+      if (expansion.test(sub)) return reason;
+      if (n === 0 && sub !== "pr") break; // api's next word is an endpoint, not a subcommand
+    }
+  }
+  return undefined;
+}
+
 function gitGate(event, command, state, cwd, main) {
+  const expansion = expansionProblem(command, cwd);
+  if (expansion) return deny(event, expansion);
   const first = main ? firstUpload(command) : undefined; // an agent never gets the exception
   if (first) {
     const { decision, reason } = firstCreation(first);
@@ -818,6 +849,8 @@ export function mergeIn(command) {
 const mentionsMerge = (text) => commandPolicy.error || commandPolicy.mentionsMerge(text);
 
 const sharedCommands = commandPolicy.commands;
+const runnable = (commands) => sharedCommands.runnable(commands);
+const commandText = (name, args, bodies) => commandReader.commandText(name, args, bodies);
 /**
  * The chief's spelling of a state tool command: node and the tool's absolute path, unquoted, the one form that the
  * sandbox's excluded entry matches (a quoted path stays in the sandbox). A path with a space has no such form, so

@@ -7,6 +7,6 @@ export { chiefEditDenied } from "./file-policy.mjs";
 export { modeSignals } from "./mode-policy.mjs";
 export { BRIEF_FIELDS, parseBrief, renderBrief } from "./brief.mjs";
 export { renderRoleInstructions, renderReportInstructions, renderChiefInstructions } from "./roles.mjs";
-export { shellCommands, programsRun } from "./command-reader.mjs";
+export { shellCommands, programsRun, commandText } from "./command-reader.mjs";
 export { createCommandPolicy, mentionsMerge } from "./command-policy.mjs";
 export { createPushPolicy, gitSubcommand } from "./push-policy.mjs";
