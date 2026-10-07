@@ -352,6 +352,21 @@ test("admission rejects a corrupt tail, missing revision, symbolic link and malf
   }
 });
 
+test("admission refuses malformed UTF-8 even when decoding would preserve the canonical record", async t => {
+  const { api, dir, scope } = await admissionFixture(t);
+  api.reserveBriefAdmission(dir, scope, admissionRequest("call-1"), admissionDispatch,
+    { issuerRole: "chief-of-staff", role: "lead" }, completeBrief("Keep the replacement character: \ufffd."));
+  assert.equal(api.readAdmission(dir).reservations[0].brief.GOAL, "Keep the replacement character: \ufffd.");
+  const path = join(dir, "00000002.json"), valid = readFileSync(path);
+  const offset = valid.indexOf(Buffer.from("\ufffd", "utf8"));
+  assert.notEqual(offset, -1);
+  const malformed = Buffer.concat([valid.subarray(0, offset), Buffer.from([0xff]), valid.subarray(offset + 3)]);
+  assert.equal(malformed.toString("utf8"), valid.toString("utf8"), "lossy decoding would conceal the corrupt bytes");
+  writeFileSync(path, malformed);
+  assert.throws(() => api.readAdmission(dir), /invalid journal UTF-8/);
+  assert.throws(() => api.reserveAdmission(dir, scope, admissionRequest("next-call"), admissionDispatch), /invalid journal UTF-8/);
+});
+
 test("admission ignores unpublished pending bytes but never turns them into capacity", async (t) => {
   const { api, dir, scope } = await admissionFixture(t);
   writeFileSync(join(dir, ".pending-11111111-1111-4111-8111-111111111111"), "incomplete temporary record");
@@ -741,8 +756,8 @@ test("Codex includes each bundled MCP dependency license", (t) => {
 });
 
 
-async function roleAdmissionFixture(t, limits = { total: 50, projects: [{ project: "project-a", limit: 50 }, { project: "project-b", limit: 50 }] }) {
-  const { dir, plugin } = isolated(t, "codex");
+async function roleAdmissionFixture(t, limits = { total: 50, projects: [{ project: "project-a", limit: 50 }, { project: "project-b", limit: 50 }] }, provider = "codex") {
+  const { dir, plugin } = isolated(t, provider);
   const url = pathToFileURL(join(plugin, "core/index.mjs")).href;
   const api = await import(url);
   assert.equal(typeof api.reserveRoleAdmission, "function");
@@ -760,10 +775,12 @@ async function roleAdmissionFixture(t, limits = { total: 50, projects: [{ projec
 }
 
 test("role admission preserves chief specialist workflows and records the role plan", async t => {
-  const f = await roleAdmissionFixture(t);
-  const roles = ["lead", "pe", "designer", "arena-judge", "implementer", "code-reviewer", "security-reviewer", "ux-reviewer", "qa"];
-  roles.forEach((role, index) => assert.equal(f.reserve(index + 1, role).decision, "permit-once"));
-  assert.deepEqual(f.api.readAdmission(f.journal).reservations.map(row => row.rolePlan), roles.map(role => ({ issuerRole: "chief-of-staff", role })));
+  for (const provider of ["claude", "codex"]) {
+    const f = await roleAdmissionFixture(t, undefined, provider);
+    const roles = ["lead", "pe", "designer", "arena-judge", "implementer", "code-reviewer", "security-reviewer", "ux-reviewer", "qa"];
+    roles.forEach((role, index) => assert.equal(f.reserve(index + 1, role).decision, "permit-once"));
+    assert.deepEqual(f.api.readAdmission(f.journal).reservations.map(row => row.rolePlan), roles.map(role => ({ issuerRole: "chief-of-staff", role })));
+  }
 });
 
 test("role admission refuses a third layer, a lead outside its team, and a child chief", async t => {

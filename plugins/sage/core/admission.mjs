@@ -229,7 +229,9 @@ function bytesAt(path) {
       size += n;
     }
     if (size > MAX_BYTES) refuse("journal file exceeds bound");
-    return buffer.subarray(0, size).toString("utf8");
+    const bytes = buffer.subarray(0, size), text = bytes.toString("utf8");
+    if (!Buffer.from(text, "utf8").equals(bytes)) refuse("invalid journal UTF-8");
+    return text;
   } finally { closeSync(fd); }
 }
 const filename = (revision) => `${String(revision).padStart(8, "0")}.json`;

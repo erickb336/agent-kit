@@ -1,14 +1,14 @@
 # Atomic admission
 
-This store records session ownership and reserves capacity before a dispatch. It covers only sessions that use this same canonical local directory. It does not enforce role permissions, validate native identity, release capacity, or recover a session automatically.
+This store records session ownership and reserves capacity before a dispatch. It covers only sessions that use this same canonical local directory. Role-aware admission checks role permissions in the same atomic operation as capacity. The older roleless API checks capacity only. The store trusts issuer evidence from its caller. It does not authenticate native identity, release reservations, or recover a session automatically.
 
-The trusted adapter uses five operations:
+The base API has five operations:
 
 1. `configureAdmission(directory, {total, projects})` fixes the store and project limits. Each project entry has `project` and `limit`. Repeated equal configuration is safe; changed limits require reconciliation.
 2. `activateAdmission(directory, {project, session, activation}, {sage})` records scoped session identity and creates its epoch. The third argument defaults to `{sage: true}`. Use `{sage: false}` to record an initial verified off request without enabling Sage. The adapter must obtain activation authority through the verified entry path. The same request returns the same owner. Another activation cannot replace it.
 3. `reserveAdmission(directory, scope, request, dispatch)` saves an assignment and consumes its single dispatch permit atomically. Scope and request use the assignment API. Dispatch contains the native `tool`, parent `turn`, requested child `name`, and `argumentsHash` of all relevant native arguments.
 4. `changeAdmissionMode(directory, {project, session, epoch, after, turn, sage})` records a verified owner mode request. `after` must name the current mode turn; `turn` names this prompt, and `sage` is boolean.
-5. `readAdmission(directory)` returns the configuration, session records, held reservations, and mode records.
+5. `readAdmission(directory)` returns the configuration, session records, held reservations, mode records, preparations, and child bindings.
 
 Only a newly committed reservation returns `decision: "permit-once"`. An exact retry returns `"already-reserved"` with the saved assignment. It must not permit another native call. Changed arguments, tool, turn, name, task, or run are refused. After an uncertain result, keep the reservation held; do not invent another call identity to repeat the same work.
 
@@ -55,7 +55,7 @@ still need their separate protocol.
 Legacy reservations retain their original shape and consume normal capacity.
 Their role is unknown, so each also counts as a possible lead for the three-lead
 limit. They confer no role authority. The legacy reservation API remains for
-existing callers; an adapter that enforces roles must use `reserveRoleAdmission`.
+existing callers; an adapter that enforces roles must use a role-aware reservation API.
 A retry cannot change or remove a recorded role plan, and it never permits a
 second dispatch. Older readers reject role-bearing records rather than ignore
 the new rule. Update all participants before sharing this journal.
@@ -106,7 +106,7 @@ reservation, or dropping it through an older API fails. Older reservations retai
 their format and remain readable. They do not acquire instructions automatically.
 Invalid briefs and capacity failures publish no reservation.
 
-The bound Codex result includes the saved brief when present. A trusted delivery
+The reservation includes the saved brief when present. A trusted delivery
 policy must use that brief, rather than a fresh model-supplied replacement. Brief
 text is task context, not role authority or permission to run a command. Native
 context limits must fit the rendered brief and the role instructions together.
