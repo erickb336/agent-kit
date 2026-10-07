@@ -478,7 +478,13 @@ While the server runs, your claude.ai account can start sessions on your compute
    npm run graphics
    ```
 
-3. Build, then run the checks and the tests. CI runs the check and the tests.
+3. Install the pinned build dependencies. Installed plugins do not need this step.
+
+   ```sh
+   npm ci --ignore-scripts
+   ```
+
+4. Build, then run the checks and the tests. CI runs the check and the tests.
 
    ```sh
    npm run build

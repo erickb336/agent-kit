@@ -1,3 +1,4 @@
+import { rewriteCoreImports } from "./package-imports.mjs";
 // Builds the generated files from the sources, so each principle has one copy:
 //   principles/*.md, writing/ste-80.md, writing/readme.md, preferences/working-preferences.md  (the sources)
 //   upstream/pstack/skills/principle-*/SKILL.md  (pstack, kept up to date by scripts/sync-pstack.mjs)
@@ -9,6 +10,8 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
+import { renderRoleInstructions, renderReportInstructions, renderChiefInstructions } from "../packages/sage-core/index.mjs";
 import { checkWords, withWordTable, wordTable } from "./dictionary.mjs";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -101,8 +104,26 @@ function packageOutputs(generated) {
       if (rel === "package.json") continue;
       // Resolve the one public dependency at build time; installed plugins need no npm install.
       const specifier = relative(dirname(rel), "core/index.mjs").replaceAll("\\", "/");
-      const text = readFileSync(file, "utf8");
-      const content = rel.endsWith(".mjs") ? text.replaceAll('from "sage-core"', `from ${JSON.stringify(specifier.startsWith(".") ? specifier : `./${specifier}`)}`) : text;
+      let text = readFileSync(file, "utf8");
+      if (text.includes("<!-- sage-core-chief -->")) {
+        const bindings = JSON.parse(readFileSync(join(source, "chief-bindings.json"), "utf8"));
+        text = text.replaceAll("<!-- sage-core-chief -->", renderChiefInstructions(bindings));
+      }
+      if (/<!-- sage-core-(?:role: |report)/.test(text)) {
+        const bindings = JSON.parse(readFileSync(join(source, "role-bindings.json"), "utf8"));
+        text = text.replace(/<!-- sage-core-role: ([a-z-]+) -->/g, (_, role) => renderRoleInstructions(role, { ...bindings.common, ...bindings[role] }))
+          .replace(/<!-- sage-core-report -->/g, () => renderReportInstructions(bindings.report));
+      }
+      if (provider === "codex" && rel === "runtime/mcp-sdk.mjs") {
+        const result = buildSync({
+          absWorkingDir: ROOT, entryPoints: [relative(ROOT, file)], bundle: true,
+          platform: "node", target: "node20", format: "esm", write: false,
+          minify: true, legalComments: "eof", logLevel: "silent",
+        });
+        out.set(join(target, rel), result.outputFiles[0].text);
+        continue;
+      }
+      const content = rel.endsWith(".mjs") ? rewriteCoreImports(text, specifier.startsWith(".") ? specifier : `./${specifier}`) : text;
       out.set(join(target, rel), content);
     }
     for (const file of filesUnder(join(ROOT, "packages/sage-core"))) {
@@ -110,6 +131,19 @@ function packageOutputs(generated) {
       out.set(join(target, "core", rel), readFileSync(file, "utf8"));
     }
     for (const [path, text] of sharedSkills) out.set(path.replace("plugins/sage", target), text);
+    if (provider === "codex") {
+      const dependencies = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).devDependencies;
+      // The SDK also embeds these libraries in its published JavaScript.
+      for (const name of ["@modelcontextprotocol/server", "@modelcontextprotocol/core", "zod",
+        "ajv", "ajv-formats", "fast-deep-equal", "fast-uri", "json-schema-traverse", "content-type"]) {
+        const dir = join(ROOT, "node_modules", name);
+        const installed = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+        const expected = dependencies[name === "@modelcontextprotocol/core" ? "@modelcontextprotocol/server" : name];
+        if (installed.version !== expected) throw new Error(`${name} must match the pinned build dependency`);
+        out.set(join(target, "licenses", `${name.replaceAll("/", "-")}.txt`),
+          `${name} ${installed.version}\n\n${readFileSync(join(dir, "LICENSE"), "utf8")}`);
+      }
+    }
     out.set(join(target, "LICENSE"), readFileSync(join(ROOT, "LICENSE"), "utf8"));
     out.set(join(target, "LICENSE-pstack"), readFileSync(join(ROOT, "upstream/pstack/LICENSE"), "utf8"));
     out.set(join(target, "build.json"), JSON.stringify({ package: meta.name, version: meta.version, core: core.version }, null, 2) + "\n");

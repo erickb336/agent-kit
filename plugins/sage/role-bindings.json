@@ -1,0 +1,23 @@
+{
+  "implementer": {
+    "PROJECT_GUIDANCE": "`AGENTS.md`, `CLAUDE.md` or `README.md`",
+    "WORKTREE_SETUP": "1. **Make your worktree.** In the project, make a branch and a worktree for the task, and work only there:\n   ```bash\n   git -C <project> worktree add .claude/worktrees/<task> -b claude/<task>\n   ```\n   For a repair, the chief gives you the branch: use its worktree, or make one from that branch. Use absolute paths.",
+    "DELIVERY_STEP": "6. **Commit and push.** Commit in small steps that each pass the checks. If the project has a GitHub remote, push the branch and open a pull request with `gh pr create` (or update the open one). Never merge, and never force-push."
+  },
+  "pe": {
+    "PROJECT_GUIDANCE": "`AGENTS.md`, `CLAUDE.md` or `README.md`"
+  },
+  "designer": {},
+  "arena-judge": {},
+  "code-reviewer": {},
+  "security-reviewer": {},
+  "ux-reviewer": {},
+  "qa": {},
+  "report": {
+    "REPORT_GATE": "The sage hook does not let you finish until each field starts a line."
+  },
+  "lead": {},
+  "common": {
+    "REPORT_REFERENCE": "the report of the `sage:report` skill"
+  }
+}

@@ -10,3 +10,4 @@ export { modeSignals } from "./mode-policy.mjs";
 export { createAssignment, correlateReport } from "./assignments.mjs";
 export { configureAdmission, activateAdmission, changeAdmissionMode, reserveAdmission, reserveRoleAdmission, reserveBriefAdmission, prepareAdmission, reservePreparedAdmission, bindAdmission, readAdmission } from "./admission.mjs";
 export { BRIEF_FIELDS, parseBrief, renderBrief } from "./brief.mjs";
+export { renderRoleInstructions, renderReportInstructions, renderChiefInstructions } from "./roles.mjs";
