@@ -285,6 +285,65 @@ const wrongRefusals = (s, cases, expected, cwd) => cases.flatMap((command) => {
   return expected.test(reason) ? [] : [`${command} -> ${reason}`];
 });
 
+for (const toolName of ["Bash", "Monitor"]) for (const agent of [false, true]) {
+  test(`T199: ${toolName} refuses expanded command words for ${agent ? "an agent" : "the main session"}, while ordinary arguments pass`, () => {
+    const s = session();
+    s.send(prompt("sage mode"));
+    const identity = agent ? { agent_id: "a1", agent_type: "sage:implementer" } : {};
+    const send = (command) => s.send(tool(toolName, { command }, { cwd: FEATURE, ...identity }));
+    // These strings go only to the hook on stdin. No shell expands or executes them.
+    const attacks = [
+      `gh pr {m..m}erge 41 --squash --delete-branch --match-head-commit ${SHA}`,
+      "git pu{s..s}h --force origin claude/t1",
+      "g{i..i}t push origin HEAD:main",
+      `g{h..h} pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`,
+      `gh pr m[e]rge 41 --squash --delete-branch --match-head-commit ${SHA}`,
+      "g?t push origin HEAD:main",
+      "g*t push origin HEAD:main",
+      "git p?sh --force origin claude/t1",
+      "git p*sh --force origin claude/t1",
+      "gh p[r] merge 41",
+      "gh pr m?rg* 41",
+      `git -C ${FEATURE} pu{s..s}h --force origin claude/t1`,
+      "gh -R acme/repo pr m[e]rge 41",
+      "gh pr --repo acme/repo m?rg* 41",
+      "env X=1 command g{i..i}t push origin HEAD:main",
+      "if true; then { git pu{s..s}h --force origin claude/t1; }; fi",
+      "bash -c 'gh pr {m..m}erge 41'",
+      "echo $(git pu{s..s}h --force origin claude/t1)",
+      "echo 'git pu{s..s}h --force origin claude/t1' | bash",
+      "printf '%s\\n' 'g{i..i}t push origin HEAD:main' | bash",
+      `echo 'gh pr {m..m}erge 41 --squash --delete-branch --match-head-commit ${SHA}' | bash`,
+      "echo 'git pu{s..s}h --force origin claude/t1' | head | bash",
+      "X=1 ${G} pr merge 41",
+    ];
+    const wrong = attacks.flatMap((command) => {
+      const reason = denied(send(command)) ?? "allowed";
+      return /shell expansion can hide the command/.test(reason) ? [] : [`${command} -> ${reason}`];
+    });
+    for (const command of [
+      "git log --format='%h {x}'",
+      "grep -n 'merge' *.md",
+      "gh pr view 41",
+      "git push origin claude/t1",
+      `git -C ${FEATURE} log --format='%h {x}'`,
+      "gh pr view 41 --json title --jq '.title // \"?\"'",
+      "gh api 'repos/{owner}/{repo}/pulls?state=open'",
+      "echo 'gh pr {m..m}erge'",
+      "echo 'gh pr {m..m}erge' | head",
+      "[ -f README.md ] && echo yes",
+      "[[ -f README.md ]]",
+      "if [[ -f README.md ]]; then echo yes; fi",
+      "bash <<'EOF'\ngit log --format='%h {x}'\nEOF",
+      "bash <<'EOF'\ngrep -n 'merge' *.md\nEOF",
+    ]) {
+      const answer = send(command);
+      if (answer !== undefined) wrong.push(`${command} -> ${JSON.stringify(answer)}`);
+    }
+    assert.deepEqual(wrong, [], "expanded command words are refused; ordinary arguments and test commands pass");
+  });
+}
+
 test("a push to main is refused in any position: behind a wrapper, a shell keyword, a group, a redirection or a shell", () => {
   const s = session();
   s.send(prompt("sage mode"));
@@ -1218,7 +1277,6 @@ test("a merge passes only as the one merge form; any other command that names a 
     "$'\\x67h' pr merge 41 --admin",
     "$(printf 'g%s' h) pr merge 41 --admin",
     "`printf gh` pr merge 41",
-    "X=1 ${G} pr merge 41",
     // A command that the hook cannot read.
     `echo "${MERGE}`,
     // The GitHub API, with a number, a variable or a substitution in the path, and GraphQL.
