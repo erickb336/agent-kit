@@ -1407,3 +1407,123 @@ test("shared chief instructions reject incomplete or substituted provider bindin
     assert.throws(() => api.renderChiefInstructions(invalid), /exact provider bindings/);
   }
 });
+
+test("shared command reader preserves substitutions pipelines and heredoc structure in both bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.shellCommands, "function");
+    const text = 'printf "%s" "$(git status)" | cat >out\ncat <<\'END\'\n$(not-a-command)\nEND\n';
+    const rows = api.shellCommands(text);
+    assert.deepEqual(rows.map(row => row.words), [["git", "status"], ["printf", "%s", "$(…)"], ["cat"], ["cat"]]);
+    assert.equal(rows[0].host.cmd, rows[1]);
+    assert.equal(rows[0].host.index, 2);
+    assert.equal(rows[1].pipeTo, rows[2]);
+    assert.deepEqual(rows[2].redirects, [">out"]);
+    assert.deepEqual(rows[3].bodies, ["$(not-a-command)"]);
+    for (const broken of ["echo 'open", "cat <<END\nmissing", "echo $(git status", "case x in a) echo hi"]) {
+      assert.throws(() => api.shellCommands(broken));
+    }
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.shellCommands(text), rows);
+    }
+  }
+});
+
+test("shared command reader resolves fake program paths without running them", async t => {
+  const { chmodSync } = await import("node:fs");
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.programsRun, "function");
+    const bin = join(f.dir, "bin"); mkdirSync(bin);
+    for (const name of ["ps", "kill"]) { writeFileSync(join(bin, name), "fixture data, never executed"); chmodSync(join(bin, name), 0o700); }
+    const text = "env ps -ax; kill 123; env kill 123; sh -c 'ps -ef'";
+    const rows = api.programsRun(text, f.dir, bin);
+    assert.deepEqual(rows.map(row => row.word), ["ps", "kill", "kill", "sh", "ps"]);
+    assert.deepEqual(rows.map(row => row.file), [join(bin, "ps"), undefined, join(bin, "kill"), undefined, join(bin, "ps")]);
+    assert.deepEqual(rows[0].args, ["-ax"]);
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.programsRun(text, f.dir, bin), rows);
+    }
+  }
+});
+
+test("shared command reader failures explicitly deny every recognized Claude command tool", async t => {
+  for (const missing of ["hooks/command-reader.mjs", "core/command-reader.mjs"]) {
+    const f = isolated(t, "claude");
+    assert.ok(existsSync(join(f.plugin, missing)));
+    rmSync(join(f.plugin, missing));
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const sage of [true, false]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+      for (const actor of [{}, { agent_id: "fixture-child" }]) {
+        const result = hook.handle({ hook_event_name: "PreToolUse", tool_name, cwd: f.dir,
+          tool_input: { command: "echo fixture" }, ...actor }, { sage }, {});
+        assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+        assert.match(result.hookSpecificOutput.permissionDecisionReason, /command reader cannot load/);
+      }
+    }
+    assert.throws(() => hook.shellCommands("echo fixture"), /command reader cannot load/);
+    assert.throws(() => hook.programsRun("echo fixture", f.dir, ""), /command reader cannot load/);
+  }
+});
+
+test("package boundaries allow public core imports and reject reverse private and cross-provider imports", async t => {
+  const module = join(ROOT, "scripts/package-boundaries.mjs");
+  assert.ok(existsSync(module), "package boundaries must have an executable check");
+  const { packageBoundaryProblems } = await import(pathToFileURL(module));
+  const f = isolated(t, "codex");
+  for (const name of ["sage-core", "sage-claude", "sage-codex"]) {
+    mkdirSync(join(f.dir, "packages", name), { recursive: true });
+    writeFileSync(join(f.dir, "packages", name, "index.mjs"), "export const value = 1;\n");
+  }
+  const write = (name, text) => writeFileSync(join(f.dir, "packages", name, "index.mjs"), text);
+  write("sage-claude", "export { value } from 'sage-core';");
+  write("sage-codex", "export { value } from 'sage-core';");
+  assert.deepEqual(packageBoundaryProblems(f.dir), []);
+  for (const [name, text] of [
+    ["sage-core", "export { value } from '../sage-codex/index.mjs';"],
+    ["sage-codex", "export { value } from '../sage-core/index.mjs';"],
+    ["sage-codex", "export { value } from 'sage-core/state.mjs';"],
+    ["sage-codex", "export { value } from '../sage-claude/index.mjs';"],
+    ["sage-claude", "export const value = import('sage-codex');"],
+    ["sage-claude", "export const value = require('sage-core/private.mjs');"],
+    ["sage-claude", "export const value = require('sage-core');"],
+    ["sage-claude", "export const value = import('file:///tmp/other-package.mjs').catch(() => null);"],
+  ]) {
+    write(name, text);
+    assert.ok(packageBoundaryProblems(f.dir).length > 0, `${name}: ${text}`);
+    write(name, "export const value = 1;\n");
+  }
+  assert.equal(existsSync(join(f.dir, ".package-boundary-check")), false);
+  assert.deepEqual(packageBoundaryProblems(ROOT), []);
+});
+
+test("package public imports package both quote styles and dynamic imports outside the checkout", async t => {
+  const module = join(ROOT, "scripts/package-imports.mjs");
+  assert.ok(existsSync(module), "packaging must parse public imports rather than replace one spelling");
+  const { rewriteCoreImports } = await import(pathToFileURL(module));
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const original = [
+      "import { shellCommands } from 'sage-core';",
+      'export { programsRun } from "sage-core";',
+      "export const loaded = import('sage-core');",
+      'export const data = \'from "sage-core"\';',
+      '// import { notCode } from "sage-core";',
+      "export const words = shellCommands('echo fixture')[0].words;",
+    ].join("\n");
+    const rewritten = rewriteCoreImports(original, "./core/index.mjs");
+    assert.match(rewritten, /from "sage-core"/); // Text data and comments remain unchanged.
+    const entry = join(f.plugin, "import-fixture.mjs"); writeFileSync(entry, rewritten);
+    const result = await import(pathToFileURL(entry));
+    assert.deepEqual(result.words, ["echo", "fixture"]);
+    assert.equal(typeof result.programsRun, "function");
+    assert.equal(typeof (await result.loaded).shellCommands, "function");
+    assert.equal(result.data, 'from "sage-core"');
+    const escaped = 'export { shellCommands } from "sage-\\u0063ore";';
+    assert.equal(rewriteCoreImports(escaped, "./core/index.mjs"), 'export { shellCommands } from "./core/index.mjs";');
+  }
+});

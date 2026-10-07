@@ -1278,9 +1278,8 @@ test("the merge check refuses a merge when it cannot run, the hook refuses a mer
   // The state tool does not load.
   const s = autopilotSession();
   const plugin = realpathSync(mkdtempSync(join(tmpdir(), "sage-plugin-")));
-  mkdirSync(join(plugin, "hooks"));
-  mkdirSync(join(plugin, "skills/sage"), { recursive: true });
-  copyFileSync(HOOK, join(plugin, "hooks/sage-hook.mjs"));
+  // Keep the plugin's real dependency graph; only the state tool is broken in this case.
+  cpSync(dirname(dirname(HOOK)), plugin, { recursive: true });
   writeFileSync(join(plugin, "skills/sage/sage.mjs"), 'throw new Error("a broken state tool");\n');
   const send = (event, env = s.vars) => spawnSync("node", [join(plugin, "hooks/sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env });
   const broken = send(bash(MERGE));

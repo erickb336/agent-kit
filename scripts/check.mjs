@@ -8,8 +8,11 @@ import { BRIEF_FIELDS as CORE_BRIEF_FIELDS } from "../packages/sage-core/index.m
 import { BRIEF_FIELDS, REPORT_FIELDS } from "../plugins/sage/hooks/sage-hook.mjs";
 import { fingerprint, overrides } from "./sync-pstack.mjs";
 import { files as graphics } from "./graphics.mjs";
+import { packageBoundaryProblems } from "./package-boundaries.mjs";
 
 const problems = [];
+try { problems.push(...packageBoundaryProblems(ROOT)); }
+catch { problems.push("package dependency analysis failed; check that imports resolve and package sources are valid"); }
 const words = (s) => s.split(/\s+/).filter(Boolean).length;
 
 for (const f of readdirSync(join(ROOT, "principles")).filter((f) => f.endsWith(".md") && f !== "README.md")) {

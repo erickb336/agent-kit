@@ -1,3 +1,4 @@
+import { rewriteCoreImports } from "./package-imports.mjs";
 // Builds the generated files from the sources, so each principle has one copy:
 //   principles/*.md, writing/ste-80.md, writing/readme.md, preferences/working-preferences.md  (the sources)
 //   upstream/pstack/skills/principle-*/SKILL.md  (pstack, kept up to date by scripts/sync-pstack.mjs)
@@ -122,7 +123,7 @@ function packageOutputs(generated) {
         out.set(join(target, rel), result.outputFiles[0].text);
         continue;
       }
-      const content = rel.endsWith(".mjs") ? text.replaceAll('from "sage-core"', `from ${JSON.stringify(specifier.startsWith(".") ? specifier : `./${specifier}`)}`) : text;
+      const content = rel.endsWith(".mjs") ? rewriteCoreImports(text, specifier.startsWith(".") ? specifier : `./${specifier}`) : text;
       out.set(join(target, rel), content);
     }
     for (const file of filesUnder(join(ROOT, "packages/sage-core"))) {
