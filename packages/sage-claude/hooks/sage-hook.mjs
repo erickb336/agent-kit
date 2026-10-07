@@ -45,7 +45,7 @@ const filePolicy = await import("./file-policy.mjs").catch((error) => ({ error }
 const commandReader = await import("./command-reader.mjs").catch((error) => ({ error }));
 const commandPolicy = await import("./command-policy.mjs")
   .then((module) => ({ ...module,
-    commands: module.createCommandPolicy({ stateToolPath: TOOL }),
+    commands: module.createCommandPolicy({ stateToolPath: TOOL, prPattern: stateTool.PR ?? null }),
     pushes: module.createPushPolicy({ stateToolPath: TOOL, readBranch: branchAt, mainReason: TO_MAIN }),
   }))
   .catch((error) => ({ error }));
@@ -210,11 +210,8 @@ const running = (n) => `${n} sage ${n === 1 ? "agent is" : "agents are"} running
 
 export function handle(input, state, slots) {
   const event = input.hook_event_name;
-  if (event === "PreToolUse" && SHELL_TOOLS.test(input.tool_name ?? "") && commandReader.error) {
-    return deny(event, "the command reader cannot load, so this command is refused. Reinstall or update the sage plugin.");
-  }
-  if (event === "PreToolUse" && SHELL_TOOLS.test(input.tool_name ?? "") && commandPolicy.error) {
-    return deny(event, "the command policy cannot load, so this command is refused. Reinstall or update the sage plugin.");
+  if (event === "PreToolUse" && SHELL_TOOLS.test(input.tool_name ?? "") && (commandReader.error || commandPolicy.error)) {
+    return deny(event, "the command modules could not load, so the hook refuses this command. Restore the complete plugin and try again.");
   }
   const main = !agentEvent(input);
   if (main && CHIEF.test(input.agent_type ?? "")) state.sage = true;
@@ -742,34 +739,7 @@ function real(path) {
   }
 }
 
-/** Expansion in a command word can hide git, gh, push or merge. Arguments keep their ordinary braces and globs. */
-function expansionProblem(command, cwd) {
-  const expansion = /[{[*?]/;
-  const expands = (word) => !/^(?:[{}]|\[\[?)$/.test(word) && expansion.test(word); // literal groups and test commands
-  const reason = "shell expansion can hide the command. Use literal program and git or gh subcommand words, without {, [, * or ?.";
-  let runs;
-  try {
-    runs = programsRun(command, cwd);
-  } catch (e) {
-    return expansion.test(command) ? `${reason} The hook cannot read this command (${e.message}).` : undefined;
-  }
-  for (const { word, args, stdin, piped } of runs) {
-    if (expands(word)) return reason;
-    const name = word.split("/").pop();
-    // A shell can run text from a pipe, including through filters. Its output is unknown: refuse expansion in that text.
-    if (piped && commandText(name, args, stdin) === stdin && runnable(shellCommands(command)).some(({ words, bodies }) => [...words, ...bodies].some(expands))) return reason;
-    if (name === "git" && expansion.test(subcommand(args, 0))) return reason;
-    if (name !== "gh") continue;
-    let k = 0;
-    for (let n = 0; n < 2; n++) {
-      while (args[k]?.startsWith("-")) k += /^(?:-R|--repo)$/.test(args[k]) ? 2 : 1;
-      const sub = args[k++] ?? "";
-      if (expansion.test(sub)) return reason;
-      if (n === 0 && sub !== "pr") break; // api's next word is an endpoint, not a subcommand
-    }
-  }
-  return undefined;
-}
+const expansionProblem = (command, cwd) => sharedCommands.expansionProblem(command, cwd);
 
 function gitGate(event, command, state, cwd, main) {
   const expansion = expansionProblem(command, cwd);
@@ -849,8 +819,6 @@ export function mergeIn(command) {
 const mentionsMerge = (text) => commandPolicy.error || commandPolicy.mentionsMerge(text);
 
 const sharedCommands = commandPolicy.commands;
-const runnable = (commands) => sharedCommands.runnable(commands);
-const commandText = (name, args, bodies) => commandReader.commandText(name, args, bodies);
 /**
  * The chief's spelling of a state tool command: node and the tool's absolute path, unquoted, the one form that the
  * sandbox's excluded entry matches (a quoted path stays in the sandbox). A path with a space has no such form, so

@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { shellCommands } from "./command-reader.mjs";
+import { shellCommands, programsRun, commandText } from "./command-reader.mjs";
 import { PR } from "./pull-request.mjs";
 
 const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
@@ -12,13 +12,49 @@ const bare = (text) => text.replace(/\\\n/g, "").replace(/['"\\]/g, "");
 export const mentionsMerge = (text) =>
   (/\bgh\b/i.test(text) && /\bmerge\b/i.test(text)) || (/\bpulls\//i.test(text) && /\/merge\b/i.test(text)) || /\/merges\b|\b(?:mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b/i.test(text);
 
+/** git's options before its subcommand, and the ones that take the next word as their value. */
+const GIT_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)$/;
+const subcommand = (words, k) => {
+  while (words[k]?.startsWith("-")) k += GIT_VALUE.test(words[k]) ? 2 : 1;
+  return words[k] ?? "";
+};
+
 /** Classify command text without executing it. The path is trusted provider configuration, never tool input.
  * A matching merge is only a candidate: role, mode and ledger approval are separate checks.
  */
-export function createCommandPolicy({ stateToolPath } = {}) {
+export function createCommandPolicy({ stateToolPath, prPattern = PR } = {}) {
   if (stateToolPath !== undefined && (typeof stateToolPath !== "string" || !isAbsolute(stateToolPath) || /[\x00-\x1f\x7f]/.test(stateToolPath))) {
     throw new TypeError("stateToolPath must be an absolute path without control characters");
   }
+  /** Expansion in a command word can hide git, gh, push or merge. Arguments keep their ordinary braces and globs. */
+  function expansionProblem(command, cwd) {
+    const expansion = /[{[*?]/;
+    const expands = (word) => !/^(?:[{}]|\[\[?)$/.test(word) && expansion.test(word); // literal groups and test commands
+    const reason = "shell expansion can hide the command. Use literal program and git or gh subcommand words, without {, [, * or ?.";
+    let runs;
+    try {
+      runs = programsRun(command, cwd);
+    } catch (e) {
+      return expansion.test(command) ? `${reason} The hook cannot read this command (${e.message}).` : undefined;
+    }
+    for (const { word, args, stdin, piped } of runs) {
+      if (expands(word)) return reason;
+      const name = word.split("/").pop();
+      // A shell can run text from a pipe, including through filters. Its output is unknown: refuse expansion in that text.
+      if (piped && commandText(name, args, stdin) === stdin && runnable(shellCommands(command)).some(({ words, bodies }) => [...words, ...bodies].some(expands))) return reason;
+      if (name === "git" && expansion.test(subcommand(args, 0))) return reason;
+      if (name !== "gh") continue;
+      let k = 0;
+      for (let n = 0; n < 2; n++) {
+        while (args[k]?.startsWith("-")) k += /^(?:-R|--repo)$/.test(args[k]) ? 2 : 1;
+        const sub = args[k++] ?? "";
+        if (expansion.test(sub)) return reason;
+        if (n === 0 && sub !== "pr") break; // api's next word is an endpoint, not a subcommand
+      }
+    }
+    return undefined;
+  }
+
   const CANNOT = `the hook cannot prove that this command is only the merge command, so it refuses it. Merge only with ${MERGE_FORM}, as a command of its own: not through the GitHub API, a variable, a script or another program. Merge text may stand only in the text of echo, printf, cat, grep, git commit, gh pr create, comment, view or edit, or the state tool, and not piped on or written to a file that a later command could run.`;
 
   /**
@@ -46,8 +82,8 @@ export function createCommandPolicy({ stateToolPath } = {}) {
     const words = text.split(/[ \t]+/);
     if (words.slice(0, 3).join(" ") !== "gh pr merge" || /[^\w \t=-]/.test(text)) return undefined;
     const [, , , pr, ...flags] = words;
-    // The task ledger and command policy use the same PR-number rule.
-    if (!PR.test(pr ?? "")) return { problem: `name the pull request by its number (digits, no leading zero): ${MERGE_FORM}.` };
+    // A null pattern preserves diagnostics when the provider state tool could not load.
+    if (prPattern && !prPattern.test(pr ?? "")) return { problem: `name the pull request by its number (digits, no leading zero): ${MERGE_FORM}.` };
     const shas = [];
     const modes = new Set();
     for (let k = 0; k < flags.length; k++) {
@@ -99,5 +135,5 @@ export function createCommandPolicy({ stateToolPath } = {}) {
       .join("\n");
 
 
-  return Object.freeze({ mergeIn, runnable });
+  return Object.freeze({ expansionProblem, mergeIn, runnable });
 }

@@ -2,7 +2,7 @@
 import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -2911,4 +2911,28 @@ test("Q4-CASE: the named word keeps the command's own capitals (T83 round 6)", (
     assert.ok(answer.includes(word), `${command}: ${answer}`);
   }
   assert.match(denied(s.send(bash("cp x ~/.Claude/Sage/y"))) ?? "", /"~\/\.Claude\/Sage\/y" names the logbook/, "chief");
+});
+
+
+test("missing command modules refuse command tools before protected API writes", () => {
+  for (const missing of ["hooks/command-reader.mjs", "hooks/command-policy.mjs", "core/command-reader.mjs", "core/command-policy.mjs"]) {
+    const plugin = realpathSync(mkdtempSync(join(tmpdir(), "sage-missing-command-")));
+    cpSync(dirname(dirname(HOOK)), plugin, { recursive: true });
+    rmSync(join(plugin, missing), { force: true });
+    for (const on of [false, true]) {
+      const s = session();
+      if (on) s.send(prompt("sage mode"));
+      for (const actor of [{}, { agent_type: "sage:build", agent_id: "child" }]) {
+        for (const name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+          // Only JSON reaches the hook. No command text runs in a shell.
+          const event = tool(name, { command: `gh api repos/o/r/git/refs -f ref=refs/heads/main -f sha=${SHA}` }, actor);
+          const result = spawnSync("node", [join(plugin, "hooks/sage-hook.mjs")], {
+            input: JSON.stringify({ session_id: "s1", ...event }), encoding: "utf8", env: s.vars,
+          });
+          assert.equal(result.status, 0, result.stderr);
+          assert.match(denied(JSON.parse(result.stdout || "{}")) ?? "", /command modules could not load/, `${missing}, sage=${on}, ${name}, ${actor.agent_id ?? "main"}`);
+        }
+      }
+    }
+  }
 });
