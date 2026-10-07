@@ -1527,3 +1527,72 @@ test("package public imports package both quote styles and dynamic imports outsi
     assert.equal(rewriteCoreImports(escaped, "./core/index.mjs"), 'export { shellCommands } from "./core/index.mjs";');
   }
 });
+
+test("shared command policy classifies merge candidates and executable text in both isolated providers", async t => {
+  const sha = "a".repeat(40);
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.createCommandPolicy, "function");
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const adapter = await import(pathToFileURL(join(f.plugin, provider === "claude" ? "hooks/command-policy.mjs" : "runtime/command-policy.mjs")));
+    const policy = adapter.createCommandPolicy({ stateToolPath: tool });
+    const candidate = `gh pr merge 12 --squash --delete-branch --match-head-commit ${sha}`;
+    assert.deepEqual(policy.mergeIn(candidate), { pr: "12", sha });
+    for (const text of [candidate.replace(" 12 ", " 012 "), candidate.replace(sha, "abc"), `${candidate} --admin`,
+      `sh -c '${candidate}'`, `echo '${candidate}' | sh`, `echo '${candidate}' > run; sh run`,
+      "gh api repos/o/r/pulls/12/merge", "gh pr 'merge", "$(echo gh) pr merge 12"]) {
+      assert.equal(typeof policy.mergeIn(text)?.problem, "string", text);
+    }
+    for (const text of ["git status", "git merge topic", `echo '${candidate}'`, `echo '${candidate}' | head -1`,
+      `node '${tool}' log --why '${candidate}'`]) assert.equal(policy.mergeIn(text), undefined, text);
+    assert.ok(api.createCommandPolicy().mergeIn(`node '${tool}' log --why '${candidate}'`)?.problem);
+    assert.ok(policy.mergeIn(`node '/other/sage.mjs' log --why '${candidate}'`)?.problem);
+    const rows = policy.runnable(api.shellCommands(`echo 'git push origin main'; git push origin topic`));
+    assert.deepEqual(rows.map(row => row.words), [["echo"], ["git", "push", "origin", "topic"]]);
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.mergeIn(candidate), policy.mergeIn(candidate));
+      assert.equal(hook.mergeIn(`node '${tool}' log --why '${candidate}'`), undefined);
+    }
+  }
+});
+
+test("shared command policy rejects invalid trusted paths and snapshots its binding", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.createCommandPolicy, "function");
+  for (const path of [null, 1, "", "relative/sage.mjs", "/tmp/bad\npath", "/tmp/bad\0path"]) {
+    assert.throws(() => api.createCommandPolicy({ stateToolPath: path }), /absolute path/);
+  }
+  const binding = { stateToolPath: join(f.dir, "sage.mjs") };
+  const original = binding.stateToolPath;
+  const policy = api.createCommandPolicy(binding);
+  binding.stateToolPath = "/other/sage.mjs";
+  assert.equal(policy.mergeIn(`node '${original}' log --why 'gh pr merge'`), undefined);
+  assert.ok(policy.mergeIn(`node '${binding.stateToolPath}' log --why 'gh pr merge'`)?.problem);
+});
+
+test("shared command policy failures deny recognized Claude command tools before native handling", async t => {
+  for (const missing of ["hooks/command-policy.mjs", "core/command-policy.mjs", "invalid-path"]) {
+    const f = isolated(t, "claude");
+    assert.ok(existsSync(join(f.plugin, "hooks/command-policy.mjs")));
+    if (missing === "invalid-path") {
+      const odd = join(f.dir, "plugin\tpath");
+      cpSync(f.plugin, odd, { recursive: true });
+      f.plugin = odd;
+    } else {
+      assert.ok(existsSync(join(f.plugin, missing)));
+      rmSync(join(f.plugin, missing));
+    }
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const sage of [false, true]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+      for (const actor of [{}, { agent_id: "fixture-child" }]) {
+        const output = hook.handle({ hook_event_name: "PreToolUse", tool_name,
+          tool_input: { command: "echo fixture" }, ...actor }, { sage }, {});
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+      }
+    }
+    assert.ok(hook.mergeIn("gh pr merge 1")?.problem);
+  }
+});

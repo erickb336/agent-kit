@@ -12,6 +12,7 @@ import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkd
 import { homedir, hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { createBoard } from "./board.mjs";
+import { PR } from "./pull-request.mjs";
 
 export function createStateTool({ defaultRoot, models = ["inherit"], modelDefaults = {} }) {
 if (typeof defaultRoot !== "function") throw new TypeError("defaultRoot must be a function");
@@ -95,11 +96,6 @@ const OPTIONS = {
   "merge-check": ["sha", "pr", "cycles"],
   board: ["remember", "name-hex"],
 };
-/**
- * A pull request's number: digits with no leading zero, so that "#5", "05" or a link never hides a task from merge-check
- * --pr. The PR script reads the logbook's PR cell with this same rule.
- */
-const PR = /^[1-9][0-9]*$/;
 /** The canonical number of a PR in an older row: "040" is PR 40. */
 const prNumber = (pr) => (/^\d+$/.test(pr ?? "") ? String(BigInt(pr)) : pr);
 const STANDING = `# Standing orders

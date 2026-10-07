@@ -31,13 +31,18 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const TOOL = join(ROOT, "skills/sage/sage.mjs");
+
 // The state tool. When it cannot load, the hook still runs: its merge check refuses every merge, and it starts no new agent.
 const stateTool = await import("../skills/sage/sage.mjs").catch((error) => ({ error }));
 const boardTool = await import("../skills/sage/board.mjs").catch((error) => ({ error }));
 const modePolicy = await import("./mode-policy.mjs").catch((error) => ({ error }));
 const filePolicy = await import("./file-policy.mjs").catch((error) => ({ error }));
 const commandReader = await import("./command-reader.mjs").catch((error) => ({ error }));
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const commandPolicy = await import("./command-policy.mjs")
+  .then((module) => ({ ...module, commands: module.createCommandPolicy({ stateToolPath: TOOL }) }))
+  .catch((error) => ({ error }));
 const START = String.raw`^[\s"'“‘*_>-]*`;
 const SP = String.raw`[^\S\r\n  ]`; // a space, a tab or an NBSP, never a line break
 const END = String.raw`(?=${SP}*(?:[.,:;!\r\n  ]|$))`;
@@ -201,6 +206,9 @@ export function handle(input, state, slots) {
   const event = input.hook_event_name;
   if (event === "PreToolUse" && SHELL_TOOLS.test(input.tool_name ?? "") && commandReader.error) {
     return deny(event, "the command reader cannot load, so this command is refused. Reinstall or update the sage plugin.");
+  }
+  if (event === "PreToolUse" && SHELL_TOOLS.test(input.tool_name ?? "") && commandPolicy.error) {
+    return deny(event, "the command policy cannot load, so this command is refused. Reinstall or update the sage plugin.");
   }
   const main = !agentEvent(input);
   if (main && CHIEF.test(input.agent_type ?? "")) state.sage = true;
@@ -821,8 +829,6 @@ function real(path) {
   }
 }
 
-const MERGE_FORM = "gh pr merge <n> --squash --delete-branch --match-head-commit <sha>";
-
 function gitGate(event, command, state, cwd, main) {
   const first = main ? firstUpload(command) : undefined; // an agent never gets the exception
   if (first) {
@@ -891,62 +897,15 @@ export function programsRun(command, cwd, path = process.env.PATH ?? "") {
   return commandReader.programsRun(command, cwd, path);
 }
 
-/**
- * Text that names a merge: the word gh and the word merge in any order (so also "$G pr merge" or "gh pr $(echo merge)"),
- * a merge path of the REST API, or a GraphQL merge mutation. Each test is one linear scan.
- */
-const mentionsMerge = (text) =>
-  (/\bgh\b/i.test(text) && /\bmerge\b/i.test(text)) || (/\bpulls\//i.test(text) && /\/merge\b/i.test(text)) || /\/merges\b|\b(?:mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b/i.test(text);
-const CANNOT = `the hook cannot prove that this command is only the merge command, so it refuses it. Merge only with ${MERGE_FORM}, as a command of its own: not through the GitHub API, a variable, a script or another program. Merge text may stand only in the text of echo, printf, cat, grep, git commit, gh pr create, comment, view or edit, or the state tool, and not piped on or written to a file that a later command could run.`;
-
-/**
- * The merge in a Bash command, by an allow-list. Undefined when the command names no merge outside harmless text.
- * Else { pr, sha } when the whole command is the one merge form, which the merge check then decides, or { problem }.
- */
+/** Shared merge classification; the ledger still decides whether a candidate may merge. */
 export function mergeIn(command) {
-  const form = mergeForm(command);
-  if (form) return form;
-  let commands;
-  try {
-    commands = shellCommands(command);
-  } catch (e) {
-    return mentionsMerge(bare(command)) ? { problem: `${CANNOT} (It cannot read the command: ${e.message}.)` } : undefined;
-  }
-  return mentionsMerge(codeText(commands)) || commands.some(expandedMerge) ? { problem: CANNOT } : undefined;
+  if (commandPolicy.error) return { problem: "the command policy cannot load, so the merge is refused." };
+  return sharedCommands.mergeIn(command);
 }
+const mentionsMerge = (text) => commandPolicy.error || commandPolicy.mentionsMerge(text);
+const runnable = (commands) => sharedCommands.runnable(commands);
 
-/** A command whose name comes from an expansion ($'…', $( ), a backtick or $VAR), with the word merge in its words. */
-const expandedMerge = ({ words, bodies }) => /\$/.test(words.find((w) => !/^\w+=/.test(w)) ?? "") && /\bmerge\b/i.test([...words, ...bodies].join(" "));
-
-/** The merge form, when the command is one gh pr merge with plain words only: { pr, sha }, or { problem }. */
-function mergeForm(command) {
-  const text = command.trim();
-  const words = text.split(/[ \t]+/);
-  if (words.slice(0, 3).join(" ") !== "gh pr merge" || /[^\w \t=-]/.test(text)) return undefined;
-  const [, , , pr, ...flags] = words;
-  // The state tool's one PR-number rule. When the state tool cannot load, the merge check refuses every merge anyway.
-  if (stateTool.PR && !stateTool.PR.test(pr ?? "")) return { problem: `name the pull request by its number (digits, no leading zero): ${MERGE_FORM}.` };
-  const shas = [];
-  const modes = new Set();
-  for (let k = 0; k < flags.length; k++) {
-    const f = flags[k];
-    if (f === "--match-head-commit") shas.push(flags[++k] ?? "");
-    else if (f.startsWith("--match-head-commit=")) shas.push(f.slice(f.indexOf("=") + 1));
-    else if (f === "--squash" || f === "--delete-branch") modes.add(f);
-    else return { problem: `merge only with ${MERGE_FORM}; "${f}" is not part of it.` };
-  }
-  if (!shas.length) return { problem: "merge only the checked commit: add --match-head-commit <the head SHA that the ledger verified>." };
-  if (shas.length > 1) return { problem: `give --match-head-commit once, not ${shas.length} times: gh uses the last one, and the merge check reads one.` };
-  if (!/^[0-9a-f]{40}$/i.test(shas[0])) return { problem: `--match-head-commit needs the full 40-character head SHA that the ledger verified, not "${shas[0]}".` };
-  if (modes.size < 2) return { problem: `merge only with ${MERGE_FORM}: add --squash and --delete-branch.` };
-  return { pr, sha: shas[0] };
-}
-
-/**
- * The known-harmless commands, which never run their arguments: the number of words of the command's name, or 0.
- * printf -v sets a variable, so it is not harmless.
- */
-const TOOL = join(ROOT, "skills/sage/sage.mjs");
+const sharedCommands = commandPolicy.commands;
 /**
  * The chief's spelling of a state tool command: node and the tool's absolute path, unquoted, the one form that the
  * sandbox's excluded entry matches (a quoted path stays in the sandbox). A path with a space has no such form, so
@@ -955,40 +914,6 @@ const TOOL = join(ROOT, "skills/sage/sage.mjs");
  */
 export const stateCommand = (args) => (/\s/.test(TOOL) ? `node "${TOOL}" ${args}` : `node ${TOOL} ${args}`);
 const SPACE_NOTE = /\s/.test(TOOL) ? "The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. " : "";
-function harmless([a, b, c, ...rest]) {
-  if (a === "echo" || a === "cat" || a === "grep" || (a === "printf" && ![b, c, ...rest].some((w) => w?.startsWith("-v")))) return 1;
-  if ((a === "git" && b === "commit") || (a === "node" && b === TOOL)) return 2;
-  return a === "gh" && b === "pr" && /^(?:create|comment|view|edit)$/.test(c ?? "") ? 3 : 0;
-}
-/** The commands that may end a pipe after a harmless command: they only cut, count or sort its text. */
-const FILTER = /^(?:head|tail|wc|sort|uniq|less)$/;
-const filters = (c) => FILTER.test(c.words[0] ?? "") && c.words.slice(1).every((w) => /^(?:-\w*|\d+)$/.test(w) && !/^-o|^--output/.test(w));
-/** Shell structure that can send a command's output somewhere other than its own line: then no text is harmless. */
-const STRUCTURE = /^(?:[{}!]|if|then|elif|else|fi|for|while|until|do|done|case|esac|select|function|time|coproc|alias|shopt|enable)$/;
-
-/**
- * The words of each command that can run: all its words and heredoc bodies, except the arguments and heredocs of a
- * harmless command whose output stays harmless. That command is not in a group, not written to a file that a later
- * command could run, is piped on only through filters, and, in a substitution, lands in a harmless argument itself.
- */
-function runnable(commands) {
-  const structure = commands.some((c) => STRUCTURE.test(c.words[0] ?? ""));
-  const last = commands.at(-1);
-  const stays = (c) => !(c.writes && c !== last) && (!c.piped || (c.pipeTo && filters(c.pipeTo) && stays(c.pipeTo)));
-  const contained = (c) => {
-    const n = harmless(c.words);
-    if (!n || structure || c.grouped || !stays(c)) return false;
-    return !c.host || (contained(c.host.cmd) && (c.host.index < 0 || c.host.index >= harmless(c.host.cmd.words)));
-  };
-  return commands.map((c) => (contained(c) ? { cmd: c, words: c.words.slice(0, harmless(c.words)), bodies: [] } : { cmd: c, words: c.words, bodies: c.bodies }));
-}
-
-/** The text of a command line that can run. A local "git merge" is not a merge of a pull request, so its subcommand word is left out. */
-const codeText = (commands) =>
-  runnable(commands)
-    .map(({ words, bodies }) => [...(words[0] === "git" && /^merge(?:-base|-file|-tree)?$/.test(words[1] ?? "") ? [words[0], ...words.slice(2)] : words), ...bodies].join(" "))
-    .join("\n");
-
 /** Shared shell reader. This function parses text and never executes it. */
 export function shellCommands(src) {
   if (commandReader.error) throw new Error("the command reader cannot load");
