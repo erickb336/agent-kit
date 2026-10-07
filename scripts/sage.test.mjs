@@ -466,6 +466,27 @@ for (const [blocking, clean] of [["findings", "review-clean"], ["qa-fail", "qa-p
   });
 }
 
+test("T180 follow-up: blocking verdicts return a pr-ready task to reviewing with a decision", () => {
+  for (const blocking of ["findings", "qa-fail", "checks-fail"]) {
+    const s = store();
+    s.ok("task", "add", "--title", "t", "--size", "small");
+    toReviewing(s, "T1");
+    s.ok("task", "T1", "set", "state=verifying");
+    for (const kind of ["checks-pass", "review-clean", "qa-pass"]) s.ok("verdict", "T1", "--sha", SHA, "--kind", kind);
+    s.ok("task", "T1", "set", "state=verified");
+    s.ok("task", "T1", "set", "state=pr-ready");
+    if (blocking !== "checks-fail") s.ok("finding", "add", "T1", "--source", "qa", "--severity", "medium", "--summary", "A new problem");
+
+    assert.equal(s.ok("verdict", "T1", "--sha", SHA, "--kind", blocking), `T1 ${blocking} · a1b2c3d · cycle 1 · reviewing`);
+    assert.equal(rows(s.dir, "tasks")[0].state, "reviewing");
+    assert.match(s.ok("task", "T1"), /^T1 reviewing/);
+    assert.deepEqual(rows(s.dir, "decisions").map(({ task, decision, why }) => ({ task, decision, why })), [
+      { task: "T1", decision: "pr-ready → reviewing", why: `${blocking} verdict on ${SHA}` },
+    ]);
+    assert.equal(rows(s.dir, "ledger").at(-1).kind, blocking);
+  }
+});
+
 test("two chiefs at once: 2 x 50 rounds of updates and of creates lose no write and repeat no id", async () => {
   const s = store();
   s.ok("task", "add", "--title", "a", "--size", "small");

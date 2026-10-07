@@ -1011,10 +1011,11 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       if (opt.sha && notFull(opt.sha)) refuse(notFull(opt.sha));
       const sha = opt.sha?.toLowerCase() ?? ""; // as git prints it
       const decided = opt.pr ? setPr(task, opt.pr, "verdict --pr") : [];
-      const backToReview = task.state === "verified" && NOT_CLEAN.includes(kind);
+      const beforeReview = task.state;
+      const backToReview = ["verified", "pr-ready"].includes(beforeReview) && NOT_CLEAN.includes(kind);
       if (backToReview) {
         move(task, "reviewing");
-        decided.push({ at: now(), task: task.id, decision: "verified → reviewing", why: `${kind} verdict on ${sha}` });
+        decided.push({ at: now(), task: task.id, decision: `${beforeReview} → reviewing`, why: `${kind} verdict on ${sha}` });
       }
       if (decided.length) write(dir, "decisions", [...read(dir, "decisions"), ...decided]);
       write(dir, "tasks", tasks);
