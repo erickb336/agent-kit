@@ -1596,3 +1596,81 @@ test("shared command policy failures deny recognized Claude command tools before
     assert.ok(hook.mergeIn("gh pr merge 1")?.problem);
   }
 });
+
+test("shared push policy applies the same branch and force rules in both isolated providers", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.createPushPolicy, "function");
+    const adapter = await import(pathToFileURL(join(f.plugin, provider === "claude" ? "hooks/command-policy.mjs" : "runtime/command-policy.mjs")));
+    const calls = [];
+    let branch = "topic";
+    const policy = adapter.createPushPolicy({ readBranch: dir => { calls.push(dir); return branch; } });
+    for (const text of ["git push origin topic", "git push -u --follow-tags origin topic", "git push --delete origin topic",
+      "echo 'git push origin main'", "git status"]) assert.equal(policy.pushProblem(text, f.dir), undefined, text);
+    for (const text of ["git push origin main", "git push origin refs/heads/master", "git push origin topic:main",
+      "git push -f origin topic", "git push --force-with-lease origin topic", "git push --forc origin topic",
+      "git push --mirror origin", "git push origin HEAD", "git push origin", "git push upstream topic",
+      "git push origin '$BRANCH'", "sudo git push origin topic", "sh -c 'git push origin topic'",
+      "echo 'git push origin main' | sh", "git push 'origin", "gh api repos/o/r/git/refs -f ref=refs/heads/main"]) {
+      const before = calls.length;
+      assert.equal(typeof policy.pushProblem(text, f.dir), "string", text);
+      assert.equal(calls.length, before, "invalid forms must not query a checkout");
+    }
+    branch = "main";
+    assert.match(policy.pushProblem("git push origin topic", f.dir), /checkout is on main/);
+    assert.equal(policy.pushProblem("git push --delete origin topic", f.dir), undefined);
+    assert.doesNotMatch(policy.pushProblem("git push origin main", f.dir), /first creation|asks the user/);
+    assert.equal(api.gitSubcommand(["-C", "folder", "-c", "x=y", "stash", "list"], 0), "stash");
+  }
+});
+
+test("shared push policy derives checkout paths and scopes the state-tool text exception", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.createPushPolicy, "function");
+  const tool = join(f.dir, "sage.mjs");
+  const calls = [];
+  const policy = api.createPushPolicy({ stateToolPath: tool, readBranch: dir => { calls.push(dir); return "topic"; } });
+  assert.equal(policy.pushProblem("cd project; git -C nested push origin topic", f.dir), undefined);
+  assert.deepEqual(calls, [join(f.dir, "project/nested")]);
+  assert.equal(policy.pushProblem(`node '${tool}' log --why 'git push origin main'`, f.dir), undefined);
+  assert.ok(policy.pushProblem("node /other/sage.mjs log --why 'git push origin main'", f.dir));
+  assert.deepEqual(calls, [join(f.dir, "project/nested")]);
+});
+
+test("shared push policy validates and snapshots trusted branch readers and messages", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.createPushPolicy, "function");
+  assert.throws(() => api.createPushPolicy(), /readBranch/);
+  for (const mainReason of [null, "", " ", "bad\nmessage", "x".repeat(2049)]) {
+    assert.throws(() => api.createPushPolicy({ readBranch: () => "topic", mainReason }), /mainReason/);
+  }
+  const options = { readBranch: () => "main", mainReason: "Use a reviewed pull request." };
+  const policy = api.createPushPolicy(options);
+  options.readBranch = () => "topic"; options.mainReason = "changed";
+  assert.match(policy.pushProblem("git push origin topic", f.dir), /checkout is on main/);
+  assert.match(policy.pushProblem("git push origin main", f.dir), /Use a reviewed pull request/);
+  for (const value of [null, "", " ", "main\n", "master\r\n", "topic\tname", "topic\0name", true, Promise.resolve("topic")]) {
+    assert.throws(() => api.createPushPolicy({ readBranch: () => value }).pushProblem("git push origin topic", f.dir), /readBranch/);
+  }
+  const broken = api.createPushPolicy({ readBranch: () => { throw new Error("fixture read failure"); } });
+  assert.throws(() => broken.pushProblem("git push origin topic", f.dir), /fixture read failure/);
+  // Preserve the existing Claude rule; Codex can require its reader to throw on missing evidence.
+  assert.equal(api.createPushPolicy({ readBranch: () => undefined }).pushProblem("git push origin topic", f.dir), undefined);
+});
+
+test("shared push policy loading failures deny Claude command tools", async t => {
+  const f = isolated(t, "claude");
+  const path = join(f.plugin, "core/push-policy.mjs");
+  assert.ok(existsSync(path)); rmSync(path);
+  const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+  for (const sage of [false, true]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+    for (const actor of [{}, { agent_id: "fixture-child" }]) {
+      const output = hook.handle({ hook_event_name: "PreToolUse", tool_name,
+        tool_input: { command: "git push origin topic" }, ...actor }, { sage }, {});
+      assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+    }
+  }
+});

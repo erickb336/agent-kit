@@ -1,1 +1,1 @@
-export { createCommandPolicy, mentionsMerge } from "sage-core";
+export { createCommandPolicy, mentionsMerge, createPushPolicy, gitSubcommand } from "sage-core";

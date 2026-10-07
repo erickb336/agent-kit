@@ -58,14 +58,19 @@ not another source layer. Tests run each bundle outside the checkout.
 ## Current migration
 
 Task state, the board, assignments, admission, role rules, brief validation,
-principles, shared role text, command reading, and merge-command classification already live in core. The
+principles, shared role text, command reading, merge-command classification, and push rules already live in core. The
 command reader is the existing implementation; this move changes no shell grammar.
 
 The shared command policy takes a trusted state-tool path from each provider.
 A recognized merge is only a candidate; mode, role and ledger checks still decide
 whether it can run. An omitted path grants no state-tool text exception.
 
-The Claude hook still combines native handling with other command, push, logbook-write,
+The shared push policy receives a synchronous branch reader and a refusal message.
+Claude retains its Git invocation and first-upload confirmation flow. Core does
+not grant that exception. Missing branch evidence keeps the existing Claude
+behavior; Codex must use a reader that throws when it cannot verify the branch.
+
+The Claude hook still combines native handling with other command, logbook-write,
 and workflow policies. Extract those rules into core behind explicit operation
 contracts, then change each provider to call them. Keep native identity and event
 correlation in each provider. Do not move native transport code into core merely
