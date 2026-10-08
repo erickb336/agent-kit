@@ -3885,3 +3885,53 @@ test("T197: derived command evidence belongs to its dispatch", async () => {
   assert.equal(programsRun(safe[2], f.dir, process.env.PATH).some(run => run.word === f.hard), false, "obsolete argument text is absent from the default leaf view");
   assert.deepEqual(failures, [], "function arguments do not retain an external program's dispatch rules");
 });
+
+test("T197: known functions own copy and source arguments", () => {
+  const f = ghAgentSession();
+  const source = join(f.dir, "ordinary.txt"), aliases = join(f.dir, "aliases.yml"), copy = join(f.dir, "copy");
+  writeFileSync(source, "ordinary\n"); writeFileSync(aliases, "safe: pr view\n");
+  const otherBin = join(f.dir, "other-bin"), client = join(f.dir, "ordinary-client");
+  mkdirSync(otherBin); writeFileSync(client, "inert fixture\n", { mode: 0o755 }); linkSync(client, join(otherBin, "gh"));
+  const safe = [
+    `export() { echo safe; }; export PATH=${otherBin}:$PATH; ${client} auth status`,
+    `cp() { echo safe; }; cp ${source} ${aliases}`,
+    `f() { cp ${source} ${aliases}; }; cp() { echo safe; }; f`,
+    `cp() { echo safe; }; cp ${f.hard} ${copy}`,
+    `f() { echo safe; }; f ${f.hard}; printf payload > ${copy}`,
+    `f() { echo safe; }; f ${aliases}; printf payload > ${copy}`,
+    `f() { echo safe; }; f ${source}; printf payload > ${copy}`,
+  ];
+  const failures = safe.filter(command => f.send(command) !== undefined);
+  for (const command of [
+    `export PATH=${otherBin}:$PATH; ${client} auth status`,
+    `cp ${source} ${aliases}`,
+    `cp() { echo safe; }; command cp ${f.hard} ${copy}`,
+    `cp() { echo safe; }; cp "$(${f.hard} auth status)" ${copy}`,
+    `cp() { echo safe; }; cp ${source} ${copy} > ${aliases}`,
+    `f() { cat ${f.hard} > ${copy}; }; f`,
+  ]) assert.ok(denied(f.send(command)), "external copy, body writes and caller syntax retain their own checks");
+  assert.deepEqual(failures, [], "known function arguments do not enter external copy rules");
+});
+
+test("T197: provisional dispatch errors follow the actual binding", () => {
+  const f = ghAgentSession();
+  const failures = [];
+  for (const args of ["--qa-unused-option g", "-S"]) {
+    for (const command of [
+      `f() { env ${args}; }; env() { echo safe; }; f`,
+      `env() { echo safe; }; f() { env ${args}; }; f`,
+    ]) if (f.send(command) !== undefined) failures.push(command);
+    for (const command of [
+      `f() { env ${args}; }; f`,
+      `f() { env ${args}; }; echo safe`,
+      `f() { command env ${args}; }; env() { echo safe; }; f`,
+      `f() { env ${args}; }; env() { echo safe; }; f; unset -f env; f`,
+      `f() { env ${args}; }; f; env() { echo safe; }; f`,
+    ]) assert.ok(denied(f.send(command)), "actual, unresolved and bypassed dispatch errors remain refusals");
+  }
+  for (const command of [
+    `f() { env --qa-unused-option "$(${f.hard} auth status)"; }; env() { echo safe; }; f`,
+    `f() { env -S > ${join(f.dir, "aliases.yml")}; }; env() { echo safe; }; f`,
+  ]) assert.ok(denied(f.send(command)), "syntax outside an obsolete interpretation remains checked");
+  assert.deepEqual(failures, [], "a later function binding retires only its provisional interpretation error");
+});

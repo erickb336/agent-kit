@@ -936,7 +936,7 @@ function ghAliasBodyProblem(body, cwd, path, inherited) {
   // Alias definitions may contain more alias definitions. Refuse an unreadable or over-deep body.
   if ((inherited?.depth ?? 0) >= 4) return NO_GH;
   try {
-    return ghProblem(body, cwd, path, programsRun(body, cwd, path), { ...inherited, depth: (inherited?.depth ?? 0) + 1, alias: true });
+    return ghProblem(body, cwd, path, { ...inherited, depth: (inherited?.depth ?? 0) + 1, alias: true });
   } catch { return NO_GH; }
 }
 const fileIdentity = file => {
@@ -985,7 +985,7 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
     return why && `${why} (The hook cannot read this command: ${e.message}.)`;
   }
   try {
-    const gh = ghProblem(command, cwd, path, runs);
+    const gh = ghProblem(command, cwd, path);
     if (gh) return gh;
   } catch (error) {
     return `${NO_GH} (The hook cannot read executable evidence: ${error.message}.)`;
@@ -1064,27 +1064,29 @@ function copyDestinations(args, cwd, uncertainDirectory = false) {
 }
 
 /** The gh policy is shared by direct commands and proposed alias bodies, with the same file identities. */
-function ghProblem(command, cwd, path, runs, inherited) {
+function ghProblem(command, cwd, path, inherited) {
   const scoped = programsRun(command, cwd, path, { contextEvidence: true, uncertainDirectory: inherited?.uncertainDirectory });
   const evidence = scoped.programs.map(entry => entry.run);
   const leaves = scoped.programs.filter(entry => !entry.wrapper);
   const uncertain = new Set(scoped.programs.filter(entry => entry.uncertainDirectory).map(entry => entry.run));
   const shellFunctions = new Set(scoped.programs.filter(entry => entry.shellFunction || entry.resolvedDeclaration).map(entry => entry.run));
-  const writesCommand = scoped.redirects.some(({ redirect }) => toFile(redirect)) || leaves.some(({ run }) =>
-    !shellFunctions.has(run) && writesIn({ words: [run.word, ...run.args], redirects: [] }));
-  if (ghAliasWrite(command) && writesCommand) return NO_GH;
+  const dispatches = leaves.filter(({ run }) => !shellFunctions.has(run));
   const redirects = scoped.redirects;
+  const writesCommand = redirects.some(({ redirect }) => toFile(redirect)) || dispatches.some(({ run }) =>
+    writesIn({ words: [run.word, ...run.args], redirects: [] }));
+  if (writesCommand && (redirects.some(({ redirect }) => ghAliasWrite(redirect)) ||
+    dispatches.some(({ run }) => ghAliasWrite([run.word, ...run.args, ...run.stdin].join(" "))))) return NO_GH;
   for (const { redirect, dir, uncertainDirectory } of redirects) {
     const target = redirect.replace(/^(&>>?|>>|>\||>&|<>|<&|>|<)/, "");
     if (toFile(redirect) && ((uncertainDirectory && !isAbsolute(target)) || aliasDestination(target, dir))) return NO_GH;
     if (uncertainDirectory && writesCommand && /^<[^<&]/.test(redirect) && !isAbsolute(target)) return NO_GH;
   }
-  if (leaves.some(({ run, uncertainDirectory }) => [run.word, run.file].some(name => name && basename(name) === "cp") && copyDestinations(run.args, run.dir, uncertainDirectory).some(file => aliasDestination(file, run.dir)))) return NO_GH;
+  if (dispatches.some(({ run, uncertainDirectory }) => [run.word, run.file].some(name => name && basename(name) === "cp") && copyDestinations(run.args, run.dir, uncertainDirectory).some(file => aliasDestination(file, run.dir)))) return NO_GH;
   const commands = shellCommands(command);
   const inputs = commands.flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.replace(/^<>?/, ""));
   // Control flow can keep any observed PATH in effect. Never discard a known gh identity.
   const paths = new Set([...(inherited?.paths ?? []), path, ...evidence.map(run => run.path).filter(value => typeof value === "string")]);
-  for (const run of runs) {
+  for (const { run } of dispatches) {
     if (run.word !== "export") continue;
     for (const word of run.args) if (/^PATH=/.test(word)) paths.add(word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path));
   }
@@ -1092,7 +1094,7 @@ function ghProblem(command, cwd, path, runs, inherited) {
   const lookups = new Set([...folders].flatMap(dir => [...paths].flatMap(value => value.split(":").map(entry => resolve(dir, entry || ".")))));
   const identities = new Set([...(inherited?.identities ?? []), ...[...lookups].flatMap(dir => [fileIdentity(join(dir, "gh")), fileIdentity(join(dir, "gh.exe"))])].filter(Boolean));
   const context = { ...inherited, paths, folders, identities };
-  if (writesCommand && leaves.some(({ run, uncertainDirectory }) => [...run.args, ...run.stdin].some(text => ghAliasConfiguration(text, run.dir, run.path, { ...context, uncertainDirectory })))) return NO_GH;
+  if (writesCommand && dispatches.some(({ run, uncertainDirectory }) => [...run.args, ...run.stdin].some(text => ghAliasConfiguration(text, run.dir, run.path, { ...context, uncertainDirectory })))) return NO_GH;
   const isGhFile = file => {
     if (!file) return false;
     try {
@@ -1119,7 +1121,7 @@ function ghProblem(command, cwd, path, runs, inherited) {
     const isGh = GH_NAME.test(name) || (!shellFunctions.has(run) && (isGhFile(file) || possible.some(isGhFile)));
     if (isGh && (inherited?.alias || !plainGh(command))) return NO_GH;
   }
-  for (const { run: { word, file, args, dir, path: runPath }, uncertainDirectory } of leaves) {
+  for (const { run: { word, file, args, dir, path: runPath }, uncertainDirectory } of dispatches) {
     const name = word.split(/[\\/]/).pop();
     const aliasName = /^(?:git|git\.exe)$/i.test(basename(file ?? "")) ? "git" : name;
     if (aliasBodies(aliasName, args).some(body => ghAliasBodyProblem(body, dir, runPath, { ...context, uncertainDirectory }))) return NO_GH;

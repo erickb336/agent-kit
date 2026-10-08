@@ -368,6 +368,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
 }), publicLeaves = true) {
   const functionBodies = new Map(), functionIds = new WeakMap();
   const callSites = new WeakMap(), provisionalCalls = new Map(), provisionalDerived = new Map(), confirmedCalls = new Set();
+  const provisionalErrors = [];
   let functionDepth = 0, declarationDepth = 0, emitLeaves = publicLeaves;
   const siteFor = (command, index) => {
     if (!callSites.has(command)) callSites.set(command, []);
@@ -401,6 +402,14 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
     let derived;
     const derive = site => {
       if (declarationDepth && !derived) derived = { site, contextStart: found.contexts.length, redirectStart: found.redirects.length };
+    };
+    // An unresolved declaration owns its interpretation error; actual calls still throw immediately.
+    const interpret = (site, read) => {
+      try { return read(); }
+      catch (error) {
+        if (!declarationDepth) throw error;
+        provisionalErrors.push({ site: derived?.site ?? site, error });
+      }
     };
     for (const child of COMMAND_CONTEXT.get(c).children) walkFlow(child, [state], execute);
     if (!COMMAND_CONTEXT.get(c).groupOwned) execute.redirects(c.redirects, [state]);
@@ -443,14 +452,16 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         WRAPPER.has(key) && (key !== "npm" || words.slice(k + 1).some(word => /(?:^|=)(?:exec|x)$/.test(word))));
       const originalArgs = words.slice(k + 1);
       const npmWords = wrapper === "npm" ? [...words] : undefined;
-      const npm = npmWords && wrapperArguments(npmWords, k + 1, wrapper, here, at);
+      const npm = npmWords && interpret(siteFor(c, k), () => wrapperArguments(npmWords, k + 1, wrapper, here, at));
+      if (npmWords && !npm) break;
       if (npm?.ordinary) wrapper = undefined;
       else if (npm) words.splice(0, words.length, ...npmWords);
       if (wrapper) {
         const modifier = keyword && !w.includes("/") && /^(?:time|noglob|nocorrect)$/.test(name);
         const external = viaExec || w.includes("/") || (!modifier && !/^(?:command|builtin|exec)$/.test(name));
         if (external) emit({ word: w, file, args: originalArgs, dir: at, path: here, stdin: [], piped: false }, true, uncertain, false, siteFor(c, k));
-        derive(siteFor(c, k));
+        const dispatchSite = siteFor(c, k);
+        derive(dispatchSite);
         if (wrapper.includes(" ")) k++;
         if (modifier) {
           if (name === "time" && words[k + 1] === "-p") k++;
@@ -465,14 +476,16 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
           localHome = environment.home;
         }
         if (wrapper === "watch") {
-          const watched = watchOptions(words, k + 1);
+          const watched = interpret(dispatchSite, () => watchOptions(words, k + 1));
+          if (!watched) break;
           if (watched.shellText) {
-            inner(words.slice(watched.next).join(" "), at, here, transformed, uncertain, shellLookup(environment));
+            interpret(dispatchSite, () => inner(words.slice(watched.next).join(" "), at, here, transformed, uncertain, shellLookup(environment)));
             break;
           }
           k = watched.next - 1;
         } else {
-          const wrapped = npm ?? wrapperArguments(words, k + 1, wrapper, here, at);
+          const wrapped = npm ?? interpret(dispatchSite, () => wrapperArguments(words, k + 1, wrapper, here, at));
+          if (!wrapped) break;
           k = wrapped.next - 1;
           here = wrapped.path;
           if (Object.hasOwn(wrapped.lookup ?? {}, "cdpath")) localCdpath = environment.cdpath = wrapped.lookup.cdpath;
@@ -481,7 +494,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
           at = wrapped.dir;
           transformed ||= wrapped.split;
           if (wrapped.call) {
-            inner(wrapped.call, at, here, true, uncertain, shellLookup(environment));
+            interpret(dispatchSite, () => inner(wrapped.call, at, here, true, uncertain, shellLookup(environment)));
             break;
           }
         }
@@ -540,8 +553,8 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       if (!functionId) {
         const texts = commandText(name, args, bodies);
         if (texts.length) derive(siteFor(c, k));
-        for (const text of texts) inner(text, at, here, transformed, uncertain,
-          name === "eval" && !viaExec ? { cdpath: localCdpath, home: localHome, exported } : shellLookup(environment));
+        for (const text of texts) interpret(siteFor(c, k), () => inner(text, at, here, transformed, uncertain,
+          name === "eval" && !viaExec ? { cdpath: localCdpath, home: localHome, exported } : shellLookup(environment)));
         const exec = [name, file?.split("/").pop()].includes("find") ? args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)) : -1;
         if (exec >= 0 && args[exec + 1]) {
           derive(siteFor(c, k));
@@ -613,6 +626,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
   }
   found.contexts = found.contexts.filter(entry => !obsoleteContexts.has(entry));
   found.redirects = found.redirects.filter(redirect => !obsoleteRedirects.has(redirect));
+  for (const { site, error } of provisionalErrors) if (!confirmedCalls.has(site)) throw error;
   return result;
 }
 
