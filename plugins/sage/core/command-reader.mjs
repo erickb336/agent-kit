@@ -46,11 +46,13 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  * the program of find -exec, and a program word with spaces that a wrapper such as watch gives to sh -c. The words
  * after a script (bash ./x.sh kill) are the script's arguments, not programs. Each $( ) or backtick is a command of its
  * own, and so is each <( ) and >( ). It cannot see a program in a variable ($P), in text piped into a shell, or inside a script.
+ * With executableEvidence, also retain external wrappers and literal command names. Wrapper options own their values;
+ * shell syntax and builtin wrappers are not external executable evidence. The default leaf view stays unchanged.
  * Throws when the shell reader cannot read the line (see shellCommands), and for text nested more than 3 levels deep.
  */
-export function programsRun(command, cwd, path = process.env.PATH ?? "") {
+export function programsRun(command, cwd, path = process.env.PATH ?? "", { executableEvidence = false } = {}) {
   const found = [];
-  readPrograms(command, cwd, path, 0, found);
+  readPrograms(command, cwd, path, 0, found, executableEvidence);
   return found;
 }
 
@@ -86,60 +88,166 @@ function watchOptions(words, next) {
   return { next, shellText };
 }
 
-function readPrograms(command, dir, path, depth, found) {
+const ENV_OPTIONS = {
+  "argv0": "a", "ignore-environment": "i", "env0-from": "value", "null": "0", "unset": "u", "chdir": "C",
+  "default-signal": "optional", "ignore-signal": "optional", "block-signal": "optional",
+  "list-signal-handling": "flag", "debug": "v", "quoting-style": "value", "split-string": "S", "help": "flag", "version": "flag",
+};
+
+/** env -S splits argv, not shell commands. Refuse unknown expansion instead of losing executable evidence. */
+function envSplit(text) {
+  const words = [];
+  let word, quote;
+  const add = value => { word = (word ?? "") + value; };
+  const end = () => { if (word !== undefined) words.push(word); word = undefined; };
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if ((char === "'" || char === '"') && (!quote || quote === char)) {
+      quote = quote ? undefined : char;
+      add("");
+    } else if (/\s/.test(char) && !quote) end();
+    else if (char === "#" && word === undefined) break;
+    else if (char === "$" && quote !== "'") throw new Error("env split-string contains an unresolved variable");
+    else if (char === "\\" && (quote !== "'" || ["\\", "'"].includes(text[i + 1]))) {
+      const escape = text[++i];
+      if (escape === "_" && quote !== '"') end();
+      else if (escape === "c" && quote !== '"') break;
+      else if (escape === "_" && quote === '"') add(" ");
+      else if (["'", '"', "#", "$", "\\"].includes(escape)) add(escape);
+      else if (Object.hasOwn({ f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" }, escape)) add({ f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" }[escape]);
+      else throw new Error("env split-string contains an invalid escape");
+    } else add(char);
+  }
+  if (quote) throw new Error("env split-string has an open quote");
+  end();
+  return words;
+}
+
+function wrapperArguments(words, next, wrapper, path, dir) {
+  let splits = 0, chdir;
+  while (/^-./.test(words[next] ?? "")) {
+    const option = words[next++];
+    if (option === "--") break;
+    if (wrapper !== "env") {
+      const takesValue = WRAPPER.get(wrapper);
+      let flag = option.split("=")[0], value;
+      if (option.startsWith("--")) {
+        if (takesValue?.test(flag)) value = option.includes("=") ? option.slice(option.indexOf("=") + 1) : words[next++];
+      } else {
+        const index = [...option].findIndex((char, i) => i > 0 && takesValue?.test(`-${char}`));
+        if (index >= 0) {
+          flag = `-${option[index]}`;
+          value = option.slice(index + 1) || words[next++];
+        }
+      }
+      if (wrapper === "sudo" && (flag === "-D" || flag === "--chdir")) chdir = value;
+      continue;
+    }
+    let flags;
+    if (option.startsWith("--")) {
+      const prefix = option.slice(2).split("=")[0];
+      const matches = Object.keys(ENV_OPTIONS).filter(name => name.startsWith(prefix));
+      const name = Object.hasOwn(ENV_OPTIONS, prefix) ? prefix : matches.length === 1 ? matches[0] : undefined;
+      flags = [ENV_OPTIONS[name]];
+    } else flags = [...option.slice(1)];
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i];
+      if (!["a", "u", "C", "P", "S", "value"].includes(flag)) continue;
+      const attached = option.startsWith("--") ? (option.includes("=") ? option.slice(option.indexOf("=") + 1) : undefined) : flags.slice(i + 1).join("") || undefined;
+      const value = attached ?? words[next++];
+      if (value === undefined) throw new Error("env option has no value");
+      if (flag === "S") {
+        if (++splits > 4) throw new Error("env split-string nested more than 4 levels deep");
+        const expanded = envSplit(value);
+        words.splice(next, 0, ...expanded);
+      } else if (flag === "P") path = value;
+      else if (flag === "C") chdir = value;
+      break;
+    }
+  }
+  if (wrapper === "timeout" || wrapper === "gtimeout") next++; // only timeout owns a duration operand
+  if (wrapper === "env" && words[next] === "-") next++;
+  if (wrapper === "env" || wrapper === "sudo") {
+    while (words[next]?.includes("=")) {
+      const word = words[next++];
+      if (/^PATH=/.test(word)) path = word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
+    }
+  }
+  return { next, path, dir: chdir === undefined ? dir : resolve(dir, chdir) };
+}
+
+function readPrograms(command, dir, path, depth, found, evidence) {
   const inner = (text, at, here) => {
     if (depth === 3) throw new Error("commands nested more than 3 levels deep");
-    readPrograms(text, at, here, depth + 1, found);
+    readPrograms(text, at, here, depth + 1, found, evidence);
   };
   const commands = shellCommands(command);
   for (const c of commands) {
-    const { words, bodies } = c;
+    const { bodies, syntax } = c;
+    const words = evidence ? [...c.words] : c.words;
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
     const exported = words[0] === "export" && words.slice(1).filter(word => /^PATH=/.test(word)).at(-1);
     if (exported) path = set(exported);
     let here = path;
+    let at = dir; // a wrapper chdir belongs to this command, not the following shell command
     let viaExec = false;
+    let argv = false; // wrappers pass arguments; those words are no longer shell keywords or assignments
     let shellText; // undefined keeps the generic wrapper fallback; watch selects shell text or literal argv
     let takesValue; // the options of the last wrapper that take a value
     for (let k = 0; k < words.length; k++) {
       const w = words[k];
       const name = w.split("/").pop();
-      if (takesValue?.test(w)) k++;
-      if (/^PATH=/.test(w)) here = set(w); // only before the program, never an ordinary argument
-      if (/^\w+=/.test(w) || w.startsWith("-") || /^\d+[smhd]?$/.test(w) || KEYWORD.test(w)) continue;
-      if (LIST.test(w)) break;
-      if (w === "function" && ++k) continue; // function <name> { … }: the name is not a program
+      if (!evidence && takesValue?.test(w)) k++;
+      const assignment = evidence ? !argv && syntax[k]?.assignment : /^\w+=/.test(w);
+      const keyword = evidence ? !argv && !syntax[k]?.quoted : true;
+      if (assignment && /^PATH=/.test(w)) here = set(w);
+      if (assignment || (keyword && KEYWORD.test(w)) || (!evidence && (w.startsWith("-") || /^\d+[smhd]?$/.test(w)))) continue;
+      if (keyword && LIST.test(w)) break;
+      if (keyword && w === "function" && ++k) continue; // the function name is not a program
       const wrapper = [`${name} ${words[k + 1]}`, name].find((key) => WRAPPER.has(key));
       if (wrapper) {
+        if (evidence && (viaExec || w.includes("/") || (name === "time" && (argv || syntax[k]?.quoted)) || (!SAME_SHELL.test(name) && name !== "exec"))) {
+          found.push({ word: w, file: program(w, at, here), args: words.slice(k + 1), dir: at, path: here, stdin: [], piped: false });
+        }
         if (wrapper !== name) k++;
         viaExec ||= !SAME_SHELL.test(name);
+        argv = true;
         if (name === "watch") {
           const watched = watchOptions(words, k + 1);
+          if (evidence && watched.shellText) {
+            inner(words.slice(watched.next).join(" "), at, here);
+            break;
+          }
           shellText ||= watched.shellText;
           k = watched.next - 1;
+        } else if (evidence) {
+          const wrapped = wrapperArguments(words, k + 1, wrapper, here, at);
+          k = wrapped.next - 1;
+          here = wrapped.path;
+          at = wrapped.dir;
         }
         takesValue = WRAPPER.get(wrapper);
         continue;
       }
       // A direct quoted path stays literal. A shell-text wrapper interprets its argument even if that filename exists.
-      const file = program(w, dir, here);
-      if (/\s/.test(w) && (shellText ?? !file)) { // watch "ps -ax" runs its text with sh -c
-        inner(w, dir, here);
+      const file = program(w, at, here);
+      if (/\s/.test(w) && (evidence ? shellText === true : (shellText ?? !file))) { // watch "ps -ax" runs its text with sh -c
+        inner(w, at, here);
         break;
       }
       const args = words.slice(k + 1);
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir, path: here, stdin, piped: pipes.length > 0 });
-      for (const text of commandText(name, args, bodies)) inner(text, dir, here);
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 });
+      for (const text of commandText(name, args, bodies)) inner(text, at, here);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, path: here, stdin: [], piped: false });
+        found.push({ word: args[exec + 1], file: program(args[exec + 1], at, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir: at, path: here, stdin: [], piped: false });
       }
       break;
     }
-    if (words.length && words.every(word => /^\w+=/.test(word))) path = here;
+    if (words.length && words.every((word, index) => evidence ? syntax[index]?.assignment : /^\w+=/.test(word))) path = here;
     if (words[0] === "cd" && words.length === 2) dir = resolve(dir, words[1]); // for the commands after it
   }
 }
@@ -179,7 +287,7 @@ function program(word, dir, path) {
 
 /**
  * The simple commands of a shell command line: { words, bodies, host, piped, pipeTo, grouped, writes }. The words lose their
- * quotes and redirections (2>/dev/null, >out, <in, with their targets); the bodies are the command's heredocs and
+ * quotes and redirections (2>/dev/null, >out, <in, with their targets); syntax retains quote and assignment eligibility; the bodies are the command's heredocs and
  * here-strings, which stay text. The patterns of a case arm ("top)") are not commands. A command substitution, $( ) or a backtick, gives
  * commands of its own, whose host is the command and word they land in (index -1: a heredoc), and so does a process
  * substitution, <( ) or >( ). Throws when it cannot read the line: an open quote, substitution, heredoc, "(" or case,
@@ -192,9 +300,10 @@ export function shellCommands(src) {
 }
 
 function readCommands(src, i, close, out, host) {
-  const fresh = () => ({ words: [], bodies: [], host, piped: false, grouped: false, writes: false, redirects: [], heredoc: false });
+  const fresh = () => ({ words: [], syntax: [], bodies: [], host, piped: false, grouped: false, writes: false, redirects: [], heredoc: false });
   let cmd = fresh();
   let word;
+  let quoted = false, assignment = false;
   let depth = 0;
   let target; // after a redirection: its operator, kept with its target in redirects, or "body" for the text of a here-string
   const cases = []; // each open case: { depth } where it opens, and pattern: true before an arm's ")", false after it
@@ -205,13 +314,14 @@ function readCommands(src, i, close, out, host) {
     if (word === undefined) return;
     if (target === "body") cmd.bodies.push(word);
     else if (target) cmd.redirects.push(target + word);
-    else cmd.words.push(word);
+    else { cmd.words.push(word); cmd.syntax.push({ quoted, assignment }); }
     word = target = undefined;
+    quoted = assignment = false;
     const [first, , third] = cmd.words;
-    if (first === "case" && cmd.words.length === 3 && third === "in") {
+    if (first === "case" && !cmd.syntax[0].quoted && cmd.words.length === 3 && third === "in" && !cmd.syntax[2].quoted) {
       endCommand();
       cases.push({ depth, pattern: true });
-    } else if (first === "esac" && cmd.words.length === 1 && arm()) cases.pop();
+    } else if (first === "esac" && !cmd.syntax[0].quoted && cmd.words.length === 1 && arm()) cases.pop();
   };
   const endCommand = () => {
     endWord();
@@ -223,7 +333,7 @@ function readCommands(src, i, close, out, host) {
   const here = () => ({ cmd, index: cmd.words.length });
   while (i < src.length) {
     const c = src[i];
-    const esac = word === "esac" && !cmd.words.length; // "esac)" closes a $( ), and "esac |" pipes the case on
+    const esac = word === "esac" && !quoted && !cmd.words.length; // "esac)" closes a $( ), and "esac |" pipes the case on
     if (arm()?.pattern && "()|".includes(c) && !esac) { // a case arm: "(a|b)" or "a)"; its pattern runs nothing
       endWord();
       if (cmd.words.length > 1) throw new Error("a case pattern of more than one word"); // a shell refuses it too
@@ -245,14 +355,16 @@ function readCommands(src, i, close, out, host) {
       return i + 1;
     }
     if (c === "\\") {
-      if (src[i + 1] !== "\n") add(src[i + 1] ?? "");
+      if (src[i + 1] !== "\n") { quoted = true; add(src[i + 1] ?? ""); }
       i += 2;
     } else if (c === "'") {
+      quoted = true;
       const j = src.indexOf("'", i + 1);
       if (j < 0) throw new Error("an open quote");
       add(src.slice(i + 1, j));
       i = j + 1;
     } else if (c === '"') {
+      quoted = true;
       const r = readExpanding(src, i + 1, '"', out, here());
       add(r.text);
       i = r.i;
@@ -281,7 +393,7 @@ function readCommands(src, i, close, out, host) {
     } else if (c === ">" || c === "<" || (c === "&" && src[i + 1] === ">")) {
       // A redirection: >, >>, >|, >&, &>, &>>, <, <>, <&, with the number or {name} of its file descriptor before it.
       // It and its target are not words, so ps>out and 2>/dev/null ps run ps.
-      if (/^(?:\d+|\{\w+\})$/.test(word ?? "")) word = undefined;
+      if (!quoted && /^(?:\d+|\{\w+\})$/.test(word ?? "")) word = undefined;
       endWord();
       const op = /^(?:&>>?|>>|>\||>&|<>|<&|>|<)/.exec(src.slice(i, i + 3))[0];
       cmd.writes ||= op.includes(">");
@@ -300,6 +412,7 @@ function readCommands(src, i, close, out, host) {
       if (c === ")" && cases.at(-1)?.depth === depth--) throw new Error("a case with no esac");
       i += (c === "|" || c === "&") && src[i + 1] === c ? 2 : 1;
     } else {
+      if (c === "=" && !quoted && /^[A-Za-z_]\w*$/.test(word ?? "")) assignment = true;
       add(c);
       i++;
     }

@@ -3254,3 +3254,68 @@ test("T197: alias bodies cannot hide a known gh hard link", () => {
   writeFileSync(file, `[alias]\n m = !${f.hard} auth status\n`);
   assert.equal(f.s.send(tool("Edit", { file_path: file, old_string: `m = !${f.hard} auth status`, new_string: "" }, { cwd: FEATURE, ...AGENT })), undefined, "alias removal remains allowed");
 });
+
+
+test("T197: executable evidence retains wrappers and literal command names", () => {
+  const f = ghAgentSession();
+  for (const name of ["123", "1s", "-client", "if", "for", "case", "esac", "X=1"]) linkSync(f.gh, join(f.dir, name));
+  const wrappers = join(f.dir, "wrappers"); mkdirSync(wrappers);
+  for (const name of ["watch", "sudo", "command", "builtin", "time"]) linkSync(f.gh, join(wrappers, name));
+  const cases = ["123 auth status", "1s auth status", "-client auth status", '"if" auth status',
+    '"for" auth status', '"case" auth status', '"esac" auth status', '"X=1" auth status',
+    "watch -x 123 auth status", "watch -x -- -client auth status", "watch -x 'X=1' auth status",
+    "timeout 1 'for' auth status", "env 'if' auth status", '"123">out auth status',
+    "sudo -nu root gh auth status", "timeout -vk 1s 2s gh auth status"];
+  for (const name of ["watch", "sudo"]) {
+    cases.push(`PATH=${wrappers}:${f.dir} ${name} auth status`);
+    cases.push(`${wrappers}/${name} auth status`);
+  }
+  for (const name of ["command", "builtin", "time"]) cases.push(`${wrappers}/${name} auth status`);
+  cases.push(`PATH=${wrappers}:${f.dir} "time" auth status`);
+  const child = join(f.dir, "child"); mkdirSync(child); linkSync(f.gh, join(child, "client"));
+  for (const prefix of [`env -C ${child}`, `env -C${child}`, `env --chdir ${child}`, `env --chd=${child}`,
+    `sudo -D ${child}`, `sudo -D${child}`, `sudo --chdir=${child}`]) cases.push(`${prefix} ./client auth status`);
+  for (const name of ["client$cash", "client~mark", "client`tick"]) {
+    linkSync(f.gh, join(f.dir, name));
+    cases.push(`'${name}' auth status`);
+  }
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const command of ["echo 123 1s -client if for X=1", `echo ${f.hard}`, "X='1' echo safe",
+    "if true; then echo safe; fi", "for value in watch sudo 123; do echo safe; done",
+    "timeout 1s echo safe", "sudo -u 123 echo safe", "watch -n 123 echo safe",
+    "sudo -nu root echo safe", "timeout -vk 1s 2s echo safe",
+    ...["command", "builtin", "time"].map(name => `PATH=${wrappers}:${f.dir} ${name} echo safe`)]) {
+    assert.equal(f.send(command), undefined, command);
+  }
+});
+
+test("T197: env split-string owns its command mode inside watch exec", () => {
+  const f = ghAgentSession();
+  writeFileSync(join(f.dir, "gh auth status"), "ordinary executable must never execute", { mode: 0o755 });
+  const cases = [
+    'watch -x env -S "gh auth status"', 'watch --exec env -S"gh auth status"',
+    'watch -x env --split-string "gh auth status"', 'watch --exec env --split-string="gh auth status"',
+  ];
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  assert.equal(f.send('watch -x env "gh auth status"'), undefined);
+  assert.equal(f.send('watch --exec env -S "echo harmless"'), undefined);
+});
+
+test("T197: Git alias subsections retain protected executable bodies in native edits", () => {
+  const f = ghAgentSession();
+  const results = [];
+  for (const section of ['[alias "foo"]', '[alias.foo]']) {
+    const file = join(f.dir, "subsection-config");
+    writeFileSync(file, `${section}\n bar = !echo safe\n`);
+    for (const [name, input] of [
+      ["Write", { file_path: file, content: `${section}\n bar = !${f.hard} auth status\n` }],
+      ["Edit", { file_path: file, old_string: "echo safe", new_string: `${f.hard} auth status` }],
+      ["MultiEdit", { file_path: file, edits: [
+        { old_string: "echo safe", new_string: "PLACEHOLDER auth status" },
+        { old_string: "PLACEHOLDER", new_string: f.hard },
+      ] }],
+    ]) results.push([`${section} ${name}`, Boolean(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))))]);
+    assert.equal(f.s.send(tool("Write", { file_path: file, content: `${section}\n bar = !echo safe\n` }, { cwd: FEATURE, ...AGENT })), undefined);
+  }
+  assert.deepEqual(results, results.map(([name]) => [name, true]));
+});
