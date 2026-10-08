@@ -3435,3 +3435,42 @@ test("T197: documented package options and sudo help keep ordinary commands", ()
     assert.ok(denied(f.send(command)), command);
   }
 });
+
+test("T197: npm option normalization retains positional commands", () => {
+  const f = ghAgentSession();
+  for (const name of ["true", "false", "null"]) linkSync(f.gh, join(f.dir, name));
+  const spaced = join(f.dir, "client with spaces"); linkSync(f.gh, spaced);
+  const refused = [];
+  for (const runner of ["npm exec", "npm x", "npx"]) {
+    for (const flag of ["--offline", "--no-offline", "--quiet", "--silent", "--verbose"]) {
+      for (const program of ["gh", f.hard]) refused.push(`${runner} ${flag}=${program} auth status`);
+    }
+    for (const value of [" ", "\t", " \t "]) refused.push(`${runner} --call '${value}' gh auth status`);
+    refused.push(`${runner} --quiet=true auth status`, `${runner} --silent=false auth status`);
+  }
+  refused.push("npx --no true --check true --call 'gh auth status'", "npm --offline=exec gh auth status", `npm exec --offline=--call '${f.hard} auth status'`,
+    `npx --quiet=--call '"${spaced}" auth status'`, `npm exec --offline=null auth status`);
+  assert.deepEqual(refused.map(command => [command, Boolean(denied(f.send(command)))]), refused.map(command => [command, true]));
+  for (const runner of ["npm exec", "npm x", "npx"]) {
+    for (const flag of ["--offline", "--quiet", "--no-offline"]) {
+      assert.equal(f.send(`${runner} ${flag}=echo safe`), undefined);
+      assert.equal(f.send(`${runner} ${flag}= echo ${f.hard}`), undefined, "an empty operand must not select a later argument");
+    }
+    for (const value of ["true", "false"]) assert.equal(f.send(`${runner} --offline=${value} -- echo safe`), undefined);
+    assert.equal(f.send(`${runner} --call ' ' echo safe`), undefined);
+    assert.equal(f.send(`${runner} --offline=gh auth status`, false), undefined, "main keeps its gh behavior");
+  }
+  assert.equal(f.send("npm exec --workspaces=null -- echo safe"), undefined);
+  assert.equal(f.send("npx --no-install=gh echo safe"), undefined, "npx replaces the old no-install option");
+  assert.equal(f.send("npm exec --offline=--call 'echo safe'"), undefined);
+  assert.equal(f.send("npx --no true --check true --call 'echo safe'"), undefined);
+  const negated = ghAgentSession();
+  const negativeCases = ["npm exec", "npx"].flatMap(runner =>
+    ["quiet", "silent", "verbose"].flatMap(flag => ["true", "false"].flatMap(value =>
+      [`${runner} --no-${flag} ${value} gh auth status`, `${runner} --no-${flag}=${value} ${negated.hard} auth status`])));
+  assert.deepEqual(negativeCases.map(command => [command, Boolean(denied(negated.send(command)))]), negativeCases.map(command => [command, true]));
+  for (const runner of ["npm exec", "npx"]) {
+    assert.equal(negated.send(`${runner} --no-quiet true echo safe`), undefined);
+    assert.equal(negated.send(`${runner} --no-silent=false echo safe`), undefined);
+  }
+});

@@ -149,15 +149,46 @@ const NPM_OPTIONS = new Map([
   ...("yes no no-install quiet silent verbose help version parseable offline prefer-offline prefer-online " +
     "workspaces include-workspace-root ignore-scripts strict-allow-scripts dangerously-allow-all-scripts audit fund all long").split(" ").map(name => [name, "flag"]),
   ["call", "call"],
+  // nopt treats unregistered --check as Boolean unless it has =value. npx does not register it as a switch.
+  ["check", "unregistered"],
 ]);
 const NPM_ALIASES = { c: "call", w: "workspace", ws: "workspaces", y: "yes", q: "quiet", a: "all", l: "long" };
 const NPM_WRAPPERS = new Set(["npx", "npm", "npm exec", "npm x"]);
 
+const NPM_LOGLEVEL_ALIASES = { quiet: "warn", q: "warn", silent: "silent", verbose: "verbose" };
+
+// npx inserts -- before its first original positional argument, before nopt splits option=value.
+function npxBoundary(words, start) {
+  for (let i = start; i < words.length; i++) {
+    const option = words[i];
+    if (option === "--") break;
+    if (!option.startsWith("-")) { words.splice(i, 0, "--"); break; }
+    const split = option.indexOf("=");
+    const raw = option.replace(/^-+/, "").split("=")[0];
+    const value = split < 0 ? undefined : option.slice(split + 1);
+    if (raw === "p") words[i] = `--package${value === undefined ? "" : `=${value}`}`;
+    else if (raw === "no-install") words[i] = "--yes=false";
+    else {
+      const loglevel = NPM_LOGLEVEL_ALIASES[raw];
+      const alias = NPM_ALIASES[raw] ?? (raw === "no" ? "no-yes" : undefined);
+      if (loglevel || alias) {
+        words.splice(i, 1, ...(loglevel ? ["--loglevel", loglevel] : [`--${alias}`]), ...(value === undefined ? [] : [value]));
+        i--;
+        continue;
+      }
+    }
+    const kind = NPM_OPTIONS.get(raw === "p" ? "package" : raw);
+    if (value === undefined && kind !== "flag" &&
+        (kind === "value" || kind === "call" || !words[i + 1]?.startsWith("-"))) i++;
+  }
+}
+
 function npmArguments(words, start, wrapper) {
+  if (wrapper === "npx") npxBoundary(words, start);
   const operands = [];
   let next = start, call, operation = wrapper !== "npm";
   while (next < words.length) {
-    const option = words[next++];
+    let option = words[next++];
     if (option === "--") {
       if (!operation && !/^(?:exec|x)$/.test(words[next++] ?? "")) return { ordinary: true };
       operation = true;
@@ -171,38 +202,42 @@ function npmArguments(words, start, wrapper) {
         continue;
       }
       operands.push(option);
-      if (wrapper === "npx") { operands.push(...words.slice(next)); break; }
-      continue; // npm exec reads its options anywhere before --; npx stops at its first operand.
+      continue; // npm reads options anywhere before --; npxBoundary has already placed its delimiter.
     }
     const split = option.indexOf("=");
-    const raw = option.slice(option.startsWith("--") ? 2 : 1, split < 0 ? undefined : split);
-    let name = raw === "p" ? (wrapper === "npx" ? "package" : "parseable") : NPM_ALIASES[raw] ?? raw;
-    const attached = split < 0 ? undefined : option.slice(split + 1);
-    if (name.startsWith("no-") && NPM_OPTIONS.get(name.slice(3)) === "flag") name = name.slice(3);
+    if (split >= 0) {
+      words.splice(next, 0, option.slice(split + 1));
+      option = option.slice(0, split);
+    }
+    const raw = option.slice(option.startsWith("--") ? 2 : 1);
+    let name = raw === "p" ? "parseable" : NPM_ALIASES[raw] ?? raw;
+    const negated = name.startsWith("no-") && NPM_OPTIONS.get(name.slice(3)) === "flag";
+    if (negated) name = name.slice(3);
     if (!NPM_OPTIONS.has(name)) {
       // nopt recognizes exact names, then shorthand clusters, with either one or two dashes.
       // Do not guess an abbreviation from this bounded option table: npm may have another matching option.
       const cluster = [...raw].map(char => char === "p" ? "parseable" : NPM_ALIASES[char]);
-      if (attached !== undefined || cluster.some(flag => !flag)) throw evidenceError(`unknown package runner option ${option}`);
+      if (cluster.some(flag => !flag)) throw evidenceError(`unknown package runner option ${option}`);
       words.splice(next, 0, ...cluster.map(flag => `--${flag}`));
       continue;
     }
-    const kind = NPM_OPTIONS.get(name);
+    const registeredKind = NPM_OPTIONS.get(name);
+    const kind = registeredKind === "unregistered" ? (split < 0 ? "flag" : "value") : registeredKind;
     if (kind === "flag") {
-      // Quiet, silent and verbose are fixed loglevel aliases; Boolean options can consume true or false.
-      if (wrapper !== "npx" && !/^(?:quiet|silent|verbose)$/.test(name) && attached === undefined && /^(?:true|false)$/.test(words[next] ?? "")) next++;
+      // Only accepted Boolean values belong to the option. Other tokens retain their argv role.
+      const booleanValue = /^(?:true|false)$/.test(words[next] ?? "") ||
+        (words[next] === "null" && /^(?:yes|no|workspaces)$/.test(name));
+      if ((negated || !NPM_LOGLEVEL_ALIASES[name]) && booleanValue) next++;
       continue;
     }
-    let value = attached;
-    if (value === undefined) {
-      if (kind === "call" && (words[next] === undefined || /^-./.test(words[next]))) value = "";
-      else {
-        if (/^-./.test(words[next] ?? "")) throw evidenceError("package runner option has no value");
-        value = words[next++];
-      }
+    let value;
+    if (kind === "call" && (words[next] === undefined || /^-./.test(words[next]))) value = "";
+    else {
+      if (registeredKind !== "unregistered" && /^-./.test(words[next] ?? "")) throw evidenceError("package runner option has no value");
+      value = words[next++];
     }
     if (value === undefined) throw evidenceError("package runner option has no value");
-    if (kind === "call") call = value;
+    if (kind === "call") call = value.trim();
   }
   if (!operation) return { ordinary: true };
   words.splice(start, words.length - start, ...operands);
@@ -328,7 +363,7 @@ function readPrograms(command, dir, path, depth, found) {
       const lexicalWrapper = !argv && !w.includes("/") && (/^(?:command|builtin|exec)$/.test(name) || (keyword && /^(?:time|noglob|nocorrect)$/.test(name)));
       const wrapperNames = lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
       let wrapper = wrapperNames.flatMap(base => [`${base} ${words[k + 1]}`, base]).find(key =>
-        WRAPPER.has(key) && (key !== "npm" || words.slice(k + 1).some(word => /^(?:exec|x)$/.test(word))));
+        WRAPPER.has(key) && (key !== "npm" || words.slice(k + 1).some(word => /(?:^|=)(?:exec|x)$/.test(word))));
       const originalArgs = words.slice(k + 1);
       const npmWords = wrapper === "npm" ? [...words] : undefined;
       const npm = npmWords && wrapperArguments(npmWords, k + 1, wrapper, here, at);
