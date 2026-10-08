@@ -254,8 +254,19 @@ export function handle(input, state, slots) {
   if (why && main) return deny(event, `${why} Only sage.mjs changes the logbook: run the state tool's command for this change (node <path to skills/sage/sage.mjs> ...), as a command of its own. If no command does it, ask the user.`);
   if (why) return deny(event, `${why} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
   const agent = (ours || (!main && state.sage)) && !CHIEF.test(input.agent_type ?? "");
+  if (event === "PreToolUse" && agent && /^(?:Write|Edit|MultiEdit)$/.test(input.tool_name ?? "") && ghAliasFileWrite(input.tool_input ?? {}, input.cwd ?? process.cwd())) return deny(event, NO_GH);
   if (event === "PreToolUse" && agent && SHELL_TOOLS.test(input.tool_name ?? "")) {
-    const problem = agentProblem([].concat(input.tool_input?.command ?? []).join(" "), input.cwd ?? process.cwd());
+    const ti = input.tool_input ?? {};
+    const cwd = /^mcp__terminal__/.test(input.tool_name) && typeof ti.cwd === "string" ? ti.cwd : input.cwd ?? process.cwd();
+    const commands = commandFields(ti);
+    // Keep expansion, push and merge refusals ahead of the narrower gh exceptions.
+    if (state.sage) for (const command of commands) {
+      const result = gitGate(event, command, state, cwd, false, input.tool_name);
+      if (result?.hookSpecificOutput?.permissionDecision === "deny") return result;
+    }
+    // Keep alias payloads intact and also read PowerShell's backslash-separated paths.
+    const views = input.tool_name === "PowerShell" ? commands.flatMap(command => [command, command.replace(/\\/g, "/")]) : commands;
+    const problem = views.map(command => agentProblem(command, cwd)).find(Boolean);
     if (problem) return deny(event, problem);
   }
   if (event !== "PreToolUse" || !state.sage) return undefined;
@@ -522,8 +533,30 @@ function pathOf(word) {
  * backtick, or an absolute path (the owner's decision T83-COST-GLOB, so that rm dist/* and jq ... > config.json pass in
  * a project).
  */
+/** Only complete brace groups contain reserved braces; quoted braces and file patterns remain path evidence. */
+function logbookWords(text) {
+  const all = wordsOf(text);
+  if (!all.includes("{")) return all;
+  const groups = [];
+  let complete = true, opened = false, dataBrace = false;
+  for (const command of shellCommands(text)) {
+    for (let k = 0; k < command.words.length; k++) {
+      const word = command.words[k];
+      if (!k && !command.syntax[k].quoted && word === "{") { groups.push(false); opened = true; }
+      else if (!k && !command.syntax[k].quoted && word === "}") { if (!groups.pop()) complete = false; }
+      else {
+        if (groups.length) groups.fill(true);
+        if (wordsOf(word).some(part => part === "{" || part === "}")) dataBrace = true;
+      }
+    }
+    if ([...command.redirects, ...command.bodies].some(value => wordsOf(value).some(word => word === "{" || word === "}"))) dataBrace = true;
+  }
+  return opened && complete && !groups.length && !dataBrace ? all.filter(word => word !== "{" && word !== "}") : all;
+}
+
 function nearLogbook(text, roots, cwd) {
-  const words = partsOf(text);
+  const all = logbookWords(text);
+  const words = [...new Set(all)].map(word => ({ word, low: fold(word), parts: fold(word).split("/") }));
   const plain = words.filter(({ word }) => !GLOB.test(word));
   const home = fold(process.env.HOME ?? "");
   const atHome = (w) => /^(?:~|\$home|-)\/?$/.test(w) || (home.length > 1 && (w === home || w === `${home}/`));
@@ -531,7 +564,6 @@ function nearLogbook(text, roots, cwd) {
   const leaves =
     /[$`]/.test(text) ||
     words.some(({ low, parts }) => /^(?:cd|pushd)$/.test(low) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(low) && !/^\/dev\/(?:null|stdout|stderr)$/.test(low)));
-  const all = wordsOf(text); // in their own case, for the refusal
   const unique = [...new Set(all)]; // each word once: a long line repeats words
   const lowWords = all.map(fold);
   const cdHome = lowWords.findIndex((word, k) => /^(?:cd|pushd)$/.test(word) && atHome(lowWords[k + 1] ?? "-"));
@@ -737,16 +769,19 @@ const CODE = /^-(?:[a-z]*[ce]|p|-eval|-print|command)$/;
  * refuse more.
  */
 const canonical = (path) => fold(real(path));
-function real(path) {
+function real(path, strict = false) {
   let rest = [];
   for (let hops = 0; ; ) {
     try {
       return join(realpathSync.native(path), ...rest); // the system resolves ".." after each link; only the missing rest is joined
-    } catch {
+    } catch (error) {
+      if (strict && !["ENOENT", "ELOOP"].includes(error.code)) throw error;
       let link = false;
       try {
         link = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink();
-      } catch {} // a name that is too long, or a file used as a folder: it does not exist
+      } catch (error) {
+        if (strict && !["ENOENT", "ELOOP"].includes(error.code)) throw error;
+      } // Other callers keep treating an invalid path as missing.
       if (link) {
         if (++hops > 64) throw new Error(`too many links in ${path}`);
         path = from(dirname(path), readlinkSync(path));
@@ -760,9 +795,7 @@ const expansionProblem = (command, cwd) => sharedCommands.expansionProblem(comma
 
 /** Preserve command arrays while checking every other string, including nested tool inputs. */
 function commandFields(ti) {
-  const text = fields(ti);
-  if (Array.isArray(ti.command)) text.push(ti.command.join(" "));
-  return text;
+  return fields(Array.isArray(ti.command) ? { ...ti, command: ti.command.join(" ") } : ti);
 }
 
 /** PowerShell expansions cannot be judged by the shared shell reader. Refuse protected words conservatively. */
@@ -821,27 +854,291 @@ const TEMP = [...new Set([tmpdir(), "/tmp", process.env.TMPDIR].filter(Boolean).
 const inTemp = (file) => !!file && TEMP.some((t) => file.startsWith(`${t}/`));
 const PROCESS_TEXT = new RegExp(`(?:^|[\\s;&|(\`'"/<>])(?:${UNIX_PROCESS}|${POWERSHELL_PROCESS})(?=$|[\\s;&|)\`'"<>])`, "im");
 
+const NO_GH = "an agent may run only plain gh pr create, gh pr view, gh pr comment, gh pr edit, gh pr checks, gh issue view, or gh api with GET. Other gh commands, copies, links and aliases are refused. Ask the chief to run them.";
+const GH_NAME = /^(?:gh|gh\.exe)$/i;
+const namesGh = text => /\bgh(?:\.exe)?\b/i.test(unquote(text).replace(/`/g, ""));
+const ghAliasWrite = text => /(?:^|[\s/\\])aliases\.ya?ml\b/i.test(text) || (/\[alias\]|!\s*gh\b/i.test(unquote(text).replace(/`/g, "")) && namesGh(text));
+const GH_ALIASES = /(?:^|[/\\])aliases\.ya?ml$/i;
+/** Retain both names: a link may hide an alias file or give an ordinary file its alias name. */
+function destinationNames(file, cwd) {
+  const supplied = from(cwd, file);
+  return GH_ALIASES.test(supplied) ? [supplied] : [supplied, real(supplied, true)];
+}
+const aliasDestination = (file, cwd) => destinationNames(file, cwd).some(name => GH_ALIASES.test(name));
+/** Check proposed file content, not removed text or documentation that quotes configuration. */
+function ghAliasFileWrite(input, cwd) {
+  const file = from(cwd, input.file_path ?? input.path ?? "");
+  const names = destinationNames(file, cwd);
+  let content = input.content;
+  if (typeof content !== "string") {
+    const edits = Array.isArray(input.edits) ? input.edits : [input];
+    try {
+      if (!statSync(file).isFile()) throw new Error("the edit target is not a regular file");
+      content = readFileSync(file, "utf8");
+      for (const edit of edits) {
+        if (typeof edit.old_string !== "string" || typeof edit.new_string !== "string") continue;
+        content = edit.replace_all ? content.replaceAll(edit.old_string, () => edit.new_string) : content.replace(edit.old_string, () => edit.new_string);
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      content = edits.map(edit => edit.new_string).filter(text => typeof text === "string").join("\n");
+    }
+  }
+  if (names.some(name => GH_ALIASES.test(name))) return /^\s*[^#\s][^\n]*:\s*\S/m.test(content);
+  const gitConfig = names.some(name => /(?:^|[/\\])(?:\.gitconfig|\.git[/\\]config|git[/\\]config)$/i.test(name));
+  return ghAliasConfiguration(content, cwd, process.env.PATH ?? "", undefined, gitConfig);
+}
+/** Git config removes transport quotes; escaped quotes still belong to the shell command. */
+function gitAliasBody(value) {
+  let text = "", quoted = false;
+  const escapes = { n: "\n", t: "\t", b: "\b", '"': '"', "\\": "\\" };
+  for (let k = 0; k < value.length; k++) {
+    const char = value[k];
+    if (char === '"') quoted = !quoted;
+    else if (char === "\\" && Object.hasOwn(escapes, value[k + 1])) text += escapes[value[++k]];
+    else if (!quoted && /[#;]/.test(char)) break;
+    else text += char;
+  }
+  return text.trimStart().startsWith("!") ? text.trimStart().slice(1) : undefined;
+}
+function ghAliasConfiguration(content, cwd, path, inherited, gitConfig = false) {
+  const uncommented = content.replace(/\\\r?\n/g, "").replace(/^\s*[#;][^\n]*$/gm, "");
+  const configuration = /^\s*\[[^\]\n]+\]/.test(uncommented);
+  const lines = uncommented.split("\n").filter(line => line.trim());
+  const fragment = lines.length > 0 && lines.every(line => /^\s*[\w.-]+\s*=/.test(line)) && /=[ \t]*["']?!/.test(uncommented);
+  const sectionHeader = /^\s*\[((?:[^\]"\n]|"(?:[^"\\\n]|\\.)*")*)\]/;
+  const aliasSection = name => /^alias(?:\.[^\s]+|[ \t]+"(?:[^"\\\n]|\\.)*")?$/i.test(name);
+  if (!(gitConfig || fragment || (configuration && lines.some(line => aliasSection(sectionHeader.exec(line)?.[1] ?? ""))))) return false;
+  if (namesGh(content)) return true;
+  let alias = fragment;
+  for (const line of lines) {
+    const section = sectionHeader.exec(line);
+    if (section) alias = aliasSection(section[1]);
+    const assignment = section ? line.slice(section[0].length) : line;
+    const value = alias && /^[ \t]*[\w.-]+[ \t]*=[ \t]*(.*)$/.exec(assignment)?.[1];
+    if (typeof value !== "string") continue;
+    const body = gitAliasBody(value);
+    if (body !== undefined && ghAliasBodyProblem(body, cwd, path, inherited)) return true;
+  }
+  return false;
+}
+/** Shell parsing has already removed alias and git-config argument quotes. */
+function aliasBodies(name, args) {
+  if (name === "alias") return args.filter(arg => arg.includes("=")).map(arg => arg.slice(arg.indexOf("=") + 1));
+  if (name !== "git") return [];
+  return args.flatMap((arg, k) => {
+    const match = /^(?:-c)?alias\.[^=]+(?:=(.*))?$/i.exec(arg);
+    const value = match && (match[1] ?? args[k + 1]);
+    return value?.startsWith("!") ? [value.slice(1)] : [];
+  });
+}
+function ghAliasBodyProblem(body, cwd, path, inherited) {
+  // Alias definitions may contain more alias definitions. Refuse an unreadable or over-deep body.
+  if ((inherited?.depth ?? 0) >= 4) return NO_GH;
+  try {
+    return ghProblem(body, cwd, path, { ...inherited, depth: (inherited?.depth ?? 0) + 1, alias: true });
+  } catch { return NO_GH; }
+}
+const fileIdentity = file => {
+  try { const stat = statSync(file); return stat.isFile() ? `${stat.dev}:${stat.ino}` : undefined; } catch { return undefined; }
+};
+
+/** Only one literal gh invocation gets the agent exceptions; wrappers, substitutions and aliases do not. */
+function plainGh(command) {
+  const [one, ...more] = shellCommands(command);
+  if (!one || more.length || one.writes || one.piped || one.grouped || one.bodies.length || one.words[0] !== "gh") return false;
+  const [, group, verb, ...args] = one.words;
+  if (group === "pr") return /^(?:create|view|comment|edit|checks)$/.test(verb ?? "");
+  if (group === "issue") return verb === "view";
+  if (group !== "api") return false;
+  let method, payload = false, endpoint = false;
+  const values = new Set(["--cache", "-F", "--field", "-f", "--raw-field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-p", "--preview", "-t", "--template"]);
+  for (let i = 0, words = [verb, ...args]; i < words.length; i++) {
+    const word = words[i];
+    if (typeof word !== "string") return false;
+    const [flag, ...value] = word.split("=");
+    if (flag === "-X" || flag === "--method" || /^-X./.test(word)) {
+      const next = /^-X./.test(word) ? word.slice(2).replace(/^=/, "") : value.length ? value.join("=") : words[++i];
+      if (method !== undefined || next !== "GET") return false;
+      method = next;
+    } else if (values.has(flag) || /^-[FfHqpt]./.test(word)) {
+      const short = /^-[FfHqpt]./.test(word);
+      const option = short ? word.slice(0, 2) : flag;
+      if (!short && !value.length && words[++i] === undefined) return false;
+      if (["-f", "-F", "--field", "--raw-field", "--input"].includes(option)) payload = true;
+    } else if (["--include", "-i", "--paginate", "--silent", "--slurp", "--verbose", "--allow-escape-sequences", "--help"].includes(word)) {
+      continue;
+    } else if (word.startsWith("-") || endpoint) return false;
+    else endpoint = true;
+  }
+  return endpoint && (!payload || method === "GET");
+}
+
 export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   let runs;
   try {
     runs = programsRun(command, cwd, path);
   } catch (e) {
     const text = bare(command);
-    const why = gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
+    const why = namesGh(text) ? NO_GH : gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
+    if (e.code === "SAGE_EXECUTABLE_EVIDENCE") return `${NO_GH} (The hook cannot read executable evidence: ${e.message}.)`;
     return why && `${why} (The hook cannot read this command: ${e.message}.)`;
   }
+  try {
+    const gh = ghProblem(command, cwd, path);
+    if (gh) return gh;
+  } catch (error) {
+    return `${NO_GH} (The hook cannot read executable evidence: ${error.message}.)`;
+  }
   for (const { word, file, args } of runs) {
-    const name = word.split("/").pop();
+    const name = word.split(/[\\/]/).pop();
     if (name === "git" && /^stash$/i.test(subcommand(args, 0))) return NO_STASH;
     if ((isProcess(name) || isProcess(file?.split("/").pop())) && !inTemp(file)) return NO_PROCESS(word);
   }
   return undefined;
 }
 
+// GNU cp's option kinds (coreutils cp.c); macOS also accepts the flag-only c, N and X.
+const COPY_OPTIONS = new Map([
+  ..."archive attributes-only copy-contents debug dereference force interactive link no-clobber no-dereference no-target-directory one-file-system parents path recursive remove-destination strip-trailing-slashes symbolic-link verbose keep-directory-symlink help version".split(" ").map(name => [name, "flag"]),
+  ..."no-preserve sparse suffix target-directory".split(" ").map(name => [name, "value"]),
+  ..."backup preserve reflink update context".split(" ").map(name => [name, "optional"]),
+]);
+/** cp's destination depends on option values and whether it keeps each source's parent path. */
+function copyDestinations(args, cwd, uncertainDirectory = false) {
+  const badOption = message => Object.assign(new Error(message), { code: "SAGE_COPY_OPTION" });
+  const parse = (suffixIsFlag) => {
+    const operands = [];
+    let target, literal = false, noDirectory = false, parents = false;
+    const option = (name, value) => {
+      if (name === "target-directory") target = value;
+      if (name === "no-target-directory") noDirectory = true;
+      if (name === "parents" || name === "path") parents = true;
+    };
+    for (let k = 0; k < args.length; k++) {
+      const arg = args[k];
+      if (!literal && arg === "--") { literal = true; continue; }
+      if (!literal && arg.startsWith("--")) {
+        const equal = arg.indexOf("="), prefix = arg.slice(2, equal < 0 ? undefined : equal);
+        const matches = COPY_OPTIONS.has(prefix) ? [prefix] : [...COPY_OPTIONS.keys()].filter(name => name.startsWith(prefix));
+        if (matches.length !== 1) throw badOption("unknown or ambiguous copy option");
+        const name = matches[0], kind = COPY_OPTIONS.get(name);
+        let value = equal < 0 ? undefined : arg.slice(equal + 1);
+        if (kind === "value" && value === undefined) value = args[++k];
+        if ((kind === "value" && value === undefined) || (kind === "flag" && value !== undefined)) throw badOption("invalid copy option value");
+        option(name, value);
+      } else if (!literal && /^-./.test(arg)) {
+        for (let j = 1; j < arg.length; j++) {
+          const name = arg[j];
+          if (name === "t" || (name === "S" && !suffixIsFlag)) {
+            const value = arg.slice(j + 1) || args[++k];
+            if (value === undefined) throw badOption("a copy option needs a value");
+            option(name === "t" ? "target-directory" : "suffix", value);
+            break;
+          }
+          if (!"abdfHilLnprstuvxPRSTZcNX".includes(name)) throw badOption("unknown copy option");
+          if (name === "T") noDirectory = true;
+        }
+      } else operands.push(arg);
+    }
+    if (target === undefined) target = operands.pop();
+    if (!target || !operands.length) return [];
+    if (uncertainDirectory && !isAbsolute(target)) throw new Error("the copy destination directory is uncertain");
+    const supplied = from(cwd, target);
+    let directory = false;
+    if (!noDirectory) {
+      try { directory = statSync(supplied).isDirectory(); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+    return directory ? operands.map(source => `${supplied}/${parents ? source.replace(/^\/+|\/+$/g, "") : basename(source)}`) : [supplied];
+  };
+  // -S consumes a suffix in GNU cp and is a flag in macOS cp. Check both destination interpretations.
+  const candidates = [];
+  let parsed = false, problem;
+  for (const suffixIsFlag of [false, true]) {
+    try { candidates.push(...parse(suffixIsFlag)); parsed = true; }
+    catch (error) { if (error.code !== "SAGE_COPY_OPTION") throw error; problem = error; }
+  }
+  if (!parsed) throw problem;
+  return [...new Set(candidates)];
+}
+
+/** The gh policy is shared by direct commands and proposed alias bodies, with the same file identities. */
+function ghProblem(command, cwd, path, inherited) {
+  const scoped = programsRun(command, cwd, path, { contextEvidence: true, uncertainDirectory: inherited?.uncertainDirectory });
+  const evidence = scoped.programs.map(entry => entry.run);
+  const leaves = scoped.programs.filter(entry => !entry.wrapper);
+  const uncertain = new Set(scoped.programs.filter(entry => entry.uncertainDirectory).map(entry => entry.run));
+  const shellFunctions = new Set(scoped.programs.filter(entry => entry.shellFunction || entry.resolvedDeclaration).map(entry => entry.run));
+  const dispatches = leaves.filter(({ run }) => !shellFunctions.has(run));
+  const redirects = scoped.redirects;
+  const writesCommand = redirects.some(({ redirect }) => toFile(redirect)) || dispatches.some(({ run }) =>
+    writesIn({ words: [run.word, ...run.args], redirects: [] }));
+  if (writesCommand && (redirects.some(({ redirect }) => ghAliasWrite(redirect)) ||
+    dispatches.some(({ run }) => ghAliasWrite([run.word, ...run.args, ...run.stdin].join(" "))))) return NO_GH;
+  for (const { redirect, dir, uncertainDirectory } of redirects) {
+    const target = redirect.replace(/^(&>>?|>>|>\||>&|<>|<&|>|<)/, "");
+    if (toFile(redirect) && ((uncertainDirectory && !isAbsolute(target)) || aliasDestination(target, dir))) return NO_GH;
+    if (uncertainDirectory && writesCommand && /^<[^<&]/.test(redirect) && !isAbsolute(target)) return NO_GH;
+  }
+  if (dispatches.some(({ run, uncertainDirectory }) => [run.word, run.file].some(name => name && basename(name) === "cp") && copyDestinations(run.args, run.dir, uncertainDirectory).some(file => aliasDestination(file, run.dir)))) return NO_GH;
+  const commands = shellCommands(command);
+  const inputs = commands.flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.replace(/^<>?/, ""));
+  // Control flow can keep any observed PATH in effect. Never discard a known gh identity.
+  const paths = new Set([...(inherited?.paths ?? []), path, ...evidence.map(run => run.path).filter(value => typeof value === "string")]);
+  for (const { run } of dispatches) {
+    if (run.word !== "export") continue;
+    for (const word of run.args) if (/^PATH=/.test(word)) paths.add(word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path));
+  }
+  const folders = new Set([...(inherited?.folders ?? []), ...(inherited?.uncertainDirectory ? [] : [cwd]), ...scoped.programs.filter(entry => !entry.uncertainDirectory).map(entry => entry.run.dir)]);
+  const lookups = new Set([...folders].flatMap(dir => [...paths].flatMap(value => value.split(":").map(entry => resolve(dir, entry || ".")))));
+  const identities = new Set([...(inherited?.identities ?? []), ...[...lookups].flatMap(dir => [fileIdentity(join(dir, "gh")), fileIdentity(join(dir, "gh.exe"))])].filter(Boolean));
+  const context = { ...inherited, paths, folders, identities };
+  if (writesCommand && dispatches.some(({ run, uncertainDirectory }) => [...run.args, ...run.stdin].some(text => ghAliasConfiguration(text, run.dir, run.path, { ...context, uncertainDirectory })))) return NO_GH;
+  const isGhFile = file => {
+    if (!file) return false;
+    try {
+      const real = realpathSync.native(file);
+      const identity = fileIdentity(real);
+      return !!identity && (GH_NAME.test(basename(file)) || GH_NAME.test(basename(real)) || identities.has(identity));
+    } catch { return false; }
+  };
+  const referencesGhFile = arg => {
+    const candidate = arg.replace(/^if=/, "");
+    return isAbsolute(candidate) ? isGhFile(candidate) : [...folders].some(folder => isGhFile(from(folder, candidate)));
+  };
+  const substitutionReadsGh = commands.filter(item => item.host && !item.words.length).flatMap(item => item.redirects)
+    .some(ref => /^<[^<&]/.test(ref) && referencesGhFile(ref.replace(/^<>?/, "")));
+  for (const run of evidence) {
+    const { word, file } = run;
+    const name = word.split(/[\\/]/).pop();
+    if (!shellFunctions.has(run) && uncertain.has(run) && !isAbsolute(word) && (word.includes("/") || (!file && !/^(?:echo|printf|cd|export|unset|readonly|local|declare|typeset|alias|unalias|true|false|test|:|\[)$/.test(word)))) return NO_GH;
+    const possible = shellFunctions.has(run) ? [] : word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...folders].flatMap(folder => [...paths].map(value =>
+      value.split(":").map(entry => resolve(folder, entry || ".", word)).find(candidate => {
+        try { const stat = statSync(candidate); return stat.isFile() && (stat.mode & 0o111); } catch { return false; }
+      })
+    ));
+    const isGh = GH_NAME.test(name) || (!shellFunctions.has(run) && (isGhFile(file) || possible.some(isGhFile)));
+    if (isGh && (inherited?.alias || !plainGh(command))) return NO_GH;
+  }
+  for (const { run: { word, file, args, dir, path: runPath }, uncertainDirectory } of dispatches) {
+    const name = word.split(/[\\/]/).pop();
+    const aliasName = /^(?:git|git\.exe)$/i.test(basename(file ?? "")) ? "git" : name;
+    if (aliasBodies(aliasName, args).some(body => ghAliasBodyProblem(body, dir, runPath, { ...context, uncertainDirectory }))) return NO_GH;
+    const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (aliasName === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
+    const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);
+    if (uncertainDirectory && writesCommand && /^(?:cp|mv|ln|install|cat|head|tail|dd|rsync|tee|copy-item|move-item|new-item)$/.test(name) && args.some(arg => !arg.startsWith("-") && !isAbsolute(arg))) return NO_GH;
+    const referencesGh = [...args, ...inputs].some(referencesGhFile);
+    if ((alias || copy) && (namesGh(args.join(" ")) || referencesGh)) return NO_GH;
+    if ((substitutionReadsGh || (referencesGh && !/^(?:echo|printf)$/.test(name))) && writesCommand) return NO_GH;
+  }
+  return undefined;
+}
+
 /** Shared program resolution; never executes a program. */
-export function programsRun(command, cwd, path = process.env.PATH ?? "") {
+export function programsRun(command, cwd, path = process.env.PATH ?? "", options) {
   if (commandReader.error) throw commandReader.error;
-  return commandReader.programsRun(command, cwd, path);
+  return commandReader.programsRun(command, cwd, path, options);
 }
 
 /** Shared merge classification. The role, mode and ledger checks remain in gitGate. */
