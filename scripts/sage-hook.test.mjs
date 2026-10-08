@@ -3205,6 +3205,27 @@ test("T197: alias bodies cannot hide a known gh hard link", () => {
   assert.equal(f.s.send(tool("Write", { file_path: inlineConfig, content: "[alias]st = status\n" }, { cwd: FEATURE, ...AGENT })), undefined);
   const spaced = join(f.dir, "client with spaces"); linkSync(f.gh, spaced);
   assert.ok(denied(f.send(`"${spaced}" auth status`)), "a quoted executable pathname keeps its identity");
+  const watchCases = [];
+  for (const options of ["-x", "--exec", "-tx", "-xn1", "-n 1 -x", "--interval 1 --exec",
+    "-q 2 -x", "--equexit=2 --exec", "-s /tmp -x", "--shotsdir /tmp --exec", "-d -x", "-x --",
+    "--ex", "--exe", "--i 1 --ex", "--eq=2 --exe", "--s /tmp --ex", "--dif=x --ex"]) {
+    watchCases.push([`watch ${options} "gh auth status"`, false]);
+    watchCases.push([`watch ${options} "${spaced}" auth status`, true]);
+    watchCases.push([`watch ${options} gh auth status`, true]);
+  }
+  for (const option of ["--shotsdir", "--shots", "--s"]) {
+    watchCases.push([`watch ${option} --exec "gh auth status"`, true]); // --exec is the required directory value
+  }
+  watchCases.push(
+    ['watch -dx "gh auth status"', true], // -d consumes its attached optional value, including x
+    ['watch -s -x "gh auth status"', true], // -x is the required directory value
+    ['watch -- "gh auth status" -x', true],
+    ['watch env "gh auth status" --exec', true], // watch stops its options at env
+    ['watch -x env "gh auth status" --exec', false],
+    [`watch --exec env "${spaced}" auth status`, true],
+    ['watch -x "gh auth status missing"', false], // unresolved exec filenames stay literal
+  );
+  assert.deepEqual(watchCases.map(([command]) => [command, Boolean(denied(f.send(command)))]), watchCases);
   for (const command of [`alias m='${f.hard} auth status'`, `alias m='${f.linked} auth status'`,
     `alias m='"${spaced}" auth status'`, `alias m='env ${f.hard} auth status'`,
     `alias m='PATH=/nonexistent ${f.hard} auth status'`,

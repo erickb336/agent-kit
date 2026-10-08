@@ -17,7 +17,7 @@ const WRAPPER = new Map([
   ["exec", /^-a$/],
   ["stdbuf", /^-(?:[ioe]|-(?:input|output|error))$/],
   ["caffeinate", /^-[tw]$/],
-  ["watch", /^-(?:n|-interval)$/],
+  ["watch", undefined],
   ...["npx", "bunx", "npm exec", "pnpm dlx"].map((name) => [name, PACKAGE_RUNNER]),
   ...["nohup", "command", "builtin", "time", "noglob", "nocorrect"].map((name) => [name, undefined]),
 ]);
@@ -54,6 +54,38 @@ export function programsRun(command, cwd, path = process.env.PATH ?? "") {
   return found;
 }
 
+const WATCH_OPTIONS = [
+  "beep", "color", "no-color", "differences", "help", "interval", "errexit", "follow", "chgexit",
+  "equexit", "exec", "precise", "no-rerun", "shotsdir", "no-title", "no-wrap", "version",
+];
+
+// watch stops its options at the first command word. Only -x/--exec preserves literal argv.
+function watchOptions(words, next) {
+  let shellText = true;
+  for (; /^-./.test(words[next] ?? ""); next++) {
+    const option = words[next];
+    if (option === "--") { next++; break; }
+    if (option.startsWith("--")) {
+      const prefix = option.slice(2).split("=")[0];
+      const matches = WATCH_OPTIONS.filter(name => name.startsWith(prefix));
+      const name = WATCH_OPTIONS.includes(prefix) ? prefix : matches.length === 1 ? matches[0] : undefined;
+      if (name === "exec" && !option.includes("=")) shellText = false;
+      else if (/^(?:interval|equexit|shotsdir)$/.test(name ?? "") && !option.includes("=")) next++;
+      continue;
+    }
+    for (let i = 1; i < option.length; i++) {
+      const flag = option[i];
+      if (flag === "x") shellText = false;
+      if (/[nqs]/.test(flag)) { // a required value is attached or is the next word
+        if (i === option.length - 1) next++;
+        break;
+      }
+      if (flag === "d") break; // an optional differences value must be attached: -dx consumes x
+    }
+  }
+  return { next, shellText };
+}
+
 function readPrograms(command, dir, path, depth, found) {
   const inner = (text, at, here) => {
     if (depth === 3) throw new Error("commands nested more than 3 levels deep");
@@ -67,7 +99,7 @@ function readPrograms(command, dir, path, depth, found) {
     if (exported) path = set(exported);
     let here = path;
     let viaExec = false;
-    let shellText = false;
+    let shellText; // undefined keeps the generic wrapper fallback; watch selects shell text or literal argv
     let takesValue; // the options of the last wrapper that take a value
     for (let k = 0; k < words.length; k++) {
       const w = words[k];
@@ -81,13 +113,17 @@ function readPrograms(command, dir, path, depth, found) {
       if (wrapper) {
         if (wrapper !== name) k++;
         viaExec ||= !SAME_SHELL.test(name);
-        shellText ||= name === "watch";
+        if (name === "watch") {
+          const watched = watchOptions(words, k + 1);
+          shellText ||= watched.shellText;
+          k = watched.next - 1;
+        }
         takesValue = WRAPPER.get(wrapper);
         continue;
       }
       // A direct quoted path stays literal. A shell-text wrapper interprets its argument even if that filename exists.
       const file = program(w, dir, here);
-      if (/\s/.test(w) && (shellText || !file)) { // watch "ps -ax" runs its text with sh -c
+      if (/\s/.test(w) && (shellText ?? !file)) { // watch "ps -ax" runs its text with sh -c
         inner(w, dir, here);
         break;
       }
