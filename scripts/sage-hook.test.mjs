@@ -4030,3 +4030,228 @@ test("T186: normalized command arrays retain reader option boundaries", () => {
     }
   }
 });
+
+// T181 uses only hook JSON. No fixture starts a real subagent.
+const LEAD = { agent_id: "lead-a", agent_type: "sage:lead" };
+const nested = (role = "sage:qa", id = "child-call", extra = {}) => spawnAgent(role, BRIEF, id, { ...LEAD, ...extra });
+const resultOf = (id, agentId, extra = {}, status = "async_launched") => ({ hook_event_name: "PostToolUse", tool_name: "Agent", tool_use_id: id, tool_response: { status, agentId }, ...extra });
+const ended = (agent_id, agent_type = "sage:qa", extra = {}) => ({ hook_event_name: "SubagentStop", agent_id, agent_type, stop_hook_active: true, ...extra });
+function nestedSession() {
+  const s = session();
+  s.sage("config", "max_agents=20", "cap_total=30");
+  s.send(prompt("sage mode"));
+  return s;
+}
+
+test("T181: only the chief starts leads, and only leads start the permitted children", () => {
+  const s = nestedSession();
+  for (const agent_type of ["sage:implementer", "sage:qa", "Explore", "sage:chief-of-staff"]) {
+    for (const role of ["sage:lead", "sage:qa", "Explore"]) {
+      assert.match(denied(s.send(nested(role, `${agent_type}-${role}`, { agent_type }))) ?? "", /report to the sage/i, `${agent_type} -> ${role}`);
+    }
+  }
+  for (const role of ["sage:lead", "sage:pe", "sage:designer", "Explore"]) assert.ok(denied(s.send(nested(role, role))), role);
+  for (const [n, role] of ["sage:implementer", "sage:code-reviewer", "sage:security-reviewer", "sage:ux-reviewer", "sage:qa"].entries()) {
+    assert.equal(s.send(nested(role, `ok-${n}`)), undefined, role);
+    s.send(resultOf(`ok-${n}`, `child-${n}`, LEAD, "completed"));
+  }
+  assert.equal(s.send(spawnAgent("sage:lead", BRIEF, "main-lead")), undefined);
+  assert.equal(s.send(spawnAgent("sage:designer", BRIEF, "main-design")), undefined, "the chief still starts specialists");
+  assert.equal(s.send(spawnAgent("Explore", "short", "main-explore")), undefined);
+});
+
+test("T181: nested briefs and shared caps keep the chief's existing refusals", () => {
+  const s = nestedSession();
+  const brief = spawnAgent("sage:qa", "GOAL short", "bad");
+  assert.equal(denied(s.send({ ...brief, ...LEAD })), denied(s.send(brief)), "same brief refusal");
+  s.sage("config", "max_agents=1");
+  assert.equal(s.send(nested()), undefined);
+  assert.match(denied(s.send(nested("sage:qa", "second"))) ?? "", /1 sage agent is running for other, and its cap is 1/);
+  assert.match(denied(s.send(spawnAgent("sage:qa", BRIEF, "main"))) ?? "", /1 sage agent is running for other, and its cap is 1/);
+});
+
+test("T181: parallel admission holds three leads per project and three children per caller across folders", async () => {
+  const s = nestedSession();
+  const leads = await Promise.all([1, 2, 3, 4].map(n => s.sendAsync(spawnAgent("sage:lead", BRIEF, `lead-${n}`))));
+  assert.equal(leads.filter(x => !denied(x)).length, 3);
+  assert.match(leads.map(denied).find(Boolean), /3 leads/);
+  const a = join(s.dir, "a"), b = join(s.dir, "b");
+  mkdirSync(a); mkdirSync(b);
+  const children = await Promise.all([1, 2, 3, 4].map(n => s.sendAsync(nested("sage:qa", `c-${n}`, { cwd: n % 2 ? a : b }))));
+  assert.equal(children.filter(x => !denied(x)).length, 3);
+  assert.match(children.map(denied).find(Boolean), /3 children/);
+  assert.equal(s.send(nested("sage:qa", "other-lead", { agent_id: "lead-b" })), undefined);
+});
+
+test("T181: exact results keep identical child roles with their own parents", () => {
+  const s = nestedSession();
+  const b = { ...LEAD, agent_id: "lead-b" };
+  for (const [caller, prefix] of [[LEAD, "a"], [b, "b"]]) for (let n = 1; n <= 3; n++) assert.equal(s.send(nested("sage:qa", `${prefix}-${n}`, caller)), undefined);
+  s.send(start("b-child")); s.send(start("a-child"));
+  s.send(resultOf("b-1", "b-child", b)); s.send(resultOf("a-1", "a-child", LEAD));
+  s.send(ended("b-child"));
+  assert.ok(denied(s.send(nested("sage:qa", "a-fourth"))), "B's stop must not free A's child");
+  assert.equal(s.send(nested("sage:qa", "b-fourth", b)), undefined);
+  s.send({ hook_event_name: "Stop", background_tasks: [] });
+  assert.ok(denied(s.send(nested("sage:qa", "still-a"))), "the main task list does not own nested children");
+  s.send(ended("lead-a", "sage:lead"));
+  assert.ok(denied(s.send(nested("sage:qa", "ended-parent"))), "a parent-end race cannot start a late child");
+  assert.equal(s.send(nested("sage:qa", "fresh-parent", { agent_id: "lead-c" })), undefined);
+});
+
+test("T181: stop-before-result, malformed results and failed launches preserve exact capacity", () => {
+  const s = nestedSession();
+  for (let n = 1; n <= 3; n++) assert.equal(s.send(nested("sage:qa", `c-${n}`)), undefined);
+  s.send(ended("early"));
+  s.send(resultOf("c-1", "early", LEAD));
+  assert.equal(s.send(nested("sage:qa", "replacement")), undefined, "late binding cannot resurrect a stopped child");
+  s.send(resultOf("c-2", "live", { ...LEAD, agent_id: "wrong" }, "completed"));
+  s.send({ ...resultOf("c-2", "live", LEAD), tool_response: { status: "completed" } });
+  assert.ok(denied(s.send(nested("sage:qa", "malformed-held"))));
+  s.send(resultOf("c-2", "live", LEAD));
+  s.send(resultOf("c-2", "different", LEAD, "completed"));
+  assert.ok(denied(s.send(nested("sage:qa", "conflict-held"))));
+  s.send(ended("live"));
+  assert.equal(s.send(nested("sage:qa", "after-live")), undefined);
+  s.send({ hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_use_id: "after-live", ...LEAD });
+  assert.equal(s.send(nested("sage:qa", "failed-replacement")), undefined, "a failure before launch frees its own reservation");
+  s.send(start("possibly-running"));
+  s.send({ hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_use_id: "failed-replacement", ...LEAD });
+  assert.ok(denied(s.send(nested("sage:qa", "possible-held"))), "failure after a possible start retains capacity");
+});
+
+test("T181: exact calls reject missing IDs and keep distinct IDs that legacy safe mapping aliases", () => {
+  const s = nestedSession();
+  assert.ok(denied(s.send({ ...nested(), agent_id: "" })));
+  assert.ok(denied(s.send({ ...nested(), tool_use_id: undefined })));
+  for (const id of ["a/b", "a_b", "third"]) assert.equal(s.send(nested("sage:qa", id)), undefined);
+  s.send(resultOf("a/b", "one", LEAD));
+  s.send(resultOf("a_b", "two", LEAD));
+  s.send(ended("one"));
+  assert.equal(s.send(nested("sage:qa", "fourth")), undefined);
+  s.send(ended("one"));
+  assert.ok(denied(s.send(nested("sage:qa", "duplicate-stop"))));
+  s.send(ended("two"));
+  assert.equal(s.send(nested("sage:qa", "fifth")), undefined);
+});
+
+test("T181: report gates and attempted TaskStop keep nested capacity; late async launches remain charged", () => {
+  const s = nestedSession();
+  s.sage("config", "max_agents=3");
+  for (let n = 1; n <= 3; n++) assert.equal(s.send(nested("sage:qa", `r-${n}`)), undefined);
+  s.send(resultOf("r-1", "child", LEAD));
+  assert.equal(s.send({ hook_event_name: "SubagentStop", agent_id: "child", agent_type: "sage:qa", last_assistant_message: "incomplete" }).decision, "block");
+  s.send(tool("TaskStop", { task_id: "child" }));
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "held"))));
+  s.send(ended("lead-a", "sage:lead"));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "one-free")), undefined, "the confirmed child follows its parent's end");
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "pending-held"))), "already permitted calls still hold capacity");
+  s.send(resultOf("r-2", "late-child", LEAD));
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "late-held"))), "a launch after parent cleanup may still be running");
+  s.send(ended("late-child"));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "late-finished")), undefined);
+});
+
+test("T181: exact identity includes the raw session and refuses malformed nonmain lifecycle callers", () => {
+  const s = nestedSession();
+  assert.equal(s.send(spawnAgent("sage:lead", BRIEF, "main-call")), undefined);
+  const noCaller = { agent_type: "sage:lead" };
+  s.send(resultOf("main-call", "wrong", noCaller, "completed"));
+  s.send({ hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_use_id: "main-call", ...noCaller });
+  assert.equal(s.send(spawnAgent("sage:lead", BRIEF, "main-2")), undefined);
+  assert.equal(s.send(spawnAgent("sage:lead", BRIEF, "main-3")), undefined);
+  assert.ok(denied(s.send(spawnAgent("sage:lead", BRIEF, "main-4"))));
+  assert.ok(denied(s.send({ ...nested(), agent_id: undefined })));
+  const native = session();
+  assert.equal(native.send(nested("Explore", "native", { agent_type: "Explore" })), undefined, "ordinary non-Sage nesting stays unchanged");
+  for (const session_id of ["a/b", "a_b"]) for (let n = 1; n <= 3; n++) assert.equal(s.send(nested("sage:qa", `same-${n}`, { session_id })), undefined);
+  s.send(resultOf("same-1", "same-child", { ...LEAD, session_id: "a/b" }));
+  s.send(ended("same-child", "sage:qa", { session_id: "a_b" }));
+  assert.ok(denied(s.send(nested("sage:qa", "held-a", { session_id: "a/b" }))));
+  s.send(ended("same-child", "sage:qa", { session_id: "a/b" }));
+  assert.equal(s.send(nested("sage:qa", "free-a", { session_id: "a/b" })), undefined);
+});
+
+test("T181: partial higher slots and a held mutation lock cannot admit excess children", () => {
+  const s = nestedSession();
+  const dir = join(s.vars.SAGE_HOOKS_STATE, "slots"), partial = join(dir, "slot-20");
+  mkdirSync(partial, { recursive: true });
+  writeFileSync(join(partial, "project-other"), "");
+  writeFileSync(join(partial, "session-s1"), "");
+  assert.equal(s.send(nested("sage:qa", "p-1")), undefined);
+  assert.equal(s.send(nested("sage:qa", "p-2")), undefined);
+  assert.ok(denied(s.send(nested("sage:qa", "p-3"))), "partial parent metadata counts against the limit, even in a higher slot");
+  rmSync(partial, { recursive: true });
+  assert.equal(s.send(nested("sage:qa", "p-3")), undefined, "a refused admission is not a completed call");
+  const before = readdirSync(dir).sort();
+  mkdirSync(join(s.vars.SAGE_HOOKS_STATE, "slots.lock"));
+  assert.equal(s.send({ hook_event_name: "SubagentStop", agent_id: "unfinished", agent_type: "sage:qa", last_assistant_message: "incomplete" })?.decision, "block", "a storage lock cannot bypass the report gate");
+  assert.match(denied(s.send(nested("sage:qa", "locked"))) ?? "", /agent-slot lock is busy/);
+  assert.deepEqual(readdirSync(dir).sort(), before);
+  rmSync(join(s.vars.SAGE_HOOKS_STATE, "slots.lock"), { recursive: true });
+});
+
+test("T181: unbound child reservations keep a one-hour lease and duplicate Pre does not add capacity", async () => {
+  const s = nestedSession();
+  for (let n = 1; n <= 3; n++) assert.equal(s.send(nested("sage:qa", `lease-${n}`)), undefined);
+  assert.equal(s.send(nested("sage:qa", "lease-1")), undefined, "same admitted call is idempotent");
+  assert.ok(denied(s.send({ ...nested("sage:qa", "lease-1"), tool_input: { subagent_type: "sage:qa", prompt: BRIEF, description: "changed" } })));
+  const dir = join(s.vars.SAGE_HOOKS_STATE, "slots");
+  for (const slot of readdirSync(dir)) utimesSync(join(dir, slot), new Date(Date.now() - 20 * 60_000), new Date(Date.now() - 20 * 60_000));
+  assert.ok(denied(s.send(nested("sage:qa", "twenty-minutes"))), "not the old ten-minute pending lease");
+  for (const slot of readdirSync(dir)) utimesSync(join(dir, slot), new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000));
+  assert.equal(s.send(nested("sage:qa", "expired")), undefined);
+  const { slotsFor } = await import(HOOK);
+  const at = Date.now(), isolated = join(s.dir, "isolated", "slots");
+  const options = { role: "sage:qa", caller: "parent", input: { prompt: BRIEF } };
+  const first = slotsFor(isolated, "original", at);
+  assert.deepEqual(first.take("p", 20, 30, "closed", options), { ok: true });
+  first.result("closed", "parent", { status: "completed", agentId: "done" });
+  const later = slotsFor(isolated, "original", at + 2 * 3600_000);
+  assert.equal(later.take("p", 20, 30, "closed", options).refused, "ended", "a lease does not erase terminal identity");
+  assert.deepEqual(first.take("p", 20, 30, "expiring", options), { ok: true });
+  const other = slotsFor(isolated, "other", at + 2 * 3600_000);
+  assert.deepEqual(other.take("p", 20, 30, "new", options), { ok: true });
+  assert.equal(later.take("p", 20, 30, "expiring", options).refused, "ended", "another session's expiry closes the original call");
+});
+
+test("T181: ambiguous starts protect legacy and nested leases until an exact result supplies ownership", async () => {
+  const { slotsFor } = await import(HOOK);
+  const dir = mkdtempSync(join(tmpdir(), "sage-mixed-slots-")), at = Date.now();
+  const slots = minute => slotsFor(join(dir, "slots"), "s", at + minute * 60_000);
+  const direct = { role: "sage:qa" }, child = { role: "sage:qa", caller: "lead", input: { prompt: BRIEF } };
+  assert.deepEqual(slots(0).take("p", 2, 10, "direct", direct), { ok: true });
+  assert.deepEqual(slots(0).take("p", 2, 10, "child", child), { ok: true });
+  slots(0).bind("direct-agent", "sage:qa");
+  slots(9).touch("direct-agent", "sage:qa");
+  assert.equal(slots(11).take("p", 2, 10, "too-many", child).refused, "project", "an ambiguous live direct agent cannot expire at ten minutes");
+  slots(11).drop("direct");
+  assert.equal(slots(11).take("p", 2, 10, "still-full", child).refused, "project", "failure after possible launch retains both candidates");
+  slots(11).result("direct", undefined, { status: "async_launched", agentId: "direct-agent" });
+  slots(11).release("direct-agent");
+  assert.equal(slots(11).take("p", 2, 10, "direct", direct).refused, "ended", "a result-correlated legacy call cannot reopen after completion");
+  assert.deepEqual(slots(11).take("p", 2, 10, "replacement", child), { ok: true }, "an exact result permits the direct agent's own stop to release it");
+  slots(11).result("direct", undefined, { status: "completed", agentId: "direct-agent" });
+  assert.equal(slots(11).take("p", 2, 10, "excess", child).refused, "project", "a repeated old result cannot release the replacement");
+  const separate = join(dir, "separate"), first = slotsFor(separate, "a_b", at, "a/b"), alias = slotsFor(separate, "a_b", at, "a_b");
+  assert.deepEqual(first.take("p", 1, 10, "joined", direct), { ok: true });
+  first.result("joined", undefined, { status: "async_launched", agentId: "joined-agent" });
+  alias.release("joined-agent");
+  assert.equal(first.take("p", 1, 10, "extra", direct).refused, "project", "a result-correlated legacy slot retains its raw session identity");
+  first.release("joined-agent");
+  assert.deepEqual(first.take("p", 1, 10, "extra", direct), { ok: true });
+});
+
+test("T181: terminal child events cannot consume and release a fresh legacy reservation", () => {
+  const s = nestedSession();
+  s.sage("config", "max_agents=1");
+  assert.equal(s.send(nested("sage:qa", "finished")), undefined);
+  s.send(resultOf("finished", "old-child", LEAD, "completed"));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "fresh-main")), undefined);
+  s.send(start("old-child"));
+  s.send(ended("old-child"));
+  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "excess"))), "terminal replay does not steal the new call");
+  s.send(start("fresh-agent"));
+  s.send(ended("fresh-agent"));
+  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "replacement")), undefined, "the real direct agent still releases normally");
+});
