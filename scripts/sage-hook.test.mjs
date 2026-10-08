@@ -3184,3 +3184,37 @@ test("T197: generic writers cannot copy a literal gh outside PATH", () => {
   const linked = join(third, "gh"); symlinkSync(payload, linked);
   for (const command of [`cat ${linked} > /tmp/copied-client`, `dd if=${linked} of=/tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
 });
+
+
+test("T197: alias bodies cannot hide a known gh hard link", () => {
+  const f = ghAgentSession();
+  const spaced = join(f.dir, "client with spaces"); linkSync(f.gh, spaced);
+  assert.ok(denied(f.send(`"${spaced}" auth status`)), "a quoted executable pathname keeps its identity");
+  for (const command of [`alias m='${f.hard} auth status'`, `alias m='${f.linked} auth status'`,
+    `alias m='"${spaced}" auth status'`, `alias m='env ${f.hard} auth status'`,
+    `alias m='PATH=/nonexistent ${f.hard} auth status'`,
+    `git config alias.m '!${f.hard} auth status'`, `git -c alias.m='!${f.hard} auth status' m`,
+    `git -calias.m='!${f.hard} auth status' m`,
+    `printf '[alias]\n m = !${f.hard} auth status\n' > /tmp/alias-config`]) {
+    assert.ok(denied(f.send(command)), command);
+  }
+  const file = join(f.dir, "custom-config");
+  for (const content of [`[alias]\n m = !${f.hard} auth status\n`, `[alias]\n m = "!${f.hard} auth status"\n`,
+    `[alias]\n m = "!\\"${spaced}\\" auth status"\n`]) {
+    assert.ok(denied(f.s.send(tool("Write", { file_path: file, content }, { cwd: FEATURE, ...AGENT }))));
+  }
+  writeFileSync(file, "[alias]\n m = !echo harmless\n");
+  assert.ok(denied(f.s.send(tool("Edit", { file_path: file, old_string: "echo harmless", new_string: `${f.hard} auth status` }, { cwd: FEATURE, ...AGENT }))));
+  assert.ok(denied(f.s.send(tool("MultiEdit", { file_path: file, edits: [
+    { old_string: "echo harmless", new_string: "PLACEHOLDER auth status" },
+    { old_string: "PLACEHOLDER", new_string: f.hard },
+  ] }, { cwd: FEATURE, ...AGENT }))));
+  for (const command of ["alias ll='ls -l'", "git config alias.st status", `alias location='echo ${f.hard}'`,
+    `echo ${f.hard} > /tmp/path.txt`]) assert.equal(f.send(command), undefined, command);
+  assert.equal(f.send(`alias m='${f.hard} auth status'`, false), undefined, "main keeps its alias behavior");
+  for (const content of ["[alias]\n st = status\n", `[alias]\n st = status\n[example]\n value = !${f.hard} auth status\n`, `# Example\n\n\x60\x60\x60gitconfig\n[alias]\n m = !${f.hard} auth status\n\x60\x60\x60\n`]) {
+    assert.equal(f.s.send(tool("Write", { file_path: file, content }, { cwd: FEATURE, ...AGENT })), undefined);
+  }
+  writeFileSync(file, `[alias]\n m = !${f.hard} auth status\n`);
+  assert.equal(f.s.send(tool("Edit", { file_path: file, old_string: `m = !${f.hard} auth status`, new_string: "" }, { cwd: FEATURE, ...AGENT })), undefined, "alias removal remains allowed");
+});

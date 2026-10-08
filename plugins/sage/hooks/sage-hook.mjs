@@ -854,11 +854,55 @@ function ghAliasFileWrite(input, cwd) {
   }
   if (/(?:^|[/\\])aliases\.ya?ml$/i.test(file)) return /^\s*[^#\s][^\n]*:\s*\S/m.test(content);
   const gitConfig = /(?:^|[/\\])(?:\.gitconfig|\.git[/\\]config|git[/\\]config)$/i.test(file);
-  const uncommented = content.replace(/^\s*[#;][^\n]*$/gm, "");
+  return ghAliasConfiguration(content, cwd, process.env.PATH ?? "", undefined, gitConfig);
+}
+/** Git config removes transport quotes; escaped quotes still belong to the shell command. */
+function gitAliasBody(value) {
+  let text = "", quoted = false;
+  const escapes = { n: "\n", t: "\t", b: "\b", '"': '"', "\\": "\\" };
+  for (let k = 0; k < value.length; k++) {
+    const char = value[k];
+    if (char === '"') quoted = !quoted;
+    else if (char === "\\" && Object.hasOwn(escapes, value[k + 1])) text += escapes[value[++k]];
+    else if (!quoted && /[#;]/.test(char)) break;
+    else text += char;
+  }
+  return text.trimStart().startsWith("!") ? text.trimStart().slice(1) : undefined;
+}
+function ghAliasConfiguration(content, cwd, path, inherited, gitConfig = false) {
+  const uncommented = content.replace(/\\\r?\n/g, "").replace(/^\s*[#;][^\n]*$/gm, "");
   const configuration = /^\s*\[[^\]\n]+\]/.test(uncommented);
   const lines = uncommented.split("\n").filter(line => line.trim());
   const fragment = lines.length > 0 && lines.every(line => /^\s*[\w.-]+\s*=/.test(line)) && /=[ \t]*["']?!/.test(uncommented);
-  return namesGh(content) && (gitConfig || fragment || (configuration && /\[alias\]/i.test(content)));
+  if (!(gitConfig || fragment || (configuration && /\[alias\]/i.test(content)))) return false;
+  if (namesGh(content)) return true;
+  let alias = fragment;
+  for (const line of lines) {
+    const section = /^\s*\[([^\]]+)\]/.exec(line);
+    if (section) { alias = /^alias$/i.test(section[1]); continue; }
+    const value = alias && /^[ \t]*[\w.-]+[ \t]*=[ \t]*(.*)$/.exec(line)?.[1];
+    if (typeof value !== "string") continue;
+    const body = gitAliasBody(value);
+    if (body !== undefined && ghAliasBodyProblem(body, cwd, path, inherited)) return true;
+  }
+  return false;
+}
+/** Shell parsing has already removed alias and git-config argument quotes. */
+function aliasBodies(name, args) {
+  if (name === "alias") return args.filter(arg => arg.includes("=")).map(arg => arg.slice(arg.indexOf("=") + 1));
+  if (name !== "git") return [];
+  return args.flatMap((arg, k) => {
+    const match = /^(?:-c)?alias\.[^=]+(?:=(.*))?$/i.exec(arg);
+    const value = match && (match[1] ?? args[k + 1]);
+    return value?.startsWith("!") ? [value.slice(1)] : [];
+  });
+}
+function ghAliasBodyProblem(body, cwd, path, inherited) {
+  // Alias definitions may contain more alias definitions. Refuse an unreadable or over-deep body.
+  if ((inherited?.depth ?? 0) >= 4) return NO_GH;
+  try {
+    return ghProblem(body, cwd, path, programsRun(body, cwd, path), { ...inherited, depth: (inherited?.depth ?? 0) + 1, alias: true });
+  } catch { return NO_GH; }
 }
 const fileIdentity = file => {
   try { const stat = statSync(file); return stat.isFile() ? `${stat.dev}:${stat.ino}` : undefined; } catch { return undefined; }
@@ -904,18 +948,32 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
     const why = namesGh(text) ? NO_GH : gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
     return why && `${why} (The hook cannot read this command: ${e.message}.)`;
   }
+  const gh = ghProblem(command, cwd, path, runs);
+  if (gh) return gh;
+  for (const { word, file, args } of runs) {
+    const name = word.split(/[\\/]/).pop();
+    if (name === "git" && /^stash$/i.test(subcommand(args, 0))) return NO_STASH;
+    if ((isProcess(name) || isProcess(file?.split("/").pop())) && !inTemp(file)) return NO_PROCESS(word);
+  }
+  return undefined;
+}
+
+/** The gh policy is shared by direct commands and proposed alias bodies, with the same file identities. */
+function ghProblem(command, cwd, path, runs, inherited) {
   if (ghAliasWrite(command) && writes(command)) return NO_GH;
   const commands = shellCommands(command);
   const inputs = commands.flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.replace(/^<>?/, ""));
   // Control flow can keep any observed PATH in effect. Never discard a known gh identity.
-  const paths = new Set([path, ...runs.map(run => run.path).filter(value => typeof value === "string")]);
+  const paths = new Set([...(inherited?.paths ?? []), path, ...runs.map(run => run.path).filter(value => typeof value === "string")]);
   for (const run of runs) {
     if (run.word !== "export") continue;
     for (const word of run.args) if (/^PATH=/.test(word)) paths.add(word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path));
   }
-  const folders = new Set([cwd, ...runs.map(run => run.dir)]);
+  const folders = new Set([...(inherited?.folders ?? []), cwd, ...runs.map(run => run.dir)]);
   const lookups = new Set([...folders].flatMap(dir => [...paths].flatMap(value => value.split(":").map(entry => resolve(dir, entry || ".")))));
-  const identities = new Set([...lookups].flatMap(dir => [fileIdentity(join(dir, "gh")), fileIdentity(join(dir, "gh.exe"))]).filter(Boolean));
+  const identities = new Set([...(inherited?.identities ?? []), ...[...lookups].flatMap(dir => [fileIdentity(join(dir, "gh")), fileIdentity(join(dir, "gh.exe"))])].filter(Boolean));
+  const context = { ...inherited, paths, folders, identities };
+  if (writes(command) && runs.some(run => [...run.args, ...run.stdin].some(text => ghAliasConfiguration(text, run.dir, run.path, context)))) return NO_GH;
   const isGhFile = file => {
     if (!file) return false;
     try {
@@ -927,7 +985,7 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   const referencesGhFile = arg => [...folders].some(folder => isGhFile(resolve(folder, arg.replace(/^if=/, ""))));
   const substitutionReadsGh = commands.filter(item => item.host && !item.words.length).flatMap(item => item.redirects)
     .some(ref => /^<[^<&]/.test(ref) && referencesGhFile(ref.replace(/^<>?/, "")));
-  for (const { word, file, args } of runs) {
+  for (const { word, file, args, dir, path: runPath } of runs) {
     const name = word.split(/[\\/]/).pop();
     const possible = word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...folders].flatMap(folder => [...paths].map(value =>
       value.split(":").map(entry => resolve(folder, entry || ".", word)).find(candidate => {
@@ -935,14 +993,13 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
       })
     ));
     const isGh = GH_NAME.test(name) || isGhFile(file) || possible.some(isGhFile);
-    if (isGh && !plainGh(command)) return NO_GH;
+    if (isGh && (inherited?.alias || !plainGh(command))) return NO_GH;
+    if (aliasBodies(name, args).some(body => ghAliasBodyProblem(body, dir, runPath, context))) return NO_GH;
     const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (name === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
     const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);
     const referencesGh = [...args, ...inputs].some(referencesGhFile);
     if ((alias || copy) && (namesGh(args.join(" ")) || referencesGh)) return NO_GH;
     if ((substitutionReadsGh || (referencesGh && !/^(?:echo|printf)$/.test(name))) && writes(command)) return NO_GH;
-    if (name === "git" && /^stash$/i.test(subcommand(args, 0))) return NO_STASH;
-    if ((isProcess(name) || isProcess(file?.split("/").pop())) && !inTemp(file)) return NO_PROCESS(word);
   }
   return undefined;
 }

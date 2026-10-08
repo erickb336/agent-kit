@@ -83,14 +83,16 @@ function readPrograms(command, dir, path, depth, found) {
         takesValue = WRAPPER.get(wrapper);
         continue;
       }
-      if (/\s/.test(w)) { // watch "ps -ax" runs its text with sh -c
+      // A quoted executable path can contain spaces. Resolve it before treating wrapper text as shell code.
+      const file = program(w, dir, here);
+      if (/\s/.test(w) && !file) { // watch "ps -ax" runs its text with sh -c
         inner(w, dir, here);
         break;
       }
       const args = words.slice(k + 1);
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, path: here, stdin, piped: pipes.length > 0 });
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir, path: here, stdin, piped: pipes.length > 0 });
       for (const text of commandText(name, args, bodies)) inner(text, dir, here);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
