@@ -3935,3 +3935,98 @@ test("T197: provisional dispatch errors follow the actual binding", () => {
   ]) assert.ok(denied(f.send(command)), "syntax outside an obsolete interpretation remains checked");
   assert.deepEqual(failures, [], "a later function binding retires only its provisional interpretation error");
 });
+
+// T186 payloads reach only the hook. No reader, preprocessor, decompressor or pager runs.
+for (const [reader, active, ordinary] of [
+  ["rg", [
+    "--pre cat x", "--pre=cat x", "--pre-glob=*.txt x", "--pre-glob '*.txt' x",
+    "-z x", "-nz x", "--search-zip x", "--hostname-bin helper x", "--hostname-bin=helper x",
+    "-e --pre --pre cat", "--regexp=--pre --search-zip", "x --pre cat",
+  ], [
+    "-n x", "--no-pre x", "--no-search-zip x", "-e --pre x", "-e--pre x",
+    "--regexp --pre x", "--regexp=--pre x", "-g --pre x", "-g--pre x",
+    "--glob --search-zip x", "-- --pre x", "-ez x", "--prett x",
+  ]],
+  ["file", [
+    "-C -m magic", "--compile -m magic", "--co -m magic", "-bC -m magic",
+    "-z", "-Z", "-bz", "--uncompress", "--uncompress-noreport", "--uncompress-n",
+    "-F -C -C -m magic", "--sep --compile --compile -m magic",
+  ], [
+    "", "-b", "-c -m magic", "--checking-printout -m magic", "-F -C", "-F-C",
+    "--separator --compile", "--separator=--compile", "--sep --compile", "-m -C", "-- -C",
+  ]],
+  ["diff", [
+    "-l ordinary", "-ul ordinary", "--paginate ordinary", "--pag ordinary", "--p ordinary", "--pa ordinary",
+    "-L --paginate --paginate ordinary", "--label --paginate -l ordinary", "ordinary --paginate",
+  ], [
+    "ordinary", "-u ordinary", "--to-file=ordinary", "--to-file ordinary",
+    "-L --paginate ordinary", "-L--paginate ordinary", "--label --paginate ordinary",
+    "--label=--paginate ordinary", "--algorithm --paginate ordinary", "-A--paginate ordinary", "-- --paginate ordinary",
+  ]],
+]) test(`T186: ${reader} run or write options are not plain logbook reads`, () => {
+  const s = session(); s.send(prompt("sage mode"));
+  const ledger = join(s.vars.SAGE_HOME, "project", "ledger.tsv");
+  for (const extra of [AGENT, {}]) {
+    for (const options of active) assert.match(denied(s.send(bash(`${reader} ${options} ${ledger}`, FEATURE, extra))) ?? "", LOGBOOK_SHELL, `${reader} ${options}`);
+    for (const options of ordinary) assert.equal(s.send(bash(`${reader} ${options} ${ledger}`, FEATURE, extra)), undefined, `${reader} ${options}`);
+  }
+});
+
+test("T186: reader options follow their dispatch and preserve ordinary argument data", () => {
+  const s = session(); s.send(prompt("sage mode"));
+  const ledger = join(s.vars.SAGE_HOME, "project", "ledger.tsv");
+  for (const command of [
+    `env rg --pre cat x ${ledger}`,
+    `/usr/bin/file -C -m magic ${ledger}`,
+    `LANG=C rg --pre cat x ${ledger}`,
+    `f() { rg --pre cat x ${ledger}; }; f`,
+    `rg() { :; }; command rg --pre cat x ${ledger}`,
+  ]) assert.match(denied(s.send(bash(command, FEATURE, AGENT))) ?? "", LOGBOOK_SHELL, command);
+  for (const command of [
+    `rg() { :; }; rg --pre cat x ${ledger}`,
+    `f() { env rg --pre cat x ${ledger}; }; env() { :; }; f`,
+    `echo rg --pre cat x ${ledger}`,
+    `constructor --pre x ${ledger}`,
+    `__proto__ --pre x ${ledger}`,
+    `tail -f ${ledger}`,
+    `grep -e --pre ${ledger}`,
+  ]) assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+});
+
+test("T186: state-tool reader exceptions also check launch options", () => {
+  const s = session(); s.send(prompt("sage mode"));
+  for (const command of [
+    `rg --pre cat x ${TOOL}`, `rg --pre-glob '*.mjs' x ${TOOL}`, `diff --paginate ordinary ${TOOL}`,
+    `rg() { /usr/bin/rg --pre cat x ${TOOL}; }; rg ordinary`,
+    `diff() { /usr/bin/diff --paginate ordinary ${TOOL}; }; diff ordinary`,
+  ]) {
+    assert.ok(denied(s.send(bash(command, FEATURE, AGENT))), command);
+  }
+  for (const command of [
+    `rg -n READS ${TOOL}`, `rg -e --pre ${TOOL}`, `diff --to-file=ordinary ${TOOL}`, `diff -L --paginate ordinary ${TOOL}`,
+    `rg() { cat ordinary; }; rg --pre cat x ${TOOL}`,
+    `diff() { cat ordinary; }; diff --paginate ordinary ${TOOL}`,
+  ]) {
+    assert.equal(s.send(bash(command, FEATURE, AGENT)), undefined, command);
+  }
+});
+
+test("T186: normalized command arrays retain reader option boundaries", () => {
+  const s = session(); s.send(prompt("sage mode"));
+  const ledger = join(s.vars.SAGE_HOME, "project", "ledger.tsv");
+  for (const name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+    for (const actor of [AGENT, {}]) {
+      for (const command of [
+        ["rg", "--pre", "cat", "x", ledger],
+        ["file", "-C", "-m", "magic", ledger],
+        ["diff", "--paginate", "ordinary", ledger],
+      ]) assert.match(denied(s.send(tool(name, { command }, { cwd: FEATURE, ...actor }))) ?? "", LOGBOOK_SHELL, `${name}: ${command.join(" ")}`);
+      for (const command of [
+        ["rg", "-e", "--pre", ledger],
+        ["file", "-F", "-C", ledger],
+        ["diff", "-L", "--paginate", "ordinary", ledger],
+        ["rg", "--", "--pre", ledger],
+      ]) assert.equal(s.send(tool(name, { command }, { cwd: FEATURE, ...actor })), undefined, `${name}: ${command.join(" ")}`);
+    }
+  }
+});
