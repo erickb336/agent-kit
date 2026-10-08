@@ -3831,3 +3831,25 @@ test("T197: recursive function analysis refuses at a bounded depth", async () =>
   assert.ok(denied(f.send("f() { f; }; f")), "the hook refuses recursion it cannot analyze");
   assert.equal(f.send("leaf() { echo safe; }; middle() { leaf; }; outer() { middle; }; unrelated() { echo ordinary; }; outer"), undefined, "bounded nonrecursive calls and unrelated definitions remain allowed");
 });
+
+test("T197: forward bindings resolve only matching provisional calls", async () => {
+  const f = ghAgentSession();
+  for (const command of [
+    "f() { g; }; g() { echo safe; }; f",
+    "g() { echo safe; }; f() { g; }; f",
+    "f() { g; }; g() { h; }; h() { echo safe; }; f",
+  ]) assert.equal(f.send(command), undefined, "a call uses its known forward or preceding definition");
+  linkSync(f.gh, join(f.dir, "g"));
+  for (const command of ["f() { g; }; g() { echo safe; }; f", "g() { echo safe; }; f() { g; }; f"])
+    assert.equal(f.send(command), undefined, "a known function shadows an inert gh hardlink in either declaration order");
+  for (const command of [
+    `f() { g; }; g() { ${f.hard} auth status; }; f`,
+    `f() { ${f.hard} auth status; }; echo safe`,
+    "f() { g; }; g() { echo safe; }; f; unset -f g; f",
+    "f() { g; }; other() { g; }; g() { echo safe; }; f; unset -f g; other",
+    "(g() { echo safe; }; f() { g; }; f); other() { g; }; other",
+    "f() { command g; }; g() { echo safe; }; f",
+  ]) assert.ok(denied(f.send(command)), "explicit forbidden bodies and actual unknown callees remain refused");
+  const { programsRun } = await import(HOOK);
+  assert.deepEqual(programsRun("f() { g; }; g() { echo safe; }; f", f.dir, process.env.PATH).map(run => run.word), ["g", "echo", "f"], "provenance does not change the default flat view");
+});

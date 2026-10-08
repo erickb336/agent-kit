@@ -366,9 +366,19 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
   ...(process.env.HOME === undefined ? {} : { home: process.env.HOME }),
 }), publicLeaves = true) {
   const functionBodies = new Map(), functionIds = new WeakMap();
-  let functionDepth = 0, emitLeaves = publicLeaves;
-  const emit = (run, wrapper = false, uncertain = false, shellFunction = false) => {
-    found.contexts.push({ run, wrapper, uncertainDirectory: uncertain, ...(shellFunction ? { shellFunction: true } : {}) });
+  const callSites = new WeakMap(), provisionalCalls = new Map(), confirmedCalls = new Set();
+  let functionDepth = 0, declarationDepth = 0, emitLeaves = publicLeaves;
+  const siteFor = (command, index) => {
+    if (!callSites.has(command)) callSites.set(command, []);
+    return callSites.get(command)[index] ??= {};
+  };
+  const emit = (run, wrapper = false, uncertain = false, shellFunction = false, site) => {
+    const entry = { run, wrapper, uncertainDirectory: uncertain, ...(shellFunction ? { shellFunction: true } : {}) };
+    found.contexts.push(entry);
+    if (site && declarationDepth) {
+      if (!provisionalCalls.has(site)) provisionalCalls.set(site, []);
+      provisionalCalls.get(site).push(entry);
+    } else if (site && shellFunction) confirmedCalls.add(site);
     found.executables.push(run);
     if (!wrapper && emitLeaves) found.leaves.push(run);
   };
@@ -435,7 +445,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       if (wrapper) {
         const modifier = keyword && !w.includes("/") && /^(?:time|noglob|nocorrect)$/.test(name);
         const external = viaExec || w.includes("/") || (!modifier && !/^(?:command|builtin|exec)$/.test(name));
-        if (external) emit({ word: w, file, args: originalArgs, dir: at, path: here, stdin: [], piped: false }, true, uncertain);
+        if (external) emit({ word: w, file, args: originalArgs, dir: at, path: here, stdin: [], piped: false }, true, uncertain, false, siteFor(c, k));
         if (wrapper.includes(" ")) k++;
         if (modifier) {
           if (name === "time" && words[k + 1] === "-p") k++;
@@ -521,7 +531,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       }
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
-      emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 }, false, uncertain, functionId !== undefined);
+      emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 }, false, uncertain, functionId !== undefined, siteFor(c, k));
       for (const text of commandText(name, args, bodies)) inner(text, at, here, transformed, uncertain,
         name === "eval" && !viaExec ? { cdpath: localCdpath, home: localHome, exported } : shellLookup(environment));
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
@@ -561,6 +571,12 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
     return states.map(state => ({ ...state,
       functions: { ...state.functions, [name]: id }, functionChanges: { ...state.functionChanges, [name]: id } }));
   };
+  execute.declaration = (body, states, opaque) => {
+    declarationDepth++;
+    try {
+      return walkFlow(body, states.map(state => ({ ...state, functionChanges: {}, uncertainDirectory: true })), execute, opaque);
+    } finally { declarationDepth--; }
+  };
   execute.effects = (id, state, opaque) => {
     if (functionDepth === 8) throw evidenceError("function calls nested more than 8 levels deep");
     const body = functionBodies.get(id), previous = emitLeaves;
@@ -571,7 +587,10 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       return body.effects;
     } finally { functionDepth--; emitLeaves = previous; }
   };
-  return walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, functions: {}, functionChanges: {}, uncertainDirectory }], execute);
+  const result = walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, functions: {}, functionChanges: {}, uncertainDirectory }], execute);
+  // Only the same parsed position can resolve a provisional declaration binding. Actual unknown calls remain.
+  for (const site of confirmedCalls) for (const entry of provisionalCalls.get(site) ?? []) entry.resolvedDeclaration = true;
+  return result;
 }
 
 /** Directory changes belong to their execution scope; a branch keeps both possible outcomes. */
@@ -591,7 +610,7 @@ function walkFlow(flow, initial, execute, opaque = false) {
       });
       return { yes: unique(results.filter(r => r.status !== false).map(r => r.state)), no: unique(results.filter(r => r.status !== true).map(r => r.state)) };
     }
-    const result = walkFlow(node, node.kind === "function" ? states.map(state => ({ ...state, functionChanges: {}, uncertainDirectory: true })) : states, execute, scope.opaque);
+    const result = node.kind === "function" ? execute.declaration(node, states, scope.opaque) : walkFlow(node, states, execute, scope.opaque);
     if (node.kind === "function") {
       scope.functionEffect = true;
       const next = execute.function(node.functionName, node, states);
