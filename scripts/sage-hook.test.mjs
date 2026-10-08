@@ -3160,6 +3160,12 @@ test("T197: gh identities remain protected across wrapped and conditional export
   const second = join(f.dir, "second"); mkdirSync(second);
   writeFileSync(join(second, "gh"), "fake second gh", { mode: 0o755 });
   linkSync(join(second, "gh"), join(second, "client"));
+  writeFileSync(join(f.dir, "git"), "ordinary fake git", { mode: 0o755 });
+  linkSync(join(second, "gh"), join(second, "git"));
+  const ordered = session({ PATH: `${f.dir}:${second}:${process.env.PATH}` }); ordered.send(prompt("sage mode"));
+  for (const command of ["git status", `echo PATH=${second}; git status`]) {
+    assert.equal(ordered.send(tool("Bash", { command }, { cwd: FEATURE, ...AGENT })), undefined, command);
+  }
   for (const prefix of [`command export PATH=${second}; `, `builtin export PATH=${second}; `, `X=1 export PATH=${second}; `, `{ export PATH=${second}; }; `, `if true; then export PATH=${second}; fi; `]) {
     assert.ok(denied(f.send(`${prefix}${second}/client auth status`)), prefix);
     assert.ok(denied(f.send(`${prefix}client auth status`)), prefix);
@@ -3171,4 +3177,9 @@ test("T197: generic writers cannot copy a literal gh outside PATH", () => {
   const second = join(f.dir, "second"); mkdirSync(second);
   const gh = join(second, "gh"); writeFileSync(gh, "fake second gh", { mode: 0o755 });
   for (const command of [`cat ${gh} > /tmp/copied-client`, `dd if=${gh} of=/tmp/copied-client`, `rsync ${gh} /tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
+  for (const command of [`echo ${gh} > /tmp/path.txt`, `printf '%s\n' ${gh} > /tmp/path.txt`]) assert.equal(f.send(command), undefined, command);
+  const third = join(f.dir, "third"); mkdirSync(third);
+  const payload = join(third, "payload"); writeFileSync(payload, "fake gh payload", { mode: 0o755 });
+  const linked = join(third, "gh"); symlinkSync(payload, linked);
+  for (const command of [`cat ${linked} > /tmp/copied-client`, `dd if=${linked} of=/tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
 });

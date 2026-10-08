@@ -909,8 +909,9 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   const inputs = commands.flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.replace(/^<>?/, ""));
   // Control flow can keep any observed PATH in effect. Never discard a known gh identity.
   const paths = new Set([path, ...runs.map(run => run.path).filter(value => typeof value === "string")]);
-  for (const word of commands.flatMap(item => item.words)) {
-    if (/^PATH=/.test(word)) paths.add(word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path));
+  for (const run of runs) {
+    if (run.word !== "export") continue;
+    for (const word of run.args) if (/^PATH=/.test(word)) paths.add(word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path));
   }
   const folders = new Set([cwd, ...runs.map(run => run.dir)]);
   const lookups = new Set([...folders].flatMap(dir => [...paths].flatMap(value => value.split(":").map(entry => resolve(dir, entry || ".")))));
@@ -920,19 +921,23 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
     try {
       const real = realpathSync.native(file);
       const identity = fileIdentity(real);
-      return !!identity && (GH_NAME.test(basename(real)) || identities.has(identity));
+      return !!identity && (GH_NAME.test(basename(file)) || GH_NAME.test(basename(real)) || identities.has(identity));
     } catch { return false; }
   };
   for (const { word, file, args, dir } of runs) {
     const name = word.split(/[\\/]/).pop();
-    const possible = word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...lookups].map(folder => join(folder, word));
+    const possible = word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...folders].flatMap(folder => [...paths].map(value =>
+      value.split(":").map(entry => resolve(folder, entry || ".", word)).find(candidate => {
+        try { const stat = statSync(candidate); return stat.isFile() && (stat.mode & 0o111); } catch { return false; }
+      })
+    ));
     const isGh = GH_NAME.test(name) || isGhFile(file) || possible.some(isGhFile);
     if (isGh && !plainGh(command)) return NO_GH;
     const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (name === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
     const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);
     const referencesGh = [...args, ...inputs].some(arg => [...folders].some(folder => isGhFile(resolve(folder, arg.replace(/^if=/, "")))));
     if ((alias || copy) && (namesGh(args.join(" ")) || referencesGh)) return NO_GH;
-    if (referencesGh && writes(command)) return NO_GH;
+    if (referencesGh && !/^(?:echo|printf)$/.test(name) && writes(command)) return NO_GH;
     if (name === "git" && /^stash$/i.test(subcommand(args, 0))) return NO_STASH;
     if ((isProcess(name) || isProcess(file?.split("/").pop())) && !inTemp(file)) return NO_PROCESS(word);
   }
