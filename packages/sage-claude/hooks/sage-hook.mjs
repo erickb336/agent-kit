@@ -1069,6 +1069,7 @@ function ghProblem(command, cwd, path, runs, inherited) {
   const evidence = scoped.programs.map(entry => entry.run);
   const leaves = scoped.programs.filter(entry => !entry.wrapper);
   const uncertain = new Set(scoped.programs.filter(entry => entry.uncertainDirectory).map(entry => entry.run));
+  const shellFunctions = new Set(scoped.programs.filter(entry => entry.shellFunction).map(entry => entry.run));
   const writesCommand = writes(command) || runs.some(run => writesIn({ words: [run.word, ...run.args], redirects: [] }));
   if (ghAliasWrite(command) && writesCommand) return NO_GH;
   const redirects = scoped.redirects;
@@ -1108,13 +1109,13 @@ function ghProblem(command, cwd, path, runs, inherited) {
   for (const run of evidence) {
     const { word, file } = run;
     const name = word.split(/[\\/]/).pop();
-    if (uncertain.has(run) && !isAbsolute(word) && (word.includes("/") || (!file && !/^(?:echo|printf|cd|export|unset|readonly|local|declare|typeset|alias|unalias|true|false|test|:|\[)$/.test(word)))) return NO_GH;
-    const possible = word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...folders].flatMap(folder => [...paths].map(value =>
+    if (!shellFunctions.has(run) && uncertain.has(run) && !isAbsolute(word) && (word.includes("/") || (!file && !/^(?:echo|printf|cd|export|unset|readonly|local|declare|typeset|alias|unalias|true|false|test|:|\[)$/.test(word)))) return NO_GH;
+    const possible = shellFunctions.has(run) ? [] : word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...folders].flatMap(folder => [...paths].map(value =>
       value.split(":").map(entry => resolve(folder, entry || ".", word)).find(candidate => {
         try { const stat = statSync(candidate); return stat.isFile() && (stat.mode & 0o111); } catch { return false; }
       })
     ));
-    const isGh = GH_NAME.test(name) || isGhFile(file) || possible.some(isGhFile);
+    const isGh = GH_NAME.test(name) || (!shellFunctions.has(run) && (isGhFile(file) || possible.some(isGhFile)));
     if (isGh && (inherited?.alias || !plainGh(command))) return NO_GH;
   }
   for (const { run: { word, file, args, dir, path: runPath }, uncertainDirectory } of leaves) {

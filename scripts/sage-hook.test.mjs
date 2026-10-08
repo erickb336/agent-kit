@@ -3798,3 +3798,36 @@ test("T197: function summaries preserve callable table changes", () => {
     assert.equal(f.send(`${prefix} ${change} ${action}`, f.safeParent), undefined, "variable-only or uncalled removal preserves the override");
   assert.deepEqual(failures, [], "a called removal cannot leave stale function dispatch");
 });
+
+test("T197: function effects resolve current callee bindings", async () => {
+  const f = ghLookupSession();
+  const prefix = "export() { echo safe; };";
+  const action = `export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > settings"`;
+  const cases = [
+    ["reset() { echo safe; }; outer() { reset; }; reset() { unset -f export; }; outer;", true],
+    ["reset() { unset -f export; }; outer() { reset; }; reset() { echo safe; }; outer;", false],
+    ["reset() { unset -f export; }; outer() { reset; }; outer;", true],
+    ["reset() { echo safe; }; outer() { reset; }; outer;", false],
+    ["reset() { unset -f export; }; outer() { reset; }; unrelated() { echo safe; }; outer;", true],
+    ["install() { reset() { unset -f export; }; }; install; reset;", true],
+    ["install() { reset() { unset -f export; }; };", false],
+  ];
+  const failures = [];
+  for (const [setup, expected] of cases)
+    if (Boolean(denied(f.send(`${prefix} ${setup} ${action}`, f.safeParent))) !== expected) failures.push({ setup, expected });
+  assert.deepEqual(failures, [], "function dispatch cannot use a stale callee summary");
+  assert.equal(f.send(`${prefix} reset() { echo safe; }; outer() { reset; }; reset() { unset -f export; }; outer; export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > ${f.safe}/settings"`, f.safeParent), undefined, "an absolute ordinary destination stays allowed");
+  assert.ok(denied(f.send(`CDPATH=${f.safeParent}; f() { cd dest; printf payload > settings; }; CDPATH=${f.protectedParent}; f;`, f.safeParent)), "called-body policy evidence uses current lookup values");
+  const { programsRun } = await import(HOOK);
+  assert.deepEqual(programsRun("f() { echo safe; }; f", f.safe, process.env.PATH).map(run => run.word), ["echo", "f"], "effect analysis does not duplicate default flat leaves");
+  assert.ok(denied(f.send(`leaf() { ${f.hard} auth status; }; outer() { leaf; }; outer`, f.safeParent)), "known calls retain protected executable evidence inside their bodies");
+  assert.ok(denied(f.send("gh() { echo safe; }; gh pr view 41", f.safeParent)), "a known function does not bypass the gh name and plain-command rules");
+});
+
+test("T197: recursive function analysis refuses at a bounded depth", async () => {
+  const f = ghAgentSession();
+  const { programsRun } = await import(HOOK);
+  assert.throws(() => programsRun("f() { f; }; f", f.dir, process.env.PATH), error => error.code === "SAGE_EXECUTABLE_EVIDENCE", "recursive analysis must fail closed");
+  assert.ok(denied(f.send("f() { f; }; f")), "the hook refuses recursion it cannot analyze");
+  assert.equal(f.send("leaf() { echo safe; }; middle() { leaf; }; outer() { middle; }; unrelated() { echo ordinary; }; outer"), undefined, "bounded nonrecursive calls and unrelated definitions remain allowed");
+});

@@ -364,16 +364,18 @@ function shellLookup(exported) {
 function readPrograms(command, dir, path, depth, found, uncertainDirectory = false, lookup = shellLookup({
   ...(process.env.CDPATH === undefined ? {} : { cdpath: process.env.CDPATH }),
   ...(process.env.HOME === undefined ? {} : { home: process.env.HOME }),
-})) {
-  const emit = (run, wrapper = false, uncertain = false) => {
-    found.contexts.push({ run, wrapper, uncertainDirectory: uncertain });
+}), publicLeaves = true) {
+  const functionBodies = new Map(), functionIds = new WeakMap();
+  let functionDepth = 0, emitLeaves = publicLeaves;
+  const emit = (run, wrapper = false, uncertain = false, shellFunction = false) => {
+    found.contexts.push({ run, wrapper, uncertainDirectory: uncertain, ...(shellFunction ? { shellFunction: true } : {}) });
     found.executables.push(run);
-    if (!wrapper) found.leaves.push(run);
+    if (!wrapper && emitLeaves) found.leaves.push(run);
   };
   const inner = (text, at, here, transformed = false, uncertain = false, nextLookup = lookup) => {
     try {
       if (depth === 3) throw new Error("commands nested more than 3 levels deep");
-      readPrograms(text, at, here, depth + 1, found, uncertain, nextLookup);
+      readPrograms(text, at, here, depth + 1, found, uncertain, nextLookup, emitLeaves);
     } catch (error) {
       if (transformed) error.code = "SAGE_EXECUTABLE_EVIDENCE";
       throw error;
@@ -421,8 +423,8 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       launched = true;
       const file = program(w, at, here, uncertain);
       const lexicalWrapper = !argv && !w.includes("/") && (/^(?:command|builtin|exec)$/.test(name) || (keyword && /^(?:time|noglob|nocorrect)$/.test(name)));
-      const functionEffect = !viaExec && !bypassFunctions && Object.hasOwn(functions, w) ? functions[w] : undefined;
-      const wrapperNames = functionEffect ? [] : lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
+      const functionId = !viaExec && !bypassFunctions && Object.hasOwn(functions, w) ? functions[w] : undefined;
+      const wrapperNames = functionId ? [] : lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
       let wrapper = wrapperNames.flatMap(base => [`${base} ${words[k + 1]}`, base]).find(key =>
         WRAPPER.has(key) && (key !== "npm" || words.slice(k + 1).some(word => /(?:^|=)(?:exec|x)$/.test(word))));
       const originalArgs = words.slice(k + 1);
@@ -471,7 +473,9 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         continue;
       }
       const args = words.slice(k + 1);
-      if (functionEffect) {
+      if (functionId) {
+        const functionEffect = execute.effects(functionId, { ...state, dir: at, path: here,
+          cdpath: localCdpath, home: localHome, exported: environment, functions }, scope.opaque);
         functionOutcomes = functionEffect.functions;
         if (functionOutcomes.some(changes => Object.keys(changes).length)) scope.functionEffect = true;
         if (functionEffect.directory) { scope.directoryEffect = true; nextUncertain = true; }
@@ -517,7 +521,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       }
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
-      emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 }, false, uncertain);
+      emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 }, false, uncertain, functionId !== undefined);
       for (const text of commandText(name, args, bodies)) inner(text, at, here, transformed, uncertain,
         name === "eval" && !viaExec ? { cdpath: localCdpath, home: localHome, exported } : shellLookup(environment));
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
@@ -548,8 +552,25 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
   execute.redirects = (redirects, states) => {
     for (const state of states) for (const redirect of redirects) found.redirects.push({ redirect, dir: state.dir, ...(state.uncertainDirectory ? { uncertainDirectory: true } : {}) });
   };
-  execute.function = (name, effect, states) => states.map(state => ({ ...state,
-    functions: { ...state.functions, [name]: effect }, functionChanges: { ...state.functionChanges, [name]: effect } }));
+  execute.function = (name, body, states) => {
+    if (!functionIds.has(body)) {
+      const id = functionBodies.size + 1;
+      functionIds.set(body, id); functionBodies.set(id, body);
+    }
+    const id = functionIds.get(body);
+    return states.map(state => ({ ...state,
+      functions: { ...state.functions, [name]: id }, functionChanges: { ...state.functionChanges, [name]: id } }));
+  };
+  execute.effects = (id, state, opaque) => {
+    if (functionDepth === 8) throw evidenceError("function calls nested more than 8 levels deep");
+    const body = functionBodies.get(id), previous = emitLeaves;
+    functionDepth++; emitLeaves = false;
+    try {
+      // Re-read with current bindings. Policy context stays visible; default flat leaves are not duplicated.
+      walkFlow(body, [{ ...state, functionChanges: {}, uncertainDirectory: true }], execute, opaque);
+      return body.effects;
+    } finally { functionDepth--; emitLeaves = previous; }
+  };
   return walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, functions: {}, functionChanges: {}, uncertainDirectory }], execute);
 }
 
@@ -573,7 +594,7 @@ function walkFlow(flow, initial, execute, opaque = false) {
     const result = walkFlow(node, node.kind === "function" ? states.map(state => ({ ...state, functionChanges: {}, uncertainDirectory: true })) : states, execute, scope.opaque);
     if (node.kind === "function") {
       scope.functionEffect = true;
-      const next = execute.function(node.functionName, node.effects, states);
+      const next = execute.function(node.functionName, node, states);
       return { yes: next, no: next };
     }
     if (node.kind !== "subshell") {
