@@ -3140,7 +3140,8 @@ test("T197: partial edits are checked as the resulting alias configuration", () 
 });
 
 
-test("T197: an empty exported PATH resolves gh in the current folder", () => {
+test("T197: exported PATH uses its final value, including an empty value", () => {
   const f = ghAgentSession();
+  assert.ok(denied(f.s.send(tool("Bash", { command: `export PATH=/nonexistent PATH=${f.dir}; ./hard auth status` }, { cwd: f.dir, ...AGENT }))));
   assert.ok(denied(f.s.send(tool("Bash", { command: "export PATH=; ./hard auth status" }, { cwd: f.dir, ...AGENT }))));
 });
