@@ -189,7 +189,7 @@ function npmArguments(words, start, wrapper) {
   let next = start, call, operation = wrapper !== "npm";
   while (next < words.length) {
     let option = words[next++];
-    if (option === "--") {
+    if (/^-{2,}$/.test(option)) {
       if (!operation && !/^(?:exec|x)$/.test(words[next++] ?? "")) return { ordinary: true };
       operation = true;
       operands.push(...words.slice(next));
@@ -223,6 +223,11 @@ function npmArguments(words, start, wrapper) {
     }
     const registeredKind = NPM_OPTIONS.get(name);
     const kind = registeredKind === "unregistered" ? (split < 0 ? "flag" : "value") : registeredKind;
+    if (/^-{2,}$/.test(words[next] ?? "")) {
+      // nopt keeps the sentinel in argv; a missing call value becomes the string "true".
+      if (kind === "call") call = "true";
+      continue;
+    }
     if (kind === "flag") {
       // Only accepted Boolean values belong to the option. Other tokens retain their argv role.
       const booleanValue = /^(?:true|false)$/.test(words[next] ?? "") ||

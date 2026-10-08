@@ -3474,3 +3474,21 @@ test("T197: npm option normalization retains positional commands", () => {
     assert.equal(negated.send(`${runner} --no-silent=false echo safe`), undefined);
   }
 });
+
+test("T197: npm preserves all-hyphen option sentinels", () => {
+  const f = ghAgentSession();
+  const bin = join(f.dir, "node_modules", ".bin"); mkdirSync(bin, { recursive: true });
+  linkSync(f.gh, join(bin, "gh")); linkSync(f.gh, join(bin, "--call"));
+  const s = session({ PATH: `${bin}:${process.env.PATH}` }); s.send(prompt("sage mode"));
+  const send = (command, agent = true) => s.send(tool("Bash", { command }, { cwd: f.dir, ...(agent ? AGENT : {}) }));
+  const refused = ["npm exec", "npm x", "npx"].flatMap(runner =>
+    ["--", "---", "----"].map(sentinel => `${runner} --check=${sentinel} --call 'echo safe'`));
+  assert.deepEqual(refused.map(command => [command, Boolean(denied(send(command)))]), refused.map(command => [command, true]));
+  for (const sentinel of ["--", "---", "----"]) {
+    for (const command of [`npm exec ${sentinel} echo safe`, `npm exec --check=${sentinel} echo safe`,
+      `npm exec --check ${sentinel} echo --call 'gh auth status'`, `npm x --check=${sentinel} echo ${f.hard}`]) {
+      assert.equal(send(command), undefined, command);
+    }
+    assert.equal(send(`npm exec --check=${sentinel} --call 'echo safe'`, false), undefined, "main keeps its gh behavior");
+  }
+});
