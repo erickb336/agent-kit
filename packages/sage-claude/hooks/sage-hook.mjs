@@ -617,6 +617,62 @@ function linksNear(text, root, cwd) {
 const WRITE_NAMES = new Set(["uniq", "less", "tee", "cp", "mv", "rm", "rmdir", "ln", "link", "install", "touch", "dd", "truncate", "rsync", "sponge", "patch", "unlink", "shred", "tar", "unzip", "set-content", "out-file", "add-content", "copy-item", "move-item", "remove-item", "rename-item", "new-item", "ni", "sc", "ac", "del"]);
 /** The commands that only read: their words name no command to run, so only a redirection makes them write. */
 const READERS = /^(?:cat|grep|egrep|fgrep|rg|head|tail|wc|echo|printf|ls|diff|cut|stat|file|jq|cd|pushd)$/;
+/** Audited option grammars: rg 15.2, file 5.46/macOS, and GNU diff 3.12/Apple diff. */
+const READER_OPTIONS = {
+  rg: {
+    shortRun: "z", shortValue: "ABCEdefgjmMrtT",
+    run: "pre pre-glob search-zip hostname-bin",
+    value: "regexp file dfa-size-limit encoding engine max-count regex-size-limit threads glob iglob ignore-file max-depth max-filesize type type-not type-add type-clear after-context before-context color colors context context-separator field-context-separator field-match-separator hyperlink-format max-columns path-separator replace sort sortr generate",
+  },
+  file: {
+    shortRun: "CzZ", shortValue: "efFmMP", prefixes: true,
+    run: "compile uncompress uncompress-noreport",
+    value: "magic-file exclude exclude-quiet files-from separator parameter",
+    flag: "help version brief checking-printout mime apple extension mime-type mime-encoding keep-going list dereference no-dereference no-buffer no-pad print0 preserve-date raw special-files no-sandbox debug",
+  },
+  diff: {
+    shortRun: "l", shortValue: "ACDFILSUWxX", prefixes: true,
+    run: "paginate",
+    value: "algorithm changed-group-format exclude exclude-from from-file horizon-lines ifdef ignore-matching-lines label line-format new-group-format new-line-format old-group-format old-line-format palette show-function-line starting-file tabsize to-file unchanged-group-format unchanged-line-format width",
+    // Optional long values attach with '='; they never consume the next option.
+    flag: "color context unified binary brief ed expand-tabs forward-ed help ignore-all-space ignore-blank-lines ignore-case ignore-file-name-case ignore-space-change ignore-tab-expansion ignore-trailing-space inhibit-hunk-merge initial-tab left-column minimal new-file no-dereference no-ignore-file-name-case normal rcs recursive report-identical-files sdiff-merge-assist show-c-function side-by-side speed-large-files strip-trailing-cr suppress-blank-empty suppress-common-lines text unidirectional-new-file version -no-directory -presume-output-tty",
+  },
+};
+for (const options of Object.values(READER_OPTIONS)) {
+  options.run = new Set(options.run.split(" "));
+  options.value = new Set(options.value.split(" "));
+  options.names = [...options.run, ...options.value, ...(options.flag ?? "").split(" ")];
+}
+/** Only actual option positions count. Values and all words after '--' remain data. */
+function readerRuns(name, args) {
+  if (!Object.hasOwn(READER_OPTIONS, name)) return false;
+  const options = READER_OPTIONS[name];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("="), raw = arg.slice(2, equals < 0 ? undefined : equals);
+      let option = raw;
+      if (options.prefixes && !options.names.includes(raw)) {
+        const matches = options.names.filter(candidate => candidate.startsWith(raw));
+        if (matches.length === 1) option = matches[0];
+        // Apple diff accepts these; GNU's separate palette option makes them ambiguous there.
+        else if (name === "diff" && (raw === "p" || raw === "pa")) option = "paginate";
+      }
+      if (options.run.has(option)) return true;
+      if (options.value.has(option) && equals < 0) i++;
+    } else if (arg.startsWith("-")) {
+      for (let k = 1; k < arg.length; k++) {
+        if (options.shortRun.includes(arg[k])) return true;
+        if (options.shortValue.includes(arg[k])) { if (k === arg.length - 1) i++; break; }
+      }
+    }
+  }
+  return false;
+}
+/** Function arguments are data; only an actual reader dispatch owns its options. */
+const readerDispatch = entry => !entry.wrapper && !entry.shellFunction && !entry.resolvedDeclaration &&
+  readerRuns(basename(entry.run.word).toLowerCase(), entry.run.args);
 /** A redirection (operator and target, as shellCommands keeps it) to a file: not /dev/null, /dev/stdout or /dev/stderr, an input or a &N duplicate. */
 function toFile(redirect) {
   const [, op, to] = /^(&>>?|>>|>\||>&|<>|<&|>|<)([^]*)$/.exec(redirect);
@@ -640,9 +696,10 @@ function writesIn({ words, redirects }) {
   );
 }
 /** Does one field of a command's text have a write form? A text that the hook cannot read counts as one (fail closed). */
-function writes(text) {
+function writes(text, cwd) {
   try {
-    return shellCommands(text).some(writesIn);
+    if (shellCommands(text).some(writesIn)) return true;
+    return programsRun(text, cwd, undefined, { contextEvidence: true }).programs.some(readerDispatch);
   } catch {
     return true;
   }
@@ -665,10 +722,10 @@ function underRoot(input) {
 }
 /** The word with which a command tool's input writes a logbook file, or undefined. sage: in sage mode a logbook file's name counts too. */
 function shellWrite(ti, sage, cwd) {
-  const text = fields(ti);
+  const text = commandFields(ti);
   const all = text.join("\n");
   const words = partsOf(all);
-  if (!text.some(writes) || stateToolOnly(typeof ti.command === "string" ? ti.command : "")) return undefined;
+  if (!text.some(t => writes(t, cwd)) || stateToolOnly(typeof ti.command === "string" ? ti.command : "")) return undefined;
   return namesRoot(all, words, rootsOf(false), cwd) ?? (sage ? namesTable(words) : undefined);
 }
 /**
@@ -702,9 +759,10 @@ const GIT_PLAIN = /^(?:show|log|diff|status|blame|grep|ls-files|add|commit)$/;
 function runsNamed(text, cwd) {
   const name = TOOL_NAME.exec(unquote(text))?.[0];
   if (!name) return undefined;
-  let runs;
+  let runs, scoped;
   try {
     runs = programsRun(text, cwd);
+    scoped = programsRun(text, cwd, undefined, { contextEvidence: true });
   } catch {
     return name;
   }
@@ -714,7 +772,7 @@ function runsNamed(text, cwd) {
     if (/^g?(?:sed|awk)$/.test(base) && args.some((a) => /^-[a-z]*i|^--in-place|^inplace$/i.test(a))) return word;
     if (base === "git" && (!GIT_PLAIN.test(subcommand(args, 0)) || args.some((a) => /^(?:-c|--exec-path)/.test(a)))) return word;
   }
-  return undefined;
+  return scoped.programs.find(readerDispatch)?.run.word;
 }
 const READ_WAY = "To run a read command of the state tool, run node <path to skills/sage/sage.mjs> status (or merge-check, logbook, standing, config) alone; to read the file, use cat <path> or git show <sha>:<path>.";
 /** An agent's check fails closed: when it throws, the agent's command or file change is refused. */
@@ -737,7 +795,7 @@ function agentCheck(input, file) {
   if (ti.dangerouslyDisableSandbox) return "an agent never runs a command outside the sandbox (dangerouslyDisableSandbox).";
   const command = typeof ti.command === "string" ? ti.command : "";
   const cwd = input.cwd ?? process.cwd();
-  const texts = fields({ ...ti, description: undefined }); // a description runs nothing
+  const texts = commandFields({ ...ti, description: undefined }); // a description runs nothing
   const named = texts.map((t) => runsNamed(t, cwd)).find(Boolean);
   if (named) {
     if (texts.some((t) => /sage-pr\.mjs/i.test(unquote(t)))) return "only the chief runs the PR script (sage-pr.mjs).";
@@ -754,8 +812,8 @@ function agentCheck(input, file) {
     }
     return Object.hasOwn(READS, cmd ?? "") && READS[cmd](pos) ? undefined : `"${[cmd, ...pos.slice(0, 1)].join(" ")}" writes the logbook, or is not a read command of the state tool.`;
   }
-  const text = fields(ti);
-  if (!text.some(writes)) return undefined;
+  const text = commandFields(ti);
+  if (!text.some(t => writes(t, cwd))) return undefined;
   const word = nearLogbook(text.join("\n"), roots, cwd) ?? text.map((t) => linksNear(t, roots[1], cwd)).find(Boolean);
   const hint = word && /\$\?/.test(word) ? " The hook does not expand $?, so its ? is a pattern character: to show an exit code, write || echo FAIL or ; echo done after the command instead." : "";
   return word && `an agent never writes, moves or removes a logbook file from the shell, and never writes near one with a pattern, a variable or a link to it. ${quoted(word)} makes this command near the logbook: change or remove it.${hint}`;
@@ -1073,7 +1131,7 @@ function ghProblem(command, cwd, path, inherited) {
   const dispatches = leaves.filter(({ run }) => !shellFunctions.has(run));
   const redirects = scoped.redirects;
   const writesCommand = redirects.some(({ redirect }) => toFile(redirect)) || dispatches.some(({ run }) =>
-    writesIn({ words: [run.word, ...run.args], redirects: [] }));
+    writesIn({ words: [run.word, ...run.args], redirects: [] }) || readerRuns(basename(run.word).toLowerCase(), run.args));
   if (writesCommand && (redirects.some(({ redirect }) => ghAliasWrite(redirect)) ||
     dispatches.some(({ run }) => ghAliasWrite([run.word, ...run.args, ...run.stdin].join(" "))))) return NO_GH;
   for (const { redirect, dir, uncertainDirectory } of redirects) {
