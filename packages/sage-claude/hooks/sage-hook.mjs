@@ -1326,6 +1326,23 @@ export function slotsFor(dir, session, now = Date.now(), rawSession = session) {
   };
   const counts = project => ({ total: list().length, project: list().filter(slot => (mark(slot, "project-") ?? project) === project).length });
   const matching = (slot, role) => !role || !mark(slot, "role-") || mark(slot, "role-") === safe(role);
+  const pendingFor = role => ofSession().filter(slot => has(slot, "ok") && mark(slot, "pending-") !== undefined && matching(slot, role));
+  const observationOf = agent => {
+    const name = `observed-${hash(agent)}`;
+    if (!noted(name)) return;
+    const value = JSON.parse(readFileSync(join(events, name), "utf8"));
+    if (!value || !Array.isArray(value.calls) || !value.calls.every(call => typeof call === "string") || typeof value.legacyOnly !== "boolean") throw Error("the agent observation cannot be read");
+    return value;
+  };
+  const observe = (agent, role) => {
+    const prior = observationOf(agent);
+    if (prior) return prior;
+    const pending = pendingFor(role);
+    const value = { calls: pending.map(slot => mark(slot, "call-")).filter(Boolean), legacyOnly: pending.every(slot => !has(slot, "exact")) };
+    // This records possible originating calls, never a guessed parent. Later calls cannot claim an old observation.
+    note(`observed-${hash(agent)}`, JSON.stringify(value));
+    return value;
+  };
   const ownsAgent = (slot, agent) => has(slot, "exact") || mark(slot, "bound-") !== undefined ? mark(slot, "bound-") === hash(agent) : mark(slot, "agent-") === id(agent);
   const release = (agent, attempted = false) => {
     if (!valid(agent)) return;
@@ -1344,8 +1361,10 @@ export function slotsFor(dir, session, now = Date.now(), rawSession = session) {
       return;
     }
     // Until the result supplies the join, activity can renew possible reservations but cannot assign their parents.
-    const candidates = ofSession().filter(slot => mark(slot, "pending-") !== undefined && matching(slot, role));
-    if (!candidates.some(slot => has(slot, "exact") || has(slot, "possible-launch"))) return;
+    if (noted(`binding-${hash(agent)}`)) return;
+    const observation = observe(agent, role);
+    const candidates = pendingFor(role).filter(slot => observation.calls.includes(mark(slot, "call-")));
+    if (observation.legacyOnly && !candidates.some(slot => has(slot, "possible-launch"))) return;
     for (const slot of candidates) {
       add(slot, "possible-launch");
       utimesSync(join(dir, slot), new Date(now), new Date(now));
@@ -1390,9 +1409,12 @@ export function slotsFor(dir, session, now = Date.now(), rawSession = session) {
       }
     }),
     bind: transaction((agent, role) => {
-      if (!valid(agent) || stopped(agent) || ofSession().some(slot => ownsAgent(slot, agent))) return;
+      if (!valid(agent) || stopped(agent) || ofSession().some(slot => ownsAgent(slot, agent)) || noted(`binding-${hash(agent)}`) || noted(`started-${hash(agent)}`)) return;
+      const observation = observe(agent, role);
+      note(`started-${hash(agent)}`); // event identity survives capacity release and lease expiry
       touch(agent, role);
-      const pending = ofSession().filter(slot => mark(slot, "pending-") !== undefined && matching(slot, role));
+      if (!observation.legacyOnly) return;
+      const pending = pendingFor(role).filter(slot => observation.calls.includes(mark(slot, "call-")));
       if (pending.some(slot => has(slot, "exact"))) return;
       const slot = pending[0];
       if (slot) renameSync(join(dir, slot, `pending-${mark(slot, "pending-")}`), join(dir, slot, `agent-${id(agent)}`));
@@ -1408,6 +1430,8 @@ export function slotsFor(dir, session, now = Date.now(), rawSession = session) {
       const agent = response.agentId, bound = mark(slot, "bound-");
       const call = mark(slot, "call-"), binding = `binding-${hash(agent)}`;
       if (noted(binding) && readFileSync(join(events, binding), "utf8") !== call) return;
+      const observation = observationOf(agent);
+      if (observation && !observation.calls.includes(call)) return;
       if (bound !== undefined && bound !== hash(agent)) return;
       if (bound === undefined) {
         if (ofSession().some(other => other !== slot && ownsAgent(other, agent))) return;

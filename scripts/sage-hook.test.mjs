@@ -4242,16 +4242,41 @@ test("T181: ambiguous starts protect legacy and nested leases until an exact res
   assert.deepEqual(first.take("p", 1, 10, "extra", direct), { ok: true });
 });
 
-test("T181: terminal child events cannot consume and release a fresh legacy reservation", () => {
-  const s = nestedSession();
-  s.sage("config", "max_agents=1");
-  assert.equal(s.send(nested("sage:qa", "finished")), undefined);
-  s.send(resultOf("finished", "old-child", LEAD, "completed"));
-  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "fresh-main")), undefined);
-  s.send(start("old-child"));
-  s.send(ended("old-child"));
-  assert.ok(denied(s.send(spawnAgent("sage:qa", BRIEF, "excess"))), "terminal replay does not steal the new call");
-  s.send(start("fresh-agent"));
-  s.send(ended("fresh-agent"));
-  assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "replacement")), undefined, "the real direct agent still releases normally");
+test("T181: terminal child events cannot consume and release a fresh legacy reservation", async () => {
+  const failures = [];
+  for (const kind of ["own-stop", "parent-stop", "bound-lease", "unbound-lease"]) {
+    const s = nestedSession();
+    s.sage("config", "max_agents=1");
+    assert.equal(s.send(nested("sage:qa", "finished")), undefined);
+    if (kind === "unbound-lease") s.send(start("old-child"));
+    else s.send(resultOf("finished", "old-child", LEAD));
+    if (kind === "own-stop") s.send(ended("old-child"));
+    else if (kind === "parent-stop") s.send(ended("lead-a", "sage:lead"));
+    else {
+      const dir = join(s.vars.SAGE_HOOKS_STATE, "slots");
+      for (const slot of readdirSync(dir)) utimesSync(join(dir, slot), new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000));
+    }
+    assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "fresh-main")), undefined);
+    s.send(start("old-child"));
+    s.send(ended("old-child"));
+    if (!denied(s.send(spawnAgent("sage:qa", BRIEF, "excess")))) failures.push(`${kind}: old events released fresh capacity`);
+    s.send(start("fresh-agent"));
+    s.send(ended("fresh-agent"));
+    assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "replacement")), undefined, "the real direct agent still releases normally");
+  }
+  const { slotsFor } = await import(HOOK);
+  for (const event of ["bind", "touch"]) {
+    const dir = mkdtempSync(join(tmpdir(), "sage-observed-slots-")), at = Date.now();
+    const options = { role: "sage:qa", caller: "lead", input: { prompt: BRIEF } };
+    const before = slotsFor(join(dir, "slots"), "s", at);
+    assert.deepEqual(before.take("p", 1, 10, "old", options), { ok: true });
+    before[event]("observed-child", "sage:qa");
+    const oldSlot = join(dir, "slots", "slot-1");
+    utimesSync(oldSlot, new Date(at - 2 * 3600_000), new Date(at - 2 * 3600_000));
+    const later = slotsFor(join(dir, "slots"), "s", at);
+    assert.deepEqual(later.take("p", 1, 10, "new", options), { ok: true });
+    later.result("new", "lead", { status: "completed", agentId: "observed-child" });
+    if (later.take("p", 1, 10, "excess", options).refused !== "project") failures.push(`${event}: new result claimed an earlier child observation`);
+  }
+  assert.deepEqual(failures, [], "recorded child provenance cannot move to a later call");
 });
