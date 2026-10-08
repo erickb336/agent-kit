@@ -3319,3 +3319,28 @@ test("T197: Git alias subsections retain protected executable bodies in native e
   }
   assert.deepEqual(results, results.map(([name]) => [name, true]));
 });
+
+
+test("T197: shell modifiers preserve assignment and keyword grammar", () => {
+  const f = ghAgentSession();
+  const prefixes = ["time X=1 ", "time -p X=1 ", "time ! ", "noglob X=1 ", "nocorrect X=1 ", "time noglob nocorrect X=1 "];
+  const cases = prefixes.flatMap(prefix => [`${prefix}gh auth status`, `${prefix}${f.hard} auth status`]);
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const prefix of prefixes) assert.equal(f.send(`${prefix}echo safe`), undefined, prefix);
+});
+
+test("T197: all agent rules inspect env split-string semantic leaves", () => {
+  const f = ghAgentSession();
+  const wrapped = text => `watch -x env -S ${JSON.stringify(text)}`;
+  const refused = [
+    `cp ${f.hard} /tmp/client-copy`, `dd if=${f.hard} of=/tmp/client-copy`, `git config alias.m '!${f.hard} auth status'`,
+    `git -c alias.m='!${f.hard} auth status' m`, "git stash", "/bin/ps -ax",
+  ];
+  assert.deepEqual(refused.map(text => [text, Boolean(denied(f.send(wrapped(text))))]), refused.map(text => [text, true]));
+  assert.ok(denied(f.send(wrapped("'"))), "unreadable split-string still refuses");
+  assert.ok(denied(f.send(wrapped("sh -c 'echo \"'"))), "an unreadable shell produced by split-string still refuses");
+  for (const text of ["cp /tmp/source /tmp/destination", "git config alias.st status", "git -c alias.st=status st",
+    "git status", `echo ${f.hard}`, "echo /bin/ps", `${FAKES}/ps -ax`]) {
+    assert.equal(f.send(wrapped(text)), undefined, text);
+  }
+});

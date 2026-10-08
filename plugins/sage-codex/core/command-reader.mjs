@@ -21,7 +21,6 @@ const WRAPPER = new Map([
   ...["npx", "bunx", "npm exec", "pnpm dlx"].map((name) => [name, PACKAGE_RUNNER]),
   ...["nohup", "command", "builtin", "time", "noglob", "nocorrect"].map((name) => [name, undefined]),
 ]);
-const SAME_SHELL = /^(?:command|builtin|time|noglob|nocorrect)$/;
 /** Shell keywords before a command: the command after them runs in the same shell. After for, select or case come words, not a program. */
 const KEYWORD = /^(?:!|\{|\}|if|then|elif|else|fi|while|until|do|done|esac|coproc)$/;
 const LIST = /^(?:for|select|case)$/;
@@ -47,13 +46,13 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  * after a script (bash ./x.sh kill) are the script's arguments, not programs. Each $( ) or backtick is a command of its
  * own, and so is each <( ) and >( ). It cannot see a program in a variable ($P), in text piped into a shell, or inside a script.
  * With executableEvidence, also retain external wrappers and literal command names. Wrapper options own their values;
- * shell syntax and builtin wrappers are not external executable evidence. The default leaf view stays unchanged.
+ * shell syntax and builtin wrappers are not external executable evidence. Both views use the same semantic traversal.
  * Throws when the shell reader cannot read the line (see shellCommands), and for text nested more than 3 levels deep.
  */
 export function programsRun(command, cwd, path = process.env.PATH ?? "", { executableEvidence = false } = {}) {
-  const found = [];
-  readPrograms(command, cwd, path, 0, found, executableEvidence);
-  return found;
+  const found = { leaves: [], executables: [] };
+  readPrograms(command, cwd, path, 0, found);
+  return executableEvidence ? found.executables : found.leaves;
 }
 
 const WATCH_OPTIONS = [
@@ -94,6 +93,8 @@ const ENV_OPTIONS = {
   "list-signal-handling": "flag", "debug": "v", "quoting-style": "value", "split-string": "S", "help": "flag", "version": "flag",
 };
 
+const evidenceError = message => Object.assign(new Error(message), { code: "SAGE_EXECUTABLE_EVIDENCE" });
+
 /** env -S splits argv, not shell commands. Refuse unknown expansion instead of losing executable evidence. */
 function envSplit(text) {
   const words = [];
@@ -107,7 +108,7 @@ function envSplit(text) {
       add("");
     } else if (/\s/.test(char) && !quote) end();
     else if (char === "#" && word === undefined) break;
-    else if (char === "$" && quote !== "'") throw new Error("env split-string contains an unresolved variable");
+    else if (char === "$" && quote !== "'") throw evidenceError("env split-string contains an unresolved variable");
     else if (char === "\\" && (quote !== "'" || ["\\", "'"].includes(text[i + 1]))) {
       const escape = text[++i];
       if (escape === "_" && quote !== '"') end();
@@ -115,10 +116,10 @@ function envSplit(text) {
       else if (escape === "_" && quote === '"') add(" ");
       else if (["'", '"', "#", "$", "\\"].includes(escape)) add(escape);
       else if (Object.hasOwn({ f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" }, escape)) add({ f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" }[escape]);
-      else throw new Error("env split-string contains an invalid escape");
+      else throw evidenceError("env split-string contains an invalid escape");
     } else add(char);
   }
-  if (quote) throw new Error("env split-string has an open quote");
+  if (quote) throw evidenceError("env split-string has an open quote");
   end();
   return words;
 }
@@ -155,9 +156,9 @@ function wrapperArguments(words, next, wrapper, path, dir) {
       if (!["a", "u", "C", "P", "S", "value"].includes(flag)) continue;
       const attached = option.startsWith("--") ? (option.includes("=") ? option.slice(option.indexOf("=") + 1) : undefined) : flags.slice(i + 1).join("") || undefined;
       const value = attached ?? words[next++];
-      if (value === undefined) throw new Error("env option has no value");
+      if (value === undefined) throw evidenceError("env option has no value");
       if (flag === "S") {
-        if (++splits > 4) throw new Error("env split-string nested more than 4 levels deep");
+        if (++splits > 4) throw evidenceError("env split-string nested more than 4 levels deep");
         const expanded = envSplit(value);
         words.splice(next, 0, ...expanded);
       } else if (flag === "P") path = value;
@@ -173,81 +174,87 @@ function wrapperArguments(words, next, wrapper, path, dir) {
       if (/^PATH=/.test(word)) path = word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
     }
   }
-  return { next, path, dir: chdir === undefined ? dir : resolve(dir, chdir) };
+  return { next, path, dir: chdir === undefined ? dir : resolve(dir, chdir), split: splits > 0 };
 }
 
-function readPrograms(command, dir, path, depth, found, evidence) {
-  const inner = (text, at, here) => {
-    if (depth === 3) throw new Error("commands nested more than 3 levels deep");
-    readPrograms(text, at, here, depth + 1, found, evidence);
+function readPrograms(command, dir, path, depth, found) {
+  const emit = (run, wrapper = false) => {
+    found.executables.push(run);
+    if (!wrapper) found.leaves.push(run);
+  };
+  const inner = (text, at, here, transformed = false) => {
+    try {
+      if (depth === 3) throw new Error("commands nested more than 3 levels deep");
+      readPrograms(text, at, here, depth + 1, found);
+    } catch (error) {
+      if (transformed) error.code = "SAGE_EXECUTABLE_EVIDENCE";
+      throw error;
+    }
   };
   const commands = shellCommands(command);
   for (const c of commands) {
     const { bodies, syntax } = c;
-    const words = evidence ? [...c.words] : c.words;
+    const words = [...c.words];
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
     const exported = words[0] === "export" && words.slice(1).filter(word => /^PATH=/.test(word)).at(-1);
     if (exported) path = set(exported);
     let here = path;
     let at = dir; // a wrapper chdir belongs to this command, not the following shell command
     let viaExec = false;
-    let argv = false; // wrappers pass arguments; those words are no longer shell keywords or assignments
-    let shellText; // undefined keeps the generic wrapper fallback; watch selects shell text or literal argv
-    let takesValue; // the options of the last wrapper that take a value
+    let transformed = false;
+    let argv = false; // external wrappers pass argv; shell modifiers retain assignment and keyword grammar
     for (let k = 0; k < words.length; k++) {
       const w = words[k];
       const name = w.split("/").pop();
-      if (!evidence && takesValue?.test(w)) k++;
-      const assignment = evidence ? !argv && syntax[k]?.assignment : /^\w+=/.test(w);
-      const keyword = evidence ? !argv && !syntax[k]?.quoted : true;
+      const assignment = !argv && syntax[k]?.assignment;
+      const keyword = !argv && !syntax[k]?.quoted;
       if (assignment && /^PATH=/.test(w)) here = set(w);
-      if (assignment || (keyword && KEYWORD.test(w)) || (!evidence && (w.startsWith("-") || /^\d+[smhd]?$/.test(w)))) continue;
+      if (assignment || (keyword && KEYWORD.test(w))) continue;
       if (keyword && LIST.test(w)) break;
       if (keyword && w === "function" && ++k) continue; // the function name is not a program
       const wrapper = [`${name} ${words[k + 1]}`, name].find((key) => WRAPPER.has(key));
       if (wrapper) {
-        if (evidence && (viaExec || w.includes("/") || (name === "time" && (argv || syntax[k]?.quoted)) || (!SAME_SHELL.test(name) && name !== "exec"))) {
-          found.push({ word: w, file: program(w, at, here), args: words.slice(k + 1), dir: at, path: here, stdin: [], piped: false });
-        }
+        const modifier = keyword && !w.includes("/") && /^(?:time|noglob|nocorrect)$/.test(name);
+        const external = viaExec || w.includes("/") || (!modifier && !/^(?:command|builtin|exec)$/.test(name));
+        if (external) emit({ word: w, file: program(w, at, here), args: words.slice(k + 1), dir: at, path: here, stdin: [], piped: false }, true);
         if (wrapper !== name) k++;
-        viaExec ||= !SAME_SHELL.test(name);
+        if (modifier) {
+          if (name === "time" && words[k + 1] === "-p") k++;
+          if (name === "time" && words[k + 1] === "--") k++;
+          continue;
+        }
+        viaExec ||= external || name === "exec";
         argv = true;
         if (name === "watch") {
           const watched = watchOptions(words, k + 1);
-          if (evidence && watched.shellText) {
-            inner(words.slice(watched.next).join(" "), at, here);
+          if (watched.shellText) {
+            inner(words.slice(watched.next).join(" "), at, here, transformed);
             break;
           }
-          shellText ||= watched.shellText;
           k = watched.next - 1;
-        } else if (evidence) {
+        } else {
           const wrapped = wrapperArguments(words, k + 1, wrapper, here, at);
           k = wrapped.next - 1;
           here = wrapped.path;
           at = wrapped.dir;
+          transformed ||= wrapped.split;
         }
-        takesValue = WRAPPER.get(wrapper);
         continue;
       }
-      // A direct quoted path stays literal. A shell-text wrapper interprets its argument even if that filename exists.
       const file = program(w, at, here);
-      if (/\s/.test(w) && (evidence ? shellText === true : (shellText ?? !file))) { // watch "ps -ax" runs its text with sh -c
-        inner(w, at, here);
-        break;
-      }
       const args = words.slice(k + 1);
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 });
-      for (const text of commandText(name, args, bodies)) inner(text, at, here);
+      emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 });
+      for (const text of commandText(name, args, bodies)) inner(text, at, here, transformed);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        found.push({ word: args[exec + 1], file: program(args[exec + 1], at, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir: at, path: here, stdin: [], piped: false });
+        emit({ word: args[exec + 1], file: program(args[exec + 1], at, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir: at, path: here, stdin: [], piped: false });
       }
       break;
     }
-    if (words.length && words.every((word, index) => evidence ? syntax[index]?.assignment : /^\w+=/.test(word))) path = here;
+    if (words.length && words.every((word, index) => syntax[index]?.assignment)) path = here;
     if (words[0] === "cd" && words.length === 2) dir = resolve(dir, words[1]); // for the commands after it
   }
 }

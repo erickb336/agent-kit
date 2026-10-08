@@ -949,6 +949,7 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   } catch (e) {
     const text = bare(command);
     const why = namesGh(text) ? NO_GH : gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
+    if (e.code === "SAGE_EXECUTABLE_EVIDENCE") return `${NO_GH} (The hook cannot read executable evidence: ${e.message}.)`;
     return why && `${why} (The hook cannot read this command: ${e.message}.)`;
   }
   try {
@@ -968,7 +969,8 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
 /** The gh policy is shared by direct commands and proposed alias bodies, with the same file identities. */
 function ghProblem(command, cwd, path, runs, inherited) {
   const evidence = programsRun(command, cwd, path, { executableEvidence: true });
-  if (ghAliasWrite(command) && writes(command)) return NO_GH;
+  const writesCommand = writes(command) || runs.some(run => writesIn({ words: [run.word, ...run.args], redirects: [] }));
+  if (ghAliasWrite(command) && writesCommand) return NO_GH;
   const commands = shellCommands(command);
   const inputs = commands.flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.replace(/^<>?/, ""));
   // Control flow can keep any observed PATH in effect. Never discard a known gh identity.
@@ -981,7 +983,7 @@ function ghProblem(command, cwd, path, runs, inherited) {
   const lookups = new Set([...folders].flatMap(dir => [...paths].flatMap(value => value.split(":").map(entry => resolve(dir, entry || ".")))));
   const identities = new Set([...(inherited?.identities ?? []), ...[...lookups].flatMap(dir => [fileIdentity(join(dir, "gh")), fileIdentity(join(dir, "gh.exe"))])].filter(Boolean));
   const context = { ...inherited, paths, folders, identities };
-  if (writes(command) && runs.some(run => [...run.args, ...run.stdin].some(text => ghAliasConfiguration(text, run.dir, run.path, context)))) return NO_GH;
+  if (writesCommand && runs.some(run => [...run.args, ...run.stdin].some(text => ghAliasConfiguration(text, run.dir, run.path, context)))) return NO_GH;
   const isGhFile = file => {
     if (!file) return false;
     try {
@@ -1011,7 +1013,7 @@ function ghProblem(command, cwd, path, runs, inherited) {
     const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);
     const referencesGh = [...args, ...inputs].some(referencesGhFile);
     if ((alias || copy) && (namesGh(args.join(" ")) || referencesGh)) return NO_GH;
-    if ((substitutionReadsGh || (referencesGh && !/^(?:echo|printf)$/.test(name))) && writes(command)) return NO_GH;
+    if ((substitutionReadsGh || (referencesGh && !/^(?:echo|printf)$/.test(name))) && writesCommand) return NO_GH;
   }
   return undefined;
 }
