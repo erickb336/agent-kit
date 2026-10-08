@@ -3610,3 +3610,66 @@ test("T197: copy options preserve target directories and source parent paths", (
     assert.equal(send(command), undefined, command);
   assert.deepEqual(failures, [], "copy option grammar cannot hide protected destinations");
 });
+
+function ghDestinationSession() {
+  const f = ghAgentSession();
+  const protectedDir = join(f.dir, "protected"), safe = join(f.dir, "safe");
+  mkdirSync(protectedDir); mkdirSync(safe);
+  const target = join(protectedDir, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  symlinkSync(target, join(protectedDir, "settings")); writeFileSync(join(safe, "settings"), "ordinary\n");
+  const send = (command, cwd = protectedDir) => f.s.send(tool("Bash", { command }, { cwd, ...AGENT }));
+  return { ...f, protectedDir, safe, send };
+}
+
+test("T197: compound directory effects remain uncertain until a literal absolute cd", () => {
+  const f = ghDestinationSession();
+  const prefixes = [
+    `if false; then cd ${f.safe}; fi;`, `if true; then :; else cd ${f.safe}; fi;`,
+    `for item in ; do cd ${f.safe}; done;`, `while false; do cd ${f.safe}; done;`,
+    `case untouched in changed) cd ${f.safe};; esac;`, `f() { cd ${f.safe}; };`,
+  ];
+  const failures = [];
+  for (const prefix of prefixes) {
+    if (!denied(f.send(`${prefix} printf payload > settings`))) failures.push(prefix);
+    assert.equal(f.send(`${prefix} printf payload > ${f.safe}/settings`), undefined, "absolute ordinary destination");
+    assert.equal(f.send(`${prefix} cd ${f.safe}; printf payload > settings`), undefined, "absolute cd restores a known directory");
+  }
+  assert.equal(f.send("if false; then echo safe; fi; printf payload > settings", f.safe), undefined, "a compound that cannot change directory keeps ordinary behavior");
+  const prefix = `if false; then cd ${f.safe}; fi;`;
+  linkSync(f.gh, join(f.protectedDir, "client"));
+  assert.ok(denied(f.send(`${prefix} ./client auth status`)), "relative executable identity cannot use an uncertain directory");
+  assert.ok(denied(f.send(`${prefix} cp client ${f.safe}/copied`)), "relative copy sources retain directory uncertainty");
+  assert.equal(f.send(`${prefix} /bin/echo safe > ${f.safe}/settings`), undefined, "absolute ordinary executable and destination remain known");
+  assert.equal(f.send(`${prefix} cp ${f.safe}/settings ${f.safe}/copied`), undefined, "absolute ordinary copy sources and destination remain known");
+  assert.deepEqual(failures, [], "compound flow cannot commit one guessed directory");
+});
+
+test("T197: negated cd changes status without rolling back its directory", () => {
+  const f = ghDestinationSession();
+  assert.ok(denied(f.send(`! cd ${f.protectedDir} || printf payload > settings`, f.safe)));
+  assert.equal(f.send(`! cd ${f.safe} || printf payload > settings`, f.protectedDir), undefined);
+  assert.ok(denied(f.send(`! cd ${f.dir}/missing && printf payload > settings`, f.protectedDir)));
+});
+
+test("T197: cd lookup uses prefix export and inherited CDPATH evidence", () => {
+  const f = ghDestinationSession();
+  const failures = [];
+  for (const prefix of [`CDPATH=${f.dir} cd protected;`, `CDPATH=/missing CDPATH=${f.dir} cd protected;`, `export CDPATH=${f.dir}; cd protected;`, `CDPATH=${f.dir} sh -c "cd protected; printf payload > settings";`, `env CDPATH=${f.dir} sh -c "cd protected; printf payload > settings";`]) {
+    if (!denied(f.send(`${prefix} printf payload > settings`, f.safe))) failures.push(prefix);
+  }
+  assert.equal(f.send(`CDPATH=${f.dir} cd safe; printf payload > settings`, f.protectedDir), undefined);
+  f.s.vars.CDPATH = f.dir;
+  if (!denied(f.send("cd protected; printf payload > settings", f.safe))) failures.push("inherited CDPATH");
+  assert.equal(f.send("cd safe; printf payload > settings", f.protectedDir), undefined);
+  assert.deepEqual(failures, [], "lookup context cannot hide the directory selected by cd");
+});
+
+test("T197: group-owned redirections open in the group's entry directory", () => {
+  const f = ghDestinationSession();
+  const failures = [];
+  for (const body of ["", "printf payload; "]) {
+    if (!denied(f.send(`{ ${body}cd ${f.safe}; } > settings`))) failures.push(body || "cd only");
+    assert.equal(f.send(`{ ${body}cd ${f.protectedDir}; } > settings`, f.safe), undefined, "the group opens an ordinary destination before cd");
+  }
+  assert.deepEqual(failures, [], "group redirects must use entry directory evidence");
+});
