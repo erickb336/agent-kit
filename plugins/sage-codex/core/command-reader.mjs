@@ -342,6 +342,20 @@ function wrapperArguments(words, next, wrapper, path, dir) {
   return { next, path, dir: chdir === undefined ? dir : resolve(dir, chdir), absoluteDir: chdir?.startsWith("/"), lookup, split: splits > 0 };
 }
 
+// These builtins own only their option prefix; -f addresses functions, not lookup variables.
+function lookupOptions(name, args) {
+  const flags = new Set();
+  let next = 0;
+  for (; /^-./.test(args[next] ?? ""); next++) {
+    const option = args[next];
+    if (option === "--") { next++; break; }
+    const allowed = name === "export" ? /^[fnp]+$/ : /^[fnv]+$/;
+    if (!allowed.test(option.slice(1))) return { invalid: true, flags, names: [] };
+    for (const flag of option.slice(1)) flags.add(flag);
+  }
+  return { flags, names: args.slice(next), invalid: name === "unset" && flags.has("f") && flags.has("v") };
+}
+
 // Missing exported keys are local-only; null values are explicitly unknown after unsupported flow.
 function shellLookup(exported) {
   return { cdpath: exported.cdpath === undefined ? "" : exported.cdpath, home: exported.home, exported: { ...exported } };
@@ -369,7 +383,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
   const execute = (c, state, scope) => {
     let { dir, path, cdpath, home, uncertainDirectory: uncertain } = state;
     const exported = { ...state.exported };
-    const functions = state.functions;
+    const functions = { ...state.functions };
     for (const child of COMMAND_CONTEXT.get(c).children) walkFlow(child, [state], execute);
     if (!COMMAND_CONTEXT.get(c).groupOwned) execute.redirects(c.redirects, [state]);
     if (COMMAND_CONTEXT.get(c).functionHeader) return { state };
@@ -379,14 +393,14 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
     let localCdpath = cdpath, localHome = home;
     const environment = { ...exported };
     const prefix = new Set();
-    const lookupEffect = (key, exports = false) => {
-      scope.lookupEffects.add(key);
+    const lookupEffect = (key, exports = false, local = true) => {
+      if (local) scope.lookupEffects.add(key);
       if (exports) scope.exportEffects.add(key);
     };
     let launched = false;
     let here = path;
     let at = dir; // a wrapper chdir belongs to this command, not the following shell command
-    let viaExec = false;
+    let viaExec = false, bypassFunctions = false;
     let transformed = false;
     let argv = false; // external wrappers pass argv; shell modifiers retain assignment and keyword grammar
     let nextDir = dir, status, negate = false, nextUncertain = uncertain;
@@ -405,7 +419,8 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       launched = true;
       const file = program(w, at, here, uncertain);
       const lexicalWrapper = !argv && !w.includes("/") && (/^(?:command|builtin|exec)$/.test(name) || (keyword && /^(?:time|noglob|nocorrect)$/.test(name)));
-      const wrapperNames = lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
+      const functionEffect = !viaExec && !bypassFunctions && Object.hasOwn(functions, w) ? functions[w] : undefined;
+      const wrapperNames = functionEffect ? [] : lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
       let wrapper = wrapperNames.flatMap(base => [`${base} ${words[k + 1]}`, base]).find(key =>
         WRAPPER.has(key) && (key !== "npm" || words.slice(k + 1).some(word => /(?:^|=)(?:exec|x)$/.test(word))));
       const originalArgs = words.slice(k + 1);
@@ -424,6 +439,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
           continue;
         }
         viaExec ||= external || name === "exec";
+        bypassFunctions ||= !external && /^(?:command|builtin)$/.test(name);
         argv = true;
         if (external) {
           localCdpath = environment.cdpath === undefined ? "" : environment.cdpath;
@@ -453,29 +469,45 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         continue;
       }
       const args = words.slice(k + 1);
-      if (!viaExec && w === "cd") {
+      if (functionEffect) {
+        if (functionEffect.directory) { scope.directoryEffect = true; nextUncertain = true; }
+        for (const key of functionEffect.lookup) {
+          if (key === "cdpath") cdpath = null; else home = null;
+          if (Object.hasOwn(exported, key)) exported[key] = null;
+          lookupEffect(key);
+        }
+        for (const key of functionEffect.exports) {
+          exported[key] = null;
+          lookupEffect(key, true, false);
+        }
+      } else if (!viaExec && w === "cd") {
         const change = cdDirectory(args, dir, localHome, localCdpath, uncertain);
         nextDir = change.dir; status = change.ok;
         scope.directoryEffect = true;
         nextUncertain = scope.opaque || change.uncertain;
-      } else if (!viaExec && w === "export") {
-        for (const word of args) {
-          if (word.startsWith("PATH=")) path = set(word);
-          const match = /^(CDPATH|HOME)(?:=(.*))?$/.exec(word);
+      } else if (!viaExec && (w === "export" || w === "unset")) {
+        const { flags, names, invalid } = lookupOptions(w, args);
+        if (invalid) status = false;
+        else if (flags.has("f")) {
+          if (w === "unset") for (const name of names) {
+            delete functions[name];
+            scope.functionEffect = true;
+          }
+        } else if (w !== "export" || !flags.has("p")) for (const word of names) {
+          if (w === "export" && word.startsWith("PATH=")) path = set(word);
+          const match = (w === "export" ? /^(CDPATH|HOME)(?:=(.*))?$/ : /^(CDPATH|HOME)$/).exec(word);
           if (!match) continue;
           const key = match[1] === "CDPATH" ? "cdpath" : "home";
-          const value = match[2] ?? (key === "cdpath" ? localCdpath : localHome);
-          if (key === "cdpath") cdpath = value; else home = value;
-          exported[key] = value;
-          lookupEffect(key, true);
-        }
-      } else if (!viaExec && Object.hasOwn(functions, w)) {
-        const effect = functions[w];
-        if (effect.directory) { scope.directoryEffect = true; nextUncertain = true; }
-        for (const key of effect.lookup) {
-          if (key === "cdpath") cdpath = null; else home = null;
-          if (Object.hasOwn(exported, key) || effect.exports.includes(key)) exported[key] = null;
-          lookupEffect(key, effect.exports.includes(key));
+          if (w === "unset") {
+            if (key === "cdpath") cdpath = undefined; else home = undefined;
+            delete exported[key];
+            lookupEffect(key, true);
+          } else {
+            const value = match[2] ?? (key === "cdpath" ? localCdpath : localHome);
+            if (key === "cdpath") cdpath = localCdpath = value; else home = localHome = value;
+            if (flags.has("n")) delete exported[key]; else exported[key] = value;
+            lookupEffect(key, true, match[2] !== undefined);
+          }
         }
       }
       const pipes = commands.filter((p) => p.pipeTo === c);
@@ -562,13 +594,14 @@ function walkFlow(flow, initial, execute, opaque = false) {
   }
   flow.effects = { directory: scope.directoryEffect, lookup: [...scope.lookupEffects], exports: [...scope.exportEffects] };
   flow.functionEffect = scope.functionEffect;
-  if (flow.kind === "opaque" && (scope.directoryEffect || scope.lookupEffects.size || scope.functionEffect)) {
+  if (flow.kind === "opaque" && (scope.directoryEffect || scope.lookupEffects.size || scope.exportEffects.size || scope.functionEffect)) {
     return unique([...initial, ...states].map(state => {
       const next = { ...state, exported: { ...state.exported }, uncertainDirectory: state.uncertainDirectory || scope.directoryEffect };
       for (const key of scope.lookupEffects) {
         next[key] = null;
-        if (Object.hasOwn(next.exported, key) || scope.exportEffects.has(key)) next.exported[key] = null;
+        if (Object.hasOwn(next.exported, key)) next.exported[key] = null;
       }
+      for (const key of scope.exportEffects) next.exported[key] = null;
       return next;
     }));
   }

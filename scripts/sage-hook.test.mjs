@@ -3727,3 +3727,40 @@ test("T197: child shells receive only exported and prefix lookup values", () => 
   assert.equal(f.send(`CDPATH=${f.safeParent}; sh -c "cd dest; printf payload > settings"`, f.protectedParent), undefined, "assignment retains an inherited export attribute");
   assert.deepEqual(failures, [], "the child lookup environment must match export and prefix evidence");
 });
+
+test("T197: lookup removal distinguishes local values and export attributes", () => {
+  const f = ghLookupSession(), failures = [];
+  for (const removal of ["export -n CDPATH", "export -n -- CDPATH", "unset CDPATH", "unset -v -- CDPATH"]) {
+    if (!denied(f.send(`export CDPATH=${f.safeParent}; ${removal}; sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push(removal);
+    assert.equal(f.send(`export CDPATH=${f.protectedParent}; ${removal}; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "removal preserves an ordinary child destination");
+  }
+  for (const removal of ["unset CDPATH", "unset -v CDPATH"]) {
+    if (!denied(f.send(`CDPATH=${f.safeParent}; ${removal}; cd dest; printf payload > settings`, f.protectedParent))) failures.push(`local ${removal}`);
+    assert.equal(f.send(`CDPATH=${f.protectedParent}; ${removal}; cd dest; printf payload > settings`, f.safeParent), undefined, "unset removes local lookup");
+  }
+  assert.equal(f.send(`export CDPATH=${f.safeParent}; export -n CDPATH; cd dest; printf payload > settings`, f.protectedParent), undefined, "export -n retains the local value");
+  for (const action of ["unset -f CDPATH", "export -fn CDPATH"])
+    assert.ok(denied(f.send(`export CDPATH=${f.protectedParent}; ${action}; sh -c "cd dest; printf payload > settings"`, f.safeParent)), "function-only flags do not remove variable lookup");
+  for (const action of ["export -n CDPATH", "unset CDPATH"]) {
+    for (const change of [`if true; then ${action}; fi;`, `f() { ${action}; }; f;`]) {
+      if (!denied(f.send(`export CDPATH=${f.safeParent}; ${change} sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push(change);
+      assert.equal(f.send(`export CDPATH=${f.safeParent}; ${change} sh -c "cd dest; printf payload > ${f.safe}/settings"`, f.protectedParent), undefined, "absolute ordinary write after a removal effect");
+    }
+  }
+  assert.deepEqual(failures, [], "local and child lookup removal must not hide a protected destination");
+});
+
+test("T197: known functions precede builtins unless explicitly bypassed", () => {
+  const f = ghDestinationSession(), failures = [];
+  for (const [name, body, args] of [["cd", `builtin cd ${f.protectedDir}`, f.safe], ["export", `cd ${f.protectedDir}`, ""]]) {
+    const prefix = `${name}() { ${body}; };`;
+    if (!denied(f.send(`${prefix} ${name} ${args}; printf payload > settings`, f.safe))) failures.push(name);
+    assert.equal(f.send(`${prefix} ${name} ${args}; printf payload > ${f.safe}/settings`, f.safe), undefined, "absolute ordinary write after a function");
+    for (const bypass of ["command", "builtin"])
+      assert.equal(f.send(`${prefix} ${bypass} ${name} ${args}; printf payload > settings`, f.safe), undefined, "explicit builtin selection skips the function");
+  }
+  const prefix = `f() { builtin cd ${f.protectedDir}; };`;
+  assert.equal(f.send(`${prefix} unset -f -- f; f; printf payload > settings`, f.safe), undefined, "unset -f removes the function");
+  assert.ok(denied(f.send(`${prefix} unset -v f; f; printf payload > settings`, f.safe)), "unset -v does not remove a function");
+  assert.deepEqual(failures, [], "a builtin name does not bypass a known shell function");
+});

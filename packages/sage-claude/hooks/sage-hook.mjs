@@ -1108,7 +1108,7 @@ function ghProblem(command, cwd, path, runs, inherited) {
   for (const run of evidence) {
     const { word, file } = run;
     const name = word.split(/[\\/]/).pop();
-    if (uncertain.has(run) && !isAbsolute(word) && (word.includes("/") || (!file && !/^(?:echo|printf|cd|export|readonly|local|declare|typeset|alias|unalias|true|false|test|:|\[)$/.test(word)))) return NO_GH;
+    if (uncertain.has(run) && !isAbsolute(word) && (word.includes("/") || (!file && !/^(?:echo|printf|cd|export|unset|readonly|local|declare|typeset|alias|unalias|true|false|test|:|\[)$/.test(word)))) return NO_GH;
     const possible = word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...folders].flatMap(folder => [...paths].map(value =>
       value.split(":").map(entry => resolve(folder, entry || ".", word)).find(candidate => {
         try { const stat = statSync(candidate); return stat.isFile() && (stat.mode & 0o111); } catch { return false; }
