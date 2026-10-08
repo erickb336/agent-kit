@@ -18,7 +18,8 @@ const WRAPPER = new Map([
   ["stdbuf", /^-(?:[ioe]|-(?:input|output|error))$/],
   ["caffeinate", /^-[tw]$/],
   ["watch", undefined],
-  ...["npx", "bunx", "npm exec", "pnpm dlx"].map((name) => [name, PACKAGE_RUNNER]),
+  ["npm", undefined],
+  ...["npx", "bunx", "npm exec", "npm x", "pnpm dlx"].map((name) => [name, PACKAGE_RUNNER]),
   ...["nohup", "command", "builtin", "time", "noglob", "nocorrect"].map((name) => [name, undefined]),
 ]);
 // Include flag-only names too, so an abbreviated long option must be unique across the wrapper's options.
@@ -141,7 +142,81 @@ function envSplit(text) {
   return words;
 }
 
+// npm-exec documents these command, workspace, cache and install options. Values have different roles:
+// call runs shell text; a package or workspace value is data; Boolean options do not take a command word.
+const NPM_OPTIONS = new Map([
+  ..."package workspace cache registry loglevel allow-scripts ca".split(" ").map(name => [name, "value"]),
+  ...("yes no no-install quiet silent verbose help version parseable offline prefer-offline prefer-online " +
+    "workspaces include-workspace-root ignore-scripts strict-allow-scripts dangerously-allow-all-scripts audit fund all long").split(" ").map(name => [name, "flag"]),
+  ["call", "call"],
+]);
+const NPM_ALIASES = { c: "call", w: "workspace", ws: "workspaces", y: "yes", q: "quiet", a: "all", l: "long" };
+const NPM_WRAPPERS = new Set(["npx", "npm", "npm exec", "npm x"]);
+
+function npmArguments(words, start, wrapper) {
+  const operands = [];
+  let next = start, call, operation = wrapper !== "npm";
+  while (next < words.length) {
+    const option = words[next++];
+    if (option === "--") {
+      if (!operation && !/^(?:exec|x)$/.test(words[next++] ?? "")) return { ordinary: true };
+      operation = true;
+      operands.push(...words.slice(next));
+      break;
+    }
+    if (!/^-./.test(option)) {
+      if (!operation) {
+        if (!/^(?:exec|x)$/.test(option)) return { ordinary: true };
+        operation = true;
+        continue;
+      }
+      operands.push(option);
+      if (wrapper === "npx") { operands.push(...words.slice(next)); break; }
+      continue; // npm exec reads its options anywhere before --; npx stops at its first operand.
+    }
+    const split = option.indexOf("=");
+    const raw = option.slice(option.startsWith("--") ? 2 : 1, split < 0 ? undefined : split);
+    let name = raw === "p" ? (wrapper === "npx" ? "package" : "parseable") : NPM_ALIASES[raw] ?? raw;
+    const attached = split < 0 ? undefined : option.slice(split + 1);
+    if (name.startsWith("no-") && NPM_OPTIONS.get(name.slice(3)) === "flag") name = name.slice(3);
+    if (!NPM_OPTIONS.has(name)) {
+      // nopt recognizes exact names, then shorthand clusters, with either one or two dashes.
+      // Do not guess an abbreviation from this bounded option table: npm may have another matching option.
+      const cluster = [...raw].map(char => char === "p" ? "parseable" : NPM_ALIASES[char]);
+      if (attached !== undefined || cluster.some(flag => !flag)) throw evidenceError(`unknown package runner option ${option}`);
+      words.splice(next, 0, ...cluster.map(flag => `--${flag}`));
+      continue;
+    }
+    const kind = NPM_OPTIONS.get(name);
+    if (kind === "flag") {
+      // Quiet, silent and verbose are fixed loglevel aliases; Boolean options can consume true or false.
+      if (wrapper !== "npx" && !/^(?:quiet|silent|verbose)$/.test(name) && attached === undefined && /^(?:true|false)$/.test(words[next] ?? "")) next++;
+      continue;
+    }
+    let value = attached;
+    if (value === undefined) {
+      if (kind === "call" && (words[next] === undefined || /^-./.test(words[next]))) value = "";
+      else {
+        if (/^-./.test(words[next] ?? "")) throw evidenceError("package runner option has no value");
+        value = words[next++];
+      }
+    }
+    if (value === undefined) throw evidenceError("package runner option has no value");
+    if (kind === "call") call = value;
+  }
+  if (!operation) return { ordinary: true };
+  words.splice(start, words.length - start, ...operands);
+  return { next: start, call };
+}
+
+function wrapperOptionKind(wrapper, flag) {
+  if (wrapper === "sudo" && flag === "-h") return "host-or-help";
+  if (wrapper === "xargs" && /^-(?:[ile]|-(?:replace|max-lines|eof))$/.test(flag)) return "optional-attached";
+  return WRAPPER.get(wrapper)?.test(flag) ? "value" : "flag";
+}
+
 function wrapperArguments(words, next, wrapper, path, dir) {
+  if (NPM_WRAPPERS.has(wrapper)) return { ...npmArguments(words, next, wrapper), path, dir };
   let splits = 0, chdir;
   while (next < words.length) {
     const word = words[next];
@@ -155,22 +230,31 @@ function wrapperArguments(words, next, wrapper, path, dir) {
     const option = words[next++];
     if (option === "--") break;
     if (wrapper !== "env") {
-      const takesValue = WRAPPER.get(wrapper);
       let flag = option.split("=")[0], value;
       if (option.startsWith("--")) {
         flag = `--${longOptionName(option, WRAPPER_LONG_OPTIONS.get(wrapper))}`;
-        if (takesValue?.test(flag)) value = option.includes("=") ? option.slice(option.indexOf("=") + 1) : words[next++];
+        if (option.includes("=")) value = option.slice(option.indexOf("=") + 1);
       } else {
-        const index = [...option].findIndex((char, i) => i > 0 && takesValue?.test(`-${char}`));
+        const index = [...option].findIndex((char, i) => i > 0 && wrapperOptionKind(wrapper, `-${char}`) !== "flag");
         if (wrapper === "sudo" && !/^[AaBbCcDEegHhiKklNnPpRrSsTtUuVv]+$/.test(option.slice(1, index < 0 ? undefined : index + 1))) {
           throw evidenceError(`unknown sudo option ${option}`);
         }
         if (index >= 0) {
           flag = `-${option[index]}`;
-          value = option.slice(index + 1) || words[next++];
+          value = option.slice(index + 1) || undefined;
         }
       }
-      if (takesValue?.test(flag) && value === undefined) throw evidenceError(`${wrapper} option has no value`);
+      const kind = wrapperOptionKind(wrapper, flag);
+      if (kind === "value") {
+        value ??= words[next++];
+        if (value === undefined) throw evidenceError(`${wrapper} option has no value`);
+      } else if (kind === "host-or-help" && value === undefined && option === "-h") {
+        // sudo -h alone is help; exact -h followed by a non-option, non-assignment is a host.
+        const following = words[next];
+        if (following !== undefined && !following.startsWith("-") &&
+            !(following[0] !== "/" && following[0] !== "=" && following.includes("="))) value = words[next++];
+      } // optional-attached values never consume the next command word.
+
       if (wrapper === "sudo" && (flag === "-D" || flag === "--chdir")) chdir = value;
       continue;
     }
@@ -243,11 +327,17 @@ function readPrograms(command, dir, path, depth, found) {
       const file = program(w, at, here);
       const lexicalWrapper = !argv && !w.includes("/") && (/^(?:command|builtin|exec)$/.test(name) || (keyword && /^(?:time|noglob|nocorrect)$/.test(name)));
       const wrapperNames = lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
-      const wrapper = wrapperNames.flatMap(base => [`${base} ${words[k + 1]}`, base]).find(key => WRAPPER.has(key));
+      let wrapper = wrapperNames.flatMap(base => [`${base} ${words[k + 1]}`, base]).find(key =>
+        WRAPPER.has(key) && (key !== "npm" || words.slice(k + 1).some(word => /^(?:exec|x)$/.test(word))));
+      const originalArgs = words.slice(k + 1);
+      const npmWords = wrapper === "npm" ? [...words] : undefined;
+      const npm = npmWords && wrapperArguments(npmWords, k + 1, wrapper, here, at);
+      if (npm?.ordinary) wrapper = undefined;
+      else if (npm) words.splice(0, words.length, ...npmWords);
       if (wrapper) {
         const modifier = keyword && !w.includes("/") && /^(?:time|noglob|nocorrect)$/.test(name);
         const external = viaExec || w.includes("/") || (!modifier && !/^(?:command|builtin|exec)$/.test(name));
-        if (external) emit({ word: w, file, args: words.slice(k + 1), dir: at, path: here, stdin: [], piped: false }, true);
+        if (external) emit({ word: w, file, args: originalArgs, dir: at, path: here, stdin: [], piped: false }, true);
         if (wrapper.includes(" ")) k++;
         if (modifier) {
           if (name === "time" && words[k + 1] === "-p") k++;
@@ -264,11 +354,15 @@ function readPrograms(command, dir, path, depth, found) {
           }
           k = watched.next - 1;
         } else {
-          const wrapped = wrapperArguments(words, k + 1, wrapper, here, at);
+          const wrapped = npm ?? wrapperArguments(words, k + 1, wrapper, here, at);
           k = wrapped.next - 1;
           here = wrapped.path;
           at = wrapped.dir;
           transformed ||= wrapped.split;
+          if (wrapped.call) {
+            inner(wrapped.call, at, here, true);
+            break;
+          }
         }
         continue;
       }

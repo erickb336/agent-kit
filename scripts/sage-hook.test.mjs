@@ -3371,3 +3371,67 @@ test("T197: wrapper options and assignments retain the executable boundary", () 
     assert.equal(f.send(command), undefined, command);
   }
 });
+
+test("T197: package runner call values reach every agent rule", () => {
+  const f = ghAgentSession();
+  linkSync(f.gh, join(f.dir, "false"));
+  writeFileSync(join(f.dir, "gh auth status"), "ordinary executable must never execute", { mode: 0o755 });
+  const calls = [text => `npx -c ${JSON.stringify(text)}`, text => `npx -c=${JSON.stringify(text)}`,
+    text => `npx --call ${JSON.stringify(text)}`, text => `npx --call=${JSON.stringify(text)}`,
+    text => `npm exec --call=${JSON.stringify(text)}`, text => `npm exec -c ${JSON.stringify(text)}`,
+    text => `npm x --call ${JSON.stringify(text)}`, text => `npx -yc ${JSON.stringify(text)}`,
+    text => `npm exec -pc ${JSON.stringify(text)}`, text => `npm --call=${JSON.stringify(text)} exec`,
+    text => `npm -c ${JSON.stringify(text)} x`, text => `npm exec --yc ${JSON.stringify(text)}`,
+    text => `npm exec -call ${JSON.stringify(text)}`, text => `npm exec --c ${JSON.stringify(text)}`];
+  const refused = ["gh auth status", `${f.hard} auth status`, `cp ${f.hard} /tmp/client-copy`,
+    `git config alias.m '!${f.hard} auth status'`, `git -c alias.m='!${f.hard} auth status' m`,
+    "git stash", "/bin/ps -ax"];
+  const cases = [...calls.flatMap(call => refused.map(call)), "npm exec -cal gh auth status",
+    "npm exec --call -q gh auth status", "npm exec --call= gh auth status", "npm exec -cy gh auth status",
+    "npm exec --call 'echo safe' --call= gh auth status", "npx --offline false auth status"];
+
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const call of calls) {
+    for (const body of ["echo safe", `echo ${f.hard}`, "echo '>'", "git status", `${FAKES}/ps -ax`]) {
+      assert.equal(f.send(call(body)), undefined, call(body));
+    }
+    assert.equal(f.send(call(`${f.hard} auth status`), false), undefined, "main keeps its gh behavior");
+  }
+  for (const command of ['npx echo --call "gh auth status"', 'npm exec -- echo --call "gh auth status"',
+    "npm exec --call= echo safe", "npm exec --call -q echo safe", "npm --offline exec -- echo safe",
+    'npm exec --cal "gh auth status"', 'npm exec -cal "gh auth status"', "npm exec --ca gh echo safe",
+    "npm install x", "npm -y install exec"]) {
+    assert.equal(f.send(command), undefined, "options after the command boundary remain ordinary arguments");
+  }
+});
+
+test("T197: optional wrapper values keep the next executable", () => {
+  const f = ghAgentSession();
+  const prefixes = ["xargs --replace", "xargs --max-lines", "xargs --eof", "xargs --replace={}",
+    "xargs --max-lines=2", "xargs --eof=STOP", "xargs -i", "xargs -l", "xargs -e"];
+  const cases = prefixes.flatMap(prefix => [`${prefix} gh auth status`, `${prefix} ${f.hard} auth status`]);
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const prefix of prefixes) {
+    assert.equal(f.send(`${prefix} echo safe`), undefined, prefix);
+    assert.equal(f.send(`${prefix} gh auth status`, false), undefined, "main keeps its gh behavior");
+  }
+  for (const command of [`xargs --replace=${f.hard} echo safe`, `xargs --eof=${f.hard} echo safe`,
+    `xargs -i${f.hard} echo safe`, `xargs -e${f.hard} echo safe`]) assert.equal(f.send(command), undefined, command);
+});
+
+test("T197: documented package options and sudo help keep ordinary commands", () => {
+  const f = ghAgentSession();
+  const safe = ["sudo -h", "sudo --help", "npx --no-install prettier --check .", "npx --no prettier --check .",
+    "npm exec --workspace=web -- eslint .", "npm exec --workspace web -- eslint .", "npm exec -w web -- eslint .",
+    "npm exec --offline -- eslint .", "npm exec --prefer-offline -- eslint .", "npm exec --ws -- eslint .",
+    "npm exec -ws -- eslint .", "npm exec -p -- eslint .",
+    "npm exec --workspaces --include-workspace-root -- eslint .", "npm exec --package=eslint -- eslint .",
+    "npx --cache /tmp/npm-cache --registry=https://registry.npmjs.org --loglevel warn prettier --check .",
+    "npm exec --ignore-scripts --no-audit --no-fund -- eslint .", "npm exec -- eslint ."];
+  assert.deepEqual(safe.map(command => [command, f.send(command)]), safe.map(command => [command, undefined]));
+  for (const command of safe) assert.equal(f.send(command, false), undefined, `main: ${command}`);
+  for (const command of ["sudo -h remote gh auth status", "sudo --host remote gh auth status",
+    "npx --no-install gh auth status", "npm exec --workspace=web -- gh auth status", "npm exec --offline -- gh auth status"]) {
+    assert.ok(denied(f.send(command)), command);
+  }
+});
