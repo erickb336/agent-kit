@@ -2,7 +2,7 @@
 import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -2991,4 +2991,948 @@ test("T196: a first-upload prompt cannot approve another field's target", () => 
   ]) assert.ok(denied(s.send(tool("Bash", input, { cwd: FEATURE }))), "two distinct first uploads must be refused");
   assert.equal(asked(s.send(tool("Bash", { command: CREATE, copies: Array(30).fill(CREATE) }, { cwd: FEATURE }))), ASKED, "identical text keeps one approval target");
   assert.ok(denied(s.send(tool("Bash", { command: CREATE, script: "git push origin main" }, { cwd: FEATURE }))), "a refusal in another field wins over a first-upload prompt");
+});
+
+function ghAgentSession() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-t197-")));
+  const gh = join(dir, "gh"), linked = join(dir, "linked"), hard = join(dir, "hard");
+  writeFileSync(gh, "#!/usr/bin/env node\nthrow Error('fake gh must never execute');\n", { mode: 0o755 });
+  symlinkSync(gh, linked); linkSync(gh, hard);
+  const s = session({ PATH: `${dir}:${process.env.PATH}` }); s.send(prompt("sage mode"));
+  const send = (command, agent = true, name = "Bash") => s.send(tool(name, { command }, { cwd: FEATURE, ...(agent ? AGENT : {}) }));
+  return { s, dir, gh, linked, hard, send };
+}
+
+test("T197: agents refuse other gh commands through paths, links, hard links and wrappers", () => {
+  const f = ghAgentSession();
+  for (const command of ["gh auth status", "gh m 41", "gh repo delete o/r", `${f.gh} auth status`, `${f.linked} auth status`, `${f.hard} auth status`, "env gh auth status", "bash -c 'gh auth status'", "gh pr view 41; echo done"]) {
+    assert.match(denied(f.send(command)) ?? "", /plain gh pr create/, command);
+  }
+  assert.ok(denied(f.send("gh pr merge 41")), "the existing merge rule still refuses agents");
+  assert.ok(denied(f.send(`${f.linked}* auth status`)), "expanded executable words are refused");
+  assert.equal(f.send("gh auth status", false), undefined, "main keeps its existing behavior");
+  assert.equal(f.send(`${f.hard} auth status`, false), undefined, "main may use a hard link");
+});
+
+test("T197: agents refuse gh copy and alias setup before a later command can hide it", () => {
+  const f = ghAgentSession();
+  for (const command of [
+    'cp "$(command -v gh)" /tmp/x', `cp ${f.gh} /tmp/x`, `ln ${f.hard} /tmp/x`,
+    "alias m='gh pr merge'", "Set-Alias m gh", "New-Alias m gh", "Copy-Item gh /tmp/x",
+    "git config alias.m '!gh pr merge'", "git -c alias.m='!gh pr merge' m", "gh alias set m 'pr merge'",
+  ]) assert.ok(denied(f.send(command)), command);
+  assert.equal(f.send("Set-Alias m gh", false), undefined, "main may set its own alias");
+  assert.equal(f.send("alias ll='ls -l'"), undefined, "unrelated aliases retain their behavior");
+});
+
+test("T197: plain agent PR operations and GET requests pass, while API writes do not", () => {
+  const f = ghAgentSession();
+  assert.equal(f.s.send(tool("Bash", { command: ["gh", "pr", "view", "41"] }, { cwd: FEATURE, ...AGENT })), undefined);
+  assert.equal(f.send("gh api repos/o/r -X=GET"), undefined);
+  for (const command of [
+    "gh pr create --title 'A change' --body 'Details'", "gh pr view 41", "gh pr comment 41 --body 'Checked'",
+    "gh pr edit 41 --title 'Updated'", "gh pr checks 41", "gh issue view 70", "gh api repos/o/r",
+    "gh api repos/o/r --method GET", "gh api -XGET search/issues -f q=hello", "gh api --method=GET search/issues --raw-field q=hello",
+  ]) assert.equal(f.send(command), undefined, command);
+  for (const command of ["gh api repos/o/r -X POST", "gh api repos/o/r --method=PATCH", "gh api repos/o/r -f name=changed", "gh api repos/o/r --input data.json", "gh api repos/o/r -X GET --method DELETE", "gh issue create --title x"]) {
+    assert.match(denied(f.send(command)) ?? "", /plain gh pr create/, command);
+  }
+});
+
+test("T197: every agent command field and terminal folder uses the gh identity rule", () => {
+  const f = ghAgentSession();
+  for (const name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+    assert.match(denied(f.s.send(tool(name, { command: "echo safe", payload: { script: "gh auth status" } }, { cwd: FEATURE, ...AGENT }))) ?? "", /plain gh pr create/, name);
+  }
+  assert.match(denied(f.s.send(tool("mcp__terminal__run_in_terminal", { command: "./hard auth status", cwd: f.dir }, { cwd: FEATURE, ...AGENT }))) ?? "", /plain gh pr create/);
+});
+
+test("T197: moving a gh executable is refused before its PATH entry disappears", () => {
+  const f = ghAgentSession();
+  assert.match(denied(f.send(`mv ${f.gh} /tmp/renamed-client`)) ?? "", /plain gh pr create/);
+});
+
+test("T197: agents refuse gh aliases written through file tools and shell redirection", () => {
+  const f = ghAgentSession();
+  const example = "[alias]\n m = !gh pr merge 41\n";
+  for (const input of [
+    { file_path: join(f.dir, "guide.md"), content: "# Alias examples\n\n```gitconfig\n" + example + "```\n" },
+    { file_path: join(f.dir, "regression.test.mjs"), content: "const example = `" + example + "`;" },
+  ]) assert.equal(f.s.send(tool("Write", input, { cwd: FEATURE, ...AGENT })), undefined);
+  assert.equal(f.s.send(tool("Edit", { file_path: join(f.dir, ".git/config"), old_string: example, new_string: "" }, { cwd: FEATURE, ...AGENT })), undefined);
+  for (const input of [
+    { file_path: join(f.dir, ".git/config"), content: "[alias]\n m = !gh pr merge 41\n" },
+    { file_path: join(f.dir, "alias-config"), content: "[alias]\n m = !gh pr merge 41\n" },
+    { file_path: join(f.dir, "gh/aliases.yml"), content: "m: pr merge 41\n" },
+  ]) {
+    assert.match(denied(f.s.send(tool("Write", input, { cwd: FEATURE, ...AGENT }))) ?? "", /plain gh pr create/);
+  }
+  assert.ok(denied(f.send("printf '[alias]\n m = !gh pr merge 41\n' > /tmp/alias-config")), "shell setup is refused");
+  assert.equal(f.s.send(tool("Write", { file_path: join(f.dir, "notes.md"), content: "Use gh pr view to inspect a PR." }, { cwd: FEATURE, ...AGENT })), undefined);
+});
+
+test("T197: gh hard links use each command's effective PATH", () => {
+  const f = ghAgentSession();
+  const other = join(f.dir, "second-bin"); mkdirSync(other);
+  const otherGh = join(other, "gh"), hard = join(other, "client");
+  writeFileSync(otherGh, "#!/usr/bin/env node\nthrow Error('fake gh must never execute');\n", { mode: 0o755 });
+  linkSync(otherGh, hard);
+  for (const command of [`PATH=${other} ${hard} auth status`, `export PATH=${other}; ${hard} auth status`]) {
+    assert.match(denied(f.send(command)) ?? "", /plain gh pr create/);
+  }
+});
+
+test("T197: shell quoting cannot hide gh in an alias definition", () => {
+  const f = ghAgentSession();
+  assert.ok(denied(f.send(String.raw`git config alias.m "!g\h auth status"`, true, "PowerShell")));
+  assert.ok(denied(f.send(`git config alias.m "!g'h' auth status"`)));
+  assert.ok(denied(f.send("printf 'm = !g\\h auth status\n' >> /tmp/custom-config")));
+  assert.ok(denied(f.s.send(tool("Write", { file_path: join(f.dir, "alias-config"), content: "[alias]\n m = !g'h' auth status\n" }, { cwd: FEATURE, ...AGENT }))));
+  assert.ok(denied(f.send(`printf "[alias]\n m = !g'h' auth status\n" > /tmp/alias-config`)));
+});
+
+test("T197: agents cannot copy gh bytes with readers or generic file writers", () => {
+  const f = ghAgentSession();
+  for (const command of [`cat ${f.gh} > /tmp/copied-client`, `cat < ${f.gh} > /tmp/copied-client`, `cat <> ${f.gh} > /tmp/copied-client`, `dd if=${f.gh} of=/tmp/copied-client`, `rsync ${f.hard} /tmp/copied-client`]) {
+    assert.ok(denied(f.send(command)), command);
+  }
+});
+
+test("T197: custom alias files and config fragments cannot hide gh", () => {
+  const f = ghAgentSession();
+  for (const [name, input] of [
+    ["Write", { file_path: join(f.dir, "custom/aliases.yml"), content: "m: pr merge 41\n" }],
+    ["Write", { file_path: join(f.dir, "custom-config"), content: "# Comment\n[alias]\n m = !gh auth status\n" }],
+    ["Edit", { file_path: join(f.dir, "custom-config"), old_string: "m = status", new_string: "m = !gh auth status" }],
+    ["Edit", { file_path: join(f.dir, "custom-config"), old_string: "m = status", new_string: 'm = "!gh auth status"' }],
+    ["Edit", { file_path: join(f.dir, "custom-config"), old_string: "m = status", new_string: "safe = status\nm = !gh auth status" }],
+    ["MultiEdit", { file_path: join(f.dir, "custom-config"), edits: [{ old_string: "m = status", new_string: "m = !g\\h auth status" }] }],
+  ]) assert.ok(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))), name);
+  assert.ok(denied(f.send('git config alias.m "!g\\\\h auth status"')));
+});
+
+
+test("T197: PowerShell literal Windows gh paths are refused", () => {
+  const f = ghAgentSession();
+  for (const command of [String.raw`& 'C:\tools\gh.exe' auth status`, String.raw`& '.\gh.exe' auth status`, String.raw`C:\tools\gh.exe auth status`, String.raw`.\gh.exe auth status`]) {
+    assert.ok(denied(f.send(command, true, "PowerShell")), command);
+  }
+});
+
+test("T197: an ordinary PATH argument cannot hide a gh source file", () => {
+  const f = ghAgentSession();
+  assert.ok(denied(f.send(`cat PATH=/nonexistent ${f.hard} > /tmp/copied-client`)));
+});
+
+
+test("T197: partial edits are checked as the resulting alias configuration", () => {
+  const f = ghAgentSession();
+  const notebook = join(f.dir, "example.ipynb");
+  writeFileSync(notebook, JSON.stringify({ cells: [{ cell_type: "code", source: ["print(1)"], metadata: {}, outputs: [], execution_count: null }], metadata: {}, nbformat: 4, nbformat_minor: 5 }));
+  assert.equal(f.s.send(tool("NotebookEdit", { notebook_path: notebook, cell_id: "0", new_source: "print(2)", edit_mode: "replace" }, { cwd: FEATURE, ...AGENT })), undefined);
+
+  const file = join(f.dir, "custom-config");
+  writeFileSync(file, "[alias]\n m = !echo harmless\n");
+  for (const [name, input] of [
+    ["Edit", { file_path: file, old_string: "echo harmless", new_string: "gh auth status" }],
+    ["MultiEdit", { file_path: file, edits: [{ old_string: "echo harmless", new_string: "gh auth status" }] }],
+  ]) assert.ok(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))), name);
+  assert.equal(f.s.send(tool("Write", { file_path: join(f.dir, "client.py"), content: "gh = make_client()\n" }, { cwd: FEATURE, ...AGENT })), undefined);
+});
+
+
+test("T197: exported PATH uses its final value, including an empty value", () => {
+  const f = ghAgentSession();
+  assert.ok(denied(f.s.send(tool("Bash", { command: `export PATH=/nonexistent PATH=${f.dir}; ./hard auth status` }, { cwd: f.dir, ...AGENT }))));
+  assert.ok(denied(f.s.send(tool("Bash", { command: "export PATH=; ./hard auth status" }, { cwd: f.dir, ...AGENT }))));
+});
+
+
+test("T197: PATH changes never erase a previously known gh identity", () => {
+  const f = ghAgentSession();
+  for (const prefix of ["PATH=/nonexistent ", "export PATH=/nonexistent; ", "(export PATH=/nonexistent); ", 'echo "$(export PATH=/nonexistent)"; ', "export PATH=/nonexistent | cat; ", "false && export PATH=/nonexistent; "]) {
+    assert.ok(denied(f.send(`${prefix}${f.hard} auth status`)), prefix);
+    assert.ok(denied(f.send(`${prefix}/bin/cat ${f.gh} > /tmp/copied-client`)), prefix);
+  }
+});
+
+test("T197: gh identities remain protected across wrapped and conditional exports", () => {
+  const f = ghAgentSession();
+  const second = join(f.dir, "second"); mkdirSync(second);
+  writeFileSync(join(second, "gh"), "fake second gh", { mode: 0o755 });
+  linkSync(join(second, "gh"), join(second, "client"));
+  writeFileSync(join(f.dir, "git"), "ordinary fake git", { mode: 0o755 });
+  linkSync(join(second, "gh"), join(second, "git"));
+  const ordered = session({ PATH: `${f.dir}:${second}:${process.env.PATH}` }); ordered.send(prompt("sage mode"));
+  for (const command of ["git status", `echo PATH=${second}; git status`]) {
+    assert.equal(ordered.send(tool("Bash", { command }, { cwd: FEATURE, ...AGENT })), undefined, command);
+  }
+  for (const prefix of [`command export PATH=${second}; `, `builtin export PATH=${second}; `, `X=1 export PATH=${second}; `, `{ export PATH=${second}; }; `, `if true; then export PATH=${second}; fi; `]) {
+    assert.ok(denied(f.send(`${prefix}${second}/client auth status`)), prefix);
+    assert.ok(denied(f.send(`${prefix}client auth status`)), prefix);
+  }
+});
+
+test("T197: generic writers cannot copy a literal gh outside PATH", () => {
+  const f = ghAgentSession();
+  const second = join(f.dir, "second"); mkdirSync(second);
+  const gh = join(second, "gh"); writeFileSync(gh, "fake second gh", { mode: 0o755 });
+  for (const command of [`cat ${gh} > /tmp/copied-client`, `dd if=${gh} of=/tmp/copied-client`, `rsync ${gh} /tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
+  for (const command of [`echo ${gh} > /tmp/path.txt`, `printf '%s\n' ${gh} > /tmp/path.txt`]) assert.equal(f.send(command), undefined, command);
+  for (const command of [`echo "$(< ${gh})" > /tmp/copied-client`, `printf '%s\n' "$(< ${gh})" > /tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
+  const third = join(f.dir, "third"); mkdirSync(third);
+  const payload = join(third, "payload"); writeFileSync(payload, "fake gh payload", { mode: 0o755 });
+  const linked = join(third, "gh"); symlinkSync(payload, linked);
+  for (const command of [`cat ${linked} > /tmp/copied-client`, `dd if=${linked} of=/tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
+});
+
+
+test("T197: alias bodies cannot hide a known gh hard link", () => {
+  const f = ghAgentSession();
+  const gitDir = join(f.dir, "git-bin"); mkdirSync(gitDir);
+  const git = join(gitDir, "git"); writeFileSync(git, "fake git must never execute", { mode: 0o755 });
+  symlinkSync(git, join(f.dir, "GIT")); // the resolved name is git on either case-sensitive or insensitive hosts
+  writeFileSync(join(f.dir, "gh auth status"), "ordinary executable must never execute", { mode: 0o755 });
+  const inlineConfig = join(f.dir, "inline-config");
+  const reviewCases = [
+    ["same-line alias with space", f.s.send(tool("Write", { file_path: inlineConfig, content: `[alias] m = !${f.hard} auth status\n` }, { cwd: FEATURE, ...AGENT }))],
+    ["same-line alias without space", f.s.send(tool("Write", { file_path: inlineConfig, content: `[alias]m = !${f.hard} auth status\n` }, { cwd: FEATURE, ...AGENT }))],
+    ["watch shell text despite a matching filename", f.send('watch "gh auth status"')],
+    ["resolved Git alias name", f.send(`GIT config alias.m '!${f.hard} auth status'`)],
+  ];
+  assert.deepEqual(reviewCases.map(([name, result]) => [name, Boolean(denied(result))]), reviewCases.map(([name]) => [name, true]));
+  assert.equal(f.send('"gh auth status"'), undefined, "a direct quoted executable keeps its literal filename");
+  assert.equal(f.send("GIT config alias.st status"), undefined, "an unrelated Git alias remains allowed");
+  assert.equal(f.s.send(tool("Write", { file_path: inlineConfig, content: "[alias]st = status\n" }, { cwd: FEATURE, ...AGENT })), undefined);
+  const spaced = join(f.dir, "client with spaces"); linkSync(f.gh, spaced);
+  assert.ok(denied(f.send(`"${spaced}" auth status`)), "a quoted executable pathname keeps its identity");
+  const watchCases = [];
+  for (const options of ["-x", "--exec", "-tx", "-xn1", "-n 1 -x", "--interval 1 --exec",
+    "-q 2 -x", "--equexit=2 --exec", "-s /tmp -x", "--shotsdir /tmp --exec", "-d -x", "-x --",
+    "--ex", "--exe", "--i 1 --ex", "--eq=2 --exe", "--s /tmp --ex", "--dif=x --ex"]) {
+    watchCases.push([`watch ${options} "gh auth status"`, false]);
+    watchCases.push([`watch ${options} "${spaced}" auth status`, true]);
+    watchCases.push([`watch ${options} gh auth status`, true]);
+  }
+  for (const option of ["--shotsdir", "--shots", "--s"]) {
+    watchCases.push([`watch ${option} --exec "gh auth status"`, true]); // --exec is the required directory value
+  }
+  watchCases.push(
+    ['watch -dx "gh auth status"', true], // -d consumes its attached optional value, including x
+    ['watch -s -x "gh auth status"', true], // -x is the required directory value
+    ['watch -- "gh auth status" -x', true],
+    ['watch env "gh auth status" --exec', true], // watch stops its options at env
+    ['watch -x env "gh auth status" --exec', false],
+    [`watch --exec env "${spaced}" auth status`, true],
+    ['watch -x "gh auth status missing"', false], // unresolved exec filenames stay literal
+  );
+  assert.deepEqual(watchCases.map(([command]) => [command, Boolean(denied(f.send(command)))]), watchCases);
+  for (const command of [`alias m='${f.hard} auth status'`, `alias m='${f.linked} auth status'`,
+    `alias m='"${spaced}" auth status'`, `alias m='env ${f.hard} auth status'`,
+    `alias m='PATH=/nonexistent ${f.hard} auth status'`,
+    `git config alias.m '!${f.hard} auth status'`, `git -c alias.m='!${f.hard} auth status' m`,
+    `git -calias.m='!${f.hard} auth status' m`,
+    `printf '[alias]\n m = !${f.hard} auth status\n' > /tmp/alias-config`]) {
+    assert.ok(denied(f.send(command)), command);
+  }
+  const file = join(f.dir, "custom-config");
+  for (const content of [`[alias]\n m = !${f.hard} auth status\n`, `[alias]\n m = "!${f.hard} auth status"\n`,
+    `[alias]\n m = "!\\"${spaced}\\" auth status"\n`]) {
+    assert.ok(denied(f.s.send(tool("Write", { file_path: file, content }, { cwd: FEATURE, ...AGENT }))));
+  }
+  writeFileSync(file, "[alias]\n m = !echo harmless\n");
+  assert.ok(denied(f.s.send(tool("Edit", { file_path: file, old_string: "echo harmless", new_string: `${f.hard} auth status` }, { cwd: FEATURE, ...AGENT }))));
+  assert.ok(denied(f.s.send(tool("MultiEdit", { file_path: file, edits: [
+    { old_string: "echo harmless", new_string: "PLACEHOLDER auth status" },
+    { old_string: "PLACEHOLDER", new_string: f.hard },
+  ] }, { cwd: FEATURE, ...AGENT }))));
+  for (const command of ["alias ll='ls -l'", "git config alias.st status", `alias location='echo ${f.hard}'`,
+    `echo ${f.hard} > /tmp/path.txt`]) assert.equal(f.send(command), undefined, command);
+  assert.equal(f.send(`alias m='${f.hard} auth status'`, false), undefined, "main keeps its alias behavior");
+  for (const content of ["[alias]\n st = status\n", `[alias]\n st = status\n[example]\n value = !${f.hard} auth status\n`, `# Example\n\n\x60\x60\x60gitconfig\n[alias]\n m = !${f.hard} auth status\n\x60\x60\x60\n`]) {
+    assert.equal(f.s.send(tool("Write", { file_path: file, content }, { cwd: FEATURE, ...AGENT })), undefined);
+  }
+  writeFileSync(file, `[alias]\n m = !${f.hard} auth status\n`);
+  assert.equal(f.s.send(tool("Edit", { file_path: file, old_string: `m = !${f.hard} auth status`, new_string: "" }, { cwd: FEATURE, ...AGENT })), undefined, "alias removal remains allowed");
+});
+
+
+test("T197: executable evidence retains wrappers and literal command names", () => {
+  const f = ghAgentSession();
+  for (const name of ["123", "1s", "-client", "if", "for", "case", "esac", "X=1"]) linkSync(f.gh, join(f.dir, name));
+  const wrappers = join(f.dir, "wrappers"); mkdirSync(wrappers);
+  for (const name of ["watch", "sudo", "command", "builtin", "time"]) linkSync(f.gh, join(wrappers, name));
+  const cases = ["123 auth status", "1s auth status", "-client auth status", '"if" auth status',
+    '"for" auth status', '"case" auth status', '"esac" auth status', '"X=1" auth status',
+    "watch -x 123 auth status", "watch -x -- -client auth status", "watch -x 'X=1' auth status",
+    "timeout 1 'for' auth status", "env 'if' auth status", '"123">out auth status',
+    "sudo -nu root gh auth status", "timeout -vk 1s 2s gh auth status"];
+  for (const name of ["watch", "sudo"]) {
+    cases.push(`PATH=${wrappers}:${f.dir} ${name} auth status`);
+    cases.push(`${wrappers}/${name} auth status`);
+  }
+  for (const name of ["command", "builtin", "time"]) cases.push(`${wrappers}/${name} auth status`);
+  cases.push(`PATH=${wrappers}:${f.dir} "time" auth status`);
+  const child = join(f.dir, "child"); mkdirSync(child); linkSync(f.gh, join(child, "client"));
+  for (const prefix of [`env -C ${child}`, `env -C${child}`, `env --chdir ${child}`, `env --chd=${child}`,
+    `sudo -D ${child}`, `sudo -D${child}`, `sudo --chdir=${child}`]) cases.push(`${prefix} ./client auth status`);
+  for (const name of ["client$cash", "client~mark", "client`tick"]) {
+    linkSync(f.gh, join(f.dir, name));
+    cases.push(`'${name}' auth status`);
+  }
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const command of ["echo 123 1s -client if for X=1", `echo ${f.hard}`, "X='1' echo safe",
+    "if true; then echo safe; fi", "for value in watch sudo 123; do echo safe; done",
+    "timeout 1s echo safe", "sudo -u 123 echo safe", "watch -n 123 echo safe",
+    "sudo -nu root echo safe", "timeout -vk 1s 2s echo safe",
+    ...["command", "builtin", "time"].map(name => `PATH=${wrappers}:${f.dir} ${name} echo safe`)]) {
+    assert.equal(f.send(command), undefined, command);
+  }
+});
+
+test("T197: env split-string owns its command mode inside watch exec", () => {
+  const f = ghAgentSession();
+  writeFileSync(join(f.dir, "gh auth status"), "ordinary executable must never execute", { mode: 0o755 });
+  const cases = [
+    'watch -x env -S "gh auth status"', 'watch --exec env -S"gh auth status"',
+    'watch -x env --split-string "gh auth status"', 'watch --exec env --split-string="gh auth status"',
+  ];
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  assert.equal(f.send('watch -x env "gh auth status"'), undefined);
+  assert.equal(f.send('watch --exec env -S "echo harmless"'), undefined);
+});
+
+test("T197: Git alias subsections retain protected executable bodies in native edits", () => {
+  const f = ghAgentSession();
+  const results = [];
+  for (const section of ['[alias "foo"]', '[alias.foo]']) {
+    const file = join(f.dir, "subsection-config");
+    writeFileSync(file, `${section}\n bar = !echo safe\n`);
+    for (const [name, input] of [
+      ["Write", { file_path: file, content: `${section}\n bar = !${f.hard} auth status\n` }],
+      ["Edit", { file_path: file, old_string: "echo safe", new_string: `${f.hard} auth status` }],
+      ["MultiEdit", { file_path: file, edits: [
+        { old_string: "echo safe", new_string: "PLACEHOLDER auth status" },
+        { old_string: "PLACEHOLDER", new_string: f.hard },
+      ] }],
+    ]) results.push([`${section} ${name}`, Boolean(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))))]);
+    assert.equal(f.s.send(tool("Write", { file_path: file, content: `${section}\n bar = !echo safe\n` }, { cwd: FEATURE, ...AGENT })), undefined);
+  }
+  assert.deepEqual(results, results.map(([name]) => [name, true]));
+});
+
+
+test("T197: shell modifiers preserve assignment and keyword grammar", () => {
+  const f = ghAgentSession();
+  const prefixes = ["time X=1 ", "time -p X=1 ", "time ! ", "noglob X=1 ", "nocorrect X=1 ", "time noglob nocorrect X=1 "];
+  const cases = prefixes.flatMap(prefix => [`${prefix}gh auth status`, `${prefix}${f.hard} auth status`]);
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const prefix of prefixes) assert.equal(f.send(`${prefix}echo safe`), undefined, prefix);
+});
+
+test("T197: all agent rules inspect env split-string semantic leaves", () => {
+  const f = ghAgentSession();
+  const wrapped = text => `watch -x env -S ${JSON.stringify(text)}`;
+  const refused = [
+    `cp ${f.hard} /tmp/client-copy`, `dd if=${f.hard} of=/tmp/client-copy`, `git config alias.m '!${f.hard} auth status'`,
+    `git -c alias.m='!${f.hard} auth status' m`, "git stash", "/bin/ps -ax",
+  ];
+  assert.deepEqual(refused.map(text => [text, Boolean(denied(f.send(wrapped(text))))]), refused.map(text => [text, true]));
+  assert.ok(denied(f.send(wrapped("'"))), "unreadable split-string still refuses");
+  assert.ok(denied(f.send(wrapped("sh -c 'echo \"'"))), "an unreadable shell produced by split-string still refuses");
+  for (const text of ["cp /tmp/source /tmp/destination", "git config alias.st status", "git -c alias.st=status st",
+    "git status", `echo ${f.hard}`, "echo /bin/ps", `${FAKES}/ps -ax`]) {
+    assert.equal(f.send(wrapped(text)), undefined, text);
+  }
+});
+
+
+test("T197: wrapper options and assignments retain the executable boundary", () => {
+  const f = ghAgentSession();
+  const prefixes = ["sudo --us root", "sudo --us=root", "timeout --kill-a 1s 2s", "timeout --kill-a=1s 2s",
+    "nice --adj 5", "nice --adj=5", "sudo X=1 -u root", "sudo X=1 --user root",
+    "sudo -u root X=1 --group staff", `sudo PATH=${f.dir} --us root X=1`,
+    "sudo --auth-t basic", "sudo -a basic", "sudo --login-c plain", "sudo -c plain"];
+  const wrappedDir = join(f.dir, "wrapper-bin"); mkdirSync(wrappedDir);
+  for (const [name, alias] of [["env", "ENV"], ["sudo", "SUDO"]]) {
+    const file = join(wrappedDir, name); writeFileSync(file, "fake wrapper must never execute", { mode: 0o755 });
+    symlinkSync(file, join(f.dir, alias));
+  }
+  const equalsPath = join(f.dir, "client=name"); linkSync(f.gh, equalsPath);
+  linkSync(f.gh, join(f.dir, "=client")); linkSync(f.gh, join(f.dir, "X=1"));
+  const refused = [...prefixes.map(prefix => `${prefix} gh auth status`),
+    `sudo ${equalsPath} auth status`, "sudo =client auth status", "sudo -- X=1 auth status",
+    "sudo --future-option value gh auth status", "timeout --future-option value 1s gh auth status",
+    "nice --future-option value gh auth status", 'ENV -S "gh auth status"', "SUDO --us root gh auth status"];
+  assert.deepEqual(refused.map(command => [command, Boolean(denied(f.send(command)))]), refused.map(command => [command, true]));
+  for (const command of [...prefixes.map(prefix => `${prefix} echo safe`),
+    `sudo echo ${equalsPath}`, "sudo echo =client", "sudo -- echo --user root gh auth status",
+    "sudo X=1 -- echo --user root gh auth status", `env ${equalsPath} echo safe`,
+    'ENV -S "echo safe"', "SUDO --us root echo safe"]) {
+    assert.equal(f.send(command), undefined, command);
+  }
+});
+
+test("T197: package runner call values reach every agent rule", () => {
+  const f = ghAgentSession();
+  linkSync(f.gh, join(f.dir, "false"));
+  writeFileSync(join(f.dir, "gh auth status"), "ordinary executable must never execute", { mode: 0o755 });
+  const calls = [text => `npx -c ${JSON.stringify(text)}`, text => `npx -c=${JSON.stringify(text)}`,
+    text => `npx --call ${JSON.stringify(text)}`, text => `npx --call=${JSON.stringify(text)}`,
+    text => `npm exec --call=${JSON.stringify(text)}`, text => `npm exec -c ${JSON.stringify(text)}`,
+    text => `npm x --call ${JSON.stringify(text)}`, text => `npx -yc ${JSON.stringify(text)}`,
+    text => `npm exec -pc ${JSON.stringify(text)}`, text => `npm --call=${JSON.stringify(text)} exec`,
+    text => `npm -c ${JSON.stringify(text)} x`, text => `npm exec --yc ${JSON.stringify(text)}`,
+    text => `npm exec -call ${JSON.stringify(text)}`, text => `npm exec --c ${JSON.stringify(text)}`];
+  const refused = ["gh auth status", `${f.hard} auth status`, `cp ${f.hard} /tmp/client-copy`,
+    `git config alias.m '!${f.hard} auth status'`, `git -c alias.m='!${f.hard} auth status' m`,
+    "git stash", "/bin/ps -ax"];
+  const cases = [...calls.flatMap(call => refused.map(call)), "npm exec -cal gh auth status",
+    "npm exec --call -q gh auth status", "npm exec --call= gh auth status", "npm exec -cy gh auth status",
+    "npm exec --call 'echo safe' --call= gh auth status", "npx --offline false auth status"];
+
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const call of calls) {
+    for (const body of ["echo safe", `echo ${f.hard}`, "echo '>'", "git status", `${FAKES}/ps -ax`]) {
+      assert.equal(f.send(call(body)), undefined, call(body));
+    }
+    assert.equal(f.send(call(`${f.hard} auth status`), false), undefined, "main keeps its gh behavior");
+  }
+  for (const command of ['npx echo --call "gh auth status"', 'npm exec -- echo --call "gh auth status"',
+    "npm exec --call= echo safe", "npm exec --call -q echo safe", "npm --offline exec -- echo safe",
+    'npm exec --cal "gh auth status"', 'npm exec -cal "gh auth status"', "npm exec --ca gh echo safe",
+    "npm install x", "npm -y install exec"]) {
+    assert.equal(f.send(command), undefined, "options after the command boundary remain ordinary arguments");
+  }
+});
+
+test("T197: optional wrapper values keep the next executable", () => {
+  const f = ghAgentSession();
+  const prefixes = ["xargs --replace", "xargs --max-lines", "xargs --eof", "xargs --replace={}",
+    "xargs --max-lines=2", "xargs --eof=STOP", "xargs -i", "xargs -l", "xargs -e"];
+  const cases = prefixes.flatMap(prefix => [`${prefix} gh auth status`, `${prefix} ${f.hard} auth status`]);
+  assert.deepEqual(cases.map(command => [command, Boolean(denied(f.send(command)))]), cases.map(command => [command, true]));
+  for (const prefix of prefixes) {
+    assert.equal(f.send(`${prefix} echo safe`), undefined, prefix);
+    assert.equal(f.send(`${prefix} gh auth status`, false), undefined, "main keeps its gh behavior");
+  }
+  for (const command of [`xargs --replace=${f.hard} echo safe`, `xargs --eof=${f.hard} echo safe`,
+    `xargs -i${f.hard} echo safe`, `xargs -e${f.hard} echo safe`]) assert.equal(f.send(command), undefined, command);
+});
+
+test("T197: documented package options and sudo help keep ordinary commands", () => {
+  const f = ghAgentSession();
+  const safe = ["sudo -h", "sudo --help", "npx --no-install prettier --check .", "npx --no prettier --check .",
+    "npm exec --workspace=web -- eslint .", "npm exec --workspace web -- eslint .", "npm exec -w web -- eslint .",
+    "npm exec --offline -- eslint .", "npm exec --prefer-offline -- eslint .", "npm exec --ws -- eslint .",
+    "npm exec -ws -- eslint .", "npm exec -p -- eslint .",
+    "npm exec --workspaces --include-workspace-root -- eslint .", "npm exec --package=eslint -- eslint .",
+    "npx --cache /tmp/npm-cache --registry=https://registry.npmjs.org --loglevel warn prettier --check .",
+    "npm exec --ignore-scripts --no-audit --no-fund -- eslint .", "npm exec -- eslint ."];
+  assert.deepEqual(safe.map(command => [command, f.send(command)]), safe.map(command => [command, undefined]));
+  for (const command of safe) assert.equal(f.send(command, false), undefined, `main: ${command}`);
+  for (const command of ["sudo -h remote gh auth status", "sudo --host remote gh auth status",
+    "npx --no-install gh auth status", "npm exec --workspace=web -- gh auth status", "npm exec --offline -- gh auth status"]) {
+    assert.ok(denied(f.send(command)), command);
+  }
+});
+
+test("T197: npm option normalization retains positional commands", () => {
+  const f = ghAgentSession();
+  for (const name of ["true", "false", "null"]) linkSync(f.gh, join(f.dir, name));
+  const spaced = join(f.dir, "client with spaces"); linkSync(f.gh, spaced);
+  const refused = [];
+  for (const runner of ["npm exec", "npm x", "npx"]) {
+    for (const flag of ["--offline", "--no-offline", "--quiet", "--silent", "--verbose"]) {
+      for (const program of ["gh", f.hard]) refused.push(`${runner} ${flag}=${program} auth status`);
+    }
+    for (const value of [" ", "\t", " \t "]) refused.push(`${runner} --call '${value}' gh auth status`);
+    refused.push(`${runner} --quiet=true auth status`, `${runner} --silent=false auth status`);
+  }
+  refused.push("npx --no true --check true --call 'gh auth status'", "npm --offline=exec gh auth status", `npm exec --offline=--call '${f.hard} auth status'`,
+    `npx --quiet=--call '"${spaced}" auth status'`, `npm exec --offline=null auth status`);
+  assert.deepEqual(refused.map(command => [command, Boolean(denied(f.send(command)))]), refused.map(command => [command, true]));
+  for (const runner of ["npm exec", "npm x", "npx"]) {
+    for (const flag of ["--offline", "--quiet", "--no-offline"]) {
+      assert.equal(f.send(`${runner} ${flag}=echo safe`), undefined);
+      assert.equal(f.send(`${runner} ${flag}= echo ${f.hard}`), undefined, "an empty operand must not select a later argument");
+    }
+    for (const value of ["true", "false"]) assert.equal(f.send(`${runner} --offline=${value} -- echo safe`), undefined);
+    assert.equal(f.send(`${runner} --call ' ' echo safe`), undefined);
+    assert.equal(f.send(`${runner} --offline=gh auth status`, false), undefined, "main keeps its gh behavior");
+  }
+  assert.equal(f.send("npm exec --workspaces=null -- echo safe"), undefined);
+  assert.equal(f.send("npx --no-install=gh echo safe"), undefined, "npx replaces the old no-install option");
+  assert.equal(f.send("npm exec --offline=--call 'echo safe'"), undefined);
+  assert.equal(f.send("npx --no true --check true --call 'echo safe'"), undefined);
+  const negated = ghAgentSession();
+  const negativeCases = ["npm exec", "npx"].flatMap(runner =>
+    ["quiet", "silent", "verbose"].flatMap(flag => ["true", "false"].flatMap(value =>
+      [`${runner} --no-${flag} ${value} gh auth status`, `${runner} --no-${flag}=${value} ${negated.hard} auth status`])));
+  assert.deepEqual(negativeCases.map(command => [command, Boolean(denied(negated.send(command)))]), negativeCases.map(command => [command, true]));
+  for (const runner of ["npm exec", "npx"]) {
+    assert.equal(negated.send(`${runner} --no-quiet true echo safe`), undefined);
+    assert.equal(negated.send(`${runner} --no-silent=false echo safe`), undefined);
+  }
+});
+
+test("T197: npm preserves all-hyphen option sentinels", () => {
+  const f = ghAgentSession();
+  const bin = join(f.dir, "node_modules", ".bin"); mkdirSync(bin, { recursive: true });
+  linkSync(f.gh, join(bin, "gh")); linkSync(f.gh, join(bin, "--call"));
+  const s = session({ PATH: `${bin}:${process.env.PATH}` }); s.send(prompt("sage mode"));
+  const send = (command, agent = true) => s.send(tool("Bash", { command }, { cwd: f.dir, ...(agent ? AGENT : {}) }));
+  const refused = ["npm exec", "npm x", "npx"].flatMap(runner =>
+    ["--", "---", "----"].map(sentinel => `${runner} --check=${sentinel} --call 'echo safe'`));
+  assert.deepEqual(refused.map(command => [command, Boolean(denied(send(command)))]), refused.map(command => [command, true]));
+  for (const sentinel of ["--", "---", "----"]) {
+    for (const command of [`npm exec ${sentinel} echo safe`, `npm exec --check=${sentinel} echo safe`,
+      `npm exec --check ${sentinel} echo --call 'gh auth status'`, `npm x --check=${sentinel} echo ${f.hard}`]) {
+      assert.equal(send(command), undefined, command);
+    }
+    assert.equal(send(`npm exec --check=${sentinel} --call 'echo safe'`, false), undefined, "main keeps its gh behavior");
+  }
+});
+
+test("T197: native alias writes resolve destination links, including missing targets", () => {
+  const f = ghAgentSession();
+  const folder = join(f.dir, "config"); mkdirSync(folder);
+  const target = join(folder, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  const settings = join(f.dir, "settings"), chain = join(f.dir, "chain");
+  symlinkSync(target, settings); symlinkSync("settings", chain);
+  const missing = join(f.dir, "missing"), missingChain = join(f.dir, "missing-chain");
+  symlinkSync(join(folder, "absent", "aliases.yml"), missing); symlinkSync("missing", missingChain);
+  const parent = join(f.dir, "parent"); symlinkSync(folder, parent);
+  const physical = join(f.dir, "physical"); mkdirSync(join(physical, "deep"), { recursive: true });
+  symlinkSync(join(physical, "deep"), join(f.dir, "portal")); symlinkSync(target, join(physical, "settings"));
+  const physicalPath = `${f.dir}/portal/../settings`;
+  const failures = [];
+  const finalMissing = join(f.dir, "final-missing"); symlinkSync(join(folder, "aliases.yaml"), finalMissing);
+  for (const file of [target, settings, chain, physicalPath, join(parent, "aliases.yml")]) {
+    for (const [name, edit] of [
+      ["Write", { content: "m: pr merge 41\n" }],
+      ["Edit", { old_string: "pr view", new_string: "pr merge 41" }],
+      ["MultiEdit", { edits: [{ old_string: "pr view", new_string: "pr merge 41" }] }],
+    ]) if (!denied(f.s.send(tool(name, { file_path: file, ...edit }, { cwd: FEATURE, ...AGENT })))) failures.push(`${name} ${file}`);
+  }
+  for (const file of [missing, missingChain, finalMissing]) {
+    if (!denied(f.s.send(tool("Write", { file_path: file, content: "m: pr merge 41\n" }, { cwd: FEATURE, ...AGENT })))) failures.push(`missing Write ${file}`);
+  }
+  const ordinary = join(f.dir, "ordinary.yaml"), ordinaryLink = join(f.dir, "ordinary-link");
+  writeFileSync(ordinary, "safe: pr view\n"); symlinkSync(ordinary, ordinaryLink);
+  for (const file of [ordinary, ordinaryLink]) assert.equal(f.s.send(tool("Write", { file_path: file, content: "m: pr merge 41\n" }, { cwd: FEATURE, ...AGENT })), undefined, file);
+  assert.equal(f.s.send(tool("Write", { file_path: settings, content: "# Removed aliases\n" }, { cwd: FEATURE, ...AGENT })), undefined);
+  assert.equal(f.s.send(tool("Edit", { file_path: settings, old_string: "safe: pr view\n", new_string: "" }, { cwd: FEATURE, ...AGENT })), undefined);
+  const loop = join(f.dir, "loop"); symlinkSync("loop", loop);
+  assert.ok(denied(f.s.send(tool("Write", { file_path: loop, content: "safe text" }, { cwd: FEATURE, ...AGENT }))), "unresolved links fail closed");
+  const locked = join(f.dir, "locked"); mkdirSync(locked); symlinkSync(target, join(locked, "settings")); chmodSync(locked, 0);
+  try { assert.ok(denied(f.s.send(tool("Write", { file_path: join(locked, "settings"), content: "m: pr merge 41\n" }, { cwd: FEATURE, ...AGENT }))), "unreadable destinations fail closed"); }
+  finally { chmodSync(locked, 0o700); }
+  f.s.send(prompt("sage mode off"));
+  assert.equal(f.s.send(tool("Write", { file_path: settings, content: "m: pr merge 41\n" }, { cwd: FEATURE })), undefined, "main keeps its file policy");
+  assert.deepEqual(failures, [], "all 18 protected native destinations must refuse the proposed alias");
+});
+
+test("T197: shell alias writes resolve redirection and copy destinations", () => {
+  const f = ghAgentSession();
+  const folder = join(f.dir, "config"); mkdirSync(folder);
+  const target = join(folder, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  const settings = join(f.dir, "settings"), chain = join(f.dir, "chain"), missing = join(f.dir, "missing"), missingChain = join(f.dir, "missing-chain");
+  symlinkSync(target, settings); symlinkSync("settings", chain);
+  symlinkSync(join(folder, "absent", "aliases.yml"), missing); symlinkSync("missing", missingChain);
+  const ordinary = join(f.dir, "ordinary.yaml"), ordinaryLink = join(f.dir, "ordinary-link");
+  writeFileSync(ordinary, "m: pr merge 41\n"); symlinkSync(ordinary, ordinaryLink);
+  const failures = [];
+  for (const file of [settings, chain, missing, missingChain]) {
+    for (const command of [`printf 'm: pr merge 41\\n' > ${file}`, `cp ${ordinary} ${file}`]) {
+      if (!denied(f.send(command))) failures.push(command);
+    }
+  }
+  for (const command of [`cd ${f.dir}; printf 'm: pr merge 41\\n' > settings`, `cd ${f.dir}; cp ordinary.yaml settings`, `sh -c 'cd ${f.dir}; printf payload > settings'`, `env -C ${f.dir} sh -c 'printf payload > settings'`]) {
+    if (!denied(f.send(command))) failures.push(command);
+  }
+  for (const command of [`cat ${settings}`, `printf '%s' ${settings}`, `printf 'm: pr merge 41\\n' > ${ordinaryLink}`, `cp ${ordinary} ${ordinaryLink}`, `cp ${settings} ${ordinary}`]) assert.equal(f.send(command), undefined, command);
+  assert.equal(f.send(`printf 'm: pr merge 41\\n' > ${settings}`, false), undefined, "main keeps its shell policy");
+  const safeDir = join(f.dir, "safe"); mkdirSync(safeDir);
+  assert.equal(f.s.send(tool("Bash", { command: `env -C ${f.dir} printf payload > settings` }, { cwd: safeDir, ...AGENT })), undefined, "the outer shell opens redirections before env changes directory");
+  assert.ok(denied(f.s.send(tool("Bash", { command: `env -C ${safeDir} printf payload > settings` }, { cwd: f.dir, ...AGENT }))), "a wrapper directory does not move the outer redirection");
+  const output = join(f.dir, "output"); mkdirSync(output); symlinkSync(target, join(output, "ordinary.yaml"));
+  for (const command of [`cp ${ordinary} ${output}`, `cp -t ${output} ${ordinary}`, `cp --target-directory=${output} ${ordinary}`]) assert.ok(denied(f.send(command)), command);
+  const loop = join(f.dir, "loop"); symlinkSync("loop", loop);
+  for (const command of [`printf payload > ${loop}`, `cp ${ordinary} ${loop}`]) assert.ok(denied(f.send(command)), "unresolved destinations fail closed");
+  assert.equal(f.send(`cat ${loop}`), undefined, "a read does not resolve write destinations");
+  const gcp = join(f.dir, "gcp");
+  writeFileSync(gcp, "#!/usr/bin/env node\nthrow Error('fake cp must never execute');\n", { mode: 0o755 });
+  symlinkSync("gcp", join(f.dir, "cp"));
+  assert.ok(denied(f.send(`cp ${ordinary} ${settings}`)), "the supplied cp name remains visible when its binary has a different name");
+  assert.equal(f.send(`cp ${ordinary} ${ordinaryLink}`), undefined, "a differently named cp binary keeps ordinary destinations");
+  assert.deepEqual(failures, [], "all 12 protected shell destinations must refuse the write");
+});
+
+test("T197: alias destinations keep shell directory scopes and conditional states", async () => {
+  const f = ghAgentSession();
+  const config = join(f.dir, "config"), safe = join(f.dir, "safe"); mkdirSync(config); mkdirSync(safe);
+  const target = join(config, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  symlinkSync(target, join(f.dir, "settings")); writeFileSync(join(safe, "settings"), "ordinary\n");
+  writeFileSync(join(f.dir, "ordinary.yaml"), "m: pr merge 41\n");
+  const send = (command, cwd) => f.s.send(tool("Bash", { command }, { cwd, ...AGENT }));
+  const failures = [];
+  for (const prefix of [`(cd ${safe});`, `false && cd ${safe};`, `cd ${safe} | cat;`, `echo "$(cd ${safe})";`, `cd ${safe} &`]) {
+    for (const action of ["printf payload > settings", "cp ordinary.yaml settings"])
+      if (!denied(send(`${prefix} ${action}`, f.dir))) failures.push(`${prefix} ${action}`);
+  }
+  if (!denied(send("cd -P ..; printf payload > settings", safe))) failures.push("cd -P");
+  for (const prefix of [`(cd ${f.dir});`, `cd ${f.dir} | cat;`, `echo "$(cd ${f.dir})";`, `cd ${f.dir} &`])
+    assert.equal(send(`${prefix} printf payload > settings`, safe), undefined, prefix);
+  for (const prefix of [`cd ${safe};`, `{ cd ${safe}; };`, `cd -- ${safe};`, `cd -L ${safe};`])
+    assert.equal(send(`${prefix} printf payload > settings`, f.dir), undefined, prefix);
+  for (const prefix of [`cd ${f.dir}/missing;`, `env cd ${safe};`, `sudo cd ${safe};`])
+    assert.ok(denied(send(`${prefix} printf payload > settings`, f.dir)), prefix);
+  for (const prefix of [`cd ${f.dir}/missing || cd ${safe};`, `env cd ${f.dir};`, `sudo cd ${f.dir};`])
+    assert.equal(send(`${prefix} printf payload > settings`, safe), undefined, prefix);
+  assert.ok(denied(send(`{ cd ${safe}; }; printf '%s' '{' > settings`, f.dir)), "a quoted brace argument retains its existing path guard");
+  const { programsRun } = await import(HOOK);
+  assert.deepEqual(programsRun(`HOME=${f.dir} cd; printf payload > settings`, safe, process.env.PATH, { redirectEvidence: true }), [{ redirect: ">settings", dir: f.dir }], "bare cd uses the known HOME");
+  assert.deepEqual(failures, [], "scope changes cannot hide protected destinations");
+});
+
+test("T197: copy options preserve target directories and source parent paths", () => {
+  const f = ghAgentSession();
+  const config = join(f.dir, "config"), out = join(f.dir, "out"), safe = join(f.dir, "safe");
+  for (const folder of [config, out, safe, join(f.dir, "payload"), join(out, "payload")]) mkdirSync(folder, { recursive: true });
+  const target = join(config, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  writeFileSync(join(f.dir, "ordinary.yaml"), "m: pr merge 41\n"); writeFileSync(join(f.dir, "payload/data"), "m: pr merge 41\n");
+  symlinkSync(target, join(out, "ordinary.yaml")); symlinkSync(target, join(out, "payload/data"));
+  const send = command => f.s.send(tool("Bash", { command }, { cwd: f.dir, ...AGENT }));
+  const failures = [];
+  for (const command of [`cp -vt ${out} ordinary.yaml`, `cp -vt${out} ordinary.yaml`, `cp --target-dir ${out} ordinary.yaml`, `cp --target=${out} ordinary.yaml`, `cp --parents payload/data ${out}`, `cp -S.bak ordinary.yaml ${out}`])
+    if (!denied(send(command))) failures.push(command);
+  for (const command of [`cp -vt ${safe} ordinary.yaml`, `cp --target=${safe} ordinary.yaml`, `cp --parents payload/data ${safe}`, `cp ordinary.yaml ${safe}/settings`, `cp -S.bak ordinary.yaml ${safe}/settings`])
+    assert.equal(send(command), undefined, command);
+  assert.deepEqual(failures, [], "copy option grammar cannot hide protected destinations");
+});
+
+function ghDestinationSession() {
+  const f = ghAgentSession();
+  const protectedDir = join(f.dir, "protected"), safe = join(f.dir, "safe");
+  mkdirSync(protectedDir); mkdirSync(safe);
+  const target = join(protectedDir, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  symlinkSync(target, join(protectedDir, "settings")); writeFileSync(join(safe, "settings"), "ordinary\n");
+  const send = (command, cwd = protectedDir) => f.s.send(tool("Bash", { command }, { cwd, ...AGENT }));
+  return { ...f, protectedDir, safe, send };
+}
+
+test("T197: compound directory effects remain uncertain until a literal absolute cd", () => {
+  const f = ghDestinationSession();
+  const prefixes = [
+    `if false; then cd ${f.safe}; fi;`, `if true; then :; else cd ${f.safe}; fi;`,
+    `for item in ; do cd ${f.safe}; done;`, `while false; do cd ${f.safe}; done;`,
+    `case untouched in changed) cd ${f.safe};; esac;`, `f() { cd ${f.safe}; };`,
+  ];
+  const failures = [];
+  for (const prefix of prefixes) {
+    if (!denied(f.send(`${prefix} printf payload > settings`))) failures.push(prefix);
+    assert.equal(f.send(`${prefix} printf payload > ${f.safe}/settings`), undefined, "absolute ordinary destination");
+    assert.equal(f.send(`${prefix} cd ${f.safe}; printf payload > settings`), undefined, "absolute cd restores a known directory");
+  }
+  assert.equal(f.send("if false; then echo safe; fi; printf payload > settings", f.safe), undefined, "a compound that cannot change directory keeps ordinary behavior");
+  const prefix = `if false; then cd ${f.safe}; fi;`;
+  linkSync(f.gh, join(f.protectedDir, "client"));
+  assert.ok(denied(f.send(`${prefix} ./client auth status`)), "relative executable identity cannot use an uncertain directory");
+  assert.ok(denied(f.send(`${prefix} cp client ${f.safe}/copied`)), "relative copy sources retain directory uncertainty");
+  assert.equal(f.send(`${prefix} /bin/echo safe > ${f.safe}/settings`), undefined, "absolute ordinary executable and destination remain known");
+  assert.equal(f.send(`${prefix} cp ${f.safe}/settings ${f.safe}/copied`), undefined, "absolute ordinary copy sources and destination remain known");
+  assert.deepEqual(failures, [], "compound flow cannot commit one guessed directory");
+});
+
+test("T197: negated cd changes status without rolling back its directory", () => {
+  const f = ghDestinationSession();
+  assert.ok(denied(f.send(`! cd ${f.protectedDir} || printf payload > settings`, f.safe)));
+  assert.equal(f.send(`! cd ${f.safe} || printf payload > settings`, f.protectedDir), undefined);
+  assert.ok(denied(f.send(`! cd ${f.dir}/missing && printf payload > settings`, f.protectedDir)));
+});
+
+test("T197: cd lookup uses prefix export and inherited CDPATH evidence", () => {
+  const f = ghDestinationSession();
+  const failures = [];
+  for (const prefix of [`CDPATH=${f.dir} cd protected;`, `CDPATH=/missing CDPATH=${f.dir} cd protected;`, `export CDPATH=${f.dir}; cd protected;`, `CDPATH=${f.dir} sh -c "cd protected; printf payload > settings";`, `env CDPATH=${f.dir} sh -c "cd protected; printf payload > settings";`]) {
+    if (!denied(f.send(`${prefix} printf payload > settings`, f.safe))) failures.push(prefix);
+  }
+  assert.equal(f.send(`CDPATH=${f.dir} cd safe; printf payload > settings`, f.protectedDir), undefined);
+  f.s.vars.CDPATH = f.dir;
+  if (!denied(f.send("cd protected; printf payload > settings", f.safe))) failures.push("inherited CDPATH");
+  assert.equal(f.send("cd safe; printf payload > settings", f.protectedDir), undefined);
+  assert.deepEqual(failures, [], "lookup context cannot hide the directory selected by cd");
+});
+
+test("T197: group-owned redirections open in the group's entry directory", () => {
+  const f = ghDestinationSession();
+  const failures = [];
+  for (const body of ["", "printf payload; "]) {
+    if (!denied(f.send(`{ ${body}cd ${f.safe}; } > settings`))) failures.push(body || "cd only");
+    assert.equal(f.send(`{ ${body}cd ${f.protectedDir}; } > settings`, f.safe), undefined, "the group opens an ordinary destination before cd");
+  }
+  assert.deepEqual(failures, [], "group redirects must use entry directory evidence");
+});
+
+function ghLookupSession() {
+  const f = ghDestinationSession();
+  const protectedParent = join(f.dir, "protected-parent"), safeParent = join(f.dir, "safe-parent");
+  for (const folder of [protectedParent, safeParent]) mkdirSync(join(folder, "dest"), { recursive: true });
+  symlinkSync(join(f.protectedDir, "aliases.yml"), join(protectedParent, "dest/settings"));
+  writeFileSync(join(safeParent, "dest/settings"), "ordinary\n");
+  delete f.s.vars.CDPATH;
+  return { ...f, protectedParent, safeParent };
+}
+
+test("T197: compound and function lookup effects cannot choose one directory", () => {
+  const f = ghLookupSession(), failures = [];
+  const prefixes = [
+    `CDPATH=${f.safeParent}; if true; then CDPATH=${f.protectedParent}; fi;`,
+    `CDPATH=${f.safeParent}; if true; then export CDPATH=${f.protectedParent}; fi;`,
+    `CDPATH=${f.safeParent}; f() { CDPATH=${f.protectedParent}; }; f;`,
+  ];
+  for (const prefix of prefixes) {
+    if (!denied(f.send(`${prefix} cd dest; printf payload > settings`, f.safe))) failures.push(prefix);
+    assert.equal(f.send(`${prefix} cd dest; printf payload > ${f.safe}/settings`, f.safe), undefined, "absolute ordinary write");
+    assert.equal(f.send(`${prefix} cd ${f.safe}; printf payload > settings`, f.safe), undefined, "absolute cd restores certainty");
+    assert.ok(denied(f.send(`${prefix} cd ${f.safe}; cd dest; printf payload > settings`, f.safe)), "absolute cd does not reset unknown lookup");
+    assert.equal(f.send(`${prefix} CDPATH=${f.safeParent}; cd dest; printf payload > settings`, f.safe), undefined, "an explicit assignment restores lookup certainty");
+  }
+  assert.equal(f.send(`CDPATH=${f.safeParent}; f() { CDPATH=${f.protectedParent}; }; cd dest; printf payload > settings`, f.safe), undefined, "uncalled function cannot change lookup");
+  assert.equal(f.send(`f() { cd ${f.protectedDir}; }; f() { echo safe; }; f; printf payload > settings`, f.safe), undefined, "a new definition replaces the old effect without invoking it");
+  assert.ok(denied(f.send(`f() { cd ${f.protectedDir}; }; if false; then f() { echo safe; }; fi; f; printf payload > settings`, f.safe)), "a conditional replacement cannot discard the possible old effect");
+  assert.deepEqual(failures, [], "lookup changes cannot disappear inside compound or function syntax");
+});
+
+test("T197: env standalone dash clears prefix lookup values", () => {
+  const f = ghLookupSession(), failures = [];
+  for (const reset of ["-", "-i"]) {
+    if (!denied(f.send(`CDPATH=${f.safeParent} env ${reset} sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push(reset);
+    assert.equal(f.send(`CDPATH=${f.protectedParent} env ${reset} sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "cleared lookup preserves an ordinary child destination");
+  }
+  assert.deepEqual(failures, [], "both environment reset forms remove CDPATH");
+});
+
+test("T197: child shells receive only exported and prefix lookup values", () => {
+  const f = ghLookupSession(), failures = [];
+  if (!denied(f.send(`CDPATH=${f.safeParent}; sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push("local lookup leaked to child");
+  assert.equal(f.send(`CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "unexported value stays local");
+  assert.equal(f.send(`CDPATH=${f.protectedParent} echo safe; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "a prefix value ends with its command");
+  for (const prefix of [`export CDPATH=${f.protectedParent};`, `CDPATH=${f.protectedParent}; export CDPATH;`, `CDPATH=${f.protectedParent}`]) {
+    if (!denied(f.send(`${prefix} sh -c "cd dest; printf payload > settings"`, f.safeParent))) failures.push(prefix);
+  }
+  assert.equal(f.send(`export CDPATH=${f.safeParent}; sh -c "cd dest; printf payload > settings"`, f.protectedParent), undefined, "exported ordinary lookup reaches child");
+  assert.equal(f.send(`CDPATH=${f.safeParent} sh -c "cd dest; printf payload > settings"`, f.protectedParent), undefined, "prefix ordinary lookup reaches child");
+  f.s.vars.CDPATH = f.protectedParent;
+  assert.equal(f.send(`CDPATH=${f.safeParent}; sh -c "cd dest; printf payload > settings"`, f.protectedParent), undefined, "assignment retains an inherited export attribute");
+  assert.deepEqual(failures, [], "the child lookup environment must match export and prefix evidence");
+});
+
+test("T197: lookup removal distinguishes local values and export attributes", () => {
+  const f = ghLookupSession(), failures = [];
+  for (const removal of ["export -n CDPATH", "export -n -- CDPATH", "unset CDPATH", "unset -v -- CDPATH"]) {
+    if (!denied(f.send(`export CDPATH=${f.safeParent}; ${removal}; sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push(removal);
+    assert.equal(f.send(`export CDPATH=${f.protectedParent}; ${removal}; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "removal preserves an ordinary child destination");
+  }
+  for (const removal of ["unset CDPATH", "unset -v CDPATH"]) {
+    if (!denied(f.send(`CDPATH=${f.safeParent}; ${removal}; cd dest; printf payload > settings`, f.protectedParent))) failures.push(`local ${removal}`);
+    assert.equal(f.send(`CDPATH=${f.protectedParent}; ${removal}; cd dest; printf payload > settings`, f.safeParent), undefined, "unset removes local lookup");
+  }
+  assert.equal(f.send(`export CDPATH=${f.safeParent}; export -n CDPATH; cd dest; printf payload > settings`, f.protectedParent), undefined, "export -n retains the local value");
+  for (const action of ["unset -f CDPATH", "export -fn CDPATH"])
+    assert.ok(denied(f.send(`export CDPATH=${f.protectedParent}; ${action}; sh -c "cd dest; printf payload > settings"`, f.safeParent)), "function-only flags do not remove variable lookup");
+  for (const action of ["export -n CDPATH", "unset CDPATH"]) {
+    for (const change of [`if true; then ${action}; fi;`, `f() { ${action}; }; f;`]) {
+      if (!denied(f.send(`export CDPATH=${f.safeParent}; ${change} sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push(change);
+      assert.equal(f.send(`export CDPATH=${f.safeParent}; ${change} sh -c "cd dest; printf payload > ${f.safe}/settings"`, f.protectedParent), undefined, "absolute ordinary write after a removal effect");
+    }
+  }
+  assert.deepEqual(failures, [], "local and child lookup removal must not hide a protected destination");
+});
+
+test("T197: known functions precede builtins unless explicitly bypassed", () => {
+  const f = ghDestinationSession(), failures = [];
+  for (const [name, body, args] of [["cd", `builtin cd ${f.protectedDir}`, f.safe], ["export", `cd ${f.protectedDir}`, ""]]) {
+    const prefix = `${name}() { ${body}; };`;
+    if (!denied(f.send(`${prefix} ${name} ${args}; printf payload > settings`, f.safe))) failures.push(name);
+    assert.equal(f.send(`${prefix} ${name} ${args}; printf payload > ${f.safe}/settings`, f.safe), undefined, "absolute ordinary write after a function");
+    for (const bypass of ["command", "builtin"])
+      assert.equal(f.send(`${prefix} ${bypass} ${name} ${args}; printf payload > settings`, f.safe), undefined, "explicit builtin selection skips the function");
+  }
+  const prefix = `f() { builtin cd ${f.protectedDir}; };`;
+  assert.equal(f.send(`${prefix} unset -f -- f; f; printf payload > settings`, f.safe), undefined, "unset -f removes the function");
+  assert.ok(denied(f.send(`${prefix} unset -v f; f; printf payload > settings`, f.safe)), "unset -v does not remove a function");
+  assert.deepEqual(failures, [], "a builtin name does not bypass a known shell function");
+});
+
+test("T197: export print flag still processes supplied lookup operands", () => {
+  const f = ghLookupSession(), failures = [];
+  const cases = [
+    `CDPATH=${f.safeParent}; export -p CDPATH=${f.protectedParent}; cd dest; printf payload > settings`,
+    `CDPATH=${f.protectedParent}; export -p CDPATH; sh -c "cd dest; printf payload > settings"`,
+    `export CDPATH=${f.safeParent}; export -np CDPATH; sh -c "cd dest; printf payload > settings"`,
+  ];
+  for (const [index, command] of cases.entries())
+    if (!denied(f.send(command, index === 2 ? f.protectedParent : f.safeParent))) failures.push(command);
+  assert.equal(f.send(`CDPATH=${f.protectedParent}; export -p CDPATH=${f.safeParent}; cd dest; printf payload > settings`, f.protectedParent), undefined, "p with an assignment selects the ordinary destination");
+  assert.equal(f.send(`CDPATH=${f.safeParent}; export -p; cd dest; printf payload > settings`, f.protectedParent), undefined, "display without operands preserves local lookup");
+  assert.equal(f.send(`export CDPATH=${f.protectedParent}; export -np CDPATH; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "np removes exported lookup for an ordinary child destination");
+  assert.deepEqual(failures, [], "a print flag must not discard supplied operands");
+});
+
+test("T197: function summaries preserve callable table changes", () => {
+  const f = ghLookupSession(), failures = [];
+  const prefix = "export() { echo safe; };";
+  const action = `export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > settings"`;
+  const changes = [
+    "unset -f export;",
+    "reset() { unset -f export; }; reset;",
+    "reset() { if true; then unset -f export; fi; }; reset;",
+    "reset() { unset -f export; }; outer() { reset; }; outer;",
+  ];
+  for (const change of changes) {
+    if (!denied(f.send(`${prefix} ${change} ${action}`, f.safeParent))) failures.push(change);
+    assert.equal(f.send(`${prefix} ${change} export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > ${f.safe}/settings"`, f.safeParent), undefined, "absolute ordinary output remains allowed");
+  }
+  for (const change of ["reset() { unset -v export; }; reset;", "reset() { unset -f export; };"])
+    assert.equal(f.send(`${prefix} ${change} ${action}`, f.safeParent), undefined, "variable-only or uncalled removal preserves the override");
+  assert.deepEqual(failures, [], "a called removal cannot leave stale function dispatch");
+});
+
+test("T197: function effects resolve current callee bindings", async () => {
+  const f = ghLookupSession();
+  const prefix = "export() { echo safe; };";
+  const action = `export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > settings"`;
+  const cases = [
+    ["reset() { echo safe; }; outer() { reset; }; reset() { unset -f export; }; outer;", true],
+    ["reset() { unset -f export; }; outer() { reset; }; reset() { echo safe; }; outer;", false],
+    ["reset() { unset -f export; }; outer() { reset; }; outer;", true],
+    ["reset() { echo safe; }; outer() { reset; }; outer;", false],
+    ["reset() { unset -f export; }; outer() { reset; }; unrelated() { echo safe; }; outer;", true],
+    ["install() { reset() { unset -f export; }; }; install; reset;", true],
+    ["install() { reset() { unset -f export; }; };", false],
+  ];
+  const failures = [];
+  for (const [setup, expected] of cases)
+    if (Boolean(denied(f.send(`${prefix} ${setup} ${action}`, f.safeParent))) !== expected) failures.push({ setup, expected });
+  assert.deepEqual(failures, [], "function dispatch cannot use a stale callee summary");
+  assert.equal(f.send(`${prefix} reset() { echo safe; }; outer() { reset; }; reset() { unset -f export; }; outer; export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > ${f.safe}/settings"`, f.safeParent), undefined, "an absolute ordinary destination stays allowed");
+  assert.ok(denied(f.send(`CDPATH=${f.safeParent}; f() { cd dest; printf payload > settings; }; CDPATH=${f.protectedParent}; f;`, f.safeParent)), "called-body policy evidence uses current lookup values");
+  const { programsRun } = await import(HOOK);
+  assert.deepEqual(programsRun("f() { echo safe; }; f", f.safe, process.env.PATH).map(run => run.word), ["echo", "f"], "effect analysis does not duplicate default flat leaves");
+  assert.ok(denied(f.send(`leaf() { ${f.hard} auth status; }; outer() { leaf; }; outer`, f.safeParent)), "known calls retain protected executable evidence inside their bodies");
+  assert.ok(denied(f.send("gh() { echo safe; }; gh pr view 41", f.safeParent)), "a known function does not bypass the gh name and plain-command rules");
+});
+
+test("T197: recursive function analysis refuses at a bounded depth", async () => {
+  const f = ghAgentSession();
+  const { programsRun } = await import(HOOK);
+  assert.throws(() => programsRun("f() { f; }; f", f.dir, process.env.PATH), error => error.code === "SAGE_EXECUTABLE_EVIDENCE", "recursive analysis must fail closed");
+  assert.ok(denied(f.send("f() { f; }; f")), "the hook refuses recursion it cannot analyze");
+  assert.equal(f.send("leaf() { echo safe; }; middle() { leaf; }; outer() { middle; }; unrelated() { echo ordinary; }; outer"), undefined, "bounded nonrecursive calls and unrelated definitions remain allowed");
+});
+
+test("T197: forward bindings resolve only matching provisional calls", async () => {
+  const f = ghAgentSession();
+  for (const command of [
+    "f() { g; }; g() { echo safe; }; f",
+    "g() { echo safe; }; f() { g; }; f",
+    "f() { g; }; g() { h; }; h() { echo safe; }; f",
+  ]) assert.equal(f.send(command), undefined, "a call uses its known forward or preceding definition");
+  linkSync(f.gh, join(f.dir, "g"));
+  for (const command of ["f() { g; }; g() { echo safe; }; f", "g() { echo safe; }; f() { g; }; f"])
+    assert.equal(f.send(command), undefined, "a known function shadows an inert gh hardlink in either declaration order");
+  for (const command of [
+    `f() { g; }; g() { ${f.hard} auth status; }; f`,
+    `f() { ${f.hard} auth status; }; echo safe`,
+    "f() { g; }; g() { echo safe; }; f; unset -f g; f",
+    "f() { g; }; other() { g; }; g() { echo safe; }; f; unset -f g; other",
+    "(g() { echo safe; }; f() { g; }; f); other() { g; }; other",
+    "f() { command g; }; g() { echo safe; }; f",
+  ]) assert.ok(denied(f.send(command)), "explicit forbidden bodies and actual unknown callees remain refused");
+  const { programsRun } = await import(HOOK);
+  assert.deepEqual(programsRun("f() { g; }; g() { echo safe; }; f", f.dir, process.env.PATH).map(run => run.word), ["g", "echo", "f"], "provenance does not change the default flat view");
+});
+
+test("T197: derived command evidence belongs to its dispatch", async () => {
+  const f = ghAgentSession();
+  linkSync(f.gh, join(f.dir, "g"));
+  const safe = [
+    "f() { env g; }; env() { echo safe; }; f",
+    "env() { echo safe; }; f() { env g; }; f",
+    `f() { sh -c '${f.hard} auth status'; }; sh() { echo safe; }; f`,
+    `sh() { echo safe; }; f() { sh -c '${f.hard} auth status'; }; f`,
+    `find() { echo safe; }; find . -exec ${f.hard} auth status \\;`,
+    `echo -exec ${f.hard} auth status \\;`,
+  ];
+  const failures = [];
+  for (const command of safe) if (f.send(command) !== undefined) failures.push(command);
+  for (const command of [
+    "f() { env g; }; f",
+    "f() { command env g; }; env() { echo safe; }; f",
+    "f() { env g; }; env() { echo safe; }; f; unset -f env; f",
+    `f() { sh -c '${f.hard} auth status'; }; f`,
+    `f() { ${f.hard} auth status; }; echo safe`,
+    `find . -exec ${f.hard} auth status \\;`,
+    `sh() { echo safe; }; sh -c "$(${f.hard} auth status)"`,
+    `env() { echo safe; }; env <(${f.hard} auth status)`,
+    `f() { sh -c "$(${f.hard} auth status)"; }; sh() { echo safe; }; f`,
+    `f() { env <(${f.hard} auth status); }; env() { echo safe; }; f`,
+    `f() { sh -c 'echo safe' > ${join(f.dir, "config/gh/aliases.yml")}; }; sh() { echo safe; }; f`,
+    `find() { cat ${f.hard} > ${join(f.dir, "copy")}; }; find`,
+  ]) assert.ok(denied(f.send(command)), "real dispatch, explicit bodies and substitutions stay checked");
+  const { programsRun } = await import(HOOK);
+  assert.equal(programsRun(safe[2], f.dir, process.env.PATH).some(run => run.word === f.hard), false, "obsolete argument text is absent from the default leaf view");
+  assert.deepEqual(failures, [], "function arguments do not retain an external program's dispatch rules");
+});
+
+test("T197: known functions own copy and source arguments", () => {
+  const f = ghAgentSession();
+  const source = join(f.dir, "ordinary.txt"), aliases = join(f.dir, "aliases.yml"), copy = join(f.dir, "copy");
+  writeFileSync(source, "ordinary\n"); writeFileSync(aliases, "safe: pr view\n");
+  const otherBin = join(f.dir, "other-bin"), client = join(f.dir, "ordinary-client");
+  mkdirSync(otherBin); writeFileSync(client, "inert fixture\n", { mode: 0o755 }); linkSync(client, join(otherBin, "gh"));
+  const safe = [
+    `export() { echo safe; }; export PATH=${otherBin}:$PATH; ${client} auth status`,
+    `cp() { echo safe; }; cp ${source} ${aliases}`,
+    `f() { cp ${source} ${aliases}; }; cp() { echo safe; }; f`,
+    `cp() { echo safe; }; cp ${f.hard} ${copy}`,
+    `f() { echo safe; }; f ${f.hard}; printf payload > ${copy}`,
+    `f() { echo safe; }; f ${aliases}; printf payload > ${copy}`,
+    `f() { echo safe; }; f ${source}; printf payload > ${copy}`,
+  ];
+  const failures = safe.filter(command => f.send(command) !== undefined);
+  for (const command of [
+    `export PATH=${otherBin}:$PATH; ${client} auth status`,
+    `cp ${source} ${aliases}`,
+    `cp() { echo safe; }; command cp ${f.hard} ${copy}`,
+    `cp() { echo safe; }; cp "$(${f.hard} auth status)" ${copy}`,
+    `cp() { echo safe; }; cp ${source} ${copy} > ${aliases}`,
+    `f() { cat ${f.hard} > ${copy}; }; f`,
+  ]) assert.ok(denied(f.send(command)), "external copy, body writes and caller syntax retain their own checks");
+  assert.deepEqual(failures, [], "known function arguments do not enter external copy rules");
+});
+
+test("T197: provisional dispatch errors follow the actual binding", () => {
+  const f = ghAgentSession();
+  const failures = [];
+  for (const args of ["--qa-unused-option g", "-S"]) {
+    for (const command of [
+      `f() { env ${args}; }; env() { echo safe; }; f`,
+      `env() { echo safe; }; f() { env ${args}; }; f`,
+    ]) if (f.send(command) !== undefined) failures.push(command);
+    for (const command of [
+      `f() { env ${args}; }; f`,
+      `f() { env ${args}; }; echo safe`,
+      `f() { command env ${args}; }; env() { echo safe; }; f`,
+      `f() { env ${args}; }; env() { echo safe; }; f; unset -f env; f`,
+      `f() { env ${args}; }; f; env() { echo safe; }; f`,
+    ]) assert.ok(denied(f.send(command)), "actual, unresolved and bypassed dispatch errors remain refusals");
+  }
+  for (const command of [
+    `f() { env --qa-unused-option "$(${f.hard} auth status)"; }; env() { echo safe; }; f`,
+    `f() { env -S > ${join(f.dir, "aliases.yml")}; }; env() { echo safe; }; f`,
+  ]) assert.ok(denied(f.send(command)), "syntax outside an obsolete interpretation remains checked");
+  assert.deepEqual(failures, [], "a later function binding retires only its provisional interpretation error");
 });
