@@ -3673,3 +3673,57 @@ test("T197: group-owned redirections open in the group's entry directory", () =>
   }
   assert.deepEqual(failures, [], "group redirects must use entry directory evidence");
 });
+
+function ghLookupSession() {
+  const f = ghDestinationSession();
+  const protectedParent = join(f.dir, "protected-parent"), safeParent = join(f.dir, "safe-parent");
+  for (const folder of [protectedParent, safeParent]) mkdirSync(join(folder, "dest"), { recursive: true });
+  symlinkSync(join(f.protectedDir, "aliases.yml"), join(protectedParent, "dest/settings"));
+  writeFileSync(join(safeParent, "dest/settings"), "ordinary\n");
+  delete f.s.vars.CDPATH;
+  return { ...f, protectedParent, safeParent };
+}
+
+test("T197: compound and function lookup effects cannot choose one directory", () => {
+  const f = ghLookupSession(), failures = [];
+  const prefixes = [
+    `CDPATH=${f.safeParent}; if true; then CDPATH=${f.protectedParent}; fi;`,
+    `CDPATH=${f.safeParent}; if true; then export CDPATH=${f.protectedParent}; fi;`,
+    `CDPATH=${f.safeParent}; f() { CDPATH=${f.protectedParent}; }; f;`,
+  ];
+  for (const prefix of prefixes) {
+    if (!denied(f.send(`${prefix} cd dest; printf payload > settings`, f.safe))) failures.push(prefix);
+    assert.equal(f.send(`${prefix} cd dest; printf payload > ${f.safe}/settings`, f.safe), undefined, "absolute ordinary write");
+    assert.equal(f.send(`${prefix} cd ${f.safe}; printf payload > settings`, f.safe), undefined, "absolute cd restores certainty");
+    assert.ok(denied(f.send(`${prefix} cd ${f.safe}; cd dest; printf payload > settings`, f.safe)), "absolute cd does not reset unknown lookup");
+    assert.equal(f.send(`${prefix} CDPATH=${f.safeParent}; cd dest; printf payload > settings`, f.safe), undefined, "an explicit assignment restores lookup certainty");
+  }
+  assert.equal(f.send(`CDPATH=${f.safeParent}; f() { CDPATH=${f.protectedParent}; }; cd dest; printf payload > settings`, f.safe), undefined, "uncalled function cannot change lookup");
+  assert.equal(f.send(`f() { cd ${f.protectedDir}; }; f() { echo safe; }; f; printf payload > settings`, f.safe), undefined, "a new definition replaces the old effect without invoking it");
+  assert.ok(denied(f.send(`f() { cd ${f.protectedDir}; }; if false; then f() { echo safe; }; fi; f; printf payload > settings`, f.safe)), "a conditional replacement cannot discard the possible old effect");
+  assert.deepEqual(failures, [], "lookup changes cannot disappear inside compound or function syntax");
+});
+
+test("T197: env standalone dash clears prefix lookup values", () => {
+  const f = ghLookupSession(), failures = [];
+  for (const reset of ["-", "-i"]) {
+    if (!denied(f.send(`CDPATH=${f.safeParent} env ${reset} sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push(reset);
+    assert.equal(f.send(`CDPATH=${f.protectedParent} env ${reset} sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "cleared lookup preserves an ordinary child destination");
+  }
+  assert.deepEqual(failures, [], "both environment reset forms remove CDPATH");
+});
+
+test("T197: child shells receive only exported and prefix lookup values", () => {
+  const f = ghLookupSession(), failures = [];
+  if (!denied(f.send(`CDPATH=${f.safeParent}; sh -c "cd dest; printf payload > settings"`, f.protectedParent))) failures.push("local lookup leaked to child");
+  assert.equal(f.send(`CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "unexported value stays local");
+  assert.equal(f.send(`CDPATH=${f.protectedParent} echo safe; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "a prefix value ends with its command");
+  for (const prefix of [`export CDPATH=${f.protectedParent};`, `CDPATH=${f.protectedParent}; export CDPATH;`, `CDPATH=${f.protectedParent}`]) {
+    if (!denied(f.send(`${prefix} sh -c "cd dest; printf payload > settings"`, f.safeParent))) failures.push(prefix);
+  }
+  assert.equal(f.send(`export CDPATH=${f.safeParent}; sh -c "cd dest; printf payload > settings"`, f.protectedParent), undefined, "exported ordinary lookup reaches child");
+  assert.equal(f.send(`CDPATH=${f.safeParent} sh -c "cd dest; printf payload > settings"`, f.protectedParent), undefined, "prefix ordinary lookup reaches child");
+  f.s.vars.CDPATH = f.protectedParent;
+  assert.equal(f.send(`CDPATH=${f.safeParent}; sh -c "cd dest; printf payload > settings"`, f.protectedParent), undefined, "assignment retains an inherited export attribute");
+  assert.deepEqual(failures, [], "the child lookup environment must match export and prefix evidence");
+});

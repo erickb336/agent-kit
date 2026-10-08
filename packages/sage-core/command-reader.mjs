@@ -331,7 +331,7 @@ function wrapperArguments(words, next, wrapper, path, dir) {
     }
   }
   if (wrapper === "timeout" || wrapper === "gtimeout") next++; // only timeout owns a duration operand
-  if (wrapper === "env" && words[next] === "-") next++;
+  if (wrapper === "env" && words[next] === "-") { next++; lookup.cdpath = ""; lookup.home = undefined; }
   if (wrapper === "env") {
     while (words[next]?.includes("=")) {
       const word = words[next++];
@@ -342,8 +342,15 @@ function wrapperArguments(words, next, wrapper, path, dir) {
   return { next, path, dir: chdir === undefined ? dir : resolve(dir, chdir), absoluteDir: chdir?.startsWith("/"), lookup, split: splits > 0 };
 }
 
-function readPrograms(command, dir, path, depth, found, uncertainDirectory = false, lookup = { cdpath: process.env.CDPATH ?? "", home: process.env.HOME }) {
-  const knownFunctions = new Map();
+// Missing exported keys are local-only; null values are explicitly unknown after unsupported flow.
+function shellLookup(exported) {
+  return { cdpath: exported.cdpath === undefined ? "" : exported.cdpath, home: exported.home, exported: { ...exported } };
+}
+
+function readPrograms(command, dir, path, depth, found, uncertainDirectory = false, lookup = shellLookup({
+  ...(process.env.CDPATH === undefined ? {} : { cdpath: process.env.CDPATH }),
+  ...(process.env.HOME === undefined ? {} : { home: process.env.HOME }),
+})) {
   const emit = (run, wrapper = false, uncertain = false) => {
     found.contexts.push({ run, wrapper, uncertainDirectory: uncertain });
     found.executables.push(run);
@@ -361,18 +368,22 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
   const commands = shellCommands(command);
   const execute = (c, state, scope) => {
     let { dir, path, cdpath, home, uncertainDirectory: uncertain } = state;
+    const exported = { ...state.exported };
+    const functions = state.functions;
     for (const child of COMMAND_CONTEXT.get(c).children) walkFlow(child, [state], execute);
     if (!COMMAND_CONTEXT.get(c).groupOwned) execute.redirects(c.redirects, [state]);
+    if (COMMAND_CONTEXT.get(c).functionHeader) return { state };
     const { bodies, syntax } = c;
     const words = [...c.words];
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
-    const exported = words[0] === "export" && words.slice(1).filter(word => /^PATH=/.test(word)).at(-1);
-    if (exported) path = set(exported);
-    if (words[0] === "export") for (const word of words.slice(1)) {
-      if (word.startsWith("CDPATH=")) cdpath = word.slice(7);
-      if (word.startsWith("HOME=")) home = word.slice(5);
-    }
     let localCdpath = cdpath, localHome = home;
+    const environment = { ...exported };
+    const prefix = new Set();
+    const lookupEffect = (key, exports = false) => {
+      scope.lookupEffects.add(key);
+      if (exports) scope.exportEffects.add(key);
+    };
+    let launched = false;
     let here = path;
     let at = dir; // a wrapper chdir belongs to this command, not the following shell command
     let viaExec = false;
@@ -385,12 +396,13 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       const assignment = !argv && syntax[k]?.assignment;
       const keyword = !argv && !syntax[k]?.quoted;
       if (assignment && /^PATH=/.test(w)) here = set(w);
-      if (assignment && w.startsWith("CDPATH=")) localCdpath = w.slice(7);
-      if (assignment && w.startsWith("HOME=")) localHome = w.slice(5);
+      if (assignment && w.startsWith("CDPATH=")) { localCdpath = environment.cdpath = w.slice(7); prefix.add("cdpath"); }
+      if (assignment && w.startsWith("HOME=")) { localHome = environment.home = w.slice(5); prefix.add("home"); }
       if (keyword && w === "!") negate = !negate;
       if (assignment || (keyword && KEYWORD.test(w))) continue;
       if (keyword && LIST.test(w)) break;
       if (keyword && w === "function" && ++k) continue; // the function name is not a program
+      launched = true;
       const file = program(w, at, here, uncertain);
       const lexicalWrapper = !argv && !w.includes("/") && (/^(?:command|builtin|exec)$/.test(name) || (keyword && /^(?:time|noglob|nocorrect)$/.test(name)));
       const wrapperNames = lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
@@ -413,10 +425,14 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         }
         viaExec ||= external || name === "exec";
         argv = true;
+        if (external) {
+          localCdpath = environment.cdpath === undefined ? "" : environment.cdpath;
+          localHome = environment.home;
+        }
         if (wrapper === "watch") {
           const watched = watchOptions(words, k + 1);
           if (watched.shellText) {
-            inner(words.slice(watched.next).join(" "), at, here, transformed, uncertain, { cdpath: localCdpath, home: localHome });
+            inner(words.slice(watched.next).join(" "), at, here, transformed, uncertain, shellLookup(environment));
             break;
           }
           k = watched.next - 1;
@@ -424,13 +440,13 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
           const wrapped = npm ?? wrapperArguments(words, k + 1, wrapper, here, at);
           k = wrapped.next - 1;
           here = wrapped.path;
-          if (Object.hasOwn(wrapped.lookup ?? {}, "cdpath")) localCdpath = wrapped.lookup.cdpath;
-          if (Object.hasOwn(wrapped.lookup ?? {}, "home")) localHome = wrapped.lookup.home;
+          if (Object.hasOwn(wrapped.lookup ?? {}, "cdpath")) localCdpath = environment.cdpath = wrapped.lookup.cdpath;
+          if (Object.hasOwn(wrapped.lookup ?? {}, "home")) localHome = environment.home = wrapped.lookup.home;
           if (wrapped.dir !== at && wrapped.absoluteDir) uncertain = false;
           at = wrapped.dir;
           transformed ||= wrapped.split;
           if (wrapped.call) {
-            inner(wrapped.call, at, here, true, uncertain, { cdpath: localCdpath, home: localHome });
+            inner(wrapped.call, at, here, true, uncertain, shellLookup(environment));
             break;
           }
         }
@@ -442,14 +458,31 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         nextDir = change.dir; status = change.ok;
         scope.directoryEffect = true;
         nextUncertain = scope.opaque || change.uncertain;
-      } else if (knownFunctions.get(w)) {
-        scope.directoryEffect = true;
-        nextUncertain = true;
+      } else if (!viaExec && w === "export") {
+        for (const word of args) {
+          if (word.startsWith("PATH=")) path = set(word);
+          const match = /^(CDPATH|HOME)(?:=(.*))?$/.exec(word);
+          if (!match) continue;
+          const key = match[1] === "CDPATH" ? "cdpath" : "home";
+          const value = match[2] ?? (key === "cdpath" ? localCdpath : localHome);
+          if (key === "cdpath") cdpath = value; else home = value;
+          exported[key] = value;
+          lookupEffect(key, true);
+        }
+      } else if (!viaExec && Object.hasOwn(functions, w)) {
+        const effect = functions[w];
+        if (effect.directory) { scope.directoryEffect = true; nextUncertain = true; }
+        for (const key of effect.lookup) {
+          if (key === "cdpath") cdpath = null; else home = null;
+          if (Object.hasOwn(exported, key) || effect.exports.includes(key)) exported[key] = null;
+          lookupEffect(key, effect.exports.includes(key));
+        }
       }
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
       emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 }, false, uncertain);
-      for (const text of commandText(name, args, bodies)) inner(text, at, here, transformed, uncertain, { cdpath: localCdpath, home: localHome });
+      for (const text of commandText(name, args, bodies)) inner(text, at, here, transformed, uncertain,
+        name === "eval" && !viaExec ? { cdpath: localCdpath, home: localHome, exported } : shellLookup(environment));
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
@@ -457,19 +490,25 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       }
       break;
     }
-    if (words.length && words.every((word, index) => syntax[index]?.assignment)) { path = here; cdpath = localCdpath; home = localHome; }
-    return { state: { dir: nextDir, path, cdpath, home, uncertainDirectory: nextUncertain }, status: negate && status !== undefined ? !status : status };
+    if (!launched) {
+      path = here; cdpath = localCdpath; home = localHome;
+      for (const key of prefix) {
+        if (Object.hasOwn(exported, key)) exported[key] = key === "cdpath" ? cdpath : home;
+        lookupEffect(key);
+      }
+    }
+    return { state: { dir: nextDir, path, cdpath, home, exported, functions, uncertainDirectory: nextUncertain }, status: negate && status !== undefined ? !status : status };
   };
   execute.redirects = (redirects, states) => {
     for (const state of states) for (const redirect of redirects) found.redirects.push({ redirect, dir: state.dir, ...(state.uncertainDirectory ? { uncertainDirectory: true } : {}) });
   };
-  execute.function = (name, effect) => knownFunctions.set(name, effect);
-  return walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, uncertainDirectory }], execute);
+  execute.function = (name, effect, states) => states.map(state => ({ ...state, functions: { ...state.functions, [name]: effect } }));
+  return walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, functions: {}, uncertainDirectory }], execute);
 }
 
 /** Directory changes belong to their execution scope; a branch keeps both possible outcomes. */
 function walkFlow(flow, initial, execute, opaque = false) {
-  const scope = { opaque: opaque || flow.kind === "opaque", directoryEffect: false };
+  const scope = { opaque: opaque || flow.kind === "opaque", directoryEffect: false, lookupEffects: new Set(), exportEffects: new Set(), functionEffect: false };
   execute.redirects(flow.redirects ?? [], initial);
   const unique = states => {
     const result = [...new Map(states.map(state => [JSON.stringify(state), state])).values()];
@@ -482,9 +521,18 @@ function walkFlow(flow, initial, execute, opaque = false) {
       return { yes: unique(results.filter(r => r.status !== false).map(r => r.state)), no: unique(results.filter(r => r.status !== true).map(r => r.state)) };
     }
     const result = walkFlow(node, node.kind === "function" ? states.map(state => ({ ...state, uncertainDirectory: true })) : states, execute, scope.opaque);
-    if (node.kind === "function") execute.function(node.functionName, node.directoryEffect);
-    else if (node.kind !== "subshell" && node.directoryEffect) scope.directoryEffect = true;
-    const next = node.kind === "subshell" || node.kind === "function" ? states : result;
+    if (node.kind === "function") {
+      scope.functionEffect = true;
+      const next = execute.function(node.functionName, node.effects, states);
+      return { yes: next, no: next };
+    }
+    if (node.kind !== "subshell") {
+      scope.directoryEffect ||= node.effects.directory;
+      scope.functionEffect ||= node.functionEffect;
+      for (const key of node.effects.lookup) scope.lookupEffects.add(key);
+      for (const key of node.effects.exports) scope.exportEffects.add(key);
+    }
+    const next = node.kind === "subshell" ? states : result;
     return { yes: next, no: next };
   };
   let states = initial;
@@ -512,8 +560,18 @@ function walkFlow(flow, initial, execute, opaque = false) {
     } while ((connector === "&&" || connector === "||") && k < flow.nodes.length);
     states = connector === "&" ? before : unique([...result.yes, ...result.no]);
   }
-  flow.directoryEffect = scope.directoryEffect;
-  if (flow.kind === "opaque" && scope.directoryEffect) return unique([...initial, ...states].map(state => ({ ...state, uncertainDirectory: true })));
+  flow.effects = { directory: scope.directoryEffect, lookup: [...scope.lookupEffects], exports: [...scope.exportEffects] };
+  flow.functionEffect = scope.functionEffect;
+  if (flow.kind === "opaque" && (scope.directoryEffect || scope.lookupEffects.size || scope.functionEffect)) {
+    return unique([...initial, ...states].map(state => {
+      const next = { ...state, exported: { ...state.exported }, uncertainDirectory: state.uncertainDirectory || scope.directoryEffect };
+      for (const key of scope.lookupEffects) {
+        next[key] = null;
+        if (Object.hasOwn(next.exported, key) || scope.exportEffects.has(key)) next.exported[key] = null;
+      }
+      return next;
+    }));
+  }
   return states;
 }
 
@@ -525,8 +583,11 @@ function cdDirectory(args, dir, home, cdpath, uncertain) {
   }
   if (args[k] === "--") k++;
   const target = args[k] ?? home;
+  if (target === null) return { dir, ok: undefined, uncertain: true };
   if (!target || args.length > k + 1 || /[$`~]/.test(target) || target === "-") throw evidenceError("cd needs a known literal directory");
-  const lookup = !target.startsWith("/") && !/^\.{1,2}(?:\/|$)/.test(target) ? (cdpath ?? "").split(":") : [""];
+  const usesLookup = !target.startsWith("/") && !/^\.{1,2}(?:\/|$)/.test(target);
+  if (usesLookup && cdpath === null) return { dir, ok: undefined, uncertain: true };
+  const lookup = usesLookup ? (cdpath ?? "").split(":") : [""];
   if (lookup.some(part => /[$`~]/.test(part))) return { dir, ok: undefined, uncertain: true };
   const candidates = [...lookup.map(folder => folder ? `${folder}/${target}` : target), target];
   for (const candidate of candidates) {
@@ -738,7 +799,9 @@ function readCommands(src, i, close, out, host, flow) {
       endCommand();
       if (c === "(") {
         const previous = flow.nodes.at(-1)?.cmd;
-        const functionName = src[i + 1] === ")" && previous?.words.length === 1 && !previous.syntax[0].quoted && /^[A-Za-z_]\w*$/.test(previous.words[0]) ? previous.words[0] : undefined;
+        const nameIndex = previous?.words.findIndex((word, index) => previous.syntax[index].quoted || !KEYWORD.test(word));
+        const functionName = src[i + 1] === ")" && nameIndex >= 0 && nameIndex === previous.words.length - 1 && !previous.syntax[nameIndex].quoted && /^[A-Za-z_]\w*$/.test(previous.words[nameIndex]) ? previous.words[nameIndex] : undefined;
+        if (functionName) COMMAND_CONTEXT.get(previous).functionHeader = true;
         depth++; openScope("subshell");
         flow.functionName = functionName;
       }
