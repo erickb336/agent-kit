@@ -2936,3 +2936,59 @@ test("missing command modules refuse command tools before protected API writes",
     }
   }
 });
+
+
+for (const actor of ["main", "agent"]) {
+  test(`T196: ${actor} refuses ambiguous PowerShell protected commands`, () => {
+    const s = session(); s.send(prompt("sage mode"));
+    const extra = actor === "agent" ? { agent_id: "a1", agent_type: "sage:implementer" } : {};
+    for (const command of [
+      "g`h pr me`rge 41", 'gh pr ("mer"+"ge") 41', 'gh pr $("mer"+"ge") 41',
+      "g`it pu`sh origin claude/t1", 'git ("pu"+"sh") origin claude/t1',
+      "G`H PR ME`RGE 41",
+    ]) assert.match(denied(s.send(tool("PowerShell", { command }, { cwd: FEATURE, ...extra }))) ?? "", /PowerShell expansion/, command);
+    for (const command of ["Write-Output hello", 'Write-Output ("hello"+"world")', "Get-Date", "git status"]) {
+      assert.equal(s.send(tool("PowerShell", { command }, { cwd: FEATURE, ...extra })), undefined, command);
+    }
+  });
+
+  test(`T196: ${actor} checks merge and push text in every command input field`, () => {
+    const s = session(); s.send(prompt("sage mode"));
+    const extra = actor === "agent" ? { agent_id: "a1", agent_type: "sage:implementer" } : {};
+    const merge = `gh pr merge 41 --squash --delete-branch --match-head-commit ${SHA}`;
+    for (const name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+      for (const input of [
+        { script: merge }, { command: "echo safe", code: merge },
+        { payload: { steps: [{ script: "git push origin main" }] } },
+        { command: "echo safe", commands: ["echo safe", "git push --force origin claude/t1"] },
+      ]) assert.ok(denied(s.send(tool(name, input, { cwd: FEATURE, ...extra }))), JSON.stringify({ name, input }));
+      assert.equal(s.send(tool(name, { script: "git status", payload: { code: "echo safe" } }, { cwd: FEATURE, ...extra })), undefined);
+      assert.ok(denied(s.send(tool(name, { command: ["gh", "pr", "merge", "41"] }, { cwd: FEATURE, ...extra }))));
+    }
+    assert.match(denied(s.send(tool("PowerShell", { command: "echo safe", payload: { script: 'gh pr ("mer"+"ge") 41' } }, { cwd: FEATURE, ...extra }))) ?? "", /PowerShell expansion/);
+    let nested = { script: "git push origin main" };
+    for (let n = 0; n < 3500; n++) nested = { payload: nested };
+    assert.ok(denied(s.send(tool("Monitor", nested, { cwd: FEATURE, ...extra }))), "unreadable nested input must produce a refusal, not a hook crash");
+  });
+
+  test(`T196: ${actor} checks the terminal checkout instead of the session folder`, () => {
+    const s = session(); s.send(prompt("sage mode"));
+    const extra = actor === "agent" ? { agent_id: "a1", agent_type: "sage:implementer" } : {};
+    const send = (cwd, folder) => s.send(tool("mcp__terminal__run_in_terminal", { command: "git push origin claude/t1", cwd: folder }, { cwd, ...extra }));
+    assert.match(denied(send(FEATURE, MAIN_CHECKOUT)) ?? "", /main/, "the terminal is on main");
+    assert.equal(send(MAIN_CHECKOUT, FEATURE), undefined, "the terminal is on a feature branch");
+    assert.equal(s.send(tool("mcp__terminal__run_in_terminal", { command: "git push origin claude/t1" }, { cwd: FEATURE, ...extra })), undefined, "no tool cwd uses the session folder");
+  });
+}
+
+
+test("T196: a first-upload prompt cannot approve another field's target", () => {
+  const s = firstSession();
+  const other = CREATE.replace("heads/main", "heads/master");
+  for (const input of [
+    { description: CREATE, command: other },
+    { command: CREATE, payload: { script: other } },
+  ]) assert.ok(denied(s.send(tool("Bash", input, { cwd: FEATURE }))), "two distinct first uploads must be refused");
+  assert.equal(asked(s.send(tool("Bash", { command: CREATE, copies: Array(30).fill(CREATE) }, { cwd: FEATURE }))), ASKED, "identical text keeps one approval target");
+  assert.ok(denied(s.send(tool("Bash", { command: CREATE, script: "git push origin main" }, { cwd: FEATURE }))), "a refusal in another field wins over a first-upload prompt");
+});
