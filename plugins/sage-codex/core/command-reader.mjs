@@ -38,6 +38,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  *     word with a variable, ~ or a substitution, and for a program that is not found.
  *   - args: the words after the program, without their quotes and redirections.
  *   - dir: the folder it runs in, after an earlier "cd <dir>" of the same line.
+ *   - path: its effective PATH, after assignments and wrappers.
  *   - stdin: its heredoc and here-string bodies, and the words of the command piped into it.
  *   - piped: whether another command supplies its stdin through a pipe; a heredoc alone is not a pipe.
  * It also reads the text that other programs run as commands, up to 3 levels deep: the -c text of a shell (sh, bash,
@@ -88,12 +89,12 @@ function readPrograms(command, dir, path, depth, found) {
       const args = words.slice(k + 1);
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
-      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, stdin, piped: pipes.length > 0 });
+      found.push({ word: w, file: w === "kill" && !viaExec ? undefined : program(w, dir, here), args, dir, path: here, stdin, piped: pipes.length > 0 });
       for (const text of commandText(name, args, bodies)) inner(text, dir, here);
       const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
       if (exec >= 0 && args[exec + 1]) {
         const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, stdin: [], piped: false });
+        found.push({ word: args[exec + 1], file: program(args[exec + 1], dir, here), args: args.slice(exec + 2, end < 0 ? undefined : end), dir, path: here, stdin: [], piped: false });
       }
       break;
     }

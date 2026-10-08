@@ -254,8 +254,17 @@ export function handle(input, state, slots) {
   if (why && main) return deny(event, `${why} Only sage.mjs changes the logbook: run the state tool's command for this change (node <path to skills/sage/sage.mjs> ...), as a command of its own. If no command does it, ask the user.`);
   if (why) return deny(event, `${why} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
   const agent = (ours || (!main && state.sage)) && !CHIEF.test(input.agent_type ?? "");
+  if (event === "PreToolUse" && agent && FILE_TOOLS.test(input.tool_name ?? "") && ghAliasFileWrite(input.tool_input ?? {})) return deny(event, NO_GH);
   if (event === "PreToolUse" && agent && SHELL_TOOLS.test(input.tool_name ?? "")) {
-    const problem = agentProblem([].concat(input.tool_input?.command ?? []).join(" "), input.cwd ?? process.cwd());
+    const ti = input.tool_input ?? {};
+    const cwd = /^mcp__terminal__/.test(input.tool_name) && typeof ti.cwd === "string" ? ti.cwd : input.cwd ?? process.cwd();
+    const commands = commandFields(ti);
+    // Keep expansion, push and merge refusals ahead of the narrower gh exceptions.
+    if (state.sage) for (const command of commands) {
+      const result = gitGate(event, command, state, cwd, false, input.tool_name);
+      if (result?.hookSpecificOutput?.permissionDecision === "deny") return result;
+    }
+    const problem = commands.map(command => agentProblem(command, cwd)).find(Boolean);
     if (problem) return deny(event, problem);
   }
   if (event !== "PreToolUse" || !state.sage) return undefined;
@@ -760,9 +769,7 @@ const expansionProblem = (command, cwd) => sharedCommands.expansionProblem(comma
 
 /** Preserve command arrays while checking every other string, including nested tool inputs. */
 function commandFields(ti) {
-  const text = fields(ti);
-  if (Array.isArray(ti.command)) text.push(ti.command.join(" "));
-  return text;
+  return fields(Array.isArray(ti.command) ? { ...ti, command: ti.command.join(" ") } : ti);
 }
 
 /** PowerShell expansions cannot be judged by the shared shell reader. Refuse protected words conservatively. */
@@ -821,17 +828,78 @@ const TEMP = [...new Set([tmpdir(), "/tmp", process.env.TMPDIR].filter(Boolean).
 const inTemp = (file) => !!file && TEMP.some((t) => file.startsWith(`${t}/`));
 const PROCESS_TEXT = new RegExp(`(?:^|[\\s;&|(\`'"/<>])(?:${UNIX_PROCESS}|${POWERSHELL_PROCESS})(?=$|[\\s;&|)\`'"<>])`, "im");
 
+const NO_GH = "an agent may run only plain gh pr create, gh pr view, gh pr comment, gh pr edit, gh pr checks, gh issue view, or gh api with GET. Other gh commands, copies, links and aliases are refused. Ask the chief to run them.";
+const GH_NAME = /^(?:gh|gh\.exe)$/i;
+const namesGh = text => /\bgh(?:\.exe)?\b/i.test(unquote(text).replace(/`/g, ""));
+const ghAliasWrite = text => /(?:^|[\s/\\])aliases\.ya?ml\b/i.test(text) || (/\[alias\]|!\s*gh\b/i.test(unquote(text).replace(/`/g, "")) && namesGh(text));
+/** Check proposed file content, not removed text or documentation that quotes configuration. */
+function ghAliasFileWrite(input) {
+  const file = input.file_path ?? input.path ?? "";
+  const content = [input.content, input.new_string, ...(Array.isArray(input.edits) ? input.edits.map(edit => edit?.new_string) : [])].filter(text => typeof text === "string").join("\n");
+  if (/(?:^|[/\\])aliases\.ya?ml$/i.test(file)) return /^\s*[^#\s][^\n]*:\s*\S/m.test(content);
+  const gitConfig = /(?:^|[/\\])(?:\.gitconfig|\.git[/\\]config|git[/\\]config)$/i.test(file);
+  const uncommented = content.replace(/^\s*[#;][^\n]*$/gm, "");
+  const configuration = /^\s*\[[^\]\n]+\]/.test(uncommented);
+  const fragment = /^\s*[\w.-]+\s*=/.test(uncommented);
+  return namesGh(content) && (gitConfig || fragment || (configuration && /\[alias\]/i.test(content)));
+}
+const fileIdentity = file => {
+  try { const stat = statSync(file); return stat.isFile() ? `${stat.dev}:${stat.ino}` : undefined; } catch { return undefined; }
+};
+
+/** Only one literal gh invocation gets the agent exceptions; wrappers, substitutions and aliases do not. */
+function plainGh(command) {
+  const [one, ...more] = shellCommands(command);
+  if (!one || more.length || one.writes || one.piped || one.grouped || one.bodies.length || one.words[0] !== "gh") return false;
+  const [, group, verb, ...args] = one.words;
+  if (group === "pr") return /^(?:create|view|comment|edit|checks)$/.test(verb ?? "");
+  if (group === "issue") return verb === "view";
+  if (group !== "api") return false;
+  let method, payload = false, endpoint = false;
+  const values = new Set(["--cache", "-F", "--field", "-f", "--raw-field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-p", "--preview", "-t", "--template"]);
+  for (let i = 0, words = [verb, ...args]; i < words.length; i++) {
+    const word = words[i];
+    if (typeof word !== "string") return false;
+    const [flag, ...value] = word.split("=");
+    if (flag === "-X" || flag === "--method" || /^-X./.test(word)) {
+      const next = /^-X./.test(word) ? word.slice(2).replace(/^=/, "") : value.length ? value.join("=") : words[++i];
+      if (method !== undefined || next !== "GET") return false;
+      method = next;
+    } else if (values.has(flag) || /^-[FfHqpt]./.test(word)) {
+      const short = /^-[FfHqpt]./.test(word);
+      const option = short ? word.slice(0, 2) : flag;
+      if (!short && !value.length && words[++i] === undefined) return false;
+      if (["-f", "-F", "--field", "--raw-field", "--input"].includes(option)) payload = true;
+    } else if (["--include", "-i", "--paginate", "--silent", "--slurp", "--verbose", "--allow-escape-sequences", "--help"].includes(word)) {
+      continue;
+    } else if (word.startsWith("-") || endpoint) return false;
+    else endpoint = true;
+  }
+  return endpoint && (!payload || method === "GET");
+}
+
 export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   let runs;
   try {
     runs = programsRun(command, cwd, path);
   } catch (e) {
     const text = bare(command);
-    const why = gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
+    const why = namesGh(text) ? NO_GH : gitThen(text, "stash") ? NO_STASH : PROCESS_TEXT.test(text) ? NO_PROCESS(PROCESS_TEXT.exec(text)[0].replace(/^\W/, "")) : undefined;
     return why && `${why} (The hook cannot read this command: ${e.message}.)`;
   }
-  for (const { word, file, args } of runs) {
+  if (ghAliasWrite(command) && writes(command)) return NO_GH;
+  const inputs = shellCommands(command).flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.slice(1));
+  for (const { word, file, args, dir, path: runPath } of runs) {
+    const gh = programsRun("gh", dir, runPath ?? path)[0]?.file;
+    const ghId = gh && fileIdentity(gh);
     const name = word.split("/").pop();
+    const isGh = GH_NAME.test(name) || GH_NAME.test(file?.split("/").pop() ?? "") || (ghId && fileIdentity(file) === ghId);
+    if (isGh && !plainGh(command)) return NO_GH;
+    const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (name === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
+    const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);
+    const referencesGh = [...args, ...inputs].some(arg => ghId && fileIdentity(resolve(dir, arg.replace(/^if=/, ""))) === ghId);
+    if ((alias || copy) && (namesGh(args.join(" ")) || referencesGh)) return NO_GH;
+    if (referencesGh && writes(command)) return NO_GH;
     if (name === "git" && /^stash$/i.test(subcommand(args, 0))) return NO_STASH;
     if ((isProcess(name) || isProcess(file?.split("/").pop())) && !inTemp(file)) return NO_PROCESS(word);
   }

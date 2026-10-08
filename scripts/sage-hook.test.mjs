@@ -2,7 +2,7 @@
 import "./test-env.mjs"; // first: no variable of the developer's shell changes a result
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -2990,4 +2990,121 @@ test("T196: a first-upload prompt cannot approve another field's target", () => 
   ]) assert.ok(denied(s.send(tool("Bash", input, { cwd: FEATURE }))), "two distinct first uploads must be refused");
   assert.equal(asked(s.send(tool("Bash", { command: CREATE, copies: Array(30).fill(CREATE) }, { cwd: FEATURE }))), ASKED, "identical text keeps one approval target");
   assert.ok(denied(s.send(tool("Bash", { command: CREATE, script: "git push origin main" }, { cwd: FEATURE }))), "a refusal in another field wins over a first-upload prompt");
+});
+
+function ghAgentSession() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage-t197-")));
+  const gh = join(dir, "gh"), linked = join(dir, "linked"), hard = join(dir, "hard");
+  writeFileSync(gh, "#!/usr/bin/env node\nthrow Error('fake gh must never execute');\n", { mode: 0o755 });
+  symlinkSync(gh, linked); linkSync(gh, hard);
+  const s = session({ PATH: `${dir}:${process.env.PATH}` }); s.send(prompt("sage mode"));
+  const send = (command, agent = true, name = "Bash") => s.send(tool(name, { command }, { cwd: FEATURE, ...(agent ? AGENT : {}) }));
+  return { s, dir, gh, linked, hard, send };
+}
+
+test("T197: agents refuse other gh commands through paths, links, hard links and wrappers", () => {
+  const f = ghAgentSession();
+  for (const command of ["gh auth status", "gh m 41", "gh repo delete o/r", `${f.gh} auth status`, `${f.linked} auth status`, `${f.hard} auth status`, "env gh auth status", "bash -c 'gh auth status'", "gh pr view 41; echo done"]) {
+    assert.match(denied(f.send(command)) ?? "", /plain gh pr create/, command);
+  }
+  assert.ok(denied(f.send("gh pr merge 41")), "the existing merge rule still refuses agents");
+  assert.ok(denied(f.send(`${f.linked}* auth status`)), "expanded executable words are refused");
+  assert.equal(f.send("gh auth status", false), undefined, "main keeps its existing behavior");
+  assert.equal(f.send(`${f.hard} auth status`, false), undefined, "main may use a hard link");
+});
+
+test("T197: agents refuse gh copy and alias setup before a later command can hide it", () => {
+  const f = ghAgentSession();
+  for (const command of [
+    'cp "$(command -v gh)" /tmp/x', `cp ${f.gh} /tmp/x`, `ln ${f.hard} /tmp/x`,
+    "alias m='gh pr merge'", "Set-Alias m gh", "New-Alias m gh", "Copy-Item gh /tmp/x",
+    "git config alias.m '!gh pr merge'", "git -c alias.m='!gh pr merge' m", "gh alias set m 'pr merge'",
+  ]) assert.ok(denied(f.send(command)), command);
+  assert.equal(f.send("Set-Alias m gh", false), undefined, "main may set its own alias");
+  assert.equal(f.send("alias ll='ls -l'"), undefined, "unrelated aliases retain their behavior");
+});
+
+test("T197: plain agent PR operations and GET requests pass, while API writes do not", () => {
+  const f = ghAgentSession();
+  assert.equal(f.s.send(tool("Bash", { command: ["gh", "pr", "view", "41"] }, { cwd: FEATURE, ...AGENT })), undefined);
+  assert.equal(f.send("gh api repos/o/r -X=GET"), undefined);
+  for (const command of [
+    "gh pr create --title 'A change' --body 'Details'", "gh pr view 41", "gh pr comment 41 --body 'Checked'",
+    "gh pr edit 41 --title 'Updated'", "gh pr checks 41", "gh issue view 70", "gh api repos/o/r",
+    "gh api repos/o/r --method GET", "gh api -XGET search/issues -f q=hello", "gh api --method=GET search/issues --raw-field q=hello",
+  ]) assert.equal(f.send(command), undefined, command);
+  for (const command of ["gh api repos/o/r -X POST", "gh api repos/o/r --method=PATCH", "gh api repos/o/r -f name=changed", "gh api repos/o/r --input data.json", "gh api repos/o/r -X GET --method DELETE", "gh issue create --title x"]) {
+    assert.match(denied(f.send(command)) ?? "", /plain gh pr create/, command);
+  }
+});
+
+test("T197: every agent command field and terminal folder uses the gh identity rule", () => {
+  const f = ghAgentSession();
+  for (const name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run_in_terminal"]) {
+    assert.match(denied(f.s.send(tool(name, { command: "echo safe", payload: { script: "gh auth status" } }, { cwd: FEATURE, ...AGENT }))) ?? "", /plain gh pr create/, name);
+  }
+  assert.match(denied(f.s.send(tool("mcp__terminal__run_in_terminal", { command: "./hard auth status", cwd: f.dir }, { cwd: FEATURE, ...AGENT }))) ?? "", /plain gh pr create/);
+});
+
+test("T197: moving a gh executable is refused before its PATH entry disappears", () => {
+  const f = ghAgentSession();
+  assert.match(denied(f.send(`mv ${f.gh} /tmp/renamed-client`)) ?? "", /plain gh pr create/);
+});
+
+test("T197: agents refuse gh aliases written through file tools and shell redirection", () => {
+  const f = ghAgentSession();
+  const example = "[alias]\n m = !gh pr merge 41\n";
+  for (const input of [
+    { file_path: join(f.dir, "guide.md"), content: "# Alias examples\n\n```gitconfig\n" + example + "```\n" },
+    { file_path: join(f.dir, "regression.test.mjs"), content: "const example = `" + example + "`;" },
+  ]) assert.equal(f.s.send(tool("Write", input, { cwd: FEATURE, ...AGENT })), undefined);
+  assert.equal(f.s.send(tool("Edit", { file_path: join(f.dir, ".git/config"), old_string: example, new_string: "" }, { cwd: FEATURE, ...AGENT })), undefined);
+  for (const input of [
+    { file_path: join(f.dir, ".git/config"), content: "[alias]\n m = !gh pr merge 41\n" },
+    { file_path: join(f.dir, "alias-config"), content: "[alias]\n m = !gh pr merge 41\n" },
+    { file_path: join(f.dir, "gh/aliases.yml"), content: "m: pr merge 41\n" },
+  ]) {
+    assert.match(denied(f.s.send(tool("Write", input, { cwd: FEATURE, ...AGENT }))) ?? "", /plain gh pr create/);
+  }
+  assert.ok(denied(f.send("printf '[alias]\n m = !gh pr merge 41\n' > /tmp/alias-config")), "shell setup is refused");
+  assert.equal(f.s.send(tool("Write", { file_path: join(f.dir, "notes.md"), content: "Use gh pr view to inspect a PR." }, { cwd: FEATURE, ...AGENT })), undefined);
+});
+
+test("T197: gh hard links use each command's effective PATH", () => {
+  const f = ghAgentSession();
+  const other = join(f.dir, "second-bin"); mkdirSync(other);
+  const otherGh = join(other, "gh"), hard = join(other, "client");
+  writeFileSync(otherGh, "#!/usr/bin/env node\nthrow Error('fake gh must never execute');\n", { mode: 0o755 });
+  linkSync(otherGh, hard);
+  for (const command of [`PATH=${other} ${hard} auth status`, `export PATH=${other}; ${hard} auth status`]) {
+    assert.match(denied(f.send(command)) ?? "", /plain gh pr create/);
+  }
+});
+
+test("T197: shell quoting cannot hide gh in an alias definition", () => {
+  const f = ghAgentSession();
+  assert.ok(denied(f.send(`git config alias.m "!g'h' auth status"`)));
+  assert.ok(denied(f.send("printf 'm = !g\\h auth status\n' >> /tmp/custom-config")));
+  assert.ok(denied(f.s.send(tool("Write", { file_path: join(f.dir, "alias-config"), content: "[alias]\n m = !g'h' auth status\n" }, { cwd: FEATURE, ...AGENT }))));
+  assert.ok(denied(f.send(`printf "[alias]\n m = !g'h' auth status\n" > /tmp/alias-config`)));
+});
+
+test("T197: agents cannot copy gh bytes with readers or generic file writers", () => {
+  const f = ghAgentSession();
+  for (const command of [`cat ${f.gh} > /tmp/copied-client`, `cat < ${f.gh} > /tmp/copied-client`, `dd if=${f.gh} of=/tmp/copied-client`, `rsync ${f.hard} /tmp/copied-client`]) {
+    assert.ok(denied(f.send(command)), command);
+  }
+});
+
+test("T197: custom alias files and config fragments cannot hide gh", () => {
+  const f = ghAgentSession();
+  for (const [name, input] of [
+    ["Write", { file_path: join(f.dir, "custom/aliases.yml"), content: "m: pr merge 41\n" }],
+    ["Write", { file_path: join(f.dir, "custom-config"), content: "# Comment\n[alias]\n m = !gh auth status\n" }],
+    ["Edit", { file_path: join(f.dir, "custom-config"), old_string: "m = status", new_string: "m = !gh auth status" }],
+    ["Edit", { file_path: join(f.dir, "custom-config"), old_string: "m = status", new_string: 'm = "!gh auth status"' }],
+    ["Edit", { file_path: join(f.dir, "custom-config"), old_string: "m = status", new_string: "safe = status\nm = !gh auth status" }],
+    ["MultiEdit", { file_path: join(f.dir, "custom-config"), edits: [{ old_string: "m = status", new_string: "m = !g\\h auth status" }] }],
+  ]) assert.ok(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))), name);
+  assert.ok(denied(f.send('git config alias.m "!g\\\\h auth status"')));
 });
