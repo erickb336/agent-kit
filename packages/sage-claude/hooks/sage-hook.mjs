@@ -533,8 +533,30 @@ function pathOf(word) {
  * backtick, or an absolute path (the owner's decision T83-COST-GLOB, so that rm dist/* and jq ... > config.json pass in
  * a project).
  */
+/** Only complete brace groups contain reserved braces; quoted braces and file patterns remain path evidence. */
+function logbookWords(text) {
+  const all = wordsOf(text);
+  if (!all.includes("{")) return all;
+  const groups = [];
+  let complete = true, opened = false, dataBrace = false;
+  for (const command of shellCommands(text)) {
+    for (let k = 0; k < command.words.length; k++) {
+      const word = command.words[k];
+      if (!k && !command.syntax[k].quoted && word === "{") { groups.push(false); opened = true; }
+      else if (!k && !command.syntax[k].quoted && word === "}") { if (!groups.pop()) complete = false; }
+      else {
+        if (groups.length) groups.fill(true);
+        if (wordsOf(word).some(part => part === "{" || part === "}")) dataBrace = true;
+      }
+    }
+    if ([...command.redirects, ...command.bodies].some(value => wordsOf(value).some(word => word === "{" || word === "}"))) dataBrace = true;
+  }
+  return opened && complete && !groups.length && !dataBrace ? all.filter(word => word !== "{" && word !== "}") : all;
+}
+
 function nearLogbook(text, roots, cwd) {
-  const words = partsOf(text);
+  const all = logbookWords(text);
+  const words = [...new Set(all)].map(word => ({ word, low: fold(word), parts: fold(word).split("/") }));
   const plain = words.filter(({ word }) => !GLOB.test(word));
   const home = fold(process.env.HOME ?? "");
   const atHome = (w) => /^(?:~|\$home|-)\/?$/.test(w) || (home.length > 1 && (w === home || w === `${home}/`));
@@ -542,7 +564,6 @@ function nearLogbook(text, roots, cwd) {
   const leaves =
     /[$`]/.test(text) ||
     words.some(({ low, parts }) => /^(?:cd|pushd)$/.test(low) || parts.includes("..") || parts[0].startsWith("~") || (/^\/(?!\/)/.test(low) && !/^\/dev\/(?:null|stdout|stderr)$/.test(low)));
-  const all = wordsOf(text); // in their own case, for the refusal
   const unique = [...new Set(all)]; // each word once: a long line repeats words
   const lowWords = all.map(fold);
   const cdHome = lowWords.findIndex((word, k) => /^(?:cd|pushd)$/.test(word) && atHome(lowWords[k + 1] ?? "-"));
@@ -977,32 +998,68 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   return undefined;
 }
 
-/** cp writes its final operand, or each source basename inside its target directory. */
+// GNU cp's option kinds (coreutils cp.c); macOS also accepts the flag-only c, N and X.
+const COPY_OPTIONS = new Map([
+  ..."archive attributes-only copy-contents debug dereference force interactive link no-clobber no-dereference no-target-directory one-file-system parents path recursive remove-destination strip-trailing-slashes symbolic-link verbose keep-directory-symlink help version".split(" ").map(name => [name, "flag"]),
+  ..."no-preserve sparse suffix target-directory".split(" ").map(name => [name, "value"]),
+  ..."backup preserve reflink update context".split(" ").map(name => [name, "optional"]),
+]);
+/** cp's destination depends on option values and whether it keeps each source's parent path. */
 function copyDestinations(args, cwd) {
-  const operands = [];
-  let target, literal = false, noDirectory = false;
-  for (let k = 0; k < args.length; k++) {
-    const arg = args[k];
-    if (!literal && arg === "--") { literal = true; continue; }
-    if (!literal && /^-./.test(arg)) {
-      if (arg === "-t" || arg === "--target-directory") target = args[++k];
-      else if (arg.startsWith("--target-directory=")) target = arg.slice(19);
-      else if (/^-t./.test(arg)) target = arg.slice(2);
-      else if (arg === "-T" || arg === "--no-target-directory") noDirectory = true;
-      else if (arg === "-S" || arg === "--suffix") k++;
-      continue;
+  const badOption = message => Object.assign(new Error(message), { code: "SAGE_COPY_OPTION" });
+  const parse = (suffixIsFlag) => {
+    const operands = [];
+    let target, literal = false, noDirectory = false, parents = false;
+    const option = (name, value) => {
+      if (name === "target-directory") target = value;
+      if (name === "no-target-directory") noDirectory = true;
+      if (name === "parents" || name === "path") parents = true;
+    };
+    for (let k = 0; k < args.length; k++) {
+      const arg = args[k];
+      if (!literal && arg === "--") { literal = true; continue; }
+      if (!literal && arg.startsWith("--")) {
+        const equal = arg.indexOf("="), prefix = arg.slice(2, equal < 0 ? undefined : equal);
+        const matches = COPY_OPTIONS.has(prefix) ? [prefix] : [...COPY_OPTIONS.keys()].filter(name => name.startsWith(prefix));
+        if (matches.length !== 1) throw badOption("unknown or ambiguous copy option");
+        const name = matches[0], kind = COPY_OPTIONS.get(name);
+        let value = equal < 0 ? undefined : arg.slice(equal + 1);
+        if (kind === "value" && value === undefined) value = args[++k];
+        if ((kind === "value" && value === undefined) || (kind === "flag" && value !== undefined)) throw badOption("invalid copy option value");
+        option(name, value);
+      } else if (!literal && /^-./.test(arg)) {
+        for (let j = 1; j < arg.length; j++) {
+          const name = arg[j];
+          if (name === "t" || (name === "S" && !suffixIsFlag)) {
+            const value = arg.slice(j + 1) || args[++k];
+            if (value === undefined) throw badOption("a copy option needs a value");
+            option(name === "t" ? "target-directory" : "suffix", value);
+            break;
+          }
+          if (!"abdfHilLnprstuvxPRSTZcNX".includes(name)) throw badOption("unknown copy option");
+          if (name === "T") noDirectory = true;
+        }
+      } else operands.push(arg);
     }
-    operands.push(arg);
+    if (target === undefined) target = operands.pop();
+    if (!target || !operands.length) return [];
+    const supplied = from(cwd, target);
+    let directory = false;
+    if (!noDirectory) {
+      try { directory = statSync(supplied).isDirectory(); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+    return directory ? operands.map(source => `${supplied}/${parents ? source.replace(/^\/+|\/+$/g, "") : basename(source)}`) : [supplied];
+  };
+  // -S consumes a suffix in GNU cp and is a flag in macOS cp. Check both destination interpretations.
+  const candidates = [];
+  let parsed = false, problem;
+  for (const suffixIsFlag of [false, true]) {
+    try { candidates.push(...parse(suffixIsFlag)); parsed = true; }
+    catch (error) { if (error.code !== "SAGE_COPY_OPTION") throw error; problem = error; }
   }
-  if (target === undefined) target = operands.pop();
-  if (!target || !operands.length) return [];
-  const supplied = from(cwd, target);
-  let directory = false;
-  if (!noDirectory) {
-    try { directory = statSync(supplied).isDirectory(); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-  }
-  return directory ? operands.map(source => `${supplied}/${basename(source)}`) : [supplied];
+  if (!parsed) throw problem;
+  return [...new Set(candidates)];
 }
 
 /** The gh policy is shared by direct commands and proposed alias bodies, with the same file identities. */

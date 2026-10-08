@@ -3567,3 +3567,46 @@ test("T197: shell alias writes resolve redirection and copy destinations", () =>
   assert.equal(f.send(`cp ${ordinary} ${ordinaryLink}`), undefined, "a differently named cp binary keeps ordinary destinations");
   assert.deepEqual(failures, [], "all 12 protected shell destinations must refuse the write");
 });
+
+test("T197: alias destinations keep shell directory scopes and conditional states", async () => {
+  const f = ghAgentSession();
+  const config = join(f.dir, "config"), safe = join(f.dir, "safe"); mkdirSync(config); mkdirSync(safe);
+  const target = join(config, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  symlinkSync(target, join(f.dir, "settings")); writeFileSync(join(safe, "settings"), "ordinary\n");
+  writeFileSync(join(f.dir, "ordinary.yaml"), "m: pr merge 41\n");
+  const send = (command, cwd) => f.s.send(tool("Bash", { command }, { cwd, ...AGENT }));
+  const failures = [];
+  for (const prefix of [`(cd ${safe});`, `false && cd ${safe};`, `cd ${safe} | cat;`, `echo "$(cd ${safe})";`, `cd ${safe} &`]) {
+    for (const action of ["printf payload > settings", "cp ordinary.yaml settings"])
+      if (!denied(send(`${prefix} ${action}`, f.dir))) failures.push(`${prefix} ${action}`);
+  }
+  if (!denied(send("cd -P ..; printf payload > settings", safe))) failures.push("cd -P");
+  for (const prefix of [`(cd ${f.dir});`, `cd ${f.dir} | cat;`, `echo "$(cd ${f.dir})";`, `cd ${f.dir} &`])
+    assert.equal(send(`${prefix} printf payload > settings`, safe), undefined, prefix);
+  for (const prefix of [`cd ${safe};`, `{ cd ${safe}; };`, `cd -- ${safe};`, `cd -L ${safe};`])
+    assert.equal(send(`${prefix} printf payload > settings`, f.dir), undefined, prefix);
+  for (const prefix of [`cd ${f.dir}/missing;`, `env cd ${safe};`, `sudo cd ${safe};`])
+    assert.ok(denied(send(`${prefix} printf payload > settings`, f.dir)), prefix);
+  for (const prefix of [`cd ${f.dir}/missing || cd ${safe};`, `env cd ${f.dir};`, `sudo cd ${f.dir};`])
+    assert.equal(send(`${prefix} printf payload > settings`, safe), undefined, prefix);
+  assert.ok(denied(send(`{ cd ${safe}; }; printf '%s' '{' > settings`, f.dir)), "a quoted brace argument retains its existing path guard");
+  const { programsRun } = await import(HOOK);
+  assert.deepEqual(programsRun(`HOME=${f.dir} cd; printf payload > settings`, safe, process.env.PATH, { redirectEvidence: true }), [{ redirect: ">settings", dir: f.dir }], "bare cd uses the known HOME");
+  assert.deepEqual(failures, [], "scope changes cannot hide protected destinations");
+});
+
+test("T197: copy options preserve target directories and source parent paths", () => {
+  const f = ghAgentSession();
+  const config = join(f.dir, "config"), out = join(f.dir, "out"), safe = join(f.dir, "safe");
+  for (const folder of [config, out, safe, join(f.dir, "payload"), join(out, "payload")]) mkdirSync(folder, { recursive: true });
+  const target = join(config, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  writeFileSync(join(f.dir, "ordinary.yaml"), "m: pr merge 41\n"); writeFileSync(join(f.dir, "payload/data"), "m: pr merge 41\n");
+  symlinkSync(target, join(out, "ordinary.yaml")); symlinkSync(target, join(out, "payload/data"));
+  const send = command => f.s.send(tool("Bash", { command }, { cwd: f.dir, ...AGENT }));
+  const failures = [];
+  for (const command of [`cp -vt ${out} ordinary.yaml`, `cp -vt${out} ordinary.yaml`, `cp --target-dir ${out} ordinary.yaml`, `cp --target=${out} ordinary.yaml`, `cp --parents payload/data ${out}`, `cp -S.bak ordinary.yaml ${out}`])
+    if (!denied(send(command))) failures.push(command);
+  for (const command of [`cp -vt ${safe} ordinary.yaml`, `cp --target=${safe} ordinary.yaml`, `cp --parents payload/data ${safe}`, `cp ordinary.yaml ${safe}/settings`, `cp -S.bak ordinary.yaml ${safe}/settings`])
+    assert.equal(send(command), undefined, command);
+  assert.deepEqual(failures, [], "copy option grammar cannot hide protected destinations");
+});

@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -345,7 +345,9 @@ function readPrograms(command, dir, path, depth, found) {
     }
   };
   const commands = shellCommands(command);
-  for (const c of commands) {
+  const execute = (c, state) => {
+    let { dir, path } = state;
+    for (const child of COMMAND_CONTEXT.get(c).children) walkFlow(child, [state], execute);
     found.redirects.push(...c.redirects.map(redirect => ({ redirect, dir })));
     const { bodies, syntax } = c;
     const words = [...c.words];
@@ -357,6 +359,7 @@ function readPrograms(command, dir, path, depth, found) {
     let viaExec = false;
     let transformed = false;
     let argv = false; // external wrappers pass argv; shell modifiers retain assignment and keyword grammar
+    let nextDir = dir, status;
     for (let k = 0; k < words.length; k++) {
       const w = words[k];
       const name = w.split("/").pop();
@@ -409,6 +412,10 @@ function readPrograms(command, dir, path, depth, found) {
         continue;
       }
       const args = words.slice(k + 1);
+      if (!viaExec && w === "cd") {
+        const change = cdDirectory(args, dir, words.slice(0, k).find(word => word.startsWith("HOME="))?.slice(5));
+        nextDir = change.dir; status = change.ok;
+      }
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
       emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 });
@@ -421,7 +428,71 @@ function readPrograms(command, dir, path, depth, found) {
       break;
     }
     if (words.length && words.every((word, index) => syntax[index]?.assignment)) path = here;
-    if (words[0] === "cd" && words.length === 2) dir = resolve(dir, words[1]); // for the commands after it
+    return { state: { dir: nextDir, path }, status };
+  };
+  return walkFlow(FLOWS.get(commands), [{ dir, path }], execute);
+}
+
+/** Directory changes belong to their execution scope; a branch keeps both possible outcomes. */
+function walkFlow(flow, initial, execute) {
+  const unique = states => {
+    const result = [...new Map(states.map(state => [JSON.stringify(state), state])).values()];
+    if (result.length > 64) throw evidenceError("too many possible command directories");
+    return result;
+  };
+  const nodeResult = (node, states) => {
+    if (node.cmd) {
+      const results = states.map(state => execute(node.cmd, state));
+      return { yes: unique(results.filter(r => r.status !== false).map(r => r.state)), no: unique(results.filter(r => r.status !== true).map(r => r.state)) };
+    }
+    const result = walkFlow(node, states, execute);
+    const next = node.kind === "subshell" ? states : result;
+    return { yes: next, no: next };
+  };
+  let states = initial;
+  for (let k = 0; k < flow.nodes.length;) {
+    const before = states;
+    let result, connector;
+    do {
+      const input = !result ? states : connector === "&&" ? result.yes : result.no;
+      const saved = result;
+      const start = k;
+      let pipe;
+      do {
+        if (!input.length) nodeResult(flow.nodes[k], before); // skipped text still receives policy checks, without changing its caller
+        pipe = nodeResult(flow.nodes[k], input);
+      } while (flow.nodes[k++].after === "|" && k < flow.nodes.length);
+      if (k - start > 1) {
+        // Bash isolates each stage; shells that run the last stage in the parent may retain its directory.
+        pipe = { yes: unique([...input, ...pipe.yes]), no: unique([...input, ...pipe.no]) };
+      }
+      result = !saved ? pipe : connector === "&&"
+        ? { yes: pipe.yes, no: unique([...saved.no, ...pipe.no]) }
+        : { yes: unique([...saved.yes, ...pipe.yes]), no: pipe.no };
+      connector = flow.nodes[k - 1].after;
+    } while ((connector === "&&" || connector === "||") && k < flow.nodes.length);
+    states = connector === "&" ? before : unique([...result.yes, ...result.no]);
+  }
+  return states;
+}
+
+function cdDirectory(args, dir, home = process.env.HOME) {
+  let physical = false, k = 0;
+  for (; /^-./.test(args[k] ?? "") && args[k] !== "--"; k++) {
+    if (!/^-[LPe]+$/.test(args[k])) throw evidenceError("unknown cd directory option");
+    for (const option of args[k].slice(1)) if (option !== "e") physical = option === "P";
+  }
+  if (args[k] === "--") k++;
+  const target = args[k] ?? home;
+  if (!target || args.length > k + 1 || /[$`~]/.test(target) || target === "-") throw evidenceError("cd needs a known literal directory");
+  try {
+    const next = physical ? realpathSync.native(target.startsWith("/") ? target : `${dir}/${target}`) : resolve(dir, target);
+    if (!statSync(next).isDirectory()) return { dir, ok: false };
+    accessSync(next, constants.X_OK);
+    return { dir: next, ok: true };
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes(error.code)) return { dir, ok: false };
+    throw evidenceError("the cd directory cannot be resolved");
   }
 }
 
@@ -466,14 +537,31 @@ function program(word, dir, path) {
  * substitution, <( ) or >( ). Throws when it cannot read the line: an open quote, substitution, heredoc, "(" or case,
  * or a ")" with no "(". The hook's rules then refuse a line that names what they guard (fail closed).
  */
+const FLOWS = new WeakMap();
+const COMMAND_CONTEXT = new WeakMap();
+
 export function shellCommands(src) {
-  const out = [];
-  readCommands(src, 0, "", out, undefined);
+  const out = [], flow = { nodes: [] };
+  FLOWS.set(out, flow);
+  readCommands(src, 0, "", out, undefined, flow);
   return out;
 }
 
-function readCommands(src, i, close, out, host) {
-  const fresh = () => ({ words: [], syntax: [], bodies: [], host, piped: false, grouped: false, writes: false, redirects: [], heredoc: false });
+function readCommands(src, i, close, out, host, flow) {
+  if (!flow) {
+    flow = { nodes: [] };
+    COMMAND_CONTEXT.get(host.cmd).children.push(flow);
+  }
+  const scopes = [];
+  const openScope = kind => {
+    const child = { nodes: [], kind };
+    flow.nodes.push(child); scopes.push(flow); flow = child;
+  };
+  const fresh = () => {
+    const command = { words: [], syntax: [], bodies: [], host, piped: false, grouped: false, writes: false, redirects: [], heredoc: false };
+    COMMAND_CONTEXT.set(command, { children: [] });
+    return command;
+  };
   let cmd = fresh();
   let word;
   let quoted = false, assignment = false;
@@ -487,7 +575,11 @@ function readCommands(src, i, close, out, host) {
     if (word === undefined) return;
     if (target === "body") cmd.bodies.push(word);
     else if (target) cmd.redirects.push(target + word);
-    else { cmd.words.push(word); cmd.syntax.push({ quoted, assignment }); }
+    else {
+      if (!quoted && !cmd.words.length && word === "{") openScope("brace");
+      if (!quoted && !cmd.words.length && word === "}" && flow.kind === "brace") COMMAND_CONTEXT.get(cmd).closesBrace = true;
+      cmd.words.push(word); cmd.syntax.push({ quoted, assignment });
+    }
     word = target = undefined;
     quoted = assignment = false;
     const [first, , third] = cmd.words;
@@ -500,7 +592,10 @@ function readCommands(src, i, close, out, host) {
     endWord();
     if (target) throw new Error("a redirection with no target");
     cmd.grouped ||= depth > 0;
-    if ((cmd.words.length || cmd.heredoc || cmd.redirects.length) && !arm()?.pattern) out.push(cmd); // a bare "> file" is a command: it writes (T83-R6-BAREREDIRECT)
+    if ((cmd.words.length || cmd.heredoc || cmd.redirects.length) && !arm()?.pattern) {
+      out.push(cmd); flow.nodes.push({ cmd }); // retain the public flat view and the private execution scope
+    }
+    if (COMMAND_CONTEXT.get(cmd).closesBrace) flow = scopes.pop();
     cmd = fresh();
   };
   const here = () => ({ cmd, index: cmd.words.length });
@@ -577,12 +672,20 @@ function readCommands(src, i, close, out, host) {
       from.piped = true;
       endCommand();
       from.pipeTo = cmd;
+      if (flow.nodes.length) flow.nodes.at(-1).after = "|";
       i++;
     } else if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
       if (c === ")" && !depth) throw new Error('a ")" with no "("');
       endCommand();
-      if (c === "(") depth++;
-      if (c === ")" && cases.at(-1)?.depth === depth--) throw new Error("a case with no esac");
+      if (c === "(") { depth++; openScope("subshell"); }
+      if (c === ")") {
+        if (cases.at(-1)?.depth === depth--) throw new Error("a case with no esac");
+        flow = scopes.pop();
+      }
+      if (c === ";" || c === "&" || c === "|") {
+        const after = src[i + 1] === c && c !== ";" ? c + c : c;
+        if (flow.nodes.length) flow.nodes.at(-1).after = after;
+      }
       i += (c === "|" || c === "&") && src[i + 1] === c ? 2 : 1;
     } else {
       if (c === "=" && !quoted && /^[A-Za-z_]\w*$/.test(word ?? "")) assignment = true;
