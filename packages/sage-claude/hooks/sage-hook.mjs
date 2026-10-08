@@ -879,8 +879,9 @@ function ghAliasConfiguration(content, cwd, path, inherited, gitConfig = false) 
   let alias = fragment;
   for (const line of lines) {
     const section = /^\s*\[([^\]]+)\]/.exec(line);
-    if (section) { alias = /^alias$/i.test(section[1]); continue; }
-    const value = alias && /^[ \t]*[\w.-]+[ \t]*=[ \t]*(.*)$/.exec(line)?.[1];
+    if (section) alias = /^alias$/i.test(section[1]);
+    const assignment = section ? line.slice(section[0].length) : line;
+    const value = alias && /^[ \t]*[\w.-]+[ \t]*=[ \t]*(.*)$/.exec(assignment)?.[1];
     if (typeof value !== "string") continue;
     const body = gitAliasBody(value);
     if (body !== undefined && ghAliasBodyProblem(body, cwd, path, inherited)) return true;
@@ -994,8 +995,9 @@ function ghProblem(command, cwd, path, runs, inherited) {
     ));
     const isGh = GH_NAME.test(name) || isGhFile(file) || possible.some(isGhFile);
     if (isGh && (inherited?.alias || !plainGh(command))) return NO_GH;
-    if (aliasBodies(name, args).some(body => ghAliasBodyProblem(body, dir, runPath, context))) return NO_GH;
-    const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (name === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
+    const aliasName = /^(?:git|git\.exe)$/i.test(basename(file ?? "")) ? "git" : name;
+    if (aliasBodies(aliasName, args).some(body => ghAliasBodyProblem(body, dir, runPath, context))) return NO_GH;
+    const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (aliasName === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
     const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);
     const referencesGh = [...args, ...inputs].some(referencesGhFile);
     if ((alias || copy) && (namesGh(args.join(" ")) || referencesGh)) return NO_GH;

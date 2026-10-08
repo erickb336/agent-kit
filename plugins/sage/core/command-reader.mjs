@@ -67,6 +67,7 @@ function readPrograms(command, dir, path, depth, found) {
     if (exported) path = set(exported);
     let here = path;
     let viaExec = false;
+    let shellText = false;
     let takesValue; // the options of the last wrapper that take a value
     for (let k = 0; k < words.length; k++) {
       const w = words[k];
@@ -80,12 +81,13 @@ function readPrograms(command, dir, path, depth, found) {
       if (wrapper) {
         if (wrapper !== name) k++;
         viaExec ||= !SAME_SHELL.test(name);
+        shellText ||= name === "watch";
         takesValue = WRAPPER.get(wrapper);
         continue;
       }
-      // A quoted executable path can contain spaces. Resolve it before treating wrapper text as shell code.
+      // A direct quoted path stays literal. A shell-text wrapper interprets its argument even if that filename exists.
       const file = program(w, dir, here);
-      if (/\s/.test(w) && !file) { // watch "ps -ax" runs its text with sh -c
+      if (/\s/.test(w) && (shellText || !file)) { // watch "ps -ax" runs its text with sh -c
         inner(w, dir, here);
         break;
       }

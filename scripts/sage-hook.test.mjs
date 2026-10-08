@@ -3188,6 +3188,21 @@ test("T197: generic writers cannot copy a literal gh outside PATH", () => {
 
 test("T197: alias bodies cannot hide a known gh hard link", () => {
   const f = ghAgentSession();
+  const gitDir = join(f.dir, "git-bin"); mkdirSync(gitDir);
+  const git = join(gitDir, "git"); writeFileSync(git, "fake git must never execute", { mode: 0o755 });
+  symlinkSync(git, join(f.dir, "GIT")); // the resolved name is git on either case-sensitive or insensitive hosts
+  writeFileSync(join(f.dir, "gh auth status"), "ordinary executable must never execute", { mode: 0o755 });
+  const inlineConfig = join(f.dir, "inline-config");
+  const reviewCases = [
+    ["same-line alias with space", f.s.send(tool("Write", { file_path: inlineConfig, content: `[alias] m = !${f.hard} auth status\n` }, { cwd: FEATURE, ...AGENT }))],
+    ["same-line alias without space", f.s.send(tool("Write", { file_path: inlineConfig, content: `[alias]m = !${f.hard} auth status\n` }, { cwd: FEATURE, ...AGENT }))],
+    ["watch shell text despite a matching filename", f.send('watch "gh auth status"')],
+    ["resolved Git alias name", f.send(`GIT config alias.m '!${f.hard} auth status'`)],
+  ];
+  assert.deepEqual(reviewCases.map(([name, result]) => [name, Boolean(denied(result))]), reviewCases.map(([name]) => [name, true]));
+  assert.equal(f.send('"gh auth status"'), undefined, "a direct quoted executable keeps its literal filename");
+  assert.equal(f.send("GIT config alias.st status"), undefined, "an unrelated Git alias remains allowed");
+  assert.equal(f.s.send(tool("Write", { file_path: inlineConfig, content: "[alias]st = status\n" }, { cwd: FEATURE, ...AGENT })), undefined);
   const spaced = join(f.dir, "client with spaces"); linkSync(f.gh, spaced);
   assert.ok(denied(f.send(`"${spaced}" auth status`)), "a quoted executable pathname keeps its identity");
   for (const command of [`alias m='${f.hard} auth status'`, `alias m='${f.linked} auth status'`,
