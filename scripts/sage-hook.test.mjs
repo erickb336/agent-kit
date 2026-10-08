@@ -3853,3 +3853,35 @@ test("T197: forward bindings resolve only matching provisional calls", async () 
   const { programsRun } = await import(HOOK);
   assert.deepEqual(programsRun("f() { g; }; g() { echo safe; }; f", f.dir, process.env.PATH).map(run => run.word), ["g", "echo", "f"], "provenance does not change the default flat view");
 });
+
+test("T197: derived command evidence belongs to its dispatch", async () => {
+  const f = ghAgentSession();
+  linkSync(f.gh, join(f.dir, "g"));
+  const safe = [
+    "f() { env g; }; env() { echo safe; }; f",
+    "env() { echo safe; }; f() { env g; }; f",
+    `f() { sh -c '${f.hard} auth status'; }; sh() { echo safe; }; f`,
+    `sh() { echo safe; }; f() { sh -c '${f.hard} auth status'; }; f`,
+    `find() { echo safe; }; find . -exec ${f.hard} auth status \\;`,
+    `echo -exec ${f.hard} auth status \\;`,
+  ];
+  const failures = [];
+  for (const command of safe) if (f.send(command) !== undefined) failures.push(command);
+  for (const command of [
+    "f() { env g; }; f",
+    "f() { command env g; }; env() { echo safe; }; f",
+    "f() { env g; }; env() { echo safe; }; f; unset -f env; f",
+    `f() { sh -c '${f.hard} auth status'; }; f`,
+    `f() { ${f.hard} auth status; }; echo safe`,
+    `find . -exec ${f.hard} auth status \\;`,
+    `sh() { echo safe; }; sh -c "$(${f.hard} auth status)"`,
+    `env() { echo safe; }; env <(${f.hard} auth status)`,
+    `f() { sh -c "$(${f.hard} auth status)"; }; sh() { echo safe; }; f`,
+    `f() { env <(${f.hard} auth status); }; env() { echo safe; }; f`,
+    `f() { sh -c 'echo safe' > ${join(f.dir, "config/gh/aliases.yml")}; }; sh() { echo safe; }; f`,
+    `find() { cat ${f.hard} > ${join(f.dir, "copy")}; }; find`,
+  ]) assert.ok(denied(f.send(command)), "real dispatch, explicit bodies and substitutions stay checked");
+  const { programsRun } = await import(HOOK);
+  assert.equal(programsRun(safe[2], f.dir, process.env.PATH).some(run => run.word === f.hard), false, "obsolete argument text is absent from the default leaf view");
+  assert.deepEqual(failures, [], "function arguments do not retain an external program's dispatch rules");
+});

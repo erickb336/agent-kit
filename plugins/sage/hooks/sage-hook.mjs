@@ -1070,7 +1070,8 @@ function ghProblem(command, cwd, path, runs, inherited) {
   const leaves = scoped.programs.filter(entry => !entry.wrapper);
   const uncertain = new Set(scoped.programs.filter(entry => entry.uncertainDirectory).map(entry => entry.run));
   const shellFunctions = new Set(scoped.programs.filter(entry => entry.shellFunction || entry.resolvedDeclaration).map(entry => entry.run));
-  const writesCommand = writes(command) || runs.some(run => writesIn({ words: [run.word, ...run.args], redirects: [] }));
+  const writesCommand = scoped.redirects.some(({ redirect }) => toFile(redirect)) || leaves.some(({ run }) =>
+    !shellFunctions.has(run) && writesIn({ words: [run.word, ...run.args], redirects: [] }));
   if (ghAliasWrite(command) && writesCommand) return NO_GH;
   const redirects = scoped.redirects;
   for (const { redirect, dir, uncertainDirectory } of redirects) {

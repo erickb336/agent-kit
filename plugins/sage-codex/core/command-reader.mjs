@@ -72,10 +72,11 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  * Throws when the shell reader cannot read the line (see shellCommands), and for text nested more than 3 levels deep.
  */
 export function programsRun(command, cwd, path = process.env.PATH ?? "", { executableEvidence = false, redirectEvidence = false, contextEvidence = false, uncertainDirectory = false } = {}) {
-  const found = { leaves: [], executables: [], redirects: [], contexts: [] };
+  const found = { redirects: [], contexts: [], publicEntries: new WeakSet() };
   readPrograms(command, cwd, path, 0, found, uncertainDirectory);
   if (contextEvidence) return { programs: found.contexts, redirects: found.redirects };
-  return redirectEvidence ? found.redirects : executableEvidence ? found.executables : found.leaves;
+  return redirectEvidence ? found.redirects : found.contexts
+    .filter(entry => executableEvidence || (!entry.wrapper && found.publicEntries.has(entry))).map(entry => entry.run);
 }
 
 const WATCH_OPTIONS = [
@@ -366,7 +367,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
   ...(process.env.HOME === undefined ? {} : { home: process.env.HOME }),
 }), publicLeaves = true) {
   const functionBodies = new Map(), functionIds = new WeakMap();
-  const callSites = new WeakMap(), provisionalCalls = new Map(), confirmedCalls = new Set();
+  const callSites = new WeakMap(), provisionalCalls = new Map(), provisionalDerived = new Map(), confirmedCalls = new Set();
   let functionDepth = 0, declarationDepth = 0, emitLeaves = publicLeaves;
   const siteFor = (command, index) => {
     if (!callSites.has(command)) callSites.set(command, []);
@@ -379,8 +380,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       if (!provisionalCalls.has(site)) provisionalCalls.set(site, []);
       provisionalCalls.get(site).push(entry);
     } else if (site && shellFunction) confirmedCalls.add(site);
-    found.executables.push(run);
-    if (!wrapper && emitLeaves) found.leaves.push(run);
+    if (emitLeaves) found.publicEntries.add(entry);
   };
   const inner = (text, at, here, transformed = false, uncertain = false, nextLookup = lookup) => {
     try {
@@ -398,6 +398,10 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
     const functions = { ...state.functions };
     const functionChanges = { ...state.functionChanges };
     let functionOutcomes = [{}];
+    let derived;
+    const derive = site => {
+      if (declarationDepth && !derived) derived = { site, contextStart: found.contexts.length, redirectStart: found.redirects.length };
+    };
     for (const child of COMMAND_CONTEXT.get(c).children) walkFlow(child, [state], execute);
     if (!COMMAND_CONTEXT.get(c).groupOwned) execute.redirects(c.redirects, [state]);
     if (COMMAND_CONTEXT.get(c).functionHeader) return { state };
@@ -446,6 +450,7 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         const modifier = keyword && !w.includes("/") && /^(?:time|noglob|nocorrect)$/.test(name);
         const external = viaExec || w.includes("/") || (!modifier && !/^(?:command|builtin|exec)$/.test(name));
         if (external) emit({ word: w, file, args: originalArgs, dir: at, path: here, stdin: [], piped: false }, true, uncertain, false, siteFor(c, k));
+        derive(siteFor(c, k));
         if (wrapper.includes(" ")) k++;
         if (modifier) {
           if (name === "time" && words[k + 1] === "-p") k++;
@@ -532,14 +537,23 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
       emit({ word: w, file: w === "kill" && !viaExec ? undefined : file, args, dir: at, path: here, stdin, piped: pipes.length > 0 }, false, uncertain, functionId !== undefined, siteFor(c, k));
-      for (const text of commandText(name, args, bodies)) inner(text, at, here, transformed, uncertain,
-        name === "eval" && !viaExec ? { cdpath: localCdpath, home: localHome, exported } : shellLookup(environment));
-      const exec = args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)); // find … -exec kill {} ;
-      if (exec >= 0 && args[exec + 1]) {
-        const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
-        emit({ word: args[exec + 1], file: program(args[exec + 1], at, here, uncertain), args: args.slice(exec + 2, end < 0 ? undefined : end), dir: at, path: here, stdin: [], piped: false }, false, uncertain);
+      if (!functionId) {
+        const texts = commandText(name, args, bodies);
+        if (texts.length) derive(siteFor(c, k));
+        for (const text of texts) inner(text, at, here, transformed, uncertain,
+          name === "eval" && !viaExec ? { cdpath: localCdpath, home: localHome, exported } : shellLookup(environment));
+        const exec = [name, file?.split("/").pop()].includes("find") ? args.findIndex((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)) : -1;
+        if (exec >= 0 && args[exec + 1]) {
+          derive(siteFor(c, k));
+          const end = args.findIndex((a, j) => j > exec && /^[;+]$/.test(a));
+          emit({ word: args[exec + 1], file: program(args[exec + 1], at, here, uncertain), args: args.slice(exec + 2, end < 0 ? undefined : end), dir: at, path: here, stdin: [], piped: false }, false, uncertain);
+        }
       }
       break;
+    }
+    if (derived) {
+      if (!provisionalDerived.has(derived.site)) provisionalDerived.set(derived.site, []);
+      provisionalDerived.get(derived.site).push({ contexts: found.contexts.slice(derived.contextStart), redirects: found.redirects.slice(derived.redirectStart) });
     }
     if (!launched) {
       path = here; cdpath = localCdpath; home = localHome;
@@ -588,8 +602,17 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
     } finally { functionDepth--; emitLeaves = previous; }
   };
   const result = walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, functions: {}, functionChanges: {}, uncertainDirectory }], execute);
-  // Only the same parsed position can resolve a provisional declaration binding. Actual unknown calls remain.
-  for (const site of confirmedCalls) for (const entry of provisionalCalls.get(site) ?? []) entry.resolvedDeclaration = true;
+  // A confirmed function owns argument data; only its provisional external interpretation becomes obsolete.
+  const obsoleteContexts = new Set(), obsoleteRedirects = new Set();
+  for (const site of confirmedCalls) {
+    for (const entry of provisionalCalls.get(site) ?? []) { entry.resolvedDeclaration = true; entry.wrapper = false; }
+    for (const records of provisionalDerived.get(site) ?? []) {
+      for (const entry of records.contexts) obsoleteContexts.add(entry);
+      for (const redirect of records.redirects) obsoleteRedirects.add(redirect);
+    }
+  }
+  found.contexts = found.contexts.filter(entry => !obsoleteContexts.has(entry));
+  found.redirects = found.redirects.filter(redirect => !obsoleteRedirects.has(redirect));
   return result;
 }
 
