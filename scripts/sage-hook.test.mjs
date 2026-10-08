@@ -3091,7 +3091,7 @@ test("T197: shell quoting cannot hide gh in an alias definition", () => {
 
 test("T197: agents cannot copy gh bytes with readers or generic file writers", () => {
   const f = ghAgentSession();
-  for (const command of [`cat ${f.gh} > /tmp/copied-client`, `cat < ${f.gh} > /tmp/copied-client`, `dd if=${f.gh} of=/tmp/copied-client`, `rsync ${f.hard} /tmp/copied-client`]) {
+  for (const command of [`cat ${f.gh} > /tmp/copied-client`, `cat < ${f.gh} > /tmp/copied-client`, `cat <> ${f.gh} > /tmp/copied-client`, `dd if=${f.gh} of=/tmp/copied-client`, `rsync ${f.hard} /tmp/copied-client`]) {
     assert.ok(denied(f.send(command)), command);
   }
 });
@@ -3107,4 +3107,29 @@ test("T197: custom alias files and config fragments cannot hide gh", () => {
     ["MultiEdit", { file_path: join(f.dir, "custom-config"), edits: [{ old_string: "m = status", new_string: "m = !g\\h auth status" }] }],
   ]) assert.ok(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))), name);
   assert.ok(denied(f.send('git config alias.m "!g\\\\h auth status"')));
+});
+
+
+test("T197: PowerShell literal Windows gh paths are refused", () => {
+  const f = ghAgentSession();
+  for (const command of [String.raw`& 'C:\tools\gh.exe' auth status`, String.raw`& '.\gh.exe' auth status`]) {
+    assert.ok(denied(f.send(command, true, "PowerShell")), command);
+  }
+});
+
+test("T197: an ordinary PATH argument cannot hide a gh source file", () => {
+  const f = ghAgentSession();
+  assert.ok(denied(f.send(`cat PATH=/nonexistent ${f.hard} > /tmp/copied-client`)));
+});
+
+
+test("T197: partial edits are checked as the resulting alias configuration", () => {
+  const f = ghAgentSession();
+  const file = join(f.dir, "custom-config");
+  writeFileSync(file, "[alias]\n m = !echo harmless\n");
+  for (const [name, input] of [
+    ["Edit", { file_path: file, old_string: "echo harmless", new_string: "gh auth status" }],
+    ["MultiEdit", { file_path: file, edits: [{ old_string: "echo harmless", new_string: "gh auth status" }] }],
+  ]) assert.ok(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))), name);
+  assert.equal(f.s.send(tool("Write", { file_path: join(f.dir, "client.py"), content: "gh = make_client()\n" }, { cwd: FEATURE, ...AGENT })), undefined);
 });

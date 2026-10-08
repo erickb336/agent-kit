@@ -254,7 +254,7 @@ export function handle(input, state, slots) {
   if (why && main) return deny(event, `${why} Only sage.mjs changes the logbook: run the state tool's command for this change (node <path to skills/sage/sage.mjs> ...), as a command of its own. If no command does it, ask the user.`);
   if (why) return deny(event, `${why} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
   const agent = (ours || (!main && state.sage)) && !CHIEF.test(input.agent_type ?? "");
-  if (event === "PreToolUse" && agent && FILE_TOOLS.test(input.tool_name ?? "") && ghAliasFileWrite(input.tool_input ?? {})) return deny(event, NO_GH);
+  if (event === "PreToolUse" && agent && FILE_TOOLS.test(input.tool_name ?? "") && ghAliasFileWrite(input.tool_input ?? {}, input.cwd ?? process.cwd())) return deny(event, NO_GH);
   if (event === "PreToolUse" && agent && SHELL_TOOLS.test(input.tool_name ?? "")) {
     const ti = input.tool_input ?? {};
     const cwd = /^mcp__terminal__/.test(input.tool_name) && typeof ti.cwd === "string" ? ti.cwd : input.cwd ?? process.cwd();
@@ -833,14 +833,29 @@ const GH_NAME = /^(?:gh|gh\.exe)$/i;
 const namesGh = text => /\bgh(?:\.exe)?\b/i.test(unquote(text).replace(/`/g, ""));
 const ghAliasWrite = text => /(?:^|[\s/\\])aliases\.ya?ml\b/i.test(text) || (/\[alias\]|!\s*gh\b/i.test(unquote(text).replace(/`/g, "")) && namesGh(text));
 /** Check proposed file content, not removed text or documentation that quotes configuration. */
-function ghAliasFileWrite(input) {
-  const file = input.file_path ?? input.path ?? "";
-  const content = [input.content, input.new_string, ...(Array.isArray(input.edits) ? input.edits.map(edit => edit?.new_string) : [])].filter(text => typeof text === "string").join("\n");
+function ghAliasFileWrite(input, cwd) {
+  const file = resolve(cwd, input.file_path ?? input.path ?? "");
+  let content = input.content;
+  if (typeof content !== "string") {
+    const edits = Array.isArray(input.edits) ? input.edits : [input];
+    try {
+      if (!statSync(file).isFile()) throw new Error("the edit target is not a regular file");
+      content = readFileSync(file, "utf8");
+      for (const edit of edits) {
+        if (typeof edit.old_string !== "string" || typeof edit.new_string !== "string") continue;
+        content = edit.replace_all ? content.replaceAll(edit.old_string, () => edit.new_string) : content.replace(edit.old_string, () => edit.new_string);
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      content = edits.map(edit => edit.new_string).filter(text => typeof text === "string").join("\n");
+    }
+  }
   if (/(?:^|[/\\])aliases\.ya?ml$/i.test(file)) return /^\s*[^#\s][^\n]*:\s*\S/m.test(content);
   const gitConfig = /(?:^|[/\\])(?:\.gitconfig|\.git[/\\]config|git[/\\]config)$/i.test(file);
   const uncommented = content.replace(/^\s*[#;][^\n]*$/gm, "");
   const configuration = /^\s*\[[^\]\n]+\]/.test(uncommented);
-  const fragment = /^\s*[\w.-]+\s*=/.test(uncommented);
+  const lines = uncommented.split("\n").filter(line => line.trim());
+  const fragment = lines.length > 0 && lines.every(line => /^\s*[\w.-]+\s*=/.test(line)) && /=[ \t]*["']?!/.test(uncommented);
   return namesGh(content) && (gitConfig || fragment || (configuration && /\[alias\]/i.test(content)));
 }
 const fileIdentity = file => {
@@ -888,12 +903,12 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
     return why && `${why} (The hook cannot read this command: ${e.message}.)`;
   }
   if (ghAliasWrite(command) && writes(command)) return NO_GH;
-  const inputs = shellCommands(command).flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.slice(1));
+  const inputs = shellCommands(command).flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.replace(/^<>?/, ""));
   for (const { word, file, args, dir, path: runPath } of runs) {
     const gh = programsRun("gh", dir, runPath ?? path)[0]?.file;
     const ghId = gh && fileIdentity(gh);
-    const name = word.split("/").pop();
-    const isGh = GH_NAME.test(name) || GH_NAME.test(file?.split("/").pop() ?? "") || (ghId && fileIdentity(file) === ghId);
+    const name = word.split(/[\\/]/).pop();
+    const isGh = GH_NAME.test(name) || GH_NAME.test(file?.split(/[\\/]/).pop() ?? "") || (ghId && fileIdentity(file) === ghId);
     if (isGh && !plainGh(command)) return NO_GH;
     const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (name === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
     const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);

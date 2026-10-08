@@ -29,7 +29,7 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
 
 /**
  * The programs that a command line runs, for the hook's rules on agents (agentProblem) and on the state tool (T83).
- * Each is { word, file, args, dir, stdin, piped }, in the order of the command line:
+ * Each is { word, file, args, dir, path, stdin, piped }, in the order of the command line:
  *   - word: the program as written, after shell keywords (if, while, do, !, {), assignments (X=1), redirections
  *     (2>/dev/null, >out) and wrappers with their options (sudo, env, timeout, xargs, nice, npx, npm exec, pnpm dlx,
  *     bunx and others in WRAPPER). After for, select and case come words, not a program; a case pattern is not one.
@@ -63,15 +63,16 @@ function readPrograms(command, dir, path, depth, found) {
   for (const c of commands) {
     const { words, bodies } = c;
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
-    const own = words.find(set);
-    if (["export", undefined].includes(words.find((w) => !set(w))) && own) path = set(own); // export PATH=… or PATH=… alone
-    const here = own ? set(own) : path;
+    const exported = words[0] === "export" && words.slice(1).find(set);
+    if (exported) path = set(exported);
+    let here = path;
     let viaExec = false;
     let takesValue; // the options of the last wrapper that take a value
     for (let k = 0; k < words.length; k++) {
       const w = words[k];
       const name = w.split("/").pop();
       if (takesValue?.test(w)) k++;
+      if (/^PATH=/.test(w)) here = set(w); // only before the program, never an ordinary argument
       if (/^\w+=/.test(w) || w.startsWith("-") || /^\d+[smhd]?$/.test(w) || KEYWORD.test(w)) continue;
       if (LIST.test(w)) break;
       if (w === "function" && ++k) continue; // function <name> { … }: the name is not a program
@@ -98,6 +99,7 @@ function readPrograms(command, dir, path, depth, found) {
       }
       break;
     }
+    if (words.length && words.every(word => /^\w+=/.test(word))) path = here;
     if (words[0] === "cd" && words.length === 2) dir = resolve(dir, words[1]); // for the commands after it
   }
 }
