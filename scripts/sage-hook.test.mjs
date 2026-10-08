@@ -3145,3 +3145,30 @@ test("T197: exported PATH uses its final value, including an empty value", () =>
   assert.ok(denied(f.s.send(tool("Bash", { command: `export PATH=/nonexistent PATH=${f.dir}; ./hard auth status` }, { cwd: f.dir, ...AGENT }))));
   assert.ok(denied(f.s.send(tool("Bash", { command: "export PATH=; ./hard auth status" }, { cwd: f.dir, ...AGENT }))));
 });
+
+
+test("T197: PATH changes never erase a previously known gh identity", () => {
+  const f = ghAgentSession();
+  for (const prefix of ["PATH=/nonexistent ", "export PATH=/nonexistent; ", "(export PATH=/nonexistent); ", 'echo "$(export PATH=/nonexistent)"; ', "export PATH=/nonexistent | cat; ", "false && export PATH=/nonexistent; "]) {
+    assert.ok(denied(f.send(`${prefix}${f.hard} auth status`)), prefix);
+    assert.ok(denied(f.send(`${prefix}/bin/cat ${f.gh} > /tmp/copied-client`)), prefix);
+  }
+});
+
+test("T197: gh identities remain protected across wrapped and conditional exports", () => {
+  const f = ghAgentSession();
+  const second = join(f.dir, "second"); mkdirSync(second);
+  writeFileSync(join(second, "gh"), "fake second gh", { mode: 0o755 });
+  linkSync(join(second, "gh"), join(second, "client"));
+  for (const prefix of [`command export PATH=${second}; `, `builtin export PATH=${second}; `, `X=1 export PATH=${second}; `, `{ export PATH=${second}; }; `, `if true; then export PATH=${second}; fi; `]) {
+    assert.ok(denied(f.send(`${prefix}${second}/client auth status`)), prefix);
+    assert.ok(denied(f.send(`${prefix}client auth status`)), prefix);
+  }
+});
+
+test("T197: generic writers cannot copy a literal gh outside PATH", () => {
+  const f = ghAgentSession();
+  const second = join(f.dir, "second"); mkdirSync(second);
+  const gh = join(second, "gh"); writeFileSync(gh, "fake second gh", { mode: 0o755 });
+  for (const command of [`cat ${gh} > /tmp/copied-client`, `dd if=${gh} of=/tmp/copied-client`, `rsync ${gh} /tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
+});
