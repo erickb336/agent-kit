@@ -3083,6 +3083,7 @@ test("T197: gh hard links use each command's effective PATH", () => {
 
 test("T197: shell quoting cannot hide gh in an alias definition", () => {
   const f = ghAgentSession();
+  assert.ok(denied(f.send(String.raw`git config alias.m "!g\h auth status"`, true, "PowerShell")));
   assert.ok(denied(f.send(`git config alias.m "!g'h' auth status"`)));
   assert.ok(denied(f.send("printf 'm = !g\\h auth status\n' >> /tmp/custom-config")));
   assert.ok(denied(f.s.send(tool("Write", { file_path: join(f.dir, "alias-config"), content: "[alias]\n m = !g'h' auth status\n" }, { cwd: FEATURE, ...AGENT }))));

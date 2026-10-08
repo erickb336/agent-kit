@@ -264,8 +264,9 @@ export function handle(input, state, slots) {
       const result = gitGate(event, command, state, cwd, false, input.tool_name);
       if (result?.hookSpecificOutput?.permissionDecision === "deny") return result;
     }
-    // PowerShell uses backslashes as path separators, not POSIX escapes.
-    const problem = commands.map(command => agentProblem(input.tool_name === "PowerShell" ? command.replace(/\\/g, "/") : command, cwd)).find(Boolean);
+    // Keep alias payloads intact and also read PowerShell's backslash-separated paths.
+    const views = input.tool_name === "PowerShell" ? commands.flatMap(command => [command, command.replace(/\\/g, "/")]) : commands;
+    const problem = views.map(command => agentProblem(command, cwd)).find(Boolean);
     if (problem) return deny(event, problem);
   }
   if (event !== "PreToolUse" || !state.sage) return undefined;
