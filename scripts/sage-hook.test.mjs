@@ -3178,6 +3178,7 @@ test("T197: generic writers cannot copy a literal gh outside PATH", () => {
   const gh = join(second, "gh"); writeFileSync(gh, "fake second gh", { mode: 0o755 });
   for (const command of [`cat ${gh} > /tmp/copied-client`, `dd if=${gh} of=/tmp/copied-client`, `rsync ${gh} /tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
   for (const command of [`echo ${gh} > /tmp/path.txt`, `printf '%s\n' ${gh} > /tmp/path.txt`]) assert.equal(f.send(command), undefined, command);
+  for (const command of [`echo "$(< ${gh})" > /tmp/copied-client`, `printf '%s\n' "$(< ${gh})" > /tmp/copied-client`]) assert.ok(denied(f.send(command)), command);
   const third = join(f.dir, "third"); mkdirSync(third);
   const payload = join(third, "payload"); writeFileSync(payload, "fake gh payload", { mode: 0o755 });
   const linked = join(third, "gh"); symlinkSync(payload, linked);

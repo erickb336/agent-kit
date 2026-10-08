@@ -924,7 +924,10 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
       return !!identity && (GH_NAME.test(basename(file)) || GH_NAME.test(basename(real)) || identities.has(identity));
     } catch { return false; }
   };
-  for (const { word, file, args, dir } of runs) {
+  const referencesGhFile = arg => [...folders].some(folder => isGhFile(resolve(folder, arg.replace(/^if=/, ""))));
+  const substitutionReadsGh = commands.filter(item => item.host && !item.words.length).flatMap(item => item.redirects)
+    .some(ref => /^<[^<&]/.test(ref) && referencesGhFile(ref.replace(/^<>?/, "")));
+  for (const { word, file, args } of runs) {
     const name = word.split(/[\\/]/).pop();
     const possible = word.includes("/") ? [...folders].map(folder => resolve(folder, word)) : [...folders].flatMap(folder => [...paths].map(value =>
       value.split(":").map(entry => resolve(folder, entry || ".", word)).find(candidate => {
@@ -935,9 +938,9 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
     if (isGh && !plainGh(command)) return NO_GH;
     const alias = /^(?:alias|set-alias|new-alias|sal|nal)$/i.test(name) || (name === "git" && args.some(arg => /(?:^|[. ])alias[. ]/i.test(arg)));
     const copy = /^(?:cp|mv|ln|install|copy-item|move-item|new-item)$/i.test(name);
-    const referencesGh = [...args, ...inputs].some(arg => [...folders].some(folder => isGhFile(resolve(folder, arg.replace(/^if=/, "")))));
+    const referencesGh = [...args, ...inputs].some(referencesGhFile);
     if ((alias || copy) && (namesGh(args.join(" ")) || referencesGh)) return NO_GH;
-    if (referencesGh && !/^(?:echo|printf)$/.test(name) && writes(command)) return NO_GH;
+    if ((substitutionReadsGh || (referencesGh && !/^(?:echo|printf)$/.test(name))) && writes(command)) return NO_GH;
     if (name === "git" && /^stash$/i.test(subcommand(args, 0))) return NO_STASH;
     if ((isProcess(name) || isProcess(file?.split("/").pop())) && !inTemp(file)) return NO_PROCESS(word);
   }
