@@ -3492,3 +3492,78 @@ test("T197: npm preserves all-hyphen option sentinels", () => {
     assert.equal(send(`npm exec --check=${sentinel} --call 'echo safe'`, false), undefined, "main keeps its gh behavior");
   }
 });
+
+test("T197: native alias writes resolve destination links, including missing targets", () => {
+  const f = ghAgentSession();
+  const folder = join(f.dir, "config"); mkdirSync(folder);
+  const target = join(folder, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  const settings = join(f.dir, "settings"), chain = join(f.dir, "chain");
+  symlinkSync(target, settings); symlinkSync("settings", chain);
+  const missing = join(f.dir, "missing"), missingChain = join(f.dir, "missing-chain");
+  symlinkSync(join(folder, "absent", "aliases.yml"), missing); symlinkSync("missing", missingChain);
+  const parent = join(f.dir, "parent"); symlinkSync(folder, parent);
+  const physical = join(f.dir, "physical"); mkdirSync(join(physical, "deep"), { recursive: true });
+  symlinkSync(join(physical, "deep"), join(f.dir, "portal")); symlinkSync(target, join(physical, "settings"));
+  const physicalPath = `${f.dir}/portal/../settings`;
+  const failures = [];
+  const finalMissing = join(f.dir, "final-missing"); symlinkSync(join(folder, "aliases.yaml"), finalMissing);
+  for (const file of [target, settings, chain, physicalPath, join(parent, "aliases.yml")]) {
+    for (const [name, edit] of [
+      ["Write", { content: "m: pr merge 41\n" }],
+      ["Edit", { old_string: "pr view", new_string: "pr merge 41" }],
+      ["MultiEdit", { edits: [{ old_string: "pr view", new_string: "pr merge 41" }] }],
+    ]) if (!denied(f.s.send(tool(name, { file_path: file, ...edit }, { cwd: FEATURE, ...AGENT })))) failures.push(`${name} ${file}`);
+  }
+  for (const file of [missing, missingChain, finalMissing]) {
+    if (!denied(f.s.send(tool("Write", { file_path: file, content: "m: pr merge 41\n" }, { cwd: FEATURE, ...AGENT })))) failures.push(`missing Write ${file}`);
+  }
+  const ordinary = join(f.dir, "ordinary.yaml"), ordinaryLink = join(f.dir, "ordinary-link");
+  writeFileSync(ordinary, "safe: pr view\n"); symlinkSync(ordinary, ordinaryLink);
+  for (const file of [ordinary, ordinaryLink]) assert.equal(f.s.send(tool("Write", { file_path: file, content: "m: pr merge 41\n" }, { cwd: FEATURE, ...AGENT })), undefined, file);
+  assert.equal(f.s.send(tool("Write", { file_path: settings, content: "# Removed aliases\n" }, { cwd: FEATURE, ...AGENT })), undefined);
+  assert.equal(f.s.send(tool("Edit", { file_path: settings, old_string: "safe: pr view\n", new_string: "" }, { cwd: FEATURE, ...AGENT })), undefined);
+  const loop = join(f.dir, "loop"); symlinkSync("loop", loop);
+  assert.ok(denied(f.s.send(tool("Write", { file_path: loop, content: "safe text" }, { cwd: FEATURE, ...AGENT }))), "unresolved links fail closed");
+  const locked = join(f.dir, "locked"); mkdirSync(locked); symlinkSync(target, join(locked, "settings")); chmodSync(locked, 0);
+  try { assert.ok(denied(f.s.send(tool("Write", { file_path: join(locked, "settings"), content: "m: pr merge 41\n" }, { cwd: FEATURE, ...AGENT }))), "unreadable destinations fail closed"); }
+  finally { chmodSync(locked, 0o700); }
+  f.s.send(prompt("sage mode off"));
+  assert.equal(f.s.send(tool("Write", { file_path: settings, content: "m: pr merge 41\n" }, { cwd: FEATURE })), undefined, "main keeps its file policy");
+  assert.deepEqual(failures, [], "all 18 protected native destinations must refuse the proposed alias");
+});
+
+test("T197: shell alias writes resolve redirection and copy destinations", () => {
+  const f = ghAgentSession();
+  const folder = join(f.dir, "config"); mkdirSync(folder);
+  const target = join(folder, "aliases.yml"); writeFileSync(target, "safe: pr view\n");
+  const settings = join(f.dir, "settings"), chain = join(f.dir, "chain"), missing = join(f.dir, "missing"), missingChain = join(f.dir, "missing-chain");
+  symlinkSync(target, settings); symlinkSync("settings", chain);
+  symlinkSync(join(folder, "absent", "aliases.yml"), missing); symlinkSync("missing", missingChain);
+  const ordinary = join(f.dir, "ordinary.yaml"), ordinaryLink = join(f.dir, "ordinary-link");
+  writeFileSync(ordinary, "m: pr merge 41\n"); symlinkSync(ordinary, ordinaryLink);
+  const failures = [];
+  for (const file of [settings, chain, missing, missingChain]) {
+    for (const command of [`printf 'm: pr merge 41\\n' > ${file}`, `cp ${ordinary} ${file}`]) {
+      if (!denied(f.send(command))) failures.push(command);
+    }
+  }
+  for (const command of [`cd ${f.dir}; printf 'm: pr merge 41\\n' > settings`, `cd ${f.dir}; cp ordinary.yaml settings`, `sh -c 'cd ${f.dir}; printf payload > settings'`, `env -C ${f.dir} sh -c 'printf payload > settings'`]) {
+    if (!denied(f.send(command))) failures.push(command);
+  }
+  for (const command of [`cat ${settings}`, `printf '%s' ${settings}`, `printf 'm: pr merge 41\\n' > ${ordinaryLink}`, `cp ${ordinary} ${ordinaryLink}`, `cp ${settings} ${ordinary}`]) assert.equal(f.send(command), undefined, command);
+  assert.equal(f.send(`printf 'm: pr merge 41\\n' > ${settings}`, false), undefined, "main keeps its shell policy");
+  const safeDir = join(f.dir, "safe"); mkdirSync(safeDir);
+  assert.equal(f.s.send(tool("Bash", { command: `env -C ${f.dir} printf payload > settings` }, { cwd: safeDir, ...AGENT })), undefined, "the outer shell opens redirections before env changes directory");
+  assert.ok(denied(f.s.send(tool("Bash", { command: `env -C ${safeDir} printf payload > settings` }, { cwd: f.dir, ...AGENT }))), "a wrapper directory does not move the outer redirection");
+  const output = join(f.dir, "output"); mkdirSync(output); symlinkSync(target, join(output, "ordinary.yaml"));
+  for (const command of [`cp ${ordinary} ${output}`, `cp -t ${output} ${ordinary}`, `cp --target-directory=${output} ${ordinary}`]) assert.ok(denied(f.send(command)), command);
+  const loop = join(f.dir, "loop"); symlinkSync("loop", loop);
+  for (const command of [`printf payload > ${loop}`, `cp ${ordinary} ${loop}`]) assert.ok(denied(f.send(command)), "unresolved destinations fail closed");
+  assert.equal(f.send(`cat ${loop}`), undefined, "a read does not resolve write destinations");
+  const gcp = join(f.dir, "gcp");
+  writeFileSync(gcp, "#!/usr/bin/env node\nthrow Error('fake cp must never execute');\n", { mode: 0o755 });
+  symlinkSync("gcp", join(f.dir, "cp"));
+  assert.ok(denied(f.send(`cp ${ordinary} ${settings}`)), "the supplied cp name remains visible when its binary has a different name");
+  assert.equal(f.send(`cp ${ordinary} ${ordinaryLink}`), undefined, "a differently named cp binary keeps ordinary destinations");
+  assert.deepEqual(failures, [], "all 12 protected shell destinations must refuse the write");
+});

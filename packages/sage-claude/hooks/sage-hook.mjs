@@ -748,16 +748,19 @@ const CODE = /^-(?:[a-z]*[ce]|p|-eval|-print|command)$/;
  * refuse more.
  */
 const canonical = (path) => fold(real(path));
-function real(path) {
+function real(path, strict = false) {
   let rest = [];
   for (let hops = 0; ; ) {
     try {
       return join(realpathSync.native(path), ...rest); // the system resolves ".." after each link; only the missing rest is joined
-    } catch {
+    } catch (error) {
+      if (strict && !["ENOENT", "ELOOP"].includes(error.code)) throw error;
       let link = false;
       try {
         link = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink();
-      } catch {} // a name that is too long, or a file used as a folder: it does not exist
+      } catch (error) {
+        if (strict && !["ENOENT", "ELOOP"].includes(error.code)) throw error;
+      } // Other callers keep treating an invalid path as missing.
       if (link) {
         if (++hops > 64) throw new Error(`too many links in ${path}`);
         path = from(dirname(path), readlinkSync(path));
@@ -834,9 +837,17 @@ const NO_GH = "an agent may run only plain gh pr create, gh pr view, gh pr comme
 const GH_NAME = /^(?:gh|gh\.exe)$/i;
 const namesGh = text => /\bgh(?:\.exe)?\b/i.test(unquote(text).replace(/`/g, ""));
 const ghAliasWrite = text => /(?:^|[\s/\\])aliases\.ya?ml\b/i.test(text) || (/\[alias\]|!\s*gh\b/i.test(unquote(text).replace(/`/g, "")) && namesGh(text));
+const GH_ALIASES = /(?:^|[/\\])aliases\.ya?ml$/i;
+/** Retain both names: a link may hide an alias file or give an ordinary file its alias name. */
+function destinationNames(file, cwd) {
+  const supplied = from(cwd, file);
+  return GH_ALIASES.test(supplied) ? [supplied] : [supplied, real(supplied, true)];
+}
+const aliasDestination = (file, cwd) => destinationNames(file, cwd).some(name => GH_ALIASES.test(name));
 /** Check proposed file content, not removed text or documentation that quotes configuration. */
 function ghAliasFileWrite(input, cwd) {
-  const file = resolve(cwd, input.file_path ?? input.path ?? "");
+  const file = from(cwd, input.file_path ?? input.path ?? "");
+  const names = destinationNames(file, cwd);
   let content = input.content;
   if (typeof content !== "string") {
     const edits = Array.isArray(input.edits) ? input.edits : [input];
@@ -852,8 +863,8 @@ function ghAliasFileWrite(input, cwd) {
       content = edits.map(edit => edit.new_string).filter(text => typeof text === "string").join("\n");
     }
   }
-  if (/(?:^|[/\\])aliases\.ya?ml$/i.test(file)) return /^\s*[^#\s][^\n]*:\s*\S/m.test(content);
-  const gitConfig = /(?:^|[/\\])(?:\.gitconfig|\.git[/\\]config|git[/\\]config)$/i.test(file);
+  if (names.some(name => GH_ALIASES.test(name))) return /^\s*[^#\s][^\n]*:\s*\S/m.test(content);
+  const gitConfig = names.some(name => /(?:^|[/\\])(?:\.gitconfig|\.git[/\\]config|git[/\\]config)$/i.test(name));
   return ghAliasConfiguration(content, cwd, process.env.PATH ?? "", undefined, gitConfig);
 }
 /** Git config removes transport quotes; escaped quotes still belong to the shell command. */
@@ -966,11 +977,42 @@ export function agentProblem(command, cwd, path = process.env.PATH ?? "") {
   return undefined;
 }
 
+/** cp writes its final operand, or each source basename inside its target directory. */
+function copyDestinations(args, cwd) {
+  const operands = [];
+  let target, literal = false, noDirectory = false;
+  for (let k = 0; k < args.length; k++) {
+    const arg = args[k];
+    if (!literal && arg === "--") { literal = true; continue; }
+    if (!literal && /^-./.test(arg)) {
+      if (arg === "-t" || arg === "--target-directory") target = args[++k];
+      else if (arg.startsWith("--target-directory=")) target = arg.slice(19);
+      else if (/^-t./.test(arg)) target = arg.slice(2);
+      else if (arg === "-T" || arg === "--no-target-directory") noDirectory = true;
+      else if (arg === "-S" || arg === "--suffix") k++;
+      continue;
+    }
+    operands.push(arg);
+  }
+  if (target === undefined) target = operands.pop();
+  if (!target || !operands.length) return [];
+  const supplied = from(cwd, target);
+  let directory = false;
+  if (!noDirectory) {
+    try { directory = statSync(supplied).isDirectory(); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  return directory ? operands.map(source => `${supplied}/${basename(source)}`) : [supplied];
+}
+
 /** The gh policy is shared by direct commands and proposed alias bodies, with the same file identities. */
 function ghProblem(command, cwd, path, runs, inherited) {
   const evidence = programsRun(command, cwd, path, { executableEvidence: true });
   const writesCommand = writes(command) || runs.some(run => writesIn({ words: [run.word, ...run.args], redirects: [] }));
   if (ghAliasWrite(command) && writesCommand) return NO_GH;
+  const redirects = programsRun(command, cwd, path, { redirectEvidence: true });
+  if (redirects.some(({ redirect, dir }) => toFile(redirect) && aliasDestination(redirect.replace(/^(&>>?|>>|>\||>&|<>|<&|>|<)/, ""), dir))) return NO_GH;
+  if (runs.some(run => [run.word, run.file].some(name => name && basename(name) === "cp") && copyDestinations(run.args, run.dir).some(file => aliasDestination(file, run.dir)))) return NO_GH;
   const commands = shellCommands(command);
   const inputs = commands.flatMap(item => item.redirects).filter(ref => /^<[^<&]/.test(ref)).map(ref => ref.replace(/^<>?/, ""));
   // Control flow can keep any observed PATH in effect. Never discard a known gh identity.

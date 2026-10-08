@@ -67,12 +67,13 @@ const SHELLS = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
  * own, and so is each <( ) and >( ). It cannot see a program in a variable ($P), in text piped into a shell, or inside a script.
  * With executableEvidence, also retain external wrappers and literal command names. Wrapper options own their values;
  * shell syntax and builtin wrappers are not external executable evidence. Both views use the same semantic traversal.
+ * With redirectEvidence, return { redirect, dir } for each shell redirection before wrappers change directory.
  * Throws when the shell reader cannot read the line (see shellCommands), and for text nested more than 3 levels deep.
  */
-export function programsRun(command, cwd, path = process.env.PATH ?? "", { executableEvidence = false } = {}) {
-  const found = { leaves: [], executables: [] };
+export function programsRun(command, cwd, path = process.env.PATH ?? "", { executableEvidence = false, redirectEvidence = false } = {}) {
+  const found = { leaves: [], executables: [], redirects: [] };
   readPrograms(command, cwd, path, 0, found);
-  return executableEvidence ? found.executables : found.leaves;
+  return redirectEvidence ? found.redirects : executableEvidence ? found.executables : found.leaves;
 }
 
 const WATCH_OPTIONS = [
@@ -345,6 +346,7 @@ function readPrograms(command, dir, path, depth, found) {
   };
   const commands = shellCommands(command);
   for (const c of commands) {
+    found.redirects.push(...c.redirects.map(redirect => ({ redirect, dir })));
     const { bodies, syntax } = c;
     const words = [...c.words];
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
