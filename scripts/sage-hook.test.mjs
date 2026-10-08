@@ -3112,7 +3112,7 @@ test("T197: custom alias files and config fragments cannot hide gh", () => {
 
 test("T197: PowerShell literal Windows gh paths are refused", () => {
   const f = ghAgentSession();
-  for (const command of [String.raw`& 'C:\tools\gh.exe' auth status`, String.raw`& '.\gh.exe' auth status`]) {
+  for (const command of [String.raw`& 'C:\tools\gh.exe' auth status`, String.raw`& '.\gh.exe' auth status`, String.raw`C:\tools\gh.exe auth status`, String.raw`.\gh.exe auth status`]) {
     assert.ok(denied(f.send(command, true, "PowerShell")), command);
   }
 });
@@ -3125,6 +3125,10 @@ test("T197: an ordinary PATH argument cannot hide a gh source file", () => {
 
 test("T197: partial edits are checked as the resulting alias configuration", () => {
   const f = ghAgentSession();
+  const notebook = join(f.dir, "example.ipynb");
+  writeFileSync(notebook, JSON.stringify({ cells: [{ cell_type: "code", source: ["print(1)"], metadata: {}, outputs: [], execution_count: null }], metadata: {}, nbformat: 4, nbformat_minor: 5 }));
+  assert.equal(f.s.send(tool("NotebookEdit", { notebook_path: notebook, cell_id: "0", new_source: "print(2)", edit_mode: "replace" }, { cwd: FEATURE, ...AGENT })), undefined);
+
   const file = join(f.dir, "custom-config");
   writeFileSync(file, "[alias]\n m = !echo harmless\n");
   for (const [name, input] of [
@@ -3132,4 +3136,10 @@ test("T197: partial edits are checked as the resulting alias configuration", () 
     ["MultiEdit", { file_path: file, edits: [{ old_string: "echo harmless", new_string: "gh auth status" }] }],
   ]) assert.ok(denied(f.s.send(tool(name, input, { cwd: FEATURE, ...AGENT }))), name);
   assert.equal(f.s.send(tool("Write", { file_path: join(f.dir, "client.py"), content: "gh = make_client()\n" }, { cwd: FEATURE, ...AGENT })), undefined);
+});
+
+
+test("T197: an empty exported PATH resolves gh in the current folder", () => {
+  const f = ghAgentSession();
+  assert.ok(denied(f.s.send(tool("Bash", { command: "export PATH=; ./hard auth status" }, { cwd: f.dir, ...AGENT }))));
 });

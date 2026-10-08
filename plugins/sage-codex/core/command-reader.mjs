@@ -63,7 +63,7 @@ function readPrograms(command, dir, path, depth, found) {
   for (const c of commands) {
     const { words, bodies } = c;
     const set = (w) => /^PATH=/.test(w) && w.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
-    const exported = words[0] === "export" && words.slice(1).find(set);
+    const exported = words[0] === "export" && words.slice(1).find(word => /^PATH=/.test(word));
     if (exported) path = set(exported);
     let here = path;
     let viaExec = false;

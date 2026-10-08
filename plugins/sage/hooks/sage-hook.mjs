@@ -254,7 +254,7 @@ export function handle(input, state, slots) {
   if (why && main) return deny(event, `${why} Only sage.mjs changes the logbook: run the state tool's command for this change (node <path to skills/sage/sage.mjs> ...), as a command of its own. If no command does it, ask the user.`);
   if (why) return deny(event, `${why} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
   const agent = (ours || (!main && state.sage)) && !CHIEF.test(input.agent_type ?? "");
-  if (event === "PreToolUse" && agent && FILE_TOOLS.test(input.tool_name ?? "") && ghAliasFileWrite(input.tool_input ?? {}, input.cwd ?? process.cwd())) return deny(event, NO_GH);
+  if (event === "PreToolUse" && agent && /^(?:Write|Edit|MultiEdit)$/.test(input.tool_name ?? "") && ghAliasFileWrite(input.tool_input ?? {}, input.cwd ?? process.cwd())) return deny(event, NO_GH);
   if (event === "PreToolUse" && agent && SHELL_TOOLS.test(input.tool_name ?? "")) {
     const ti = input.tool_input ?? {};
     const cwd = /^mcp__terminal__/.test(input.tool_name) && typeof ti.cwd === "string" ? ti.cwd : input.cwd ?? process.cwd();
@@ -264,7 +264,8 @@ export function handle(input, state, slots) {
       const result = gitGate(event, command, state, cwd, false, input.tool_name);
       if (result?.hookSpecificOutput?.permissionDecision === "deny") return result;
     }
-    const problem = commands.map(command => agentProblem(command, cwd)).find(Boolean);
+    // PowerShell uses backslashes as path separators, not POSIX escapes.
+    const problem = commands.map(command => agentProblem(input.tool_name === "PowerShell" ? command.replace(/\\/g, "/") : command, cwd)).find(Boolean);
     if (problem) return deny(event, problem);
   }
   if (event !== "PreToolUse" || !state.sage) return undefined;
