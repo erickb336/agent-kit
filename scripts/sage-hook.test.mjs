@@ -3764,3 +3764,37 @@ test("T197: known functions precede builtins unless explicitly bypassed", () => 
   assert.ok(denied(f.send(`${prefix} unset -v f; f; printf payload > settings`, f.safe)), "unset -v does not remove a function");
   assert.deepEqual(failures, [], "a builtin name does not bypass a known shell function");
 });
+
+test("T197: export print flag still processes supplied lookup operands", () => {
+  const f = ghLookupSession(), failures = [];
+  const cases = [
+    `CDPATH=${f.safeParent}; export -p CDPATH=${f.protectedParent}; cd dest; printf payload > settings`,
+    `CDPATH=${f.protectedParent}; export -p CDPATH; sh -c "cd dest; printf payload > settings"`,
+    `export CDPATH=${f.safeParent}; export -np CDPATH; sh -c "cd dest; printf payload > settings"`,
+  ];
+  for (const [index, command] of cases.entries())
+    if (!denied(f.send(command, index === 2 ? f.protectedParent : f.safeParent))) failures.push(command);
+  assert.equal(f.send(`CDPATH=${f.protectedParent}; export -p CDPATH=${f.safeParent}; cd dest; printf payload > settings`, f.protectedParent), undefined, "p with an assignment selects the ordinary destination");
+  assert.equal(f.send(`CDPATH=${f.safeParent}; export -p; cd dest; printf payload > settings`, f.protectedParent), undefined, "display without operands preserves local lookup");
+  assert.equal(f.send(`export CDPATH=${f.protectedParent}; export -np CDPATH; sh -c "cd dest; printf payload > settings"`, f.safeParent), undefined, "np removes exported lookup for an ordinary child destination");
+  assert.deepEqual(failures, [], "a print flag must not discard supplied operands");
+});
+
+test("T197: function summaries preserve callable table changes", () => {
+  const f = ghLookupSession(), failures = [];
+  const prefix = "export() { echo safe; };";
+  const action = `export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > settings"`;
+  const changes = [
+    "unset -f export;",
+    "reset() { unset -f export; }; reset;",
+    "reset() { if true; then unset -f export; fi; }; reset;",
+    "reset() { unset -f export; }; outer() { reset; }; outer;",
+  ];
+  for (const change of changes) {
+    if (!denied(f.send(`${prefix} ${change} ${action}`, f.safeParent))) failures.push(change);
+    assert.equal(f.send(`${prefix} ${change} export CDPATH=${f.protectedParent}; sh -c "cd dest; printf payload > ${f.safe}/settings"`, f.safeParent), undefined, "absolute ordinary output remains allowed");
+  }
+  for (const change of ["reset() { unset -v export; }; reset;", "reset() { unset -f export; };"])
+    assert.equal(f.send(`${prefix} ${change} ${action}`, f.safeParent), undefined, "variable-only or uncalled removal preserves the override");
+  assert.deepEqual(failures, [], "a called removal cannot leave stale function dispatch");
+});

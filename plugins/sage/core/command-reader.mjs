@@ -384,6 +384,8 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
     let { dir, path, cdpath, home, uncertainDirectory: uncertain } = state;
     const exported = { ...state.exported };
     const functions = { ...state.functions };
+    const functionChanges = { ...state.functionChanges };
+    let functionOutcomes = [{}];
     for (const child of COMMAND_CONTEXT.get(c).children) walkFlow(child, [state], execute);
     if (!COMMAND_CONTEXT.get(c).groupOwned) execute.redirects(c.redirects, [state]);
     if (COMMAND_CONTEXT.get(c).functionHeader) return { state };
@@ -470,6 +472,8 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
       }
       const args = words.slice(k + 1);
       if (functionEffect) {
+        functionOutcomes = functionEffect.functions;
+        if (functionOutcomes.some(changes => Object.keys(changes).length)) scope.functionEffect = true;
         if (functionEffect.directory) { scope.directoryEffect = true; nextUncertain = true; }
         for (const key of functionEffect.lookup) {
           if (key === "cdpath") cdpath = null; else home = null;
@@ -491,9 +495,10 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         else if (flags.has("f")) {
           if (w === "unset") for (const name of names) {
             delete functions[name];
+            functionChanges[name] = null;
             scope.functionEffect = true;
           }
-        } else if (w !== "export" || !flags.has("p")) for (const word of names) {
+        } else for (const word of names) {
           if (w === "export" && word.startsWith("PATH=")) path = set(word);
           const match = (w === "export" ? /^(CDPATH|HOME)(?:=(.*))?$/ : /^(CDPATH|HOME)$/).exec(word);
           if (!match) continue;
@@ -529,13 +534,23 @@ function readPrograms(command, dir, path, depth, found, uncertainDirectory = fal
         lookupEffect(key);
       }
     }
-    return { state: { dir: nextDir, path, cdpath, home, exported, functions, uncertainDirectory: nextUncertain }, status: negate && status !== undefined ? !status : status };
+    // Apply only the names changed by the call, never a table captured when the function was defined.
+    const states = functionOutcomes.map(changes => {
+      const updated = { ...functions };
+      for (const [name, effect] of Object.entries(changes)) {
+        if (effect === null) delete updated[name]; else updated[name] = effect;
+      }
+      return { dir: nextDir, path, cdpath, home, exported, functions: updated,
+        functionChanges: { ...functionChanges, ...changes }, uncertainDirectory: nextUncertain };
+    });
+    return { states, status: negate && status !== undefined ? !status : status };
   };
   execute.redirects = (redirects, states) => {
     for (const state of states) for (const redirect of redirects) found.redirects.push({ redirect, dir: state.dir, ...(state.uncertainDirectory ? { uncertainDirectory: true } : {}) });
   };
-  execute.function = (name, effect, states) => states.map(state => ({ ...state, functions: { ...state.functions, [name]: effect } }));
-  return walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, functions: {}, uncertainDirectory }], execute);
+  execute.function = (name, effect, states) => states.map(state => ({ ...state,
+    functions: { ...state.functions, [name]: effect }, functionChanges: { ...state.functionChanges, [name]: effect } }));
+  return walkFlow(FLOWS.get(commands), [{ dir, path, ...lookup, functions: {}, functionChanges: {}, uncertainDirectory }], execute);
 }
 
 /** Directory changes belong to their execution scope; a branch keeps both possible outcomes. */
@@ -549,10 +564,13 @@ function walkFlow(flow, initial, execute, opaque = false) {
   };
   const nodeResult = (node, states) => {
     if (node.cmd) {
-      const results = states.map(state => execute(node.cmd, state, scope));
+      const results = states.flatMap(state => {
+        const result = execute(node.cmd, state, scope);
+        return (result.states ?? [result.state]).map(state => ({ state, status: result.status }));
+      });
       return { yes: unique(results.filter(r => r.status !== false).map(r => r.state)), no: unique(results.filter(r => r.status !== true).map(r => r.state)) };
     }
-    const result = walkFlow(node, node.kind === "function" ? states.map(state => ({ ...state, uncertainDirectory: true })) : states, execute, scope.opaque);
+    const result = walkFlow(node, node.kind === "function" ? states.map(state => ({ ...state, functionChanges: {}, uncertainDirectory: true })) : states, execute, scope.opaque);
     if (node.kind === "function") {
       scope.functionEffect = true;
       const next = execute.function(node.functionName, node.effects, states);
@@ -592,10 +610,9 @@ function walkFlow(flow, initial, execute, opaque = false) {
     } while ((connector === "&&" || connector === "||") && k < flow.nodes.length);
     states = connector === "&" ? before : unique([...result.yes, ...result.no]);
   }
-  flow.effects = { directory: scope.directoryEffect, lookup: [...scope.lookupEffects], exports: [...scope.exportEffects] };
   flow.functionEffect = scope.functionEffect;
   if (flow.kind === "opaque" && (scope.directoryEffect || scope.lookupEffects.size || scope.exportEffects.size || scope.functionEffect)) {
-    return unique([...initial, ...states].map(state => {
+    states = unique([...initial, ...states].map(state => {
       const next = { ...state, exported: { ...state.exported }, uncertainDirectory: state.uncertainDirectory || scope.directoryEffect };
       for (const key of scope.lookupEffects) {
         next[key] = null;
@@ -605,6 +622,8 @@ function walkFlow(flow, initial, execute, opaque = false) {
       return next;
     }));
   }
+  flow.effects = { directory: scope.directoryEffect, lookup: [...scope.lookupEffects], exports: [...scope.exportEffects],
+    functions: unique(states.map(state => state.functionChanges)) };
   return states;
 }
 
