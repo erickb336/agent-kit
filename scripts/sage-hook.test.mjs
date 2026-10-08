@@ -3344,3 +3344,30 @@ test("T197: all agent rules inspect env split-string semantic leaves", () => {
     assert.equal(f.send(wrapped(text)), undefined, text);
   }
 });
+
+
+test("T197: wrapper options and assignments retain the executable boundary", () => {
+  const f = ghAgentSession();
+  const prefixes = ["sudo --us root", "sudo --us=root", "timeout --kill-a 1s 2s", "timeout --kill-a=1s 2s",
+    "nice --adj 5", "nice --adj=5", "sudo X=1 -u root", "sudo X=1 --user root",
+    "sudo -u root X=1 --group staff", `sudo PATH=${f.dir} --us root X=1`,
+    "sudo --auth-t basic", "sudo -a basic", "sudo --login-c plain", "sudo -c plain"];
+  const wrappedDir = join(f.dir, "wrapper-bin"); mkdirSync(wrappedDir);
+  for (const [name, alias] of [["env", "ENV"], ["sudo", "SUDO"]]) {
+    const file = join(wrappedDir, name); writeFileSync(file, "fake wrapper must never execute", { mode: 0o755 });
+    symlinkSync(file, join(f.dir, alias));
+  }
+  const equalsPath = join(f.dir, "client=name"); linkSync(f.gh, equalsPath);
+  linkSync(f.gh, join(f.dir, "=client")); linkSync(f.gh, join(f.dir, "X=1"));
+  const refused = [...prefixes.map(prefix => `${prefix} gh auth status`),
+    `sudo ${equalsPath} auth status`, "sudo =client auth status", "sudo -- X=1 auth status",
+    "sudo --future-option value gh auth status", "timeout --future-option value 1s gh auth status",
+    "nice --future-option value gh auth status", 'ENV -S "gh auth status"', "SUDO --us root gh auth status"];
+  assert.deepEqual(refused.map(command => [command, Boolean(denied(f.send(command)))]), refused.map(command => [command, true]));
+  for (const command of [...prefixes.map(prefix => `${prefix} echo safe`),
+    `sudo echo ${equalsPath}`, "sudo echo =client", "sudo -- echo --user root gh auth status",
+    "sudo X=1 -- echo --user root gh auth status", `env ${equalsPath} echo safe`,
+    'ENV -S "echo safe"', "SUDO --us root echo safe"]) {
+    assert.equal(f.send(command), undefined, command);
+  }
+});

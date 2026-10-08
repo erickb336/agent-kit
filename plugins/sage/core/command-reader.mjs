@@ -7,7 +7,7 @@ import { resolve } from "node:path";
  */
 const PACKAGE_RUNNER = /^-(?:p|c|-package|-call)$/;
 const WRAPPER = new Map([
-  ["sudo", /^-(?:[ugpCDrtUTRh]|-(?:user|group|prompt|close-from|chdir|role|type|other-user|command-timeout|host))$/],
+  ["sudo", /^-(?:[acugpCDrtUTRh]|-(?:auth-type|login-class|user|group|prompt|close-from|chdir|chroot|role|type|other-user|command-timeout|host))$/],
   ["doas", /^-[uC]$/],
   ["env", /^-(?:[uCP]|-(?:unset|chdir))$/],
   ["nice", /^-(?:n|-adjustment)$/],
@@ -21,6 +21,25 @@ const WRAPPER = new Map([
   ...["npx", "bunx", "npm exec", "pnpm dlx"].map((name) => [name, PACKAGE_RUNNER]),
   ...["nohup", "command", "builtin", "time", "noglob", "nocorrect"].map((name) => [name, undefined]),
 ]);
+// Include flag-only names too, so an abbreviated long option must be unique across the wrapper's options.
+const WRAPPER_LONG_OPTIONS = new Map([
+  ["sudo", "background preserve-env edit set-home login remove-timestamp list preserve-groups shell other-user validate askpass auth-type bell close-from login-class chdir group help host reset-timestamp no-update non-interactive prompt chroot role stdin command-timeout type user version"],
+  ["nice", "adjustment help version"],
+  ...["timeout", "gtimeout"].map(name => [name, "signal kill-after foreground preserve-status verbose help version"]),
+  ["xargs", "replace max-lines max-args max-procs max-chars eof delimiter arg-file null interactive no-run-if-empty verbose exit show-limits open-tty help version"],
+  ["stdbuf", "input output error help version"],
+  ...["npx", "bunx", "npm exec", "pnpm dlx"].map(name => [name, "package call yes no quiet bun help version"]),
+  ["nohup", "help version"],
+].map(([name, options]) => [name, options.split(" ")]));
+
+function longOptionName(option, names = []) {
+  const prefix = option.slice(2).split("=")[0];
+  if (names.includes(prefix)) return prefix;
+  const matches = names.filter(name => name.startsWith(prefix));
+  if (matches.length !== 1) throw evidenceError(`unknown or ambiguous wrapper option ${option}`);
+  return matches[0];
+}
+
 /** Shell keywords before a command: the command after them runs in the same shell. After for, select or case come words, not a program. */
 const KEYWORD = /^(?:!|\{|\}|if|then|elif|else|fi|while|until|do|done|esac|coproc)$/;
 const LIST = /^(?:for|select|case)$/;
@@ -67,9 +86,7 @@ function watchOptions(words, next) {
     const option = words[next];
     if (option === "--") { next++; break; }
     if (option.startsWith("--")) {
-      const prefix = option.slice(2).split("=")[0];
-      const matches = WATCH_OPTIONS.filter(name => name.startsWith(prefix));
-      const name = WATCH_OPTIONS.includes(prefix) ? prefix : matches.length === 1 ? matches[0] : undefined;
+      const name = longOptionName(option, WATCH_OPTIONS);
       if (name === "exec" && !option.includes("=")) shellText = false;
       else if (/^(?:interval|equexit|shotsdir)$/.test(name ?? "") && !option.includes("=")) next++;
       continue;
@@ -126,29 +143,40 @@ function envSplit(text) {
 
 function wrapperArguments(words, next, wrapper, path, dir) {
   let splits = 0, chdir;
-  while (/^-./.test(words[next] ?? "")) {
+  while (next < words.length) {
+    const word = words[next];
+    // sudo resumes option parsing after an assignment. env consumes assignments only after its options.
+    if (wrapper === "sudo" && !word.startsWith("-") && word[0] !== "/" && word[0] !== "=" && word.includes("=")) {
+      if (/^PATH=/.test(word)) path = word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
+      next++;
+      continue;
+    }
+    if (!/^-./.test(word)) break;
     const option = words[next++];
     if (option === "--") break;
     if (wrapper !== "env") {
       const takesValue = WRAPPER.get(wrapper);
       let flag = option.split("=")[0], value;
       if (option.startsWith("--")) {
+        flag = `--${longOptionName(option, WRAPPER_LONG_OPTIONS.get(wrapper))}`;
         if (takesValue?.test(flag)) value = option.includes("=") ? option.slice(option.indexOf("=") + 1) : words[next++];
       } else {
         const index = [...option].findIndex((char, i) => i > 0 && takesValue?.test(`-${char}`));
+        if (wrapper === "sudo" && !/^[AaBbCcDEegHhiKklNnPpRrSsTtUuVv]+$/.test(option.slice(1, index < 0 ? undefined : index + 1))) {
+          throw evidenceError(`unknown sudo option ${option}`);
+        }
         if (index >= 0) {
           flag = `-${option[index]}`;
           value = option.slice(index + 1) || words[next++];
         }
       }
+      if (takesValue?.test(flag) && value === undefined) throw evidenceError(`${wrapper} option has no value`);
       if (wrapper === "sudo" && (flag === "-D" || flag === "--chdir")) chdir = value;
       continue;
     }
     let flags;
     if (option.startsWith("--")) {
-      const prefix = option.slice(2).split("=")[0];
-      const matches = Object.keys(ENV_OPTIONS).filter(name => name.startsWith(prefix));
-      const name = Object.hasOwn(ENV_OPTIONS, prefix) ? prefix : matches.length === 1 ? matches[0] : undefined;
+      const name = longOptionName(option, Object.keys(ENV_OPTIONS));
       flags = [ENV_OPTIONS[name]];
     } else flags = [...option.slice(1)];
     for (let i = 0; i < flags.length; i++) {
@@ -168,7 +196,7 @@ function wrapperArguments(words, next, wrapper, path, dir) {
   }
   if (wrapper === "timeout" || wrapper === "gtimeout") next++; // only timeout owns a duration operand
   if (wrapper === "env" && words[next] === "-") next++;
-  if (wrapper === "env" || wrapper === "sudo") {
+  if (wrapper === "env") {
     while (words[next]?.includes("=")) {
       const word = words[next++];
       if (/^PATH=/.test(word)) path = word.slice(5).replace(/\$\{?PATH\}?(?!\w)/g, path);
@@ -212,12 +240,15 @@ function readPrograms(command, dir, path, depth, found) {
       if (assignment || (keyword && KEYWORD.test(w))) continue;
       if (keyword && LIST.test(w)) break;
       if (keyword && w === "function" && ++k) continue; // the function name is not a program
-      const wrapper = [`${name} ${words[k + 1]}`, name].find((key) => WRAPPER.has(key));
+      const file = program(w, at, here);
+      const lexicalWrapper = !argv && !w.includes("/") && (/^(?:command|builtin|exec)$/.test(name) || (keyword && /^(?:time|noglob|nocorrect)$/.test(name)));
+      const wrapperNames = lexicalWrapper ? [name] : [file?.split("/").pop(), name].filter(Boolean);
+      const wrapper = wrapperNames.flatMap(base => [`${base} ${words[k + 1]}`, base]).find(key => WRAPPER.has(key));
       if (wrapper) {
         const modifier = keyword && !w.includes("/") && /^(?:time|noglob|nocorrect)$/.test(name);
         const external = viaExec || w.includes("/") || (!modifier && !/^(?:command|builtin|exec)$/.test(name));
-        if (external) emit({ word: w, file: program(w, at, here), args: words.slice(k + 1), dir: at, path: here, stdin: [], piped: false }, true);
-        if (wrapper !== name) k++;
+        if (external) emit({ word: w, file, args: words.slice(k + 1), dir: at, path: here, stdin: [], piped: false }, true);
+        if (wrapper.includes(" ")) k++;
         if (modifier) {
           if (name === "time" && words[k + 1] === "-p") k++;
           if (name === "time" && words[k + 1] === "--") k++;
@@ -225,7 +256,7 @@ function readPrograms(command, dir, path, depth, found) {
         }
         viaExec ||= external || name === "exec";
         argv = true;
-        if (name === "watch") {
+        if (wrapper === "watch") {
           const watched = watchOptions(words, k + 1);
           if (watched.shellText) {
             inner(words.slice(watched.next).join(" "), at, here, transformed);
@@ -241,7 +272,6 @@ function readPrograms(command, dir, path, depth, found) {
         }
         continue;
       }
-      const file = program(w, at, here);
       const args = words.slice(k + 1);
       const pipes = commands.filter((p) => p.pipeTo === c);
       const stdin = [...bodies, ...pipes.map((p) => p.words.join(" "))];
