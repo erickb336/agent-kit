@@ -1,4 +1,6 @@
 import "./test-env.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, mkdirSync, writeFileSync } from "node:fs";
@@ -63,6 +65,9 @@ test("standalone setup and installation stay explicit, with no service operation
   assert.ok(readFileSync(plist, "utf8").includes("dev.sage.board"));
   assert.ok(!lines.join("\n").includes(secret));
   assert.ok(!readFileSync(plist, "utf8").includes(secret));
+  const installed = spawnSync(process.execPath, [join(install, "packages/sage-board/cli.mjs"), "board", "all", "--status", "--config", config], { cwd: dir, env: process.env, encoding: "utf8" });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.ok(installed.stdout.includes("framed 1"));
 });
 
 
@@ -80,4 +85,15 @@ test("settings reads reject linked ancestors and service commands reject ignored
   symlinkSync(join(dir, "settings"), link);
   assert.throws(() => readBoardConfig(join(link, "board.json")), /ordinary directory/);
   await assert.rejects(runBoardCli(["board", "--serve", "--scope", "sample/project", "--config", config]), /only for a task lookup/);
+});
+
+
+test("standalone current-checkout board and task commands work without explicit project", t => {
+  const { dir, config } = fixture(t), cli = fileURLToPath(new URL("../packages/sage-board/cli.mjs", import.meta.url));
+  for (const scope of ["this", "T1"]) {
+    const result = spawnSync(process.execPath, [cli, "board", scope, "--config", config], { cwd: dir, env: process.env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes("Sample CLI task"));
+    if (scope === "T1") assert.ok(result.stdout.includes("**Brief**"));
+  }
 });

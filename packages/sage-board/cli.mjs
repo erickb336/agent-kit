@@ -117,7 +117,7 @@ export async function runBoardCli(argv, { output = line => process.stdout.write(
   const taskId = /^T[1-9]\d*$/.test(value) ? value : null;
   if (options.scope && !taskId) throw new TypeError("--scope selects the exact project of a task lookup");
   const format = options.html ? "html" : options.status ? "status" : taskId ? "task" : "chat";
-  const body = boardView({ sources: config.sources, scope: taskId ? options.scope ?? "this" : value, project: options.project, taskId, format });
+  const body = boardView({ sources: config.sources, scope: taskId ? options.scope ?? "this" : value, project: options.project ?? process.cwd(), taskId, format });
   if (options.html) {
     const file = boundedPath(options.out ?? (config.pagesDir ? resolve(config.pagesDir, `board-${Date.now()}-${randomBytes(6).toString("hex")}.html`) : ""));
     if (!file.endsWith(".html") || !outsideRoots(file, config.sources)) throw new TypeError("HTML output must be an .html artifact outside logbook roots");
