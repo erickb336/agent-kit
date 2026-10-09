@@ -11,8 +11,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir, uptime } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { boardView } from "./board-view.mjs";
 import { createBoard } from "./board.mjs";
 import { PR } from "./pull-request.mjs";
+import { OBSERVATIONS_MAX_BYTES, OBSERVATION_DATA_MAX_BYTES, validateObservation, validateObservations } from "./observations.mjs";
 
 export function createStateTool({ defaultRoot, models = ["inherit"], modelDefaults = {} }) {
 if (typeof defaultRoot !== "function") throw new TypeError("defaultRoot must be a function");
@@ -78,13 +80,14 @@ const TABLES = {
 };
 /** The columns that a later version added: an older table without them reads with them empty, and its next write adds them. */
 const ADDED = { runs: ["model"] };
-const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "projects", "board"];
+const COMMANDS = ["init", "logbook", "standing", "pages", "task", "round", "run", "finding", "verdict", "gate", "log", "status", "merge-check", "config", "projects", "board", "observe"];
 /** The options of each command, by its name or by its name and first word. Every command also takes --project. */
 const OPTIONS = {
   "logbook repair": ["accept-loss"],
   "projects rebuild": ["accept-listing"],
   "task add": ["title", "size", "risk", "add", "why"],
   "run add": ["role", "branch", "candidate"],
+  observe: ["kind", "source", "basis", "observed-at", "data-hex"],
   "run done": ["status", "tokens", "report"],
   "finding add": ["source", "severity", "summary", "key"],
   "finding triage": ["reason"],
@@ -94,7 +97,7 @@ const OPTIONS = {
   "gate answer": ["option", "other-hex"],
   log: ["why"],
   "merge-check": ["sha", "pr", "cycles"],
-  board: ["remember", "name-hex"],
+  board: ["remember", "name-hex", "view"],
 };
 /** The canonical number of a PR in an older row: "040" is PR 40. */
 const prNumber = (pr) => (/^\d+$/.test(pr ?? "") ? String(BigInt(pr)) : pr);
@@ -735,6 +738,16 @@ function sage(argv, env = process.env) {
   if (!COMMANDS.includes(cmd)) refuse(`unknown command "${cmd ?? ""}". Commands: ${COMMANDS.join(", ")}`);
   const { pos, opt } = parse(cmd, rest);
   const root = sageRoot(env);
+  if (cmd === "board" && opt.view !== undefined) {
+    if (pos.length > 1 || opt.remember !== undefined) refuse("rich board takes one scope or task id and never remembers state");
+    const scope = opt["name-hex"] !== undefined ? unhex(opt["name-hex"]) : /^T[1-9]\d*$/.test(pos[0] ?? "") ? "this" : pos[0] ?? "this";
+    let sources;
+    try {
+      if (env.SAGE_BOARD_ROOTS && Buffer.byteLength(env.SAGE_BOARD_ROOTS) > 65536) throw new Error("root configuration is too large");
+      sources = env.SAGE_BOARD_ROOTS ? JSON.parse(env.SAGE_BOARD_ROOTS) : [{ id: "current", label: "Current provider", path: root }];
+      return boardView({ sources, scope, project: opt.project ?? env.PWD, taskId: /^T[1-9]\d*$/.test(pos[0] ?? "") ? pos[0] : null, format: opt.view });
+    } catch (error) { refuse(error.message); }
+  }
   if (statSync(root, { throwIfNoEntry: false })?.isDirectory() && ["projects.tsv", "projects.made"].every((f) => !lstatSync(join(root, f), { throwIfNoEntry: false }))) known(root); // the first command of this version lists today's logbooks
   if (cmd === "projects") return pos.join(" ") === "rebuild" && opt["accept-listing"] === "yes" ? rebuild(root) : refuse(`projects takes only: ${REBUILD.slice(5)}. It lists each logbook folder that is in ${root} now as a known project, so that its verdicts count in the merge check. Run it only when the user asks for it, and show the user the folders that it prints.`);
   if (cmd === "merge-check") {
@@ -840,6 +853,35 @@ function act(cmd, pos, opt, dir, env, skip, project) {
       const old = kept.length === 1 ? (tables.length === 1 ? `; its old file is ${kept[0].aside}` : `; the old file of ${kept[0].table}.tsv is ${kept[0].aside}`) : kept.length ? `; the old files are ${kept.map((t) => t.aside).join(" and ")}` : "";
       return `${tables.map((t) => `${t.table}.tsv`).join(" and ")} started again without rows${old}. The decision${tables.length === 1 ? " is" : "s are"} in decisions.tsv.`;
     }
+    case "observe": {
+      if (pos.length !== 1) refuse("observe takes one task id and explicit observation options");
+      const { task } = taskOf(dir, need(sub, "the task id"));
+      const file = join(dir, "observations.json"), captured = Date.now();
+      let prior, record;
+      try {
+        const bytes = readRegular(file, { link: false, max: OBSERVATIONS_MAX_BYTES, encoding: null });
+        prior = bytes === undefined ? { version: 1, records: [] } : validateObservations(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)), { now: captured });
+        const encoded = need(opt["data-hex"], "--data-hex");
+        if (encoded.length > OBSERVATION_DATA_MAX_BYTES * 2) refuse("observation data exceeds 64 KiB");
+        const decoded = unhex(encoded);
+        if (decoded === undefined) refuse("--data-hex must be the hex of UTF-8 JSON");
+        record = validateObservation({ id: `O${prior.records.length + 1}`, task: task.id, kind: opt.kind, source: opt.source, basis: opt.basis,
+          observedAt: opt["observed-at"], recordedAt: new Date(captured).toISOString(), data: JSON.parse(decoded) }, { now: captured });
+      } catch (error) {
+        if (error instanceof Refusal) throw error;
+        refuse(`the observation cannot be recorded: ${error.message}. Nothing changed.`);
+      }
+      if (record.data.run !== undefined) {
+        const run = read(dir, "runs").find(row => row.id === record.data.run) ?? missing(`run ${record.data.run}`, read(dir, "runs").map(row => row.id));
+        if (run.task !== task.id) refuse(`${run.id} belongs to ${run.task}, not ${task.id}. Nothing changed.`);
+      }
+      if (record.kind === "completion" && record.data.state !== task.state) refuse(`${task.id} is ${task.state}, not ${record.data.state}. Nothing changed.`);
+      const text = JSON.stringify({ version: 1, records: [...prior.records, record] }, null, 2) + "\n";
+      if (Buffer.byteLength(text) > OBSERVATIONS_MAX_BYTES) refuse("the observation file would exceed 4 MiB. Nothing changed.");
+      // An explicit observation changes no table or verdict. A reader must never promote it into a merge decision.
+      swap(file, text);
+      return `${record.id} observed ${record.kind} for ${task.id}`;
+    }
     case "standing": {
       if (sub === "add") {
         const text = (readRegular(join(dir, "standing.md")) ?? "").trimEnd();
@@ -886,6 +928,7 @@ function act(cmd, pos, opt, dir, env, skip, project) {
               const r = judge(dir, task, read(dir, "findings"), task.id, rows.filter((r) => r.sha === head), 1);
               if (!r.ok) refuse(`${task.id} is not verified on ${head.slice(0, 7)}: ${r.reason}`);
             }
+            if (["merged", "concluded", "abandoned"].includes(v)) decided.push({ at: now(), task: task.id, decision: `state ${v}`, why: "task set" });
           } else if (k === "pr") decided.push(...setPr(task, v, "task set"));
           else if (k === "branch") task.branch = v && (ofTask(task.id, branchOf(v)) ? v : refuse(`${JSON.stringify(v)} is not a branch of ${task.id}: use [<prefix>/]${task.id.toLowerCase()}[-<words>], for example sage task ${task.id} set branch=sage/${task.id.toLowerCase()}`)); // branch= clears it
           else if (k === "title") task.title = v;

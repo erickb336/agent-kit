@@ -16,9 +16,15 @@ Run the state tool beside this skill. Resolve `sage.mjs` from this skill's direc
 node <skill-directory>/sage.mjs init --project <project>
 node <skill-directory>/sage.mjs task add --title "Describe the task" --size small --project <project>
 node <skill-directory>/sage.mjs status --project <project>
-node <skill-directory>/sage.mjs board this --project <project>
+node <skill-directory>/sage.mjs board this --view chat --project <project>
+node <skill-directory>/sage.mjs board T197 --view task --project <project>
+node <skill-directory>/sage.mjs board this --view status --project <project>
 ```
 
 Run the command without arguments for its command list. The logbook lives below `$CODEX_HOME/sage`, or `~/.codex/sage` when `CODEX_HOME` is unset. `SAGE_HOME` overrides that path. Keep the default separate from other providers; share a logbook only when the user asks. All changes to a logbook must use this tool.
+
+The board commands read the logbook without changing it. Resolve the user's requested project before a task lookup. If a task is absent, show nearby task IDs; do not open another task. For an explicitly requested combined board, set `SAGE_BOARD_ROOTS` to a JSON list of sources with distinct `id` values and absolute `path` values. Keep each source identity in the result.
+
+Treat “show board”, “sage board”, “show board for all”, “show board for <project>”, “show board T197”, and “show sage status” as requests for these manual views. Automatic phrase hooks in Codex remain unverified. Do not claim that an installed hook handles them.
 
 The hooks do not infer check results from shell output. Run the checks that fit the change and report the command, result and anything left unverified. The plugin does not stop an unchecked turn.

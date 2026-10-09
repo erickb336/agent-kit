@@ -306,33 +306,29 @@ To make every session in a folder start in sage mode, put this in the folder's `
 
 ## The board
 
-Start a message with `show board` to see the board in the chat. It is short Markdown that fits a phone screen, built from the logbooks on your Mac. It needs no server and no file.
+The board shows recorded tasks across explicit Claude and Codex logbook sources. The chat view needs no server. The browser view adds filters and task pages.
 
 | Say | You see |
 | --- | --- |
-| `show board` or `show board for this project` | The project of the session, with at most 8 active tasks (the tasks with a pull request in review first), and one line for each other project with something waiting, for example "order-chaser: 1 gate waiting". When two logbooks without a checkout have the name of the session folder, the board lists the candidates. A session folder with a control character in its path, such as a line break, gets the board for all projects. |
-| `show board for all` or `show board for all projects` | Every project: what needs you and what runs at the top, then one short section per project, with at most 8 active tasks each ("and 3 more (show board for sage)"). |
-| `show board for sage-bot` | One project, with every active task. Type its key or its real name (the name of its folder, in any script: `日本語`). The key can be in any case, with `_`, `.` or a space for `-` (`sage_bot`). When two logbooks have the same name, the board shows each with its hash, for example `project-220ca5`. Wherever a key shows, the real name follows it when the board knows it and it differs: `project-220ca5 (日本語)`. A name that can mean more than one project, or that the key keeps only in part (`中文` gives the key `project`), opens no board: the board lists the candidates. An unknown name lists the known projects. A trailing `?` also works: `show board?`. |
+| `show board`, `sage board`, or `show board for this project` | Tasks for the current checkout, with each source kept separate. |
+| `show board for all` or `sage board for all projects` | Tasks from all configured sources. |
+| `show board for sage-bot` or `sage board for sage-bot` | One named project. An ambiguous name gives qualified project choices. |
+| `show board T197`, `sage board T197`, or `board T197` | Full task detail for the current project. An unknown task gives nearby IDs and opens no other task. |
+| `show sage status` or `sage status` | Task states, recorded agents, owner needs, and available budget evidence. |
 
-The board has these parts, in this order:
+Claude recognizes these phrases only at the start of the owner's own message, outside quoted text. Leading bold and a trailing question mark work. Text after a question mark on the same line does not trigger the phrase. Codex uses its manual Sage skill commands until native owner phrase delivery is verified.
 
-1. **Needs you:** every open gate in full, never cut: its project's key, its question, the recommendation, the default and a numbered list of its options, and every verified pull request that is not merged. A pull request "waits for your merge" only when the task's branch in the project's folder, local and at origin, is at its reviewed head (the last SHA of its verdicts, which `sage-pr merge` merges), and the merge check passes on that head. The line gives the reason: "risk auth", "large", or "autopilot may merge it tonight" for a tiny or small one (autopilot can be off). It ends with "as of the last fetch": the board does not ask GitHub, so a push from another machine shows only after a `git fetch`. Else the line says "cannot merge yet" and what is missing, for example "T2: 1 of 2 clean cycles on this SHA", "T3 has open findings: F-T3-1", "branch t2 is not at the reviewed head 1a2b3c4" or "head unknown". The board never says "waits for your merge" when it cannot run the check.
-2. **Running now:** each agent with its task, role and age.
-3. **Merged since the last board** of each project, with links. The sage folder keeps, for each logbook, the time of its last board, its highest task id and its tasks that were not closed then, in `board.json`. A closed task never changes, so this stays small however many tasks merged, and two boards at once lose no entry.
-4. **One section per project:** a line per active task (id, title, state, pull request link, round), at most 8 and then "and N more (show board for sage)" (a board for one named project shows all), the count of framed tasks, and the next 3 framed tasks by id. The active tasks come in this order:
-   1. The tasks in the reviewing or verifying state that have a pull request. They come before all the other tasks, so the limit of 8 hides a pull request that waits for a review only when 9 or more of them wait. Among them, the next two rules give the order.
-   2. The other tasks by their latest change, the newest first. The latest change is the latest time in the logbook for that task: an agent run that started or ended, a gate, a verdict in the ledger or a decision.
-   3. The tasks with no time, by id.
+The six columns are Backlog, Design, Building, In review, Ready to merge, and Done. Done includes merged and concluded tasks from the last seven days, when their completion date is recorded. Abandoned tasks remain available by exact lookup.
 
-   The real name and the pull request links come from the project's own folder: the folder whose logbook this is. A folder that only has the same name gives neither, and so does a `checkout.txt` that names the folder of another logbook. Then the board shows the key and no links, as for a logbook with no `checkout.txt`.
+Each card shows its task, project, PR, size, risk, repair round, and recorded agent roles and providers. Review evidence applies only to the recorded PR head. Missing facts stay unknown. Inferred work from a Codex PR stays separate from recorded running agents.
 
-Before a gate gets to the board, the state tool checks it. `gate add` refuses a gate with:
+Needs you lists open questions with their options and recommendation, held tasks, failed checks or QA, and PRs that need owner review. Gate IDs include the source and project. The chief must resolve that exact logbook before recording an answer.
 
-- a `--recommend` or a `--default` that is not one of the options, by its text or its number;
-- two options that look the same, for example `Keep|keep`, also with other width or hidden characters;
-- an option that starts with `other:`, because that marks an answer in your own words.
+A task page shows the loop steps, brief, runs, verdict evidence, findings, artifacts, and latest decisions. The offline HTML file contains the selected tasks and their full details. Text from agents is escaped in both views.
 
-Agents write the gate and task text, so the board escapes it: a link, an image, HTML, a bare web address, a www name or an email in it shows as plain text, and the only links are the board's own pull request links. After the board, the chief asks each open gate as a choice card, built from the whole gate. It records your answer in the logbook of the gate's own project, so an answer never goes to another project's gate with the same id. It records a listed option by its number, so no text that an agent wrote goes into a command. When you answer in your own words, it records them too, marked as your own answer (`other: …`). Your words go into the command as the hex of their UTF-8 bytes (`gate answer <G> --other-hex <hex>`), so no text of yours can run as a command. `sage init` and `task add` write each project's folder to `checkout.txt` in its logbook. When the board does not know a project's folder (a logbook with no `sage init` or `task add` since this version), the gate says "Answer it in a session of" that project. The text is readable without the cards. Outside Claude Code, you (or any chat that can run a command) can print the board from a clone of the sage repository with `node plugins/sage/skills/sage/sage.mjs board all`. The board reads the logbooks and changes none.
+The read-only board does not initialize logbooks, acquire their write locks, update board history, fetch GitHub, or decide whether a PR may merge. Existing state commands still record changes and enforce the merge rules.
+
+The [board service guide](packages/sage-board/README.md) gives local startup, stable installation, offline export, and private phone access with Tailscale Serve. The server runs independently of a chat. It requires a sign-in and listens on loopback.
 
 ## Principles
 

@@ -1,33 +1,33 @@
-# Task board design proposal (T205)
+# Task board design (T205)
 
-This is the design proposal for issue #74. It is not an implemented feature. All 17 requirements remain in scope. The owner must approve the sample screens and the recorded-data choice before backend work.
+This is the approved design for issue #74. The implementation is under review. All 17 requirements remain in scope. The owner approved the recommended sample layout and recorded-data extension on 2026-10-08. Backend work may proceed; all runtime acceptance remains required.
 
-## Proposed experience
+## Experience
 
 The board shows six state columns, dark by default. Each card opens a task page. On a phone, columns with a task that needs the owner come first. The text board and task detail remain available without a server. A single-file HTML export keeps all task details in that file.
 
 A task page shows the loop, brief, runs, evidence, findings, artifacts and decisions. Missing evidence says unknown. A recorded run and work inferred from a PR have separate counts. Two roots may contain the same task ID; each task keeps its source identity.
 
-Abandoned tasks remain available through task lookup, outside the active columns. Projects share a group only when their recorded identity matches. These presentation choices wait for prototype approval.
+Abandoned tasks remain available through task lookup, outside the active columns. Projects share a group only when their recorded identity matches. The owner approved these presentation choices for v1; later feedback can refine them.
 
-## Package and service proposal
+## Packages and service
 
 - Core reads explicit logbook roots and returns one shared model. It calls no provider API or Git command, takes no lock and writes no logbook.
 - A separate provider-neutral board package owns the command, server, file watchers and optional login setup. It imports only the public core API.
-- The server listens only on 127.0.0.1. The proposed configurable port is 43123. A busy port causes a clear failure; the server never stops another process or changes ports silently.
+- The server listens only on 127.0.0.1. The default configurable port is 43123. A busy port causes a clear failure; the server never stops another process or changes ports silently.
 - A stable installed command supports optional per-user launchd startup. Provider cache changes must not replace the service.
 - Tailscale Serve supplies private HTTPS phone access. No Funnel or LAN listener is used. A board secret protects every board, task and event request. Exact allowed hosts protect the browser boundary.
 - The initial page contains its content without scripts. File events update an open page. Watch errors show stale data, not an empty board.
 
-Read-only access can still expose private briefs and reports. A private tailnet can include other readers. The owner's PE instruction permits authentication when the review finds a risk. The proposed browser sign-in prompt still needs phone and event-stream verification.
+Read-only access can still expose private briefs and reports. A private tailnet can include other readers. The owner's PE instruction permits authentication when the review finds a risk. The browser sign-in prompt still needs phone and event-stream verification.
 
-## Pending recorded-data choice
+## Approved recorded-data choice
 
 Current tables do not record the current PR head, open PR status or provider identity for every run. A branch name alone does not prove live activity. A reviewed SHA alone does not prove the current remote head.
 
-Recommended: add minimal PR and run evidence records with source, observation time and task association. A separate state/provider writer records evidence. The board stays read-only. Old records without evidence show unknown.
+The state tool adds minimal PR and run evidence records with source, observation time and task association. A separate state/provider writer records evidence. The board stays read-only. Old records without evidence show unknown.
 
-Alternative: keep existing fields and show unknown or inferred values. This preserves honest display but does not complete the requested current-head and activity capability. Record the owner's choice before changing the data contract.
+Alternative: keep existing fields and show unknown or inferred values. This preserves honest display but does not complete the requested current-head and activity capability. The owner selected the recommended evidence records.
 
 ## Acceptance to preserve
 
@@ -46,6 +46,6 @@ Current board history writes, project-list initialization and Git-derived head c
 
 ## Verification limits
 
-The design reviews inspected source and official Node, Apple and Tailscale documentation. They did not install a service, change a tailnet, read private logbooks or verify live phone access. The sample pages use invented data. Static checks confirm no scripts or external assets in the new samples. Their rendered appearance is not verified because the browser tool refused local-file URLs.
+The design reviews inspected source and official Node, Apple and Tailscale documentation. They did not install a service, change a tailnet, read private logbooks or verify live phone access. The sample pages use invented data. Static checks confirm no scripts or external assets in the new samples. The earlier sample file was not rendered because the browser tool refused local-file URLs. Separate browser tests now exercise the implemented renderer with invented data and blocked network access.
 
-Backend acceptance needs multi-root fixtures, exact-head changes, missing evidence, read-only spies, hostile text, server access checks, watcher replacement, script-free views and a real phone check. This proposal does not claim those checks passed.
+Backend acceptance needs multi-root fixtures, exact-head changes, missing evidence, read-only spies, hostile text, server access checks, watcher replacement, script-free views and a real phone check. Local tests cover these behaviors; phone access and login startup remain unverified.
