@@ -4240,6 +4240,57 @@ test("T181: ambiguous starts protect legacy and nested leases until an exact res
   assert.equal(first.take("p", 1, 10, "extra", direct).refused, "project", "a result-correlated legacy slot retains its raw session identity");
   first.release("joined-agent");
   assert.deepEqual(first.take("p", 1, 10, "extra", direct), { ok: true });
+
+  // A hook upgrade must retain reservations admitted in main's five-marker format.
+  const oldFixture = (name, marks) => {
+    const path = join(dir, name, "slots"), slot = join(path, "slot-1"), created = Date.now();
+    mkdirSync(slot, { recursive: true });
+    for (const mark of marks) writeFileSync(join(slot, mark), "");
+    return { path, slot, slots: minute => slotsFor(path, "s", created + minute * 60_000) };
+  };
+  const oldMarks = ["project-p", "session-s", "tool-old", "pending-old", "ok"];
+  for (const mixed of [false, true]) {
+    const f = oldFixture(`old-pending-${mixed}`, oldMarks), cap = mixed ? 2 : 1;
+    if (mixed) assert.deepEqual(f.slots(0).take("p", cap, 10, "nested", child), { ok: true });
+    f.slots(0).bind("old-agent", "sage:qa");
+    f.slots(9).touch("old-agent", "sage:qa");
+    assert.equal(f.slots(11).take("p", cap, 10, "excess", child).refused, "project", `old pending ${mixed ? "mixed" : "standalone"} activity keeps capacity`);
+    f.slots(11).drop("old");
+    assert.equal(f.slots(11).take("p", cap, 10, "after-failure", child).refused, "project", "a possible launch is not freed by failure");
+    if (mixed) {
+      f.slots(11).result("nested", "lead", { status: "async_launched", agentId: "nested-agent" });
+      f.slots(11).release("nested-agent");
+      assert.equal(readdirSync(f.path).length, 1, "the exact child's stop leaves the ambiguous old reservation held");
+      utimesSync(f.slot, new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000));
+    } else f.slots(11).release("old-agent");
+    // Use a current clock for fresh filesystem entries; age only the expired old reservation above.
+    const fresh = slotsFor(f.path, "s");
+    assert.deepEqual(fresh.take("p", 1, 10, "fresh", direct), { ok: true });
+    fresh.bind("old-agent", "sage:qa");
+    fresh.release("old-agent");
+    assert.equal(fresh.take("p", 1, 10, "replayed", direct).refused, "project", "old observations cannot claim a reused slot number");
+    fresh.bind("fresh-agent", "sage:qa");
+    fresh.release("fresh-agent");
+    assert.deepEqual(fresh.take("p", 1, 10, "after-stop", direct), { ok: true });
+  }
+  const bound = oldFixture("old-bound", ["project-p", "session-s", "tool-old", "agent-old-agent", "ok"]);
+  assert.deepEqual(bound.slots(0).take("p", 2, 10, "nested", child), { ok: true });
+  bound.slots(0).result("nested", "lead", { status: "async_launched", agentId: "nested-agent" });
+  bound.slots(9).touch("old-agent", "sage:qa");
+  assert.equal(bound.slots(11).take("p", 2, 10, "excess", child).refused, "project");
+  bound.slots(11).release("old-agent");
+  assert.equal(readdirSync(bound.path).length, 1, "old bound ownership still releases only its own slot");
+  for (const [name, marks] of [
+    ["missing-ok", oldMarks.filter(mark => mark !== "ok")],
+    ["missing-project", oldMarks.filter(mark => mark !== "project-p")],
+    ["different-tool", oldMarks.map(mark => mark === "pending-old" ? "pending-other" : mark)],
+    ["partial-new", [...oldMarks, "role-sage_qa", "caller-main", "scope-incomplete"]],
+  ]) {
+    const f = oldFixture(name, marks);
+    f.slots(0).bind("unowned", "sage:qa");
+    f.slots(0).release("unowned");
+    assert.equal(f.slots(0).take("p", 1, 10, "excess", child).refused, "project", `${name} cannot acquire ownership through legacy adoption`);
+  }
 });
 
 test("T181: terminal child events cannot consume and release a fresh legacy reservation", async () => {
@@ -4254,7 +4305,7 @@ test("T181: terminal child events cannot consume and release a fresh legacy rese
     else if (kind === "parent-stop") s.send(ended("lead-a", "sage:lead"));
     else {
       const dir = join(s.vars.SAGE_HOOKS_STATE, "slots");
-      for (const slot of readdirSync(dir)) utimesSync(join(dir, slot), new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000));
+      if (existsSync(dir)) for (const slot of readdirSync(dir)) utimesSync(join(dir, slot), new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000));
     }
     assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "fresh-main")), undefined);
     s.send(start("old-child"));
@@ -4264,6 +4315,7 @@ test("T181: terminal child events cannot consume and release a fresh legacy rese
     s.send(ended("fresh-agent"));
     assert.equal(s.send(spawnAgent("sage:qa", BRIEF, "replacement")), undefined, "the real direct agent still releases normally");
   }
+  assert.deepEqual(failures, [], "old child events cannot release a fresh hook reservation");
   const { slotsFor } = await import(HOOK);
   for (const event of ["bind", "touch"]) {
     const dir = mkdtempSync(join(tmpdir(), "sage-observed-slots-")), at = Date.now();

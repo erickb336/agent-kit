@@ -27,7 +27,7 @@
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge,
 // a push, every file change and command of an agent, and a chief's shell write that names a logbook file.
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -1326,7 +1326,17 @@ export function slotsFor(dir, session, now = Date.now(), rawSession = session) {
   };
   const counts = project => ({ total: list().length, project: list().filter(slot => (mark(slot, "project-") ?? project) === project).length });
   const matching = (slot, role) => !role || !mark(slot, "role-") || mark(slot, "role-") === safe(role);
-  const pendingFor = role => ofSession().filter(slot => has(slot, "ok") && mark(slot, "pending-") !== undefined && matching(slot, role));
+  const pendingFor = role => ofSession().filter(slot => {
+    if (!has(slot, "ok") || mark(slot, "pending-") === undefined || !matching(slot, role)) return false;
+    const saved = marks(slot), prefixes = ["project-", "session-", "tool-", "pending-"];
+    if (saved.length === 5 && saved.includes("ok") && prefixes.every(prefix => saved.filter(name => name.startsWith(prefix) && name.length > prefix.length).length === 1)
+      && mark(slot, "tool-") === mark(slot, "pending-")) {
+      // Main's old complete format had no call identity. Adopt it under the mutation lock without inferring
+      // a native call, role or parent. This token identifies the reservation, never its reusable slot number.
+      add(slot, `call-legacy-${randomUUID()}`);
+    }
+    return true;
+  });
   const observationOf = agent => {
     const name = `observed-${hash(agent)}`;
     if (!noted(name)) return;
