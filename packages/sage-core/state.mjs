@@ -1168,14 +1168,12 @@ function bootTime() {
 
 /**
  * True only when the holder is surely gone: an earlier boot of this machine, no process under its pid, or a newer one.
- * When either boot time is unknown, the boot rule says nothing: a holder on another host is never gone, and on this host
- * only the pid and its start time decide.
+ * A holder on another host is never gone by this machine's boot or process evidence. On this host, an unknown boot
+ * time leaves only the pid and its start time to decide.
  */
 function gone(h, boot, checkStart, probe) {
-  const here = h.host === hostname();
-  if (!Number.isFinite(h.boot) || !Number.isFinite(boot)) {
-    if (!here) return false; // without both boot times, only the host name says that the holder is on this machine
-  } else if (Math.abs(h.boot - boot) > 60_000) return here; // another machine may still hold it
+  if (h.host !== hostname()) return false;
+  if (Number.isFinite(h.boot) && Number.isFinite(boot) && Math.abs(h.boot - boot) > 60_000) return true;
   if (!probe.alive(h.pid)) return true;
   return checkStart && probe.started(h.pid) > h.start + 2000; // the pid now names a process that started after the holder
 }
