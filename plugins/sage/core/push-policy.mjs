@@ -4,9 +4,11 @@ import { createCommandPolicy, GIT_VALUE, gitSubcommand } from "./command-policy.
 
 /** Shared push rules. The provider supplies a synchronous reader of the checkout's current branch.
  * This module never executes a command or offers a first-upload exception.
- * Undefined branch evidence leaves the command unchanged, as before the extraction.
+ * Undefined branch evidence retains the existing Claude behavior; a stricter reader can throw.
  */
 export function createPushPolicy({ stateToolPath, readBranch, mainReason = "work reaches main only through a pull request. Push the task's branch and open a pull request." } = {}) {
+  if (typeof readBranch !== "function") throw new TypeError("readBranch must be a function");
+  if (typeof mainReason !== "string" || !mainReason.trim() || mainReason.length > 2048 || /[\x00-\x1f\x7f]/.test(mainReason)) throw new TypeError("mainReason must be a bounded message without control characters");
   const { runnable } = createCommandPolicy({ stateToolPath });
   const PUSH_FORM = 'git [-C <dir>] push [-u] [--follow-tags] [-o <option>] origin <branch>, as a command of its own, with the literal name of the task\'s branch: not main or master, HEAD, @, a pattern, a variable, or a refspec with ":" or "+". To delete a branch: git push --delete origin <branch>';
   /** The word git, and then a later word: one linear scan from the first git (T34, T100-N5). */
@@ -79,6 +81,7 @@ export function createPushPolicy({ stateToolPath, readBranch, mainReason = "work
     if (names[0] !== "origin") return `push to origin, not to "${names[0]}".`;
     if (remove) return undefined;
     const branch = readBranch(dir);
+    if (branch !== undefined && (typeof branch !== "string" || !branch || /[\s\x00-\x1f\x7f]/u.test(branch))) throw new TypeError("readBranch must return a branch name or undefined");
     return branch && MAIN_REF.test(branch) ? `this checkout is on ${branch}. Push from the task's worktree, on the task's branch.` : undefined;
   }
 
@@ -94,5 +97,5 @@ export function createPushPolicy({ stateToolPath, readBranch, mainReason = "work
   /** A gh api field that names main or master as the ref, such as -f ref=refs/heads/main. */
   const MAIN_FIELD = /^(?:-[fF]|--(?:raw-)?field=)?ref=(?:refs\/)?(?:heads\/)?(?:main|master)$/i;
 
-  return { pushProblem };
+  return Object.freeze({ pushProblem });
 }

@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { shellCommands, programsRun, commandText } from "./command-reader.mjs";
 import { PR } from "./pull-request.mjs";
 
@@ -18,10 +19,13 @@ export const gitSubcommand = (words, k) => {
   return words[k] ?? "";
 };
 
-/** The provider supplies its state-tool path. This policy only reads command text.
- * A null prPattern preserves diagnostics when a provider has no state tool; its merge check must still refuse.
+/** Classify command text without executing it. The path is trusted provider configuration, never tool input.
+ * A matching merge is only a candidate: role, mode and ledger approval are separate checks.
  */
 export function createCommandPolicy({ stateToolPath, prPattern = PR } = {}) {
+  if (stateToolPath !== undefined && (typeof stateToolPath !== "string" || !isAbsolute(stateToolPath) || /[\x00-\x1f\x7f]/.test(stateToolPath))) {
+    throw new TypeError("stateToolPath must be an absolute path without control characters");
+  }
   /** Expansion in a command word can hide git, gh, push or merge. Arguments keep their ordinary braces and globs. */
   function expansionProblem(command, cwd) {
     const expansion = /[{[*?]/;
@@ -78,7 +82,7 @@ export function createCommandPolicy({ stateToolPath, prPattern = PR } = {}) {
     const words = text.split(/[ \t]+/);
     if (words.slice(0, 3).join(" ") !== "gh pr merge" || /[^\w \t=-]/.test(text)) return undefined;
     const [, , , pr, ...flags] = words;
-    // The default is the shared PR rule. A provider may have no rule when its state tool failed to load.
+    // A null pattern preserves diagnostics when the provider state tool could not load.
     if (prPattern && !prPattern.test(pr ?? "")) return { problem: `name the pull request by its number (digits, no leading zero): ${MERGE_FORM}.` };
     const shas = [];
     const modes = new Set();
@@ -130,5 +134,5 @@ export function createCommandPolicy({ stateToolPath, prPattern = PR } = {}) {
       .map(({ words, bodies }) => [...(words[0] === "git" && /^merge(?:-base|-file|-tree)?$/.test(words[1] ?? "") ? [words[0], ...words.slice(2)] : words), ...bodies].join(" "))
       .join("\n");
 
-  return { expansionProblem, mergeIn, runnable };
+  return Object.freeze({ expansionProblem, mergeIn, runnable });
 }

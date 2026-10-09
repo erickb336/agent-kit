@@ -189,237 +189,6 @@ test("check rejects a hook change made only in the generated Claude plugin", (t)
   assert.equal(current.status, 0, current.stderr);
 });
 
-test("shared command extraction parses executable text in both isolated bundles", async t => {
-  for (const provider of ["claude", "codex"]) {
-    const f = isolated(t, provider);
-    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
-    assert.equal(typeof api.shellCommands, "function");
-    assert.equal(typeof api.programsRun, "function");
-    const command = "echo fixture | sh";
-    const parsed = api.shellCommands(command);
-    assert.deepEqual(parsed.map(c => c.words), [["echo", "fixture"], ["sh"]]);
-    assert.equal(parsed[0].pipeTo, parsed[1]);
-    const runs = api.programsRun(command, f.dir, "");
-    assert.deepEqual(runs.map(({ word, stdin, piped }) => ({ word, stdin, piped })), [
-      { word: "echo", stdin: [], piped: false }, { word: "sh", stdin: ["echo fixture"], piped: true },
-    ]);
-    assert.throws(() => api.shellCommands("echo 'open"), /open quote/);
-    if (provider === "claude") {
-      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
-      assert.deepEqual(hook.shellCommands(command), parsed);
-      assert.deepEqual(hook.programsRun(command, f.dir, ""), runs);
-    }
-  }
-});
-
-test("shared command extraction preserves T199 and harmless arguments in both isolated bundles", async t => {
-  for (const provider of ["claude", "codex"]) {
-    const f = isolated(t, provider);
-    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
-    assert.equal(typeof api.createCommandPolicy, "function");
-    const tool = join(f.plugin, "skills/sage/sage.mjs");
-    const policy = api.createCommandPolicy({ stateToolPath: tool });
-    for (const command of ["g{h,h} pr view 1", "git pu{s,s}h origin topic", "gh pr {m,m}erge 1",
-      "printf 'gh pr {m,m}erge 1' | cat | sh"]) {
-      assert.match(policy.expansionProblem(command, f.dir), /shell expansion can hide the command/);
-    }
-    for (const command of ["echo '{sample}'", "git add '*.mjs'", "gh pr view 1", "[ -f '*.txt' ]", "[[ -f '*.txt' ]]"]) {
-      assert.equal(policy.expansionProblem(command, f.dir), undefined, command);
-    }
-    const rows = policy.runnable(api.shellCommands(`node '${tool}' log --why 'gh pr merge'; git push origin topic`));
-    assert.deepEqual(rows.map(r => r.words), [["node", tool], ["git", "push", "origin", "topic"]]);
-  }
-});
-
-test("shared merge and push extraction classifies merges in both isolated bundles", async t => {
-  const sha = "a".repeat(40);
-  for (const provider of ["claude", "codex"]) {
-    const f = isolated(t, provider);
-    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
-    const tool = join(f.plugin, "skills/sage/sage.mjs");
-    const policy = api.createCommandPolicy({ stateToolPath: tool });
-    const candidate = `gh pr merge 12 --squash --delete-branch --match-head-commit ${sha}`;
-    assert.deepEqual(policy.mergeIn(candidate), { pr: "12", sha });
-    for (const text of [candidate.replace(" 12 ", " 012 "), candidate.replace(sha, "abc"), `${candidate} --admin`,
-      `sh -c '${candidate}'`, `echo '${candidate}' | sh`, `echo '${candidate}' > run; sh run`,
-      "gh api repos/o/r/pulls/12/merge", "gh pr 'merge", "$(echo gh) pr merge 12"]) {
-      assert.equal(typeof policy.mergeIn(text)?.problem, "string", text);
-    }
-    for (const text of ["git status", "git merge topic", `echo '${candidate}'`, `echo '${candidate}' | head -1`,
-      `node '${tool}' log --why '${candidate}'`]) assert.equal(policy.mergeIn(text), undefined, text);
-    assert.match(policy.mergeIn(`node '/other/sage.mjs' log --why '${candidate}'`).problem, /cannot prove/);
-    assert.equal(api.mentionsMerge("gh api graphql -f query=mergePullRequest"), true);
-    assert.equal(api.mentionsMerge("git merge topic"), false);
-    assert.equal(api.PR.test("12"), true);
-    assert.equal(api.PR.test("012"), false);
-    if (provider === "claude") {
-      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/command-policy.mjs")));
-      assert.deepEqual(adapter.createCommandPolicy({ stateToolPath: tool }).mergeIn(candidate), { pr: "12", sha });
-      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
-      assert.deepEqual(hook.mergeIn(candidate), { pr: "12", sha });
-    }
-  }
-});
-
-test("shared merge and push extraction applies push rules and injected branch evidence in both isolated bundles", async t => {
-  for (const provider of ["claude", "codex"]) {
-    const f = isolated(t, provider);
-    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
-    const tool = join(f.plugin, "skills/sage/sage.mjs");
-    const policy = api.createPushPolicy({ stateToolPath: tool, readBranch: dir => dir === join(f.dir, "project/nested") ? "main" : "topic" });
-    for (const text of ["git push origin topic", "git push -u --follow-tags origin topic", "git push --delete origin topic",
-      "echo 'git push origin main'", "git status", `node '${tool}' log --why 'git push origin main'`]) {
-      assert.equal(policy.pushProblem(text, f.dir), undefined, text);
-    }
-    for (const text of ["git push origin main", "git push origin refs/heads/master", "git push origin topic:main",
-      "git push -f origin topic", "git push --force-with-lease origin topic", "git push --forc origin topic",
-      "git push --mirror origin", "git push origin HEAD", "git push origin", "git push upstream topic",
-      "git push origin '$BRANCH'", "sudo git push origin topic", "sh -c 'git push origin topic'",
-      "echo 'git push origin main' | sh", "git push 'origin", "gh api repos/o/r/git/refs -f ref=refs/heads/main",
-      "node /other/sage.mjs log --why 'git push origin main'"]) {
-      assert.equal(typeof policy.pushProblem(text, f.dir), "string", text);
-    }
-    assert.match(policy.pushProblem("cd project; git -C nested push origin topic", f.dir), /checkout is on main/);
-    assert.equal(policy.pushProblem("cd project; git -C nested push --delete origin topic", f.dir), undefined);
-    assert.match(api.createPushPolicy({ readBranch: () => "topic", mainReason: "Use a reviewed pull request." }).pushProblem("git push origin main", f.dir), /^Use a reviewed pull request\./);
-    assert.equal(api.createPushPolicy({ readBranch: () => undefined }).pushProblem("git push origin topic", f.dir), undefined);
-    if (provider === "claude") {
-      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/command-policy.mjs")));
-      assert.match(adapter.createPushPolicy({ readBranch: () => "main" }).pushProblem("git push origin topic", f.dir), /checkout is on main/);
-    }
-  }
-});
-
-test("shared merge and push extraction keeps transitive module failures closed and broken-state merge diagnostics", async t => {
-  for (const missing of ["core/push-policy.mjs", "core/pull-request.mjs"]) {
-    const f = isolated(t, "claude");
-    rmSync(join(f.plugin, missing), { force: true });
-    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
-    for (const sage of [false, true]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
-      for (const actor of [{}, { agent_id: "fixture-child" }]) {
-        const output = hook.handle({ hook_event_name: "PreToolUse", tool_name,
-          tool_input: { command: "gh api repos/o/r/git/refs -f ref=refs/heads/main" }, ...actor }, { sage }, {});
-        assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${missing}: ${tool_name}`);
-        assert.match(output.hookSpecificOutput.permissionDecisionReason, /command modules could not load/);
-      }
-    }
-  }
-  const f = isolated(t, "claude");
-  writeFileSync(join(f.plugin, "skills/sage/sage.mjs"), 'throw new Error("fixture broken state tool");\n');
-  const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
-  const sha = "a".repeat(40);
-  const candidate = `gh pr merge 012 --squash --delete-branch --match-head-commit ${sha}`;
-  assert.deepEqual(hook.mergeIn(candidate), { pr: "012", sha }, "a broken state tool preserves the old diagnostic order");
-  const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: candidate } }, { sage: true, autopilot: true }, {});
-  assert.match(output.hookSpecificOutput.permissionDecisionReason, /the merge check refuses: it could not run \(fixture broken state tool\)/);
-});
-
-test("shared file and mode extraction applies the chief edit rule in both isolated bundles", async t => {
-  for (const provider of ["claude", "codex"]) {
-    const f = isolated(t, provider);
-    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
-    assert.equal(api.chiefEditDenied({ sage: true, chief: true }), true);
-    for (const context of [{ sage: true, chief: false }, { sage: false, chief: true }, { sage: false, chief: false }]) {
-      assert.equal(api.chiefEditDenied(context), false);
-    }
-    for (const context of [{}, { sage: true }, { sage: "on", chief: true }]) assert.throws(() => api.chiefEditDenied(context), /Invalid edit policy context/);
-    if (provider === "claude") {
-      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/file-policy.mjs")));
-      assert.equal(adapter.chiefEditDenied({ sage: true, chief: true }), true);
-      assert.equal(adapter.chiefEditDenied({ sage: true, chief: false }), false);
-      const hooks = join(f.dir, "hook-state");
-      mkdirSync(hooks);
-      for (const sage of [true, 1, "on", false, 0, ""]) for (const tool_name of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
-        writeFileSync(join(hooks, "fixture.json"), JSON.stringify({ sage }));
-        const result = spawnSync(process.execPath, [join(f.plugin, "hooks/sage-hook.mjs")], {
-          input: JSON.stringify({ session_id: "fixture", hook_event_name: "PreToolUse", tool_name, cwd: f.dir,
-            tool_input: { file_path: join(f.dir, "sample.txt"), notebook_path: join(f.dir, "sample.ipynb") } }),
-          encoding: "utf8", env: { ...process.env, SAGE_HOOKS_STATE: hooks, SAGE_HOME: join(f.dir, "logbooks") },
-        });
-        assert.equal(result.status, 0, result.stderr);
-        const output = JSON.parse(result.stdout || "{}");
-        assert.equal(output.hookSpecificOutput?.permissionDecision, sage ? "deny" : undefined, `${tool_name}: persisted sage=${JSON.stringify(sage)}`);
-      }
-    }
-  }
-});
-
-test("shared file and mode extraction preserves classified mode phrases in both isolated bundles", async t => {
-  const prompt = (text, owner = true) => ({ owner, text, outside: text, all: text });
-  for (const provider of ["claude", "codex"]) {
-    const f = isolated(t, provider);
-    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
-    assert.deepEqual(api.modeSignals(prompt("sage mode")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: false, modeWord: true });
-    assert.deepEqual(api.modeSignals(prompt("sage mode off")), { sageOff: true, sageOn: false, autopilotOff: true, autopilotOn: false, modeWord: true });
-    assert.deepEqual(api.modeSignals(prompt("sage mode, autopilot on")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: true, modeWord: true });
-    assert.equal(api.modeSignals(prompt("sage mode continue on the project")).sageOn, true);
-    for (const text of ["What does sage mode do?", "sage mode?", "sage mode online: is it a thing?", "autopilot on main"]) {
-      const signals = api.modeSignals(prompt(text));
-      assert.equal(signals.sageOn, false, text);
-      assert.equal(signals.autopilotOn, false, text);
-    }
-    for (const text of ["sage mode", "sage mode off", "autopilot on"]) {
-      const signals = api.modeSignals(prompt(text, false));
-      assert.equal(signals.sageOn, false, text);
-      assert.equal(signals.sageOff, false, text);
-      assert.equal(signals.autopilotOn, false, text);
-    }
-    assert.equal(api.modeSignals(prompt("Please stop autopilot", false)).autopilotOff, true);
-    assert.equal(api.modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nautopilot off" }).autopilotOff, true);
-    assert.equal(api.modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nReport: no autopilot changes" }).autopilotOff, false);
-    for (const input of [{}, { owner: "user", text: "sage mode", outside: "", all: "" }, { owner: true, text: "sage mode", all: "" }]) assert.throws(() => api.modeSignals(input), /Invalid mode prompt/);
-    if (provider === "claude") {
-      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/mode-policy.mjs")));
-      assert.equal(adapter.modeSignals(prompt("sage mode")).sageOn, true);
-      assert.equal(adapter.modeSignals(prompt("sage mode", false)).sageOn, false);
-    }
-  }
-});
-
-test("shared file and mode extraction refuses active edits when the file policy is missing", async t => {
-  for (const missing of ["hooks/file-policy.mjs", "core/file-policy.mjs"]) {
-    const f = isolated(t, "claude");
-    rmSync(join(f.plugin, missing), { force: true });
-    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
-    for (const tool_name of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
-      const input = { hook_event_name: "PreToolUse", tool_name, cwd: f.dir, tool_input: { file_path: join(f.dir, "sample.txt"), notebook_path: join(f.dir, "sample.ipynb") } };
-      const output = hook.handle(input, { sage: true }, {});
-      assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${missing}: ${tool_name}`);
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /file policy cannot load/);
-      assert.equal(hook.handle(input, { sage: false }, {}), undefined);
-    }
-    if (missing.startsWith("core/")) {
-      const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh api repos/o/r/git/refs -f ref=refs/heads/main" } }, { sage: false }, {});
-      assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /command modules could not load/);
-    }
-  }
-});
-
-test("shared file and mode extraction clears cached autopilot before tool checks when the mode policy is missing", async t => {
-  for (const missing of ["hooks/mode-policy.mjs", "core/mode-policy.mjs"]) {
-    const f = isolated(t, "claude");
-    rmSync(join(f.plugin, missing), { force: true });
-    // A passing fixture ledger makes a stale autopilot flag an actual bypass; no real logbook is read.
-    writeFileSync(join(f.plugin, "skills/sage/sage.mjs"), `export const sageRoot = () => ${JSON.stringify(join(f.dir, "logbooks"))};\nexport const mergeCheck = () => ({ ok: true });\n`);
-    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
-    const state = { sage: true, autopilot: true };
-    const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", cwd: f.dir,
-      tool_input: { command: `gh pr merge 12 --squash --delete-branch --match-head-commit ${"a".repeat(40)}` } }, state, {});
-    assert.equal(state.autopilot, false, missing);
-    assert.equal(state.sage, true, "the existing Sage restrictions stay active");
-    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
-    assert.match(output.hookSpecificOutput.permissionDecisionReason, missing.startsWith("core/") ? /command modules could not load/ : /autopilot is off/);
-    for (const sage of [false, true]) {
-      const state = { sage, given: true, autopilot: true };
-      const output = hook.handle({ hook_event_name: "UserPromptSubmit", prompt: "sage mode", cwd: f.dir }, state, {});
-      assert.equal(state.sage, sage, "missing policy cannot start Sage mode");
-      assert.equal(state.autopilot, false);
-      assert.match(context(output), /mode policy cannot load/);
-    }
-  }
-});
-
 const assignmentScope = { project: "project-a", session: "root-session", epoch: "11111111-1111-4111-8111-111111111111" };
 const assignmentDispatch = { task: "T1", run: "R1", issuer: "root-session", call: "spawn-1" };
 const assignmentId = "22222222-2222-4222-8222-222222222222";
@@ -676,6 +445,77 @@ test("admission rejects correctly hashed records that violate replay rules", asy
   }
 });
 
+test("a missing shared file policy still refuses active chief edits without disabling the hook", async (t) => {
+  const { dir, plugin } = isolated(t, "claude");
+  rmSync(join(plugin, "hooks/file-policy.mjs"), { force: true });
+  const { handle: check } = await import(pathToFileURL(join(plugin, "hooks/sage-hook.mjs")).href);
+  const input = { hook_event_name: "PreToolUse", tool_name: "Edit", session_id: "fixture", cwd: dir, tool_input: { file_path: join(dir, "sample.txt") } };
+  const result = check(input, { sage: true }, {});
+  assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(result.hookSpecificOutput.permissionDecisionReason, /file policy cannot load/);
+  assert.equal(check(input, { sage: false }, {}), undefined);
+});
+
+const filePolicyApi = () => import("../plugins/sage-codex/runtime/file-policy.mjs");
+
+test("the Codex direct edit gate denies the active chief but leaves child and inactive checks available", async () => {
+  const { directEditDecision } = await filePolicyApi();
+  const patch = { tool_name: "apply_patch", tool_input: { input: "*** Begin Patch\n*** Add File: sample.txt\n+sample\n*** End Patch" } };
+  assert.equal(directEditDecision(patch, { sage: true, chief: true }).decision, "deny");
+  assert.deepEqual(directEditDecision(patch, { sage: true, chief: false }), { decision: "pass" });
+  assert.deepEqual(directEditDecision(patch, { sage: false, chief: true }), { decision: "pass" });
+  assert.deepEqual(directEditDecision({ tool_name: "collaborationlist_agents" }, { sage: true, chief: true }), { decision: "pass" });
+});
+
+test("the Codex direct edit gate refuses unverified mode or chief context", async () => {
+  const { directEditDecision } = await filePolicyApi();
+  for (const context of [undefined, null, {}, { sage: true }, { chief: true }, { sage: "on", chief: true }]) {
+    assert.throws(() => directEditDecision({ tool_name: "apply_patch" }, context));
+  }
+});
+
+
+test("shared mode signals preserve owner phrases and conservative autopilot off", async () => {
+  const { modeSignals } = await import("../packages/sage-core/index.mjs");
+  const prompt = (text, owner = true) => ({ owner, text, outside: text, all: text });
+  assert.deepEqual(modeSignals(prompt("sage mode")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: false, modeWord: true });
+  assert.equal(modeSignals(prompt("sage mode continue on the project")).sageOn, true);
+  assert.equal(modeSignals(prompt("sage mode off")).sageOff, true);
+  assert.equal(modeSignals(prompt("sage mode off")).autopilotOff, true);
+  assert.equal(modeSignals(prompt("sage mode, autopilot on")).autopilotOn, true);
+  for (const text of ["What does sage mode do?", "sage mode?", "sage mode online: is it a thing?", "autopilot on main"]) {
+    const result = modeSignals(prompt(text));
+    assert.equal(result.sageOn, false); assert.equal(result.autopilotOn, false);
+  }
+  for (const text of ["sage mode", "sage mode off", "autopilot on"]) {
+    const result = modeSignals(prompt(text, false));
+    assert.equal(result.sageOn, false); assert.equal(result.sageOff, false); assert.equal(result.autopilotOn, false);
+  }
+  assert.equal(modeSignals(prompt("Please stop autopilot", false)).autopilotOff, true);
+  assert.equal(modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nautopilot off" }).autopilotOff, true);
+});
+
+test("shared mode signals reject unclassified or malformed prompt input", async () => {
+  const { modeSignals } = await import("../packages/sage-core/index.mjs");
+  assert.equal(modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode" }).sageOn, true);
+  for (const input of [null, {}, { owner: "user", text: "sage mode", outside: "", all: "" },
+    { owner: true, text: "sage mode", all: "" }, { owner: false, text: null, outside: "", all: "" }]) {
+    assert.throws(() => modeSignals(input));
+  }
+});
+
+test("missing shared mode policy cannot enable mode or retain autopilot", async (t) => {
+  const { dir, plugin } = isolated(t, "claude");
+  rmSync(join(plugin, "hooks/mode-policy.mjs"), { force: true });
+  const { handle: check } = await import(pathToFileURL(join(plugin, "hooks/sage-hook.mjs")).href);
+  for (const sage of [false, true]) {
+    const state = { sage, autopilot: true };
+    const result = check({ hook_event_name: "UserPromptSubmit", session_id: "fixture", cwd: dir, prompt: "sage mode" }, state, {});
+    assert.equal(state.sage, sage); assert.equal(state.autopilot, false);
+    assert.match(JSON.stringify(result), /mode policy cannot load/);
+  }
+});
+
 
 const modeTurn = "22222222-2222-4222-8222-222222222222";
 const modeNextTurn = "33333333-3333-4333-8333-333333333333";
@@ -747,6 +587,88 @@ test("admission mode concurrent changes require the same unchanged prior turn", 
 });
 
 
+async function nativeModeFixture(t) {
+  const { dir, plugin } = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(plugin, "runtime/mode.mjs")).href);
+  const core = await import(pathToFileURL(join(plugin, "core/index.mjs")).href);
+  const directory = join(dir, "admission"), projectDirectory = join(dir, "workspace"), sessionsDir = join(dir, "sessions");
+  mkdirSync(projectDirectory); mkdirSync(sessionsDir);
+  core.configureAdmission(directory, { total: 3, projects: [{ project: "one", limit: 3 }, { project: "two", limit: 3 }] });
+  const session = "11111111-1111-4111-8111-111111111111";
+  const transcript = join(sessionsDir, "root.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "session_meta", payload: { id: session, session_id: session, cli_version: "0.160.0" } }) + "\n");
+  const input = { hook_event_name: "UserPromptSubmit", session_id: session, turn_id: modeTurn, cwd: projectDirectory,
+    transcript_path: transcript, model: "fixture", permission_mode: "default", prompt: "sage mode" };
+  return { api, core, input, context: { version: "0.160.0", actor: session },
+    options: { directory, project: "one", projectDirectory, sessionsDir } };
+}
+
+test("Codex mode adapter persists verified phrases and keeps autopilot disabled", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  assert.equal(api.updateOwnerMode({ ...input, prompt: "What does sage mode do?" }, context, options).sage, false);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  const active = api.updateOwnerMode({ ...input, prompt: "sage mode, autopilot on" }, context, options);
+  assert.equal(active.sage, true); assert.equal(active.autopilot, false); assert.equal(active.signals.autopilotOn, true);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn, prompt: "continue" }, context, options).sage, true);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options).sage, false);
+  assert.equal(api.readMode(options.directory, options.project, input.session_id).sage, false);
+  assert.equal(core.readAdmission(options.directory).modes.length, 2);
+});
+
+test("Codex mode adapter never replays old activation or mode prompts over off", async (t) => {
+  const { api, input, context, options } = await nativeModeFixture(t);
+  api.updateOwnerMode(input, context, options);
+  const on = { ...input, turn_id: modeNextTurn };
+  api.updateOwnerMode(on, context, options);
+  api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options);
+  assert.equal(api.updateOwnerMode(input, context, options).sage, false);
+  assert.equal(api.updateOwnerMode(on, context, options).sage, false);
+  assert.throws(() => api.updateOwnerMode({ ...input, prompt: "sage mode off" }, context, options), /different mode request/);
+  assert.throws(() => api.updateOwnerMode({ ...on, prompt: "sage mode off" }, context, options), /different mode request/);
+  assert.equal(api.readMode(options.directory, options.project, input.session_id).modes.length, 3);
+});
+
+test("Codex mode adapter requires exact project and native owner identity before writes", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  for (const native of [null, { ...context, actor: modeTurn }, { ...context, version: "0.160.1" }]) {
+    assert.equal(api.updateOwnerMode(input, native, options), null);
+  }
+  assert.equal(api.updateOwnerMode({ ...input, cwd: options.sessionsDir }, context, options), null);
+  assert.equal(api.updateOwnerMode({ ...input, agent_id: input.session_id }, context, options), null);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  api.updateOwnerMode(input, context, options);
+  assert.equal(core.readAdmission(options.directory).sessions[0].session, `codex:${input.session_id}`);
+  assert.equal(api.readMode(options.directory, "two", input.session_id).sage, false);
+  assert.throws(() => api.readMode(options.directory, "absent", input.session_id), /not configured/);
+});
+
+test("Codex mode adapter refuses damaged storage and foreign metadata", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  writeFileSync(input.transcript_path, JSON.stringify({ type: "session_meta", payload: { id: modeNextTurn, session_id: modeNextTurn, cli_version: "0.160.0" } }) + "\n");
+  assert.equal(api.updateOwnerMode(input, context, options), null);
+  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
+  assert.throws(() => api.updateOwnerMode({ ...input, transcript_path: join(options.projectDirectory, "outside.jsonl") }, context, options));
+  writeFileSync(join(options.directory, "00000000.json"), "broken");
+  assert.throws(() => api.readMode(options.directory, options.project, input.session_id));
+});
+
+
+test("Codex mode adapter records an initial off so its retry cannot replace later on", async (t) => {
+  const { api, core, input, context, options } = await nativeModeFixture(t);
+  const off = { ...input, prompt: "sage mode off" };
+  assert.equal(api.updateOwnerMode(off, context, options).sage, false);
+  assert.equal(core.readAdmission(options.directory).modes.length, 1);
+  const owner = core.readAdmission(options.directory).sessions[0];
+  const initial = { project: owner.project, session: owner.session, activation: owner.activation };
+  assert.throws(() => core.activateAdmission(options.directory, initial), /different initial mode/);
+  assert.throws(() => core.activateAdmission(options.directory, initial, { sage: "off" }), /invalid initial mode/);
+  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn }, context, options).sage, true);
+  assert.equal(api.updateOwnerMode(off, context, options).sage, true);
+  assert.equal(core.readAdmission(options.directory).modes.length, 2);
+  assert.throws(() => api.updateOwnerMode(input, context, options), /different mode request/);
+});
+
+
 test("admission retains the original on meaning of earlier activation records", async (t) => {
   const { createHash } = await import("node:crypto");
   const { api, dir, owner, scope } = await admissionFixture(t);
@@ -759,6 +681,78 @@ test("admission retains the original on meaning of earlier activation records", 
   assert.deepEqual(api.activateAdmission(dir, admissionOwner), owner);
   api.changeAdmissionMode(dir, { ...scope, after: owner.activation, turn: modeTurn, sage: false });
   assert.equal(api.readAdmission(dir).modes.at(-1).sage, false);
+});
+
+
+test("Codex bundles the MCP SDK with native identity and hidden tool metadata intact", async (t) => {
+  const { dir, plugin } = isolated(t, "codex");
+  assert.ok(existsSync(join(plugin, "runtime/mcp-sdk.mjs")));
+  assert.equal(existsSync(join(dir, "node_modules")), false);
+  const entry = join(dir, "server.mjs");
+  writeFileSync(entry, `
+    import { McpServer, serveStdio, z } from './plugin/runtime/mcp-sdk.mjs';
+    serveStdio(() => {
+      const server = new McpServer({ name: 'sage-test', version: '0.1.0' });
+      server.registerTool('sage_native_hook', {
+        inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ['app'] } },
+      }, async (input, context) => ({ content: [{ type: 'text', text: JSON.stringify({
+        version: server.server.getClientVersion()?.version,
+        actor: context.mcpReq._meta?.threadId, input,
+      }) }] }));
+      return server;
+    });
+  `);
+  const child = spawn(process.execPath, [entry], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+  t.after(() => child.stdin.end());
+  let stderr = '', sequence = 0;
+  const pending = new Map();
+  const closed = new Promise(resolve => child.once('close', (code, signal) => {
+    for (const { reject } of pending.values()) reject(Error('MCP server closed before its response'));
+    resolve({ code, signal });
+  }));
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  createInterface({ input: child.stdout }).on('line', line => {
+    try {
+      const message = JSON.parse(line);
+      pending.get(message.id)?.resolve(message);
+      pending.delete(message.id);
+    } catch (error) {
+      for (const { reject } of pending.values()) reject(error);
+      child.stdin.end();
+    }
+  });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++sequence;
+    pending.set(id, { resolve, reject });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+  const init = await request('initialize', {
+    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codex', version: '0.160.0' },
+  });
+  assert.equal(init.result.protocolVersion, '2025-06-18');
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  const listed = await request('tools/list', {});
+  assert.equal(listed.result.tools.length, 1);
+  assert.deepEqual(listed.result.tools[0]._meta.ui.visibility, ['app']);
+  const actor = 'd72422c7-509c-43aa-8c42-827c556f8a57';
+  const input = { hook_event_name: 'PreToolUse', extra: { retained: true }, actor: 'forged', version: 'forged' };
+  const called = await request('tools/call', { name: 'sage_native_hook', arguments: input, _meta: { threadId: actor } });
+  assert.deepEqual(JSON.parse(called.result.content[0].text), { version: '0.160.0', actor, input });
+  const absent = await request('tools/call', { name: 'sage_native_hook', arguments: input });
+  assert.equal(Object.hasOwn(JSON.parse(absent.result.content[0].text), 'actor'), false);
+  child.stdin.end();
+  assert.deepEqual(await closed, { code: 0, signal: null });
+  assert.equal(stderr, '');
+});
+
+test("Codex includes each bundled MCP dependency license", (t) => {
+  const { plugin } = isolated(t, "codex");
+  for (const name of ['@modelcontextprotocol-server', '@modelcontextprotocol-core', 'zod',
+    'ajv', 'ajv-formats', 'fast-deep-equal', 'fast-uri', 'json-schema-traverse', 'content-type']) {
+    const text = readFileSync(join(plugin, 'licenses', name + '.txt'), 'utf8');
+    assert.match(text, name.startsWith('@modelcontextprotocol') ? /Apache License/ : /MIT|Permission is hereby granted/);
+    assert.match(text, /[Cc]opyright/);
+  }
 });
 
 
@@ -934,6 +928,74 @@ test("child binding atomically selects one child when two callers claim the same
   assert.deepEqual(f.api.readAdmission(f.journal).bindings, [results.find(row => row.binding).binding]);
 });
 
+async function nativeBindingFixture(t) {
+  const f = await roleAdmissionFixture(t);
+  const api = await import(new URL("../runtime/child-binding.mjs", f.url));
+  const events = await import(new URL("../runtime/events.mjs", f.url));
+  const observationsDirectory = join(f.journal, "..", "observations");
+  const root = "11111111-1111-4111-8111-111111111111";
+  const lead = "22222222-2222-4222-8222-222222222222";
+  const child = "33333333-3333-4333-8333-333333333333";
+  const owner = f.api.activateAdmission(f.journal, { project: f.scope.project, session: `codex:${root}`, activation: f.activation });
+  const scope = { project: owner.project, session: owner.session, epoch: owner.epoch };
+  const reserve = (index, role, issuerRole, issuer = root, name = `agent_${index}`, confirm = true, brief) => {
+    const args = f.args(index, issuer, scope); args[3].name = name; args[3].tool = "collaborationspawn_agent";
+    const assignment = (brief === undefined ? f.api.reserveRoleAdmission(...args, { issuerRole, role })
+      : f.api.reserveBriefAdmission(...args, { issuerRole, role }, brief)).assignment;
+    const base = { schema: 1, runtime: "0.160.0", session: root, actor: issuer, call: assignment.call, turn: f.activation };
+    events.publish(observationsDirectory, { ...base, kind: "spawn-request", name });
+    if (confirm) events.publish(observationsDirectory, { ...base, kind: "spawn-result", path: issuer === root ? `/root/${name}` : `/root/agent_1/${name}` });
+    return assignment;
+  };
+  const identity = (id = lead, parent = root, path = "/root/agent_1") => ({ session: root, child: id, parent, path, turn: f.activation });
+  const observeStart = value => events.publish(observationsDirectory, { schema: 1, runtime: "0.160.0", kind: "child-start", ...value });
+  observeStart(identity());
+  const bind = value => api.bindNativeChild({ directory: f.journal, project: scope.project, observationsDirectory }, value);
+  return { ...f, root, lead, child, scope, reserve, identity, bind, observeStart, events, observationsDirectory };
+}
+
+test("native child binding connects a lead and its specialist to exact reserved roles", async t => {
+  const f = await nativeBindingFixture(t);
+  const lead = f.reserve(1, "lead", "chief-of-staff");
+  assert.equal(f.bind(f.identity()).assignment.id, lead.id);
+  const child = f.reserve(2, "qa", "lead", f.lead);
+  const native = f.identity(f.child, f.lead, "/root/agent_1/agent_2");
+  f.observeStart(native);
+  const result = f.bind(native);
+  assert.equal(result.role, "qa"); assert.equal(result.assignment.id, child.id);
+  assert.equal(result.binding.issuer, f.lead);
+  assert.equal(f.bind(native).decision, "already-bound");
+  assert.equal(f.api.readAdmission(f.journal).bindings.length, 2);
+});
+
+test("native child binding rejects unadmitted children and inconsistent parent paths or roles", async t => {
+  const f = await nativeBindingFixture(t);
+  assert.throws(() => f.bind(f.identity()));
+  f.reserve(1, "lead", "chief-of-staff");
+  for (const change of [{ path: "/root/other" }, { parent: f.child }, { child: f.root },
+    { turn: "invalid" }, { role: "lead" }, { session: f.child }]) {
+    assert.throws(() => f.bind({ ...f.identity(), ...change }));
+  }
+  f.bind(f.identity());
+  // A trusted caller still cannot bind an inconsistent recorded issuer role.
+  f.reserve(2, "qa", "chief-of-staff", f.lead);
+  f.observeStart(f.identity(f.child, f.lead, "/root/agent_1/agent_2"));
+  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_1/agent_2")));
+  f.reserve(3, "qa", "lead", f.lead);
+  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_3")));
+  assert.equal(f.api.readAdmission(f.journal).bindings.length, 1);
+});
+
+test("native child binding refuses a reservation for another dispatch tool", async t => {
+  const f = await nativeBindingFixture(t);
+  const args = f.args(1, f.root, f.scope); args[3].name = "agent_1"; args[3].tool = "collaborationfollowup_task";
+  f.api.reserveRoleAdmission(...args, { issuerRole: "chief-of-staff", role: "lead" });
+  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "spawn-1", turn: f.activation };
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => f.bind(f.identity()));
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
 
 test("child binding keeps an exact receipt after a later legacy name collision", async t => {
   const f = await roleAdmissionFixture(t); const a = f.reserve(1).assignment;
@@ -958,6 +1020,38 @@ test("child binding reads prior role records with reused names but refuses a new
   assert.throws(() => f.api.bindAdmission(f.journal, bindingFor(first.assignment)), /name is ambiguous/);
 });
 
+test("native child binding refuses a failed reservation later matched by an unadmitted spawn", async t => {
+  const f = await nativeBindingFixture(t);
+  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", false);
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "unadmitted", turn: f.activation };
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
+  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
+
+test("native child binding refuses conflicting path reuse and a result from another parent turn", async t => {
+  const f = await nativeBindingFixture(t);
+  f.reserve(1, "lead", "chief-of-staff");
+  f.observeStart(f.identity(f.child));
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+  const other = await nativeBindingFixture(t);
+  other.reserve(1, "lead", "chief-of-staff", other.root, "agent_1", false);
+  other.events.publish(other.observationsDirectory, { schema: 1, runtime: "0.160.0", session: other.root,
+    actor: other.root, call: "spawn-1", turn: "99999999-9999-4999-8999-999999999999", kind: "spawn-result", path: "/root/agent_1" });
+  assert.throws(() => other.bind(other.identity()), /could not bind/);
+  assert.deepEqual(other.api.readAdmission(other.journal).bindings, []);
+});
+
+test("native child binding refuses a reused name before the later spawn result arrives", async t => {
+  const f = await nativeBindingFixture(t); f.reserve(1, "lead", "chief-of-staff");
+  f.events.publish(f.observationsDirectory, { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root,
+    call: "later-call", turn: f.activation, kind: "spawn-request", name: "agent_1" });
+  assert.throws(() => f.bind(f.identity()), /could not bind/);
+  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
+});
 
 const completeBrief = goal => Object.fromEntries(["GOAL", "SCOPE", "CONTEXT", "DECISIONS", "ACCEPTANCE", "VERIFY", "BUDGET", "FORBIDDEN", "REPORT", "STANDING"]
   .map(field => [field, field === "GOAL" ? goal : "none"]));
@@ -1042,6 +1136,14 @@ test("brief admission permits only one of two concurrent instructions for the sa
   assert.equal(f.api.readAdmission(f.journal).reservations.length, 1);
 });
 
+test("brief admission returns the saved instructions with the verified native binding", async t => {
+  const f = await nativeBindingFixture(t); const brief = completeBrief("Deliver these saved instructions.");
+  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", true, brief);
+  const result = f.bind(f.identity());
+  assert.equal(result.role, "lead"); assert.deepEqual(result.brief, brief);
+  assert(f.api.renderBrief(result.brief).includes("GOAL\nDeliver these saved instructions."));
+  assert.deepEqual(f.bind(f.identity()).brief, brief);
+});
 
 async function preparationFixture(t, limits) {
   const { plugin } = isolated(t, "codex");
@@ -1171,293 +1273,6 @@ test("prepared admission gives one preparation and one dispatch to concurrent ca
   assert.equal(dispatched.filter(row => /already has a dispatch/.test(row.refused)).length, 1);
   assert.equal(f.api.readAdmission(f.journal).reservations.length, 1);
 });
-
-const filePolicyApi = () => import("../plugins/sage-codex/runtime/file-policy.mjs");
-
-test("the Codex direct edit gate denies the active chief but leaves child and inactive checks available", async () => {
-  const { directEditDecision } = await filePolicyApi();
-  const patch = { tool_name: "apply_patch", tool_input: { input: "*** Begin Patch\n*** Add File: sample.txt\n+sample\n*** End Patch" } };
-  assert.equal(directEditDecision(patch, { sage: true, chief: true }).decision, "deny");
-  assert.deepEqual(directEditDecision(patch, { sage: true, chief: false }), { decision: "pass" });
-  assert.deepEqual(directEditDecision(patch, { sage: false, chief: true }), { decision: "pass" });
-  assert.deepEqual(directEditDecision({ tool_name: "collaborationlist_agents" }, { sage: true, chief: true }), { decision: "pass" });
-});
-
-test("the Codex direct edit gate refuses unverified mode or chief context", async () => {
-  const { directEditDecision } = await filePolicyApi();
-  for (const context of [undefined, null, {}, { sage: true }, { chief: true }, { sage: "on", chief: true }]) {
-    assert.throws(() => directEditDecision({ tool_name: "apply_patch" }, context));
-  }
-});
-
-
-async function nativeModeFixture(t) {
-  const { dir, plugin } = isolated(t, "codex");
-  const api = await import(pathToFileURL(join(plugin, "runtime/mode.mjs")).href);
-  const core = await import(pathToFileURL(join(plugin, "core/index.mjs")).href);
-  const directory = join(dir, "admission"), projectDirectory = join(dir, "workspace"), sessionsDir = join(dir, "sessions");
-  mkdirSync(projectDirectory); mkdirSync(sessionsDir);
-  core.configureAdmission(directory, { total: 3, projects: [{ project: "one", limit: 3 }, { project: "two", limit: 3 }] });
-  const session = "11111111-1111-4111-8111-111111111111";
-  const transcript = join(sessionsDir, "root.jsonl");
-  writeFileSync(transcript, JSON.stringify({ type: "session_meta", payload: { id: session, session_id: session, cli_version: "0.160.0" } }) + "\n");
-  const input = { hook_event_name: "UserPromptSubmit", session_id: session, turn_id: modeTurn, cwd: projectDirectory,
-    transcript_path: transcript, model: "fixture", permission_mode: "default", prompt: "sage mode" };
-  return { api, core, input, context: { version: "0.160.0", actor: session },
-    options: { directory, project: "one", projectDirectory, sessionsDir } };
-}
-
-test("Codex mode adapter persists verified phrases and keeps autopilot disabled", async (t) => {
-  const { api, core, input, context, options } = await nativeModeFixture(t);
-  assert.equal(api.updateOwnerMode({ ...input, prompt: "What does sage mode do?" }, context, options).sage, false);
-  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
-  const active = api.updateOwnerMode({ ...input, prompt: "sage mode, autopilot on" }, context, options);
-  assert.equal(active.sage, true); assert.equal(active.autopilot, false); assert.equal(active.signals.autopilotOn, true);
-  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn, prompt: "continue" }, context, options).sage, true);
-  assert.equal(api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options).sage, false);
-  assert.equal(api.readMode(options.directory, options.project, input.session_id).sage, false);
-  assert.equal(core.readAdmission(options.directory).modes.length, 2);
-});
-
-test("Codex mode adapter never replays old activation or mode prompts over off", async (t) => {
-  const { api, input, context, options } = await nativeModeFixture(t);
-  api.updateOwnerMode(input, context, options);
-  const on = { ...input, turn_id: modeNextTurn };
-  api.updateOwnerMode(on, context, options);
-  api.updateOwnerMode({ ...input, turn_id: "44444444-4444-4444-8444-444444444444", prompt: "sage mode off" }, context, options);
-  assert.equal(api.updateOwnerMode(input, context, options).sage, false);
-  assert.equal(api.updateOwnerMode(on, context, options).sage, false);
-  assert.throws(() => api.updateOwnerMode({ ...input, prompt: "sage mode off" }, context, options), /different mode request/);
-  assert.throws(() => api.updateOwnerMode({ ...on, prompt: "sage mode off" }, context, options), /different mode request/);
-  assert.equal(api.readMode(options.directory, options.project, input.session_id).modes.length, 3);
-});
-
-test("Codex mode adapter requires exact project and native owner identity before writes", async (t) => {
-  const { api, core, input, context, options } = await nativeModeFixture(t);
-  for (const native of [null, { ...context, actor: modeTurn }, { ...context, version: "0.160.1" }]) {
-    assert.equal(api.updateOwnerMode(input, native, options), null);
-  }
-  assert.equal(api.updateOwnerMode({ ...input, cwd: options.sessionsDir }, context, options), null);
-  assert.equal(api.updateOwnerMode({ ...input, agent_id: input.session_id }, context, options), null);
-  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
-  api.updateOwnerMode(input, context, options);
-  assert.equal(core.readAdmission(options.directory).sessions[0].session, `codex:${input.session_id}`);
-  assert.equal(api.readMode(options.directory, "two", input.session_id).sage, false);
-  assert.throws(() => api.readMode(options.directory, "absent", input.session_id), /not configured/);
-});
-
-test("Codex mode adapter refuses damaged storage and foreign metadata", async (t) => {
-  const { api, core, input, context, options } = await nativeModeFixture(t);
-  writeFileSync(input.transcript_path, JSON.stringify({ type: "session_meta", payload: { id: modeNextTurn, session_id: modeNextTurn, cli_version: "0.160.0" } }) + "\n");
-  assert.equal(api.updateOwnerMode(input, context, options), null);
-  assert.equal(core.readAdmission(options.directory).sessions.length, 0);
-  assert.throws(() => api.updateOwnerMode({ ...input, transcript_path: join(options.projectDirectory, "outside.jsonl") }, context, options));
-  writeFileSync(join(options.directory, "00000000.json"), "broken");
-  assert.throws(() => api.readMode(options.directory, options.project, input.session_id));
-});
-
-
-test("Codex mode adapter records an initial off so its retry cannot replace later on", async (t) => {
-  const { api, core, input, context, options } = await nativeModeFixture(t);
-  const off = { ...input, prompt: "sage mode off" };
-  assert.equal(api.updateOwnerMode(off, context, options).sage, false);
-  assert.equal(core.readAdmission(options.directory).modes.length, 1);
-  const owner = core.readAdmission(options.directory).sessions[0];
-  const initial = { project: owner.project, session: owner.session, activation: owner.activation };
-  assert.throws(() => core.activateAdmission(options.directory, initial), /different initial mode/);
-  assert.throws(() => core.activateAdmission(options.directory, initial, { sage: "off" }), /invalid initial mode/);
-  assert.equal(api.updateOwnerMode({ ...input, turn_id: modeNextTurn }, context, options).sage, true);
-  assert.equal(api.updateOwnerMode(off, context, options).sage, true);
-  assert.equal(core.readAdmission(options.directory).modes.length, 2);
-  assert.throws(() => api.updateOwnerMode(input, context, options), /different mode request/);
-});
-
-
-test("Codex bundles the MCP SDK with native identity and hidden tool metadata intact", async (t) => {
-  const { dir, plugin } = isolated(t, "codex");
-  assert.ok(existsSync(join(plugin, "runtime/mcp-sdk.mjs")));
-  assert.equal(existsSync(join(dir, "node_modules")), false);
-  const entry = join(dir, "server.mjs");
-  writeFileSync(entry, `
-    import { McpServer, serveStdio, z } from './plugin/runtime/mcp-sdk.mjs';
-    serveStdio(() => {
-      const server = new McpServer({ name: 'sage-test', version: '0.1.0' });
-      server.registerTool('sage_native_hook', {
-        inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ['app'] } },
-      }, async (input, context) => ({ content: [{ type: 'text', text: JSON.stringify({
-        version: server.server.getClientVersion()?.version,
-        actor: context.mcpReq._meta?.threadId, input,
-      }) }] }));
-      return server;
-    });
-  `);
-  const child = spawn(process.execPath, [entry], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
-  t.after(() => child.stdin.end());
-  let stderr = '', sequence = 0;
-  const pending = new Map();
-  const closed = new Promise(resolve => child.once('close', (code, signal) => {
-    for (const { reject } of pending.values()) reject(Error('MCP server closed before its response'));
-    resolve({ code, signal });
-  }));
-  child.stderr.on('data', chunk => { stderr += chunk; });
-  createInterface({ input: child.stdout }).on('line', line => {
-    try {
-      const message = JSON.parse(line);
-      pending.get(message.id)?.resolve(message);
-      pending.delete(message.id);
-    } catch (error) {
-      for (const { reject } of pending.values()) reject(error);
-      child.stdin.end();
-    }
-  });
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = ++sequence;
-    pending.set(id, { resolve, reject });
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-  });
-  const init = await request('initialize', {
-    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codex', version: '0.160.0' },
-  });
-  assert.equal(init.result.protocolVersion, '2025-06-18');
-  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
-  const listed = await request('tools/list', {});
-  assert.equal(listed.result.tools.length, 1);
-  assert.deepEqual(listed.result.tools[0]._meta.ui.visibility, ['app']);
-  const actor = 'd72422c7-509c-43aa-8c42-827c556f8a57';
-  const input = { hook_event_name: 'PreToolUse', extra: { retained: true }, actor: 'forged', version: 'forged' };
-  const called = await request('tools/call', { name: 'sage_native_hook', arguments: input, _meta: { threadId: actor } });
-  assert.deepEqual(JSON.parse(called.result.content[0].text), { version: '0.160.0', actor, input });
-  const absent = await request('tools/call', { name: 'sage_native_hook', arguments: input });
-  assert.equal(Object.hasOwn(JSON.parse(absent.result.content[0].text), 'actor'), false);
-  child.stdin.end();
-  assert.deepEqual(await closed, { code: 0, signal: null });
-  assert.equal(stderr, '');
-});
-
-test("Codex includes each bundled MCP dependency license", (t) => {
-  const { plugin } = isolated(t, "codex");
-  for (const name of ['@modelcontextprotocol-server', '@modelcontextprotocol-core', 'zod',
-    'ajv', 'ajv-formats', 'fast-deep-equal', 'fast-uri', 'json-schema-traverse', 'content-type']) {
-    const text = readFileSync(join(plugin, 'licenses', name + '.txt'), 'utf8');
-    assert.match(text, name.startsWith('@modelcontextprotocol') ? /Apache License/ : /MIT|Permission is hereby granted/);
-    assert.match(text, /[Cc]opyright/);
-  }
-});
-
-
-async function nativeBindingFixture(t) {
-  const f = await roleAdmissionFixture(t);
-  const api = await import(new URL("../runtime/child-binding.mjs", f.url));
-  const events = await import(new URL("../runtime/events.mjs", f.url));
-  const observationsDirectory = join(f.journal, "..", "observations");
-  const root = "11111111-1111-4111-8111-111111111111";
-  const lead = "22222222-2222-4222-8222-222222222222";
-  const child = "33333333-3333-4333-8333-333333333333";
-  const owner = f.api.activateAdmission(f.journal, { project: f.scope.project, session: `codex:${root}`, activation: f.activation });
-  const scope = { project: owner.project, session: owner.session, epoch: owner.epoch };
-  const reserve = (index, role, issuerRole, issuer = root, name = `agent_${index}`, confirm = true, brief) => {
-    const args = f.args(index, issuer, scope); args[3].name = name; args[3].tool = "collaborationspawn_agent";
-    const assignment = (brief === undefined ? f.api.reserveRoleAdmission(...args, { issuerRole, role })
-      : f.api.reserveBriefAdmission(...args, { issuerRole, role }, brief)).assignment;
-    const base = { schema: 1, runtime: "0.160.0", session: root, actor: issuer, call: assignment.call, turn: f.activation };
-    events.publish(observationsDirectory, { ...base, kind: "spawn-request", name });
-    if (confirm) events.publish(observationsDirectory, { ...base, kind: "spawn-result", path: issuer === root ? `/root/${name}` : `/root/agent_1/${name}` });
-    return assignment;
-  };
-  const identity = (id = lead, parent = root, path = "/root/agent_1") => ({ session: root, child: id, parent, path, turn: f.activation });
-  const observeStart = value => events.publish(observationsDirectory, { schema: 1, runtime: "0.160.0", kind: "child-start", ...value });
-  observeStart(identity());
-  const bind = value => api.bindNativeChild({ directory: f.journal, project: scope.project, observationsDirectory }, value);
-  return { ...f, root, lead, child, scope, reserve, identity, bind, observeStart, events, observationsDirectory };
-}
-
-test("native child binding connects a lead and its specialist to exact reserved roles", async t => {
-  const f = await nativeBindingFixture(t);
-  const lead = f.reserve(1, "lead", "chief-of-staff");
-  assert.equal(f.bind(f.identity()).assignment.id, lead.id);
-  const child = f.reserve(2, "qa", "lead", f.lead);
-  const native = f.identity(f.child, f.lead, "/root/agent_1/agent_2");
-  f.observeStart(native);
-  const result = f.bind(native);
-  assert.equal(result.role, "qa"); assert.equal(result.assignment.id, child.id);
-  assert.equal(result.binding.issuer, f.lead);
-  assert.equal(f.bind(native).decision, "already-bound");
-  assert.equal(f.api.readAdmission(f.journal).bindings.length, 2);
-});
-
-test("native child binding rejects unadmitted children and inconsistent parent paths or roles", async t => {
-  const f = await nativeBindingFixture(t);
-  assert.throws(() => f.bind(f.identity()));
-  f.reserve(1, "lead", "chief-of-staff");
-  for (const change of [{ path: "/root/other" }, { parent: f.child }, { child: f.root },
-    { turn: "invalid" }, { role: "lead" }, { session: f.child }]) {
-    assert.throws(() => f.bind({ ...f.identity(), ...change }));
-  }
-  f.bind(f.identity());
-  // A trusted caller still cannot bind an inconsistent recorded issuer role.
-  f.reserve(2, "qa", "chief-of-staff", f.lead);
-  f.observeStart(f.identity(f.child, f.lead, "/root/agent_1/agent_2"));
-  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_1/agent_2")));
-  f.reserve(3, "qa", "lead", f.lead);
-  assert.throws(() => f.bind(f.identity(f.child, f.lead, "/root/agent_3")));
-  assert.equal(f.api.readAdmission(f.journal).bindings.length, 1);
-});
-
-test("native child binding refuses a reservation for another dispatch tool", async t => {
-  const f = await nativeBindingFixture(t);
-  const args = f.args(1, f.root, f.scope); args[3].name = "agent_1"; args[3].tool = "collaborationfollowup_task";
-  f.api.reserveRoleAdmission(...args, { issuerRole: "chief-of-staff", role: "lead" });
-  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "spawn-1", turn: f.activation };
-  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
-  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
-  assert.throws(() => f.bind(f.identity()));
-  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
-});
-
-
-test("native child binding refuses a failed reservation later matched by an unadmitted spawn", async t => {
-  const f = await nativeBindingFixture(t);
-  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", false);
-  assert.throws(() => f.bind(f.identity()), /could not bind/);
-  const base = { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root, call: "unadmitted", turn: f.activation };
-  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-request", name: "agent_1" });
-  f.events.publish(f.observationsDirectory, { ...base, kind: "spawn-result", path: "/root/agent_1" });
-  assert.throws(() => f.bind(f.identity()), /could not bind/);
-  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
-});
-
-test("native child binding refuses conflicting path reuse and a result from another parent turn", async t => {
-  const f = await nativeBindingFixture(t);
-  f.reserve(1, "lead", "chief-of-staff");
-  f.observeStart(f.identity(f.child));
-  assert.throws(() => f.bind(f.identity()), /could not bind/);
-  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
-  const other = await nativeBindingFixture(t);
-  other.reserve(1, "lead", "chief-of-staff", other.root, "agent_1", false);
-  other.events.publish(other.observationsDirectory, { schema: 1, runtime: "0.160.0", session: other.root,
-    actor: other.root, call: "spawn-1", turn: "99999999-9999-4999-8999-999999999999", kind: "spawn-result", path: "/root/agent_1" });
-  assert.throws(() => other.bind(other.identity()), /could not bind/);
-  assert.deepEqual(other.api.readAdmission(other.journal).bindings, []);
-});
-
-test("native child binding refuses a reused name before the later spawn result arrives", async t => {
-  const f = await nativeBindingFixture(t); f.reserve(1, "lead", "chief-of-staff");
-  f.events.publish(f.observationsDirectory, { schema: 1, runtime: "0.160.0", session: f.root, actor: f.root,
-    call: "later-call", turn: f.activation, kind: "spawn-request", name: "agent_1" });
-  assert.throws(() => f.bind(f.identity()), /could not bind/);
-  assert.deepEqual(f.api.readAdmission(f.journal).bindings, []);
-});
-
-
-test("brief admission returns the saved instructions with the verified native binding", async t => {
-  const f = await nativeBindingFixture(t); const brief = completeBrief("Deliver these saved instructions.");
-  f.reserve(1, "lead", "chief-of-staff", f.root, "agent_1", true, brief);
-  const result = f.bind(f.identity());
-  assert.equal(result.role, "lead"); assert.deepEqual(result.brief, brief);
-  assert(f.api.renderBrief(result.brief).includes("GOAL\nDeliver these saved instructions."));
-  assert.deepEqual(f.bind(f.identity()).brief, brief);
-});
-
 
 async function roleInstructionsFixture(t, provider = "codex") {
   const f = isolated(t, provider);
@@ -1610,6 +1425,67 @@ test("shared chief instructions reject incomplete or substituted provider bindin
   }
 });
 
+test("shared command reader preserves substitutions pipelines and heredoc structure in both bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.shellCommands, "function");
+    const text = 'printf "%s" "$(git status)" | cat >out\ncat <<\'END\'\n$(not-a-command)\nEND\n';
+    const rows = api.shellCommands(text);
+    assert.deepEqual(rows.map(row => row.words), [["git", "status"], ["printf", "%s", "$(…)"], ["cat"], ["cat"]]);
+    assert.equal(rows[0].host.cmd, rows[1]);
+    assert.equal(rows[0].host.index, 2);
+    assert.equal(rows[1].pipeTo, rows[2]);
+    assert.deepEqual(rows[2].redirects, [">out"]);
+    assert.deepEqual(rows[3].bodies, ["$(not-a-command)"]);
+    for (const broken of ["echo 'open", "cat <<END\nmissing", "echo $(git status", "case x in a) echo hi"]) {
+      assert.throws(() => api.shellCommands(broken));
+    }
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.shellCommands(text), rows);
+    }
+  }
+});
+
+test("shared command reader resolves fake program paths without running them", async t => {
+  const { chmodSync } = await import("node:fs");
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.programsRun, "function");
+    const bin = join(f.dir, "bin"); mkdirSync(bin);
+    for (const name of ["ps", "kill"]) { writeFileSync(join(bin, name), "fixture data, never executed"); chmodSync(join(bin, name), 0o700); }
+    const text = "env ps -ax; kill 123; env kill 123; sh -c 'ps -ef'";
+    const rows = api.programsRun(text, f.dir, bin);
+    assert.deepEqual(rows.map(row => row.word), ["ps", "kill", "kill", "sh", "ps"]);
+    assert.deepEqual(rows.map(row => row.file), [join(bin, "ps"), undefined, join(bin, "kill"), undefined, join(bin, "ps")]);
+    assert.deepEqual(rows[0].args, ["-ax"]);
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.programsRun(text, f.dir, bin), rows);
+    }
+  }
+});
+
+test("shared command reader failures explicitly deny every recognized Claude command tool", async t => {
+  for (const missing of ["hooks/command-reader.mjs", "core/command-reader.mjs"]) {
+    const f = isolated(t, "claude");
+    assert.ok(existsSync(join(f.plugin, missing)));
+    rmSync(join(f.plugin, missing));
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const sage of [true, false]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+      for (const actor of [{}, { agent_id: "fixture-child" }]) {
+        const result = hook.handle({ hook_event_name: "PreToolUse", tool_name, cwd: f.dir,
+          tool_input: { command: "echo fixture" }, ...actor }, { sage }, {});
+        assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+        assert.match(result.hookSpecificOutput.permissionDecisionReason, /command modules could not load/);
+      }
+    }
+    assert.throws(() => hook.shellCommands("echo fixture"), /command reader cannot load/);
+    assert.throws(() => hook.programsRun("echo fixture", f.dir, ""), /command reader cannot load/);
+  }
+});
 
 test("package boundaries allow public core imports and reject reverse private and cross-provider imports", async t => {
   const module = join(ROOT, "scripts/package-boundaries.mjs");
@@ -1666,5 +1542,383 @@ test("package public imports package both quote styles and dynamic imports outsi
     assert.equal(result.data, 'from "sage-core"');
     const escaped = 'export { shellCommands } from "sage-\\u0063ore";';
     assert.equal(rewriteCoreImports(escaped, "./core/index.mjs"), 'export { shellCommands } from "./core/index.mjs";');
+  }
+});
+
+test("shared command policy classifies merge candidates and executable text in both isolated providers", async t => {
+  const sha = "a".repeat(40);
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.createCommandPolicy, "function");
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const adapter = await import(pathToFileURL(join(f.plugin, provider === "claude" ? "hooks/command-policy.mjs" : "runtime/command-policy.mjs")));
+    const policy = adapter.createCommandPolicy({ stateToolPath: tool });
+    const candidate = `gh pr merge 12 --squash --delete-branch --match-head-commit ${sha}`;
+    assert.deepEqual(policy.mergeIn(candidate), { pr: "12", sha });
+    for (const text of [candidate.replace(" 12 ", " 012 "), candidate.replace(sha, "abc"), `${candidate} --admin`,
+      `sh -c '${candidate}'`, `echo '${candidate}' | sh`, `echo '${candidate}' > run; sh run`,
+      "gh api repos/o/r/pulls/12/merge", "gh pr 'merge", "$(echo gh) pr merge 12"]) {
+      assert.equal(typeof policy.mergeIn(text)?.problem, "string", text);
+    }
+    for (const text of ["git status", "git merge topic", `echo '${candidate}'`, `echo '${candidate}' | head -1`,
+      `node '${tool}' log --why '${candidate}'`]) assert.equal(policy.mergeIn(text), undefined, text);
+    assert.ok(api.createCommandPolicy().mergeIn(`node '${tool}' log --why '${candidate}'`)?.problem);
+    assert.ok(policy.mergeIn(`node '/other/sage.mjs' log --why '${candidate}'`)?.problem);
+    const rows = policy.runnable(api.shellCommands(`echo 'git push origin main'; git push origin topic`));
+    assert.deepEqual(rows.map(row => row.words), [["echo"], ["git", "push", "origin", "topic"]]);
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.mergeIn(candidate), policy.mergeIn(candidate));
+      assert.equal(hook.mergeIn(`node '${tool}' log --why '${candidate}'`), undefined);
+    }
+  }
+});
+
+test("shared command policy rejects invalid trusted paths and snapshots its binding", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.createCommandPolicy, "function");
+  for (const path of [null, 1, "", "relative/sage.mjs", "/tmp/bad\npath", "/tmp/bad\0path"]) {
+    assert.throws(() => api.createCommandPolicy({ stateToolPath: path }), /absolute path/);
+  }
+  const binding = { stateToolPath: join(f.dir, "sage.mjs") };
+  const original = binding.stateToolPath;
+  const policy = api.createCommandPolicy(binding);
+  binding.stateToolPath = "/other/sage.mjs";
+  assert.equal(policy.mergeIn(`node '${original}' log --why 'gh pr merge'`), undefined);
+  assert.ok(policy.mergeIn(`node '${binding.stateToolPath}' log --why 'gh pr merge'`)?.problem);
+});
+
+test("shared command policy failures deny recognized Claude command tools before native handling", async t => {
+  for (const missing of ["hooks/command-policy.mjs", "core/command-policy.mjs", "invalid-path"]) {
+    const f = isolated(t, "claude");
+    assert.ok(existsSync(join(f.plugin, "hooks/command-policy.mjs")));
+    if (missing === "invalid-path") {
+      const odd = join(f.dir, "plugin\tpath");
+      cpSync(f.plugin, odd, { recursive: true });
+      f.plugin = odd;
+    } else {
+      assert.ok(existsSync(join(f.plugin, missing)));
+      rmSync(join(f.plugin, missing));
+    }
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const sage of [false, true]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+      for (const actor of [{}, { agent_id: "fixture-child" }]) {
+        const output = hook.handle({ hook_event_name: "PreToolUse", tool_name,
+          tool_input: { command: "echo fixture" }, ...actor }, { sage }, {});
+        assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+      }
+    }
+    assert.ok(hook.mergeIn("gh pr merge 1")?.problem);
+  }
+});
+
+test("shared push policy applies the same branch and force rules in both isolated providers", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.createPushPolicy, "function");
+    const adapter = await import(pathToFileURL(join(f.plugin, provider === "claude" ? "hooks/command-policy.mjs" : "runtime/command-policy.mjs")));
+    const calls = [];
+    let branch = "topic";
+    const policy = adapter.createPushPolicy({ readBranch: dir => { calls.push(dir); return branch; } });
+    for (const text of ["git push origin topic", "git push -u --follow-tags origin topic", "git push --delete origin topic",
+      "echo 'git push origin main'", "git status"]) assert.equal(policy.pushProblem(text, f.dir), undefined, text);
+    for (const text of ["git push origin main", "git push origin refs/heads/master", "git push origin topic:main",
+      "git push -f origin topic", "git push --force-with-lease origin topic", "git push --forc origin topic",
+      "git push --mirror origin", "git push origin HEAD", "git push origin", "git push upstream topic",
+      "git push origin '$BRANCH'", "sudo git push origin topic", "sh -c 'git push origin topic'",
+      "echo 'git push origin main' | sh", "git push 'origin", "gh api repos/o/r/git/refs -f ref=refs/heads/main"]) {
+      const before = calls.length;
+      assert.equal(typeof policy.pushProblem(text, f.dir), "string", text);
+      assert.equal(calls.length, before, "invalid forms must not query a checkout");
+    }
+    branch = "main";
+    assert.match(policy.pushProblem("git push origin topic", f.dir), /checkout is on main/);
+    assert.equal(policy.pushProblem("git push --delete origin topic", f.dir), undefined);
+    assert.doesNotMatch(policy.pushProblem("git push origin main", f.dir), /first creation|asks the user/);
+    assert.equal(api.gitSubcommand(["-C", "folder", "-c", "x=y", "stash", "list"], 0), "stash");
+  }
+});
+
+test("shared push policy derives checkout paths and scopes the state-tool text exception", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.createPushPolicy, "function");
+  const tool = join(f.dir, "sage.mjs");
+  const calls = [];
+  const policy = api.createPushPolicy({ stateToolPath: tool, readBranch: dir => { calls.push(dir); return "topic"; } });
+  assert.equal(policy.pushProblem("cd project; git -C nested push origin topic", f.dir), undefined);
+  assert.deepEqual(calls, [join(f.dir, "project/nested")]);
+  assert.equal(policy.pushProblem(`node '${tool}' log --why 'git push origin main'`, f.dir), undefined);
+  assert.ok(policy.pushProblem("node /other/sage.mjs log --why 'git push origin main'", f.dir));
+  assert.deepEqual(calls, [join(f.dir, "project/nested")]);
+});
+
+test("shared push policy validates and snapshots trusted branch readers and messages", async t => {
+  const f = isolated(t, "codex");
+  const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+  assert.equal(typeof api.createPushPolicy, "function");
+  assert.throws(() => api.createPushPolicy(), /readBranch/);
+  for (const mainReason of [null, "", " ", "bad\nmessage", "x".repeat(2049)]) {
+    assert.throws(() => api.createPushPolicy({ readBranch: () => "topic", mainReason }), /mainReason/);
+  }
+  const options = { readBranch: () => "main", mainReason: "Use a reviewed pull request." };
+  const policy = api.createPushPolicy(options);
+  options.readBranch = () => "topic"; options.mainReason = "changed";
+  assert.match(policy.pushProblem("git push origin topic", f.dir), /checkout is on main/);
+  assert.match(policy.pushProblem("git push origin main", f.dir), /Use a reviewed pull request/);
+  for (const value of [null, "", " ", "main\n", "master\r\n", "topic\tname", "topic\0name", true, Promise.resolve("topic")]) {
+    assert.throws(() => api.createPushPolicy({ readBranch: () => value }).pushProblem("git push origin topic", f.dir), /readBranch/);
+  }
+  const broken = api.createPushPolicy({ readBranch: () => { throw new Error("fixture read failure"); } });
+  assert.throws(() => broken.pushProblem("git push origin topic", f.dir), /fixture read failure/);
+  // Preserve the existing Claude rule; Codex can require its reader to throw on missing evidence.
+  assert.equal(api.createPushPolicy({ readBranch: () => undefined }).pushProblem("git push origin topic", f.dir), undefined);
+});
+
+test("shared push policy loading failures deny Claude command tools", async t => {
+  const f = isolated(t, "claude");
+  const path = join(f.plugin, "core/push-policy.mjs");
+  assert.ok(existsSync(path)); rmSync(path);
+  const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+  for (const sage of [false, true]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+    for (const actor of [{}, { agent_id: "fixture-child" }]) {
+      const output = hook.handle({ hook_event_name: "PreToolUse", tool_name,
+        tool_input: { command: "git push origin topic" }, ...actor }, { sage }, {});
+      assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+    }
+  }
+});
+
+test("shared command extraction parses executable text in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.shellCommands, "function");
+    assert.equal(typeof api.programsRun, "function");
+    const command = "echo fixture | sh";
+    const parsed = api.shellCommands(command);
+    assert.deepEqual(parsed.map(c => c.words), [["echo", "fixture"], ["sh"]]);
+    assert.equal(parsed[0].pipeTo, parsed[1]);
+    const runs = api.programsRun(command, f.dir, "");
+    assert.deepEqual(runs.map(({ word, stdin, piped }) => ({ word, stdin, piped })), [
+      { word: "echo", stdin: [], piped: false }, { word: "sh", stdin: ["echo fixture"], piped: true },
+    ]);
+    assert.throws(() => api.shellCommands("echo 'open"), /open quote/);
+    if (provider === "claude") {
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.shellCommands(command), parsed);
+      assert.deepEqual(hook.programsRun(command, f.dir, ""), runs);
+    }
+  }
+});
+
+test("shared command extraction preserves T199 and harmless arguments in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(typeof api.createCommandPolicy, "function");
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const policy = api.createCommandPolicy({ stateToolPath: tool });
+    for (const command of ["g{h,h} pr view 1", "git pu{s,s}h origin topic", "gh pr {m,m}erge 1",
+      "printf 'gh pr {m,m}erge 1' | cat | sh"]) {
+      assert.match(policy.expansionProblem(command, f.dir), /shell expansion can hide the command/);
+    }
+    for (const command of ["echo '{sample}'", "git add '*.mjs'", "gh pr view 1", "[ -f '*.txt' ]", "[[ -f '*.txt' ]]"]) {
+      assert.equal(policy.expansionProblem(command, f.dir), undefined, command);
+    }
+    const rows = policy.runnable(api.shellCommands(`node '${tool}' log --why 'gh pr merge'; git push origin topic`));
+    assert.deepEqual(rows.map(r => r.words), [["node", tool], ["git", "push", "origin", "topic"]]);
+  }
+});
+
+test("shared merge and push extraction classifies merges in both isolated bundles", async t => {
+  const sha = "a".repeat(40);
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const policy = api.createCommandPolicy({ stateToolPath: tool });
+    const candidate = `gh pr merge 12 --squash --delete-branch --match-head-commit ${sha}`;
+    assert.deepEqual(policy.mergeIn(candidate), { pr: "12", sha });
+    for (const text of [candidate.replace(" 12 ", " 012 "), candidate.replace(sha, "abc"), `${candidate} --admin`,
+      `sh -c '${candidate}'`, `echo '${candidate}' | sh`, `echo '${candidate}' > run; sh run`,
+      "gh api repos/o/r/pulls/12/merge", "gh pr 'merge", "$(echo gh) pr merge 12"]) {
+      assert.equal(typeof policy.mergeIn(text)?.problem, "string", text);
+    }
+    for (const text of ["git status", "git merge topic", `echo '${candidate}'`, `echo '${candidate}' | head -1`,
+      `node '${tool}' log --why '${candidate}'`]) assert.equal(policy.mergeIn(text), undefined, text);
+    assert.match(policy.mergeIn(`node '/other/sage.mjs' log --why '${candidate}'`).problem, /cannot prove/);
+    assert.equal(api.mentionsMerge("gh api graphql -f query=mergePullRequest"), true);
+    assert.equal(api.mentionsMerge("git merge topic"), false);
+    assert.equal(api.PR.test("12"), true);
+    assert.equal(api.PR.test("012"), false);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/command-policy.mjs")));
+      assert.deepEqual(adapter.createCommandPolicy({ stateToolPath: tool }).mergeIn(candidate), { pr: "12", sha });
+      const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+      assert.deepEqual(hook.mergeIn(candidate), { pr: "12", sha });
+    }
+  }
+});
+
+test("shared merge and push extraction applies push rules and injected branch evidence in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    const tool = join(f.plugin, "skills/sage/sage.mjs");
+    const policy = api.createPushPolicy({ stateToolPath: tool, readBranch: dir => dir === join(f.dir, "project/nested") ? "main" : "topic" });
+    for (const text of ["git push origin topic", "git push -u --follow-tags origin topic", "git push --delete origin topic",
+      "echo 'git push origin main'", "git status", `node '${tool}' log --why 'git push origin main'`]) {
+      assert.equal(policy.pushProblem(text, f.dir), undefined, text);
+    }
+    for (const text of ["git push origin main", "git push origin refs/heads/master", "git push origin topic:main",
+      "git push -f origin topic", "git push --force-with-lease origin topic", "git push --forc origin topic",
+      "git push --mirror origin", "git push origin HEAD", "git push origin", "git push upstream topic",
+      "git push origin '$BRANCH'", "sudo git push origin topic", "sh -c 'git push origin topic'",
+      "echo 'git push origin main' | sh", "git push 'origin", "gh api repos/o/r/git/refs -f ref=refs/heads/main",
+      "node /other/sage.mjs log --why 'git push origin main'"]) {
+      assert.equal(typeof policy.pushProblem(text, f.dir), "string", text);
+    }
+    assert.match(policy.pushProblem("cd project; git -C nested push origin topic", f.dir), /checkout is on main/);
+    assert.equal(policy.pushProblem("cd project; git -C nested push --delete origin topic", f.dir), undefined);
+    assert.match(api.createPushPolicy({ readBranch: () => "topic", mainReason: "Use a reviewed pull request." }).pushProblem("git push origin main", f.dir), /^Use a reviewed pull request\./);
+    assert.equal(api.createPushPolicy({ readBranch: () => undefined }).pushProblem("git push origin topic", f.dir), undefined);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/command-policy.mjs")));
+      assert.match(adapter.createPushPolicy({ readBranch: () => "main" }).pushProblem("git push origin topic", f.dir), /checkout is on main/);
+    }
+  }
+});
+
+test("shared merge and push extraction keeps transitive module failures closed and broken-state merge diagnostics", async t => {
+  for (const missing of ["core/push-policy.mjs", "core/pull-request.mjs"]) {
+    const f = isolated(t, "claude");
+    rmSync(join(f.plugin, missing), { force: true });
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const sage of [false, true]) for (const tool_name of ["Bash", "Monitor", "PowerShell", "mcp__terminal__run"]) {
+      for (const actor of [{}, { agent_id: "fixture-child" }]) {
+        const output = hook.handle({ hook_event_name: "PreToolUse", tool_name,
+          tool_input: { command: "gh api repos/o/r/git/refs -f ref=refs/heads/main" }, ...actor }, { sage }, {});
+        assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${missing}: ${tool_name}`);
+        assert.match(output.hookSpecificOutput.permissionDecisionReason, /command modules could not load/);
+      }
+    }
+  }
+  const f = isolated(t, "claude");
+  writeFileSync(join(f.plugin, "skills/sage/sage.mjs"), 'throw new Error("fixture broken state tool");\n');
+  const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+  const sha = "a".repeat(40);
+  const candidate = `gh pr merge 012 --squash --delete-branch --match-head-commit ${sha}`;
+  assert.deepEqual(hook.mergeIn(candidate), { pr: "012", sha }, "a broken state tool preserves the old diagnostic order");
+  const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: candidate } }, { sage: true, autopilot: true }, {});
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /the merge check refuses: it could not run \(fixture broken state tool\)/);
+});
+
+test("shared file and mode extraction applies the chief edit rule in both isolated bundles", async t => {
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.equal(api.chiefEditDenied({ sage: true, chief: true }), true);
+    for (const context of [{ sage: true, chief: false }, { sage: false, chief: true }, { sage: false, chief: false }]) {
+      assert.equal(api.chiefEditDenied(context), false);
+    }
+    for (const context of [{}, { sage: true }, { sage: "on", chief: true }]) assert.throws(() => api.chiefEditDenied(context), /Invalid edit policy context/);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/file-policy.mjs")));
+      assert.equal(adapter.chiefEditDenied({ sage: true, chief: true }), true);
+      assert.equal(adapter.chiefEditDenied({ sage: true, chief: false }), false);
+      const hooks = join(f.dir, "hook-state");
+      mkdirSync(hooks);
+      for (const sage of [true, 1, "on", false, 0, ""]) for (const tool_name of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+        writeFileSync(join(hooks, "fixture.json"), JSON.stringify({ sage }));
+        const result = spawnSync(process.execPath, [join(f.plugin, "hooks/sage-hook.mjs")], {
+          input: JSON.stringify({ session_id: "fixture", hook_event_name: "PreToolUse", tool_name, cwd: f.dir,
+            tool_input: { file_path: join(f.dir, "sample.txt"), notebook_path: join(f.dir, "sample.ipynb") } }),
+          encoding: "utf8", env: { ...process.env, SAGE_HOOKS_STATE: hooks, SAGE_HOME: join(f.dir, "logbooks") },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        const output = JSON.parse(result.stdout || "{}");
+        assert.equal(output.hookSpecificOutput?.permissionDecision, sage ? "deny" : undefined, `${tool_name}: persisted sage=${JSON.stringify(sage)}`);
+      }
+    }
+  }
+});
+
+test("shared file and mode extraction preserves classified mode phrases in both isolated bundles", async t => {
+  const prompt = (text, owner = true) => ({ owner, text, outside: text, all: text });
+  for (const provider of ["claude", "codex"]) {
+    const f = isolated(t, provider);
+    const api = await import(pathToFileURL(join(f.plugin, "core/index.mjs")));
+    assert.deepEqual(api.modeSignals(prompt("sage mode")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: false, modeWord: true });
+    assert.deepEqual(api.modeSignals(prompt("sage mode off")), { sageOff: true, sageOn: false, autopilotOff: true, autopilotOn: false, modeWord: true });
+    assert.deepEqual(api.modeSignals(prompt("sage mode, autopilot on")), { sageOff: false, sageOn: true, autopilotOff: false, autopilotOn: true, modeWord: true });
+    assert.equal(api.modeSignals(prompt("sage mode continue on the project")).sageOn, true);
+    for (const text of ["What does sage mode do?", "sage mode?", "sage mode online: is it a thing?", "autopilot on main"]) {
+      const signals = api.modeSignals(prompt(text));
+      assert.equal(signals.sageOn, false, text);
+      assert.equal(signals.autopilotOn, false, text);
+    }
+    for (const text of ["sage mode", "sage mode off", "autopilot on"]) {
+      const signals = api.modeSignals(prompt(text, false));
+      assert.equal(signals.sageOn, false, text);
+      assert.equal(signals.sageOff, false, text);
+      assert.equal(signals.autopilotOn, false, text);
+    }
+    assert.equal(api.modeSignals(prompt("Please stop autopilot", false)).autopilotOff, true);
+    assert.equal(api.modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nautopilot off" }).autopilotOff, true);
+    assert.equal(api.modeSignals({ owner: true, text: "sage mode", outside: "sage mode", all: "sage mode\nReport: no autopilot changes" }).autopilotOff, false);
+    for (const input of [{}, { owner: "user", text: "sage mode", outside: "", all: "" }, { owner: true, text: "sage mode", all: "" }]) assert.throws(() => api.modeSignals(input), /Invalid mode prompt/);
+    if (provider === "claude") {
+      const adapter = await import(pathToFileURL(join(f.plugin, "hooks/mode-policy.mjs")));
+      assert.equal(adapter.modeSignals(prompt("sage mode")).sageOn, true);
+      assert.equal(adapter.modeSignals(prompt("sage mode", false)).sageOn, false);
+    }
+  }
+});
+
+test("shared file and mode extraction refuses active edits when the file policy is missing", async t => {
+  for (const missing of ["hooks/file-policy.mjs", "core/file-policy.mjs"]) {
+    const f = isolated(t, "claude");
+    rmSync(join(f.plugin, missing), { force: true });
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    for (const tool_name of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+      const input = { hook_event_name: "PreToolUse", tool_name, cwd: f.dir, tool_input: { file_path: join(f.dir, "sample.txt"), notebook_path: join(f.dir, "sample.ipynb") } };
+      const output = hook.handle(input, { sage: true }, {});
+      assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${missing}: ${tool_name}`);
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /file policy cannot load/);
+      assert.equal(hook.handle(input, { sage: false }, {}), undefined);
+    }
+    if (missing.startsWith("core/")) {
+      const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh api repos/o/r/git/refs -f ref=refs/heads/main" } }, { sage: false }, {});
+      assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /command modules could not load/);
+    }
+  }
+});
+
+test("shared file and mode extraction clears cached autopilot before tool checks when the mode policy is missing", async t => {
+  for (const missing of ["hooks/mode-policy.mjs", "core/mode-policy.mjs"]) {
+    const f = isolated(t, "claude");
+    rmSync(join(f.plugin, missing), { force: true });
+    // A passing fixture ledger makes a stale autopilot flag an actual bypass; no real logbook is read.
+    writeFileSync(join(f.plugin, "skills/sage/sage.mjs"), `export const sageRoot = () => ${JSON.stringify(join(f.dir, "logbooks"))};\nexport const mergeCheck = () => ({ ok: true });\n`);
+    const hook = await import(pathToFileURL(join(f.plugin, "hooks/sage-hook.mjs")));
+    const state = { sage: true, autopilot: true };
+    const output = hook.handle({ hook_event_name: "PreToolUse", tool_name: "Bash", cwd: f.dir,
+      tool_input: { command: `gh pr merge 12 --squash --delete-branch --match-head-commit ${"a".repeat(40)}` } }, state, {});
+    assert.equal(state.autopilot, false, missing);
+    assert.equal(state.sage, true, "the existing Sage restrictions stay active");
+    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, missing.startsWith("core/") ? /command modules could not load/ : /autopilot is off/);
+    for (const sage of [false, true]) {
+      const state = { sage, given: true, autopilot: true };
+      const output = hook.handle({ hook_event_name: "UserPromptSubmit", prompt: "sage mode", cwd: f.dir }, state, {});
+      assert.equal(state.sage, sage, "missing policy cannot start Sage mode");
+      assert.equal(state.autopilot, false);
+      assert.match(context(output), /mode policy cannot load/);
+    }
   }
 });

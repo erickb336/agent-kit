@@ -33,17 +33,18 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const TOOL = join(ROOT, "skills/sage/sage.mjs");
+/** The one command that can create main or master (firstUpload). */
+const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
+const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief tries to turn on branch protection for that branch.)`;
+
 // The state tool. When it cannot load, the hook still runs: its merge check refuses every merge, and it starts no new agent.
 const stateTool = await import("../skills/sage/sage.mjs").catch((error) => ({ error }));
 const boardTool = await import("../skills/sage/board.mjs").catch((error) => ({ error }));
 const modePolicy = await import("./mode-policy.mjs").catch((error) => ({ error }));
 const filePolicy = await import("./file-policy.mjs").catch((error) => ({ error }));
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const commandReader = await import("./command-reader.mjs").catch((error) => ({ error }));
-const TOOL = join(ROOT, "skills/sage/sage.mjs");
-/** The one command that can create main or master (firstUpload). */
-const FIRST_FORM = "gh api --hostname github.com -X POST repos/<owner>/<repo>/git/refs -f ref=refs/heads/main -f sha=<full commit id>";
-const TO_MAIN = `work reaches main only through a pull request. Push the task's branch and open a pull request. (Only the first creation of main in a blank GitHub repository asks the user, from the main session, as a command of its own: ${FIRST_FORM}, for a commit with no parent that is already on GitHub. After it, the chief tries to turn on branch protection for that branch.)`;
 const commandPolicy = await import("./command-policy.mjs")
   .then((module) => ({ ...module,
     commands: module.createCommandPolicy({ stateToolPath: TOOL, prPattern: stateTool.PR ?? null }),
@@ -331,16 +332,14 @@ export function handle(input, state, slots) {
   return undefined;
 }
 
-/** Shared push classification. Branch reads and the first-upload exception stay in the provider. */
+/** Shared push classification. Branch reads stay in the provider. */
 function pushProblem(command, cwd) {
   if (commandPolicy.error) return "the command policy cannot load, so this push is refused.";
   return commandPolicy.pushes.pushProblem(command, cwd);
 }
 const subcommand = (words, k) => commandPolicy.gitSubcommand(words, k);
-/** The word git, and then a later word: one linear scan from the first git (T34, T100-N5). */
 const gitThen = (text, word) => new RegExp(`\\b${word}\\b`, "i").test(/\bgit\b([\s\S]*)/i.exec(text)?.[1] ?? "");
 const pushText = (text) => gitThen(text, "push");
-/** A command line without quotes, backslashes and line joins: the text that the rules test when the reader cannot read the line (fail closed). */
 const bare = (text) => text.replace(/\\\n/g, "").replace(/['"\\]/g, "");
 
 /** The branch that the checkout at dir is on, or undefined when git cannot read it. */
@@ -1210,11 +1209,11 @@ function ghProblem(command, cwd, path, inherited) {
 
 /** Shared program resolution; never executes a program. */
 export function programsRun(command, cwd, path = process.env.PATH ?? "", options) {
-  if (commandReader.error) throw commandReader.error;
+  if (commandReader.error) throw new Error("the command reader cannot load");
   return commandReader.programsRun(command, cwd, path, options);
 }
 
-/** Shared merge classification. The role, mode and ledger checks remain in gitGate. */
+/** Shared merge classification; the ledger still decides whether a candidate may merge. */
 export function mergeIn(command) {
   if (commandPolicy.error) return { problem: "the command policy cannot load, so the merge is refused." };
   return sharedCommands.mergeIn(command);
@@ -1230,9 +1229,9 @@ const sharedCommands = commandPolicy.commands;
  */
 export const stateCommand = (args) => (/\s/.test(TOOL) ? `node "${TOOL}" ${args}` : `node ${TOOL} ${args}`);
 const SPACE_NOTE = /\s/.test(TOOL) ? "The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. " : "";
-/** Shared shell parsing; never executes a command. */
+/** Shared shell reader. This function parses text and never executes it. */
 export function shellCommands(src) {
-  if (commandReader.error) throw commandReader.error;
+  if (commandReader.error) throw new Error("the command reader cannot load");
   return commandReader.shellCommands(src);
 }
 

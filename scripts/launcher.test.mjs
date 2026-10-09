@@ -26,6 +26,7 @@ function home() {
     mkdirSync(join(cache, v, ".claude-plugin"), { recursive: true });
     writeFileSync(join(cache, v, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "sage", ...(release === undefined ? {} : { metadata: { release } }) }));
     for (const file of readdirSync(HOOKS)) copyFileSync(join(HOOKS, file), join(cache, v, "hooks", file));
+    cpSync(join(HOOKS, "../core"), join(cache, v, "core"), { recursive: true });
     for (const name of Object.keys(REGISTERED)) {
       const file = join(cache, v, "hooks", name);
       if (withHook) writeFileSync(file, `process.stdout.write(JSON.stringify({ version: ${JSON.stringify(v)}, argv1: process.argv[1] }));\n`);
