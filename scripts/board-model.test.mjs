@@ -55,7 +55,7 @@ test("same-second later clean verdict clears the owner failure; later failure re
 
 test("task detail derives brief fields and skipped loop stages from recorded route", () => {
   const input = source("one", [task("T1", "building")], {}, [observation("artifact", { type: "brief", label: "Brief" })]);
-  input.projects[0].contents = { O1: { verified: true, text: "GOAL: Ship the board\nSCOPE: This task\nACCEPTANCE: All views agree\n- Keep sources separate\nVERIFY: Tests" } };
+  input.projects[0].contents = { O1: { verified: true, text: "**GOAL:** Ship the board\nSCOPE: This task\n## ACCEPTANCE\nAll views agree\n- Keep sources separate\nVERIFY: Tests" } };
   const result = buildBoardModel([input], { now }).tasks[0];
   assert.equal(result.briefFields.goal, "Ship the board");
   assert.equal(result.briefFields.acceptance, "All views agree\n- Keep sources separate");
@@ -79,4 +79,12 @@ test("review cycle requirements take the largest applicable size and risk count"
   assert.equal(buildBoardModel([input], { now }).tasks[0].requiredCycles, 3);
   input.config = {};
   assert.equal(buildBoardModel([input], { now }).tasks[1].requiredCycles, 1);
+});
+
+
+test("recorded running PE work selects the PE stage during design", () => {
+  const input = source("one", [task("T1", "designing", { size: "large", route: "design,pe,build,code-review,qa" })], { runs: [{ id: "R1", task: "T1", role: "pe", status: "running" }] });
+  const result = buildBoardModel([input], { now }).tasks[0];
+  assert.equal(result.loop.steps.find(step => step.label === "PE check").status, "current");
+  assert.equal(result.loop.steps.find(step => step.label === "design").status, "done");
 });

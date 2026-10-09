@@ -314,7 +314,7 @@ The board shows recorded tasks across explicit Claude and Codex logbook sources.
 | `show board for all` or `sage board for all projects` | Tasks from all configured sources. |
 | `show board for sage-bot` or `sage board for sage-bot` | One named project. An ambiguous name gives qualified project choices. |
 | `show board T197`, `sage board T197`, or `board T197` | Full task detail for the current project. An unknown task gives nearby IDs and opens no other task. |
-| `show sage status` or `sage status` | Task states, recorded agents, owner needs, and available budget evidence. |
+| `show status` or `sage status` | Task states, recorded agents, owner needs, and available budget evidence. |
 
 Claude recognizes these phrases only at the start of the owner's own message, outside quoted text. Leading bold and a trailing question mark work. Text after a question mark on the same line does not trigger the phrase. Codex uses its manual Sage skill commands until native owner phrase delivery is verified.
 

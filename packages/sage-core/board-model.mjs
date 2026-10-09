@@ -22,14 +22,14 @@ function latest(records, kind, accept = () => true) {
 function briefFields(text) {
   const fields = {}; let field = null;
   for (const line of String(text ?? "").split(/\r?\n/)) {
-    const match = /^([A-Z]+):[ \t]*(.*)$/.exec(line);
-    if (match) { field = match[1]; fields[field] = match[2]; }
+    const match = /^(?:[ \t]|[*_#|>-])*([A-Z]+)\b[*_]*(?:[ \t]*:[*_ \t]*|[ \t]+|$)(.*)$/i.exec(line);
+    if (match && ["GOAL", "SCOPE", "CONTEXT", "DECISIONS", "ACCEPTANCE", "VERIFY", "BUDGET", "FORBIDDEN", "REPORT", "STANDING"].includes(match[1].toUpperCase())) { field = match[1].toUpperCase(); fields[field] = match[2]; }
     else if (field) fields[field] += `\n${line}`;
   }
   return { goal: fields.GOAL?.trim() || null, acceptance: fields.ACCEPTANCE?.trim() || null };
 }
-function loopFor(task, route, cycles, head, reasons) {
-  const active = { framed: "framed", designing: "design", "awaiting-you": "design", briefed: "briefed", building: "build", reviewing: "review", verifying: "review", repairing: "repair", verified: "verified", "pr-ready": "verified", merged: "merge", concluded: "verified" }[task.state] ?? null;
+function loopFor(task, route, cycles, head, reasons, runs) {
+  const active = ["designing", "awaiting-you"].includes(task.state) && route.includes("pe") && runs.some(run => run.role === "pe" && run.status === "running") ? "PE check" : { framed: "framed", designing: "design", "awaiting-you": "design", briefed: "briefed", building: "build", reviewing: "review", verifying: "review", repairing: "repair", verified: "verified", "pr-ready": "verified", merged: "merge", concluded: "verified" }[task.state] ?? null;
   const stages = ["framed", "design", "PE check", "briefed", "build", "review", "repair", "verified", "merge"];
   const index = stages.indexOf(active);
   const steps = stages.map((label, i) => {
@@ -38,7 +38,7 @@ function loopFor(task, route, cycles, head, reasons) {
   });
   const cycle = cycles.find(c => c.steps.some(s => s.status !== "done")) ?? cycles.at(-1);
   const running = cycle?.steps.filter(s => s.status === "running").map(s => s.role) ?? [];
-  const explanation = reasons.length ? reasons.map(reason => reason.text).join(" ") : running.length ? `Cycle ${cycle.number} of ${cycles.length} on head ${head?.slice(0, 7) ?? "unknown"}: ${running.join(", ")} runs now.` : `Recorded state: ${task.state}. ${head ? `Review evidence uses head ${head.slice(0, 7)}.` : "The current PR head is unknown."}`;
+  const explanation = reasons.length ? reasons.map(reason => reason.text).join(" ") : active === "PE check" ? "The PE check is recorded running." : running.length ? `Cycle ${cycle.number} of ${cycles.length} on head ${head?.slice(0, 7) ?? "unknown"}: ${running.join(", ")} runs now.` : `Recorded state: ${task.state}. ${head ? `Review evidence uses head ${head.slice(0, 7)}.` : "The current PR head is unknown."}`;
   return { steps, explanation };
 }
 
@@ -80,7 +80,7 @@ function card(source, project, task, now) {
   const completionDecision = rows(project, "decisions", task).filter(row => row.decision === `state ${task.state}`).at(-1);
   const completedAt = completion ? time(completion.data.at) : ["merged", "concluded", "abandoned"].includes(task.state) ? time(completionDecision?.at) : null;
   const brief = project.contents?.[latest(records, "artifact", data => data.type === "brief")?.id]?.text ?? null;
-  return { key: `${project.key}/${task.id}`, source: source.id, sourceLabel: source.label, project: project.key, projectName: project.checkout ? basename(project.checkout) : project.name.replace(/-[0-9a-f]{6}$/, ""), ...Object.fromEntries(["id", "title", "size", "risk", "route", "state", "branch", "pr", "round", "keys"].map(field => [field, task[field] ?? ""])), column, prEvidence: pr, currentHead: head, modeEvidence: mode, completedAt, visible: column !== "done" || completedAt !== null && completedAt <= now && completedAt >= now - 7 * 86400000, agents, inferredWork: inferred, cycles, requiredCycles: required, reasons, runs, ledger, gates, findings: rows(project, "findings", task), decisions: rows(project, "decisions", task).slice(-10), brief, briefFields: briefFields(brief), loop: loopFor(task, route, cycles, head, reasons), artifacts: records.filter(record => record.kind === "artifact").map(record => ({ ...record, content: project.contents?.[record.id] ?? null })), diagnostics: [...project.diagnostics] };
+  return { key: `${project.key}/${task.id}`, source: source.id, sourceLabel: source.label, project: project.key, projectName: project.checkout ? basename(project.checkout) : project.name.replace(/-[0-9a-f]{6}$/, ""), ...Object.fromEntries(["id", "title", "size", "risk", "route", "state", "branch", "pr", "round", "keys"].map(field => [field, task[field] ?? ""])), column, prEvidence: pr, currentHead: head, modeEvidence: mode, completedAt, visible: column !== "done" || completedAt !== null && completedAt <= now && completedAt >= now - 7 * 86400000, agents, inferredWork: inferred, cycles, requiredCycles: required, reasons, runs, ledger, gates, findings: rows(project, "findings", task), decisions: rows(project, "decisions", task).slice(-10), brief, briefFields: briefFields(brief), loop: loopFor(task, route, cycles, head, reasons, runs), artifacts: records.filter(record => record.kind === "artifact").map(record => ({ ...record, content: project.contents?.[record.id] ?? null })), diagnostics: [...project.diagnostics] };
 }
 
 export function buildBoardModel(sources, { now = new Date().toISOString() } = {}) {

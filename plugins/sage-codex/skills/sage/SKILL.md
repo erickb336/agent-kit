@@ -25,6 +25,6 @@ Run the command without arguments for its command list. The logbook lives below 
 
 The board commands read the logbook without changing it. Resolve the user's requested project before a task lookup. If a task is absent, show nearby task IDs; do not open another task. For an explicitly requested combined board, set `SAGE_BOARD_ROOTS` to a JSON list of sources with distinct `id` values and absolute `path` values. Keep each source identity in the result.
 
-Treat “show board”, “sage board”, “show board for all”, “show board for <project>”, “show board T197”, and “show sage status” as requests for these manual views. Automatic phrase hooks in Codex remain unverified. Do not claim that an installed hook handles them.
+Treat “show board”, “sage board”, “show board for all”, “show board for <project>”, “show board T197”, and “show status” as requests for these manual views. Automatic phrase hooks in Codex remain unverified. Do not claim that an installed hook handles them.
 
 The hooks do not infer check results from shell output. Run the checks that fit the change and report the command, result and anything left unverified. The plugin does not stop an unchecked turn.

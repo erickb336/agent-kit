@@ -37,11 +37,13 @@ test("phone text and status preserve task counts and escape agent markup", () =>
 test("task evidence includes verified report contents and preserves brief lines in both views", () => {
   const data = model(), task = data.tasks[0];
   task.brief = "Goal line\nAcceptance line";
-  task.artifacts = [{ source: "QA recorder", observedAt: data.at, data: { type: "proof", label: "Check output", path: "artifacts/check.txt" }, content: { verified: true, text: "tests 9\npass 9\n<script>sample</script>" } }];
+  task.artifacts = [{ source: "QA recorder", observedAt: data.at, data: { type: "proof", run: "R42", label: "Check output", path: "artifacts/check.txt" }, content: { verified: true, text: "tests 9\npass 9\n<script>sample</script>" } }];
   const html = renderBoardHtml(data, { taskKey: task.key }), text = renderTaskText(task);
   assert.ok(html.includes("tests 9\npass 9\n&lt;script&gt;sample&lt;/script&gt;"));
   assert.ok(text.includes("Goal line\nAcceptance line"));
   assert.ok(text.includes("tests 9\npass 9"));
+  assert.ok(html.includes("R42 · digest verified"));
+  assert.ok(text.includes("R42 · digest verified"));
   assert.ok(text.includes("local artifact; digest verified"));
   assert.ok(!text.includes("content not verified"));
 });
