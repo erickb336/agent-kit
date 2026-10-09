@@ -1,0 +1,11 @@
+{
+  "name": "sage-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "exports": "./server.mjs",
+  "bin": { "sage": "./cli.mjs" },
+  "dependencies": { "sage-core": "0.1.0" }
+}

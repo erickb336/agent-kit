@@ -2594,7 +2594,7 @@ test("T94-Q-SPACEPATH: with the plugin in a folder with a space, the chief text 
   assert.equal(JSON.parse(readFileSync(join(dir, "root", "config.json"), "utf8"))["cap.other"], 2, "the whole pasted hint runs in a shell and sets the cap");
 });
 
-test("T72-C5-STATECMD: with the plugin in a folder with a space, the board note gives the note, then a quoted board and gate answer command that run as pasted", () => {
+test("T72-C5-STATECMD: with the plugin in a folder with a space, the read-only board note quotes the plugin path and preserves source-qualified gates", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "sage space-")));
   cpSync(fileURLToPath(new URL("../plugins/sage", import.meta.url)), join(dir, "my plugins", "sage"), { recursive: true });
   const tool = join(dir, "my plugins", "sage", "skills", "sage", "sage.mjs");
@@ -2606,13 +2606,16 @@ test("T72-C5-STATECMD: with the plugin in a folder with a space, the board note 
   const r = spawnSync("node", [join(dir, "my plugins", "sage", "hooks", "sage-hook.mjs")], { input: JSON.stringify({ session_id: "s1", cwd: project, ...prompt("show board") }), encoding: "utf8", env });
   assert.equal(r.status, 0, r.stderr);
   const lines = context(JSON.parse(r.stdout)).split("\n");
-  const board = `node "${tool}" board this --project '${project}'`;
+  const board = `node "${tool}" board this --project '${project}' --view chat`;
   assert.equal(lines[0], `sage: the owner asked for the board. The plugin path has a space: when the sandbox is on, it needs a plugin path without spaces. Run: ${board}`);
-  const answer = lines.find((l) => l.startsWith("- app: ")).slice("- app: ".length);
-  assert.equal(answer, `node "${tool}" gate answer <G> --option <n> --project '${project}'`);
-  const sh = (command) => spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", env });
-  assert.match(sh(board).stdout, /\n- app \*\*G1\*\* · T1 · q\?\n/);
-  assert.equal(sh(answer.replace("<G>", "G1").replace("<n>", "2")).stdout, "G1 answered · no\n");
+  assert.ok(!lines.some(line => line.includes("gate answer")));
+  const shown = spawnSync("node", [tool, "board", "this", "--project", project, "--view", "chat"], { encoding: "utf8", env });
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.match(shown.stdout, /G1/);
+  assert.ok(shown.stdout.includes("G1 · q?"));
+  const answered = spawnSync("node", [tool, "gate", "answer", "G1", "--option", "2", "--project", project], { encoding: "utf8", env });
+  assert.equal(answered.status, 0, answered.stderr);
+  assert.equal(answered.stdout, "G1 answered · no\n");
 });
 
 test("T72-C6-OTHER: in sage mode, the chief's gate answer commands pass the hook: by number, and own words in hex", () => {

@@ -68,7 +68,7 @@ sage mode makes the session the user's chief of staff. Autopilot lets verified p
 
 **Read:** the README, section "The board".
 
-The board is a short view of every project's logbook: what needs the user, the agents running now, and each active task. A message that starts with "show board" prints it for this project, "show board for all" for every project, and "show board for <project>" for one project. [The board](https://github.com/erickb336/sage/blob/main/README.md#the-board) gives the other forms and what each part shows. "status" in sage mode gives only the status lines of this session's project.
+The board is a short view of every project's logbook: what needs the user, the agents running now, and each active task. A message that starts with "show board" prints it for this project, "show board for all" for every project, and "show board for <project>" for one project. [The board](https://github.com/erickb336/sage/blob/main/README.md#the-board) gives the other forms and what each part shows. “show board T197” and “sage board T197” show that task in this project. “show status” and “sage status” show short status lines. The phrases work at the start of the user's own message, outside quoted text. The board command reads recorded facts; it does not change a task.
 
 ## Answer the chief's questions
 
