@@ -15,6 +15,7 @@
 //     Monitor, PowerShell, mcp__terminal__*), not only Bash. One case asks the user instead of a refusal: the chief's
 //     first creation of main or master on GitHub, in one literal gh api form (FIRST_FORM), checked on GitHub only
 //     (firstUpload, firstCreation).
+//   - Only main starts leads (3 per project); only leads start their permitted children (3 each), inside the project cap.
 //   - A sage agent may finish only with the full report of the sage:report skill.
 //   - Only the chief writes the logbook, in any mode (agentWriteProblem): an agent runs the state tool only as one plain
 //     read command, never the PR script, never a command outside the sandbox, never writes under the sage root with a
@@ -26,6 +27,7 @@
 // SAGE_HOOKS=off turns it off. The hook never breaks a session: on an error it answers nothing, but it refuses a merge,
 // a push, every file change and command of an agent, and a chief's shell write that names a logbook file.
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -63,6 +65,7 @@ const BOARD_END = String.raw`(?:[?？][!.！。]?[*_]{0,3}${SP}*(?=[\r\n\u2028\u
 const BOARD = new RegExp(`${START}show${SP}+board(?:${SP}+for${SP}+(${NAME_WORD}(?:${SP}+${NAME_WORD}){0,7}))?${BOARD_END}`, "iu");
 const FILE_TOOLS = /^(Edit|Write|MultiEdit|NotebookEdit)$/;
 const AGENT_TOOLS = /^(Agent|Task)$/;
+const LEAD_CHILDREN = new Set(["sage:implementer", "sage:code-reviewer", "sage:security-reviewer", "sage:ux-reviewer", "sage:qa"]);
 /** The tools that run a command. The PreToolUse matcher in claude.json names each of them. */
 const SHELL_TOOLS = /^(?:Bash|Monitor|PowerShell|mcp__terminal__.+)$/;
 const CHIEF = /(^|:)chief-of-staff$/;
@@ -235,22 +238,25 @@ export function handle(input, state, slots) {
     return undefined;
   }
   const ours = OURS.test(input.agent_type ?? "");
-  if (!main && ours && input.agent_id) slots.touch(input.agent_id); // the agent's lease: a slot that no event touched for an hour expires
-  if (event === "SubagentStart") return void (ours && slots.bind(input.agent_id));
-  // The session's live tasks at the main session's Stop: a slot whose agent is not among them is free. An agent that
-  // dies (for one, on a usage limit) fires no SubagentStop, but it leaves the registry, and the chief's next turn ends.
-  // Only then: at a SubagentStop, a foreground agent of the session may be running and not listed.
-  if (event === "Stop" && main && Array.isArray(input.background_tasks)) slots.reconcile(input.background_tasks.map((t) => t?.id));
+  // Report validation precedes storage: a failed lease update must not let an incomplete report finish.
   if (event === "SubagentStop") {
     // A sage agent finishes only with the full report. The second stop goes through, so this cannot loop.
     if (ours && !input.stop_hook_active && typeof input.last_assistant_message === "string") {
       const missing = missingFields(REPORT_FIELDS, input.last_assistant_message);
       if (missing.length) return { decision: "block", reason: `sage: your report has no ${missing.join(", ")}. End with the report of the sage:report skill: ${REPORT_FIELDS.join(", ")}, each at the start of a line, with "none" where a field has nothing.` };
     }
-    return void slots.release(input.agent_id);
   }
-  if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id);
-  if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id); // a stopped agent's task id is its agent id
+  if (!main && ours && input.agent_id) slots.touch(input.agent_id, input.agent_type); // the agent's lease: a slot that no event touched for an hour expires
+  if (event === "SubagentStart") return void (ours && slots.bind(input.agent_id, input.agent_type));
+  // The session's live tasks at the main session's Stop: a slot whose agent is not among them is free. An agent that
+  // dies (for one, on a usage limit) fires no SubagentStop, but it leaves the registry, and the chief's next turn ends.
+  // Only then: at a SubagentStop, a foreground agent of the session may be running and not listed.
+  if (event === "Stop" && main && Array.isArray(input.background_tasks)) slots.reconcile(input.background_tasks.map((t) => t?.id));
+  if (event === "SubagentStop") return void slots.release(input.agent_id);
+  if (["PostToolUse", "PostToolUseFailure"].includes(event) && AGENT_TOOLS.test(input.tool_name ?? "") && !main && (typeof input.agent_id !== "string" || !input.agent_id)) return undefined;
+  if (event === "PostToolUse" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.result(input.tool_use_id, main ? undefined : input.agent_id, input.tool_response);
+  if (event === "PostToolUseFailure" && AGENT_TOOLS.test(input.tool_name ?? "")) return void slots.drop(input.tool_use_id, main ? undefined : input.agent_id);
+  if (event === "PreToolUse" && input.tool_name === "TaskStop") return void slots.release(input.tool_input?.task_id, true); // legacy direct agents only: requesting a stop is not terminal evidence for nested work
   const why = event === "PreToolUse" ? (main ? chiefProblem(input, state.sage) : agentWriteProblem(input)) : undefined;
   if (why && main) return deny(event, `${why} Only sage.mjs changes the logbook: run the state tool's command for this change (node <path to skills/sage/sage.mjs> ...), as a command of its own. If no command does it, ask the user.`);
   if (why) return deny(event, `${why} Only the chief writes the logbook. An agent may run only ${READ_FORM}. Report what the logbook needs, and the chief records it.`);
@@ -270,7 +276,12 @@ export function handle(input, state, slots) {
     const problem = views.map(command => agentProblem(command, cwd)).find(Boolean);
     if (problem) return deny(event, problem);
   }
-  if (event !== "PreToolUse" || !state.sage) return undefined;
+  if (event === "PreToolUse" && AGENT_TOOLS.test(input.tool_name ?? "") && !main && (state.sage || ours)) {
+    if (input.agent_type !== "sage:lead") return deny(event, "only a lead may start an agent. Report to the sage.");
+    if (typeof input.agent_id !== "string" || !input.agent_id) return deny(event, "the spawn has no valid caller identity, so its slot cannot be checked. Report to the sage.");
+    if (!LEAD_CHILDREN.has(input.tool_input?.subagent_type)) return deny(event, "a lead starts only an implementer, code reviewer, security reviewer, UX reviewer or QA agent. Report to the sage.");
+  }
+  if (event !== "PreToolUse" || (!state.sage && !(AGENT_TOOLS.test(input.tool_name ?? "") && !main && ours))) return undefined;
 
   const tool = input.tool_name ?? "";
   const ti = input.tool_input ?? {};
@@ -278,7 +289,7 @@ export function handle(input, state, slots) {
     if (filePolicy.error) return deny(event, "the file policy cannot load, so this file change is refused. Reinstall or update the sage plugin.");
     if (filePolicy.chiefEditDenied({ sage: Boolean(state.sage), chief: main })) return deny(event, 'sage mode is on, so you do not change files yourself. Give this change to a sage:implementer. The user ends sage mode with a message that starts with "sage mode off".');
   }
-  if (main && AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
+  if (AGENT_TOOLS.test(tool) && OURS.test(ti.subagent_type ?? "")) {
     const missing = missingFields(BRIEF_FIELDS, ti.prompt);
     if (missing.length) return deny(event, `the brief has no ${missing.join(", ")}. Every brief has all of ${BRIEF_FIELDS.join(", ")}, each at the start of a line. A tiny task may keep each field to one line.`);
     let caps, project;
@@ -290,10 +301,14 @@ export function handle(input, state, slots) {
       return deny(event, `the state tool cannot load (${e?.message ?? e}), so sage starts no new agent: reinstall or update the sage plugin, and tell the user.`);
     }
     const cap = caps[`cap.${project}`] ?? caps.max_agents;
-    const r = slots.take(project, cap, caps.cap_total, input.tool_use_id ?? String(Date.now()));
+    const r = slots.take(project, cap, caps.cap_total, input.tool_use_id ?? (main && ti.subagent_type !== "sage:lead" ? String(Date.now()) : undefined), { role: ti.subagent_type, caller: main ? undefined : input.agent_id, input: ti });
     if (r.refused) {
       slots.log(`${project} ${r.project}/${cap} total ${r.total}/${caps.cap_total}`);
       const raise = (key, n) => `${SPACE_NOTE}Wait for one to finish, or raise the cap: ${stateCommand(`config ${key}=${n + 1}`)}`;
+      if (r.refused === "identity") return deny(event, "the spawn has no valid, distinct caller and tool-use identity, so its slot cannot be checked. Report to the sage.");
+      if (r.refused === "ended") return deny(event, "this lead or spawn already ended, so it cannot start another agent. Report to the sage.");
+      if (r.refused === "leads") return deny(event, `3 leads are running for ${project}. Wait for one to finish. Report to the sage.`);
+      if (r.refused === "children") return deny(event, "this lead already has 3 children. Wait for one to finish. Report to the sage.");
       if (r.refused === "mark") return deny(event, `the agent cap could not mark its slot (${r.error}), so it refuses this spawn. Tell the user.`);
       if (r.refused === "total") return deny(event, `${running(r.total)} across all projects, and the total cap is ${caps.cap_total} (${project} has ${r.project}). ${raise("cap_total", caps.cap_total)}`);
       return deny(event, `${running(r.project)} for ${project}, and its cap is ${cap} (${r.total} of ${caps.cap_total} across all projects). ${raise(`cap.${project}`, cap)}`);
@@ -1244,122 +1259,218 @@ const decide = (event, decision, reason) => ({ hookSpecificOutput: { hookEventNa
 const deny = (event, reason) => decide(event, "deny", reason);
 
 /**
- * The agent cap. All sessions share one slot directory. Each running sage agent holds one slot: a numbered directory
- * that mkdir creates atomically, so agents that the chief starts in one message cannot take the same slot, and the
- * slot numbers are the total cap. A slot's marks name its project, its session and its tool use; it is pending from
- * the spawn until SubagentStart names the agent, and a spawn that passed marks its slot ok. A project's cap is a true
- * count of its other slots: every one with a lower number (a slot with no marks yet counts as the project's), and every
- * higher one that passed. A higher slot that has not passed yet is a simultaneous spawn, and it counts this slot in its
- * turn, so simultaneous spawns get the same answer as spawns in a row. A slot is free again at SubagentStop, at a
- * TaskStop of its session, when the spawn fails before its agent started, when the session's live tasks no longer name
- * the agent at the session's Stop, or when nothing touched it for an hour. Each release looks only among the session's
- * own slots.
+ * All sessions share numbered capacity slots. One short filesystem transaction protects allocation and lifecycle
+ * changes, including legacy slots: a released slot number must never be mistaken for its next reservation.
+ * New lead and child slots retain exact call identities and bind only from Agent's structured result. Start order
+ * is not parent evidence. Incomplete marks count conservatively; unconfirmed launches retain a one-hour lease.
  */
-export function slotsFor(dir, session, now = Date.now()) {
+export function slotsFor(dir, session, now = Date.now(), rawSession = session) {
   const STALE = { pending: 10 * 60_000, agent: 60 * 60_000 };
-  const id = (raw) => safe(raw) || undefined; // an id that is empty after the mapping is missing
+  const id = (raw) => safe(raw) || undefined;
+  const valid = (raw) => typeof raw === "string" && raw.length > 0;
+  const hash = (value) => createHash("sha256").update(JSON.stringify(value) ?? "null").digest("hex");
+  const callerKey = (caller) => caller === undefined ? "main" : hash(caller);
+  const callKey = (tool, caller) => hash([rawSession, caller ?? null, tool]);
+  const scope = hash(rawSession);
+  const events = join(dir, "..", "slot-events", scope);
+  const lock = join(dir, "..", "slots.lock");
   const num = (slot) => Number(slot.slice(5));
   const list = () => {
-    try {
-      return readdirSync(dir).filter((d) => d.startsWith("slot-")).sort((a, b) => num(a) - num(b));
-    } catch {
-      return [];
-    }
+    try { return readdirSync(dir).filter(d => /^slot-\d+$/.test(d)).sort((a, b) => num(a) - num(b)); }
+    catch (error) { if (error.code === "ENOENT") return []; throw error; }
   };
   const marks = (slot) => {
-    try {
-      return readdirSync(join(dir, slot));
-    } catch {
-      return [];
-    }
+    try { return readdirSync(join(dir, slot)); }
+    catch { return []; } // unreadable metadata counts conservatively during admission
   };
-  const mark = (slot, prefix) => marks(slot).find((m) => m.startsWith(prefix))?.slice(prefix.length);
-  const ofSession = () => list().filter((slot) => mark(slot, "session-") === session);
-  const withMark = (name) => ofSession().find((slot) => marks(slot).includes(name));
+  const mark = (slot, prefix) => marks(slot).find(m => m.startsWith(prefix))?.slice(prefix.length);
+  const has = (slot, name) => marks(slot).includes(name);
+  const add = (slot, name) => writeFileSync(join(dir, slot, name), "");
+  const ofSession = () => list().filter(slot => has(slot, "exact") || mark(slot, "bound-") !== undefined ? mark(slot, "scope-") === scope : mark(slot, "session-") === session);
+  const noted = (name) => {
+    try { return statSync(join(events, name)).isFile(); }
+    catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  };
+  const note = (name, value = "", where = events) => {
+    mkdirSync(where, { recursive: true });
+    writeFileSync(join(where, name), value);
+    utimesSync(join(where, name), new Date(now), new Date(now));
+  };
+  const stopped = agent => noted(`ended-${hash(agent)}`);
   const free = (slot) => {
-    if (!slot) return;
-    try {
-      rmdirSync(join(dir, slot)); // an empty slot goes even when it cannot be read: the marks could not be written
-    } catch {
-      rmSync(join(dir, slot), { recursive: true, force: true });
+    const call = mark(slot, "call-");
+    if ((has(slot, "exact") || mark(slot, "bound-") !== undefined) && has(slot, "ok") && call) note(`closed-${call}`, "", join(dir, "..", "slot-events", mark(slot, "scope-") ?? scope));
+    // Keep failures visible. An unsuccessful cleanup must not report that capacity was released.
+    try { rmdirSync(join(dir, slot)); }
+    catch { rmSync(join(dir, slot), { recursive: true, force: true }); }
+  };
+  const transaction = (fn) => (...args) => {
+    mkdirSync(dirname(lock), { recursive: true });
+    let held = false;
+    for (let attempt = 0; attempt < 400; attempt++) {
+      try { mkdirSync(lock); held = true; break; }
+      catch (error) { if (error.code !== "EEXIST") throw error; }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
     }
+    // Never steal an old lock: its process may still own it. No process inspection is needed.
+    if (!held) throw Error("the agent-slot lock is busy; no new agent can start until the slot state is available");
+    try { return fn(...args); }
+    finally { rmdirSync(lock); }
   };
   const expire = () => {
     for (const slot of list()) {
-      const kind = mark(slot, "agent-") === undefined ? "pending" : "agent";
-      try {
-        if (now - statSync(join(dir, slot)).mtimeMs > STALE[kind]) free(slot);
-      } catch {
-        /* freed meanwhile */
-      }
+      const age = has(slot, "exact") || has(slot, "possible-launch") || mark(slot, "agent-") !== undefined ? STALE.agent : STALE.pending;
+      if (now - statSync(join(dir, slot)).mtimeMs > age) free(slot);
     }
   };
-  const counts = (project) => {
-    const all = list();
-    return { total: all.length, project: all.filter((slot) => mark(slot, "project-") === project).length };
+  const counts = project => ({ total: list().length, project: list().filter(slot => (mark(slot, "project-") ?? project) === project).length });
+  const matching = (slot, role) => !role || !mark(slot, "role-") || mark(slot, "role-") === safe(role);
+  const pendingFor = role => ofSession().filter(slot => {
+    if (!has(slot, "ok") || mark(slot, "pending-") === undefined || !matching(slot, role)) return false;
+    const saved = marks(slot), prefixes = ["project-", "session-", "tool-", "pending-"];
+    if (saved.length === 5 && saved.includes("ok") && prefixes.every(prefix => saved.filter(name => name.startsWith(prefix) && name.length > prefix.length).length === 1)
+      && mark(slot, "tool-") === mark(slot, "pending-")) {
+      // Main's old complete format had no call identity. Adopt it under the mutation lock without inferring
+      // a native call, role or parent. This token identifies the reservation, never its reusable slot number.
+      add(slot, `call-legacy-${randomUUID()}`);
+    }
+    return true;
+  });
+  const observationOf = agent => {
+    const name = `observed-${hash(agent)}`;
+    if (!noted(name)) return;
+    const value = JSON.parse(readFileSync(join(events, name), "utf8"));
+    if (!value || !Array.isArray(value.calls) || !value.calls.every(call => typeof call === "string") || typeof value.legacyOnly !== "boolean") throw Error("the agent observation cannot be read");
+    return value;
+  };
+  const observe = (agent, role) => {
+    const prior = observationOf(agent);
+    if (prior) return prior;
+    const pending = pendingFor(role);
+    const value = { calls: pending.map(slot => mark(slot, "call-")).filter(Boolean), legacyOnly: pending.every(slot => !has(slot, "exact")) };
+    // This records possible originating calls, never a guessed parent. Later calls cannot claim an old observation.
+    note(`observed-${hash(agent)}`, JSON.stringify(value));
+    return value;
+  };
+  const ownsAgent = (slot, agent) => has(slot, "exact") || mark(slot, "bound-") !== undefined ? mark(slot, "bound-") === hash(agent) : mark(slot, "agent-") === id(agent);
+  const release = (agent, attempted = false) => {
+    if (!valid(agent)) return;
+    if (!attempted) note(`ended-${hash(agent)}`); // publish terminal evidence before searching or freeing
+    for (const slot of ofSession()) {
+      if (attempted && has(slot, "exact")) continue; // requesting TaskStop is not a completed stop
+      // A permitted call may launch after its parent ends. Keep unconfirmed calls charged until their result or lease.
+      if (ownsAgent(slot, agent) || (!attempted && mark(slot, "parent-") === hash(agent) && mark(slot, "bound-") !== undefined)) free(slot);
+    }
+  };
+  const touch = (agent, role) => {
+    if (!valid(agent) || stopped(agent)) return;
+    const own = ofSession().filter(slot => ownsAgent(slot, agent));
+    if (own.length) {
+      for (const slot of own) utimesSync(join(dir, slot), new Date(now), new Date(now));
+      return;
+    }
+    // Until the result supplies the join, activity can renew possible reservations but cannot assign their parents.
+    if (noted(`binding-${hash(agent)}`)) return;
+    const observation = observe(agent, role);
+    const candidates = pendingFor(role).filter(slot => observation.calls.includes(mark(slot, "call-")));
+    if (observation.legacyOnly && !candidates.some(slot => has(slot, "possible-launch"))) return;
+    for (const slot of candidates) {
+      add(slot, "possible-launch");
+      utimesSync(join(dir, slot), new Date(now), new Date(now));
+    }
   };
   return {
-    /** Takes a slot for a spawn: { ok }, or the refusal ("project" or "total") with the counts of running agents. */
-    take(project, cap, capTotal, toolUseId) {
+    take: transaction((project, cap, capTotal, toolUseId, { role, caller, input } = {}) => {
       mkdirSync(dir, { recursive: true });
       expire();
+      const exact = caller !== undefined || role === "sage:lead";
+      if (exact && (!valid(rawSession) || !valid(toolUseId) || (caller !== undefined && !valid(caller)))) return { refused: "identity", ...counts(project) };
+      const tu = valid(toolUseId) ? toolUseId : String(now);
+      const call = callKey(tu, caller), owner = callerKey(caller);
+      if (noted(`closed-${call}`) || (exact && caller !== undefined && stopped(caller))) return { refused: "ended", ...counts(project) };
+      const prior = ofSession().find(slot => mark(slot, "call-") === call);
+      if (prior) return has(prior, "ok") && mark(prior, "project-") === project && mark(prior, "role-") === safe(role) && mark(prior, "caller-") === owner && (!(exact || mark(prior, "bound-") !== undefined) || mark(prior, "input-") === hash(input))
+        ? { ok: true } : { refused: "identity", ...counts(project) };
       let mine;
       for (let k = 1; k <= capTotal && !mine; k++) {
-        try {
-          mkdirSync(join(dir, `slot-${k}`));
-          mine = `slot-${k}`;
-        } catch {
-          /* taken */
-        }
+        try { mkdirSync(join(dir, `slot-${k}`)); mine = `slot-${k}`; }
+        catch (error) { if (error.code !== "EEXIST") throw error; }
       }
       if (!mine) return { refused: "total", ...counts(project) };
       try {
-        const tu = id(toolUseId) ?? String(now);
-        for (const m of [`project-${project}`, `session-${session}`, `tool-${tu}`, `pending-${tu}`]) writeFileSync(join(dir, mine, m), "");
-        const counted = (slot) => slot !== mine && (mark(slot, "project-") ?? project) === project && (num(slot) < num(mine) || marks(slot).includes("ok"));
-        if (list().filter(counted).length < cap) {
-          writeFileSync(join(dir, mine, "ok"), "");
-          return { ok: true };
-        }
+        const initial = [`project-${project}`, `session-${session}`, `tool-${id(tu)}`, `pending-${id(tu)}`, `call-${call}`, `caller-${owner}`, `scope-${scope}`, `input-${hash(input)}`];
+        if (role) initial.push(`role-${safe(role)}`);
+        if (exact) initial.push("exact");
+        if (caller !== undefined) initial.push(`parent-${hash(caller)}`);
+        for (const m of initial) add(mine, m);
+        const others = list().filter(slot => slot !== mine);
+        const projectSlots = others.filter(slot => (mark(slot, "project-") ?? project) === project);
+        let refused;
+        if (projectSlots.length >= cap) refused = "project";
+        else if (role === "sage:lead" && projectSlots.filter(slot => !mark(slot, "role-") || mark(slot, "role-") === "sage_lead").length >= 3) refused = "leads";
+        else if (caller !== undefined && others.filter(slot => (mark(slot, "scope-") ?? scope) === scope && (mark(slot, "caller-") ?? owner) === owner).length >= 3) refused = "children";
+        if (refused) { free(mine); return { refused, ...counts(project) }; }
+        add(mine, "ok");
+        return { ok: true };
+      } catch (error) {
         free(mine);
-        return { refused: "project", ...counts(project) };
-      } catch (e) {
-        free(mine); // a slot with some marks would count against the project for 10 minutes
-        return { refused: "mark", error: e?.message ?? String(e), ...counts(project) };
+        return { refused: "mark", error: error?.message ?? String(error), ...counts(project) };
       }
-    },
-    bind(agentId) {
-      if (!id(agentId)) return;
+    }),
+    bind: transaction((agent, role) => {
+      if (!valid(agent) || stopped(agent) || ofSession().some(slot => ownsAgent(slot, agent)) || noted(`binding-${hash(agent)}`) || noted(`started-${hash(agent)}`)) return;
+      const observation = observe(agent, role);
+      note(`started-${hash(agent)}`); // event identity survives capacity release and lease expiry
+      touch(agent, role);
+      if (!observation.legacyOnly) return;
+      const pending = pendingFor(role).filter(slot => observation.calls.includes(mark(slot, "call-")));
+      if (pending.some(slot => has(slot, "exact"))) return;
+      const slot = pending[0];
+      if (slot) renameSync(join(dir, slot, `pending-${mark(slot, "pending-")}`), join(dir, slot, `agent-${id(agent)}`));
+    }),
+    result: transaction((tool, caller, response) => {
+      if (!valid(tool) || (caller !== undefined && !valid(caller))) return;
+      const slot = ofSession().find(slot => mark(slot, "call-") === callKey(tool, caller));
+      // Leave an existing legacy FIFO binding unchanged. An unbound main call can still use the exact result.
+      if (!slot || (!has(slot, "exact") && mark(slot, "agent-") !== undefined && mark(slot, "bound-") === undefined)) return;
+      // An executed tool with an unreadable result may have launched an agent. It keeps its credit.
+      add(slot, "possible-launch");
+      if (!response || typeof response !== "object" || Array.isArray(response) || !valid(response.agentId) || !["completed", "async_launched"].includes(response.status)) return;
+      const agent = response.agentId, bound = mark(slot, "bound-");
+      const call = mark(slot, "call-"), binding = `binding-${hash(agent)}`;
+      if (noted(binding) && readFileSync(join(events, binding), "utf8") !== call) return;
+      const observation = observationOf(agent);
+      if (observation && !observation.calls.includes(call)) return;
+      if (bound !== undefined && bound !== hash(agent)) return;
+      if (bound === undefined) {
+        if (ofSession().some(other => other !== slot && ownsAgent(other, agent))) return;
+        const pending = mark(slot, "pending-");
+        if (!pending) return;
+        note(binding, call);
+        renameSync(join(dir, slot, `pending-${pending}`), join(dir, slot, `bound-${hash(agent)}`));
+        if (!has(slot, "exact")) add(slot, `agent-${id(agent)}`);
+      }
+      if (response.status === "completed") note(`ended-${hash(agent)}`);
+      // Recheck the child after binding. An async result after parent cleanup may describe a later launch; keep it charged.
+      if (stopped(agent)) release(agent);
+      else utimesSync(join(dir, slot), new Date(now), new Date(now));
+    }),
+    release: transaction(release),
+    drop: transaction((tool, caller) => {
+      const slot = ofSession().find(slot => mark(slot, "call-") === callKey(tool, caller))
+        ?? (caller === undefined ? ofSession().find(slot => !has(slot, "exact") && mark(slot, "pending-") === id(tool)) : undefined);
+      if (slot && mark(slot, "pending-") !== undefined && !has(slot, "possible-launch")) free(slot);
+    }),
+    touch: transaction(touch),
+    reconcile: transaction((liveIds) => {
+      const ids = liveIds.filter(valid);
       for (const slot of ofSession()) {
-        const pending = marks(slot).find((m) => m.startsWith("pending-"));
-        if (!pending) continue;
-        try {
-          renameSync(join(dir, slot, pending), join(dir, slot, `agent-${id(agentId)}`)); // atomic: one start binds one slot
-          return;
-        } catch {
-          /* another start took this one */
-        }
-      }
-    },
-    release: (agentId) => free(withMark(`agent-${id(agentId)}`)),
-    /** A failed spawn frees its slot while it is pending. A bound slot stays: SubagentStart names no tool use, so the agent may be another spawn's. */
-    drop: (toolUseId) => free(withMark(`pending-${id(toolUseId)}`)),
-    touch(agentId) {
-      try {
-        utimesSync(join(dir, withMark(`agent-${id(agentId)}`)), new Date(now), new Date(now));
-      } catch {
-        /* no slot: the agent's slot expired, or it is not a sage agent's */
-      }
-    },
-    /** Frees the session's bound slots whose agent is not among the live task ids. */
-    reconcile(liveIds) {
-      liveIds = liveIds.map(id);
-      for (const slot of ofSession()) {
+        if (mark(slot, "parent-") !== undefined) continue;
         const agent = mark(slot, "agent-");
-        if (agent !== undefined && !liveIds.includes(agent)) free(slot);
+        if (agent !== undefined && !ids.map(id).includes(agent)) free(slot);
+        // Exact lead ownership is not inferred from the main session's possibly incomplete task registry.
       }
-    },
-    /** One line per refusal in the hook state folder, next to the slots: the time, the project and the counts. */
+    }),
     log(text) {
       mkdirSync(dir, { recursive: true });
       appendFileSync(join(dir, "..", "refusals.log"), `${new Date(now).toISOString()} ${text}\n`);
@@ -1386,7 +1497,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
       state = {};
     }
     const before = JSON.stringify(state);
-    const output = handle(input, state, slotsFor(join(stateDir(), "slots"), session));
+    const output = handle(input, state, slotsFor(join(stateDir(), "slots"), session, Date.now(), input.session_id ?? null));
     if (JSON.stringify(state) !== before) {
       mkdirSync(stateDir(), { recursive: true });
       writeFileSync(`${file}.${process.pid}`, JSON.stringify(state));
@@ -1405,8 +1516,10 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
     } catch {
       chiefWrite = tools(SHELL_TOOLS);
     }
-    if (input?.hook_event_name === "PreToolUse" && ((!commands && tools(SHELL_TOOLS)) || commands?.some(command => mentionsMerge(command) || pushText(command) || (input.tool_name === "PowerShell" && powerShellProblem(command))) || agentWrite || chiefWrite)) {
+    if (input?.hook_event_name === "PreToolUse" && ((!commands && tools(SHELL_TOOLS)) || commands?.some(command => mentionsMerge(command) || pushText(command) || (input.tool_name === "PowerShell" && powerShellProblem(command))) || agentWrite || chiefWrite || tools(AGENT_TOOLS))) {
       process.stdout.write(JSON.stringify(deny("PreToolUse", `the hook could not check this command (${e?.message ?? e}), so it refuses it. Tell the user.`)));
+    } else if (input && ["SubagentStart", "SubagentStop", "PostToolUse", "PostToolUseFailure", "Stop"].includes(input.hook_event_name)) {
+      process.stderr.write(`sage: agent slots could not be updated (${e?.message ?? e}); reserved capacity stays charged.\n`);
     }
   }
 }

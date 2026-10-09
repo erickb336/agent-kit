@@ -2405,3 +2405,63 @@ test("T95: a write of the sage root keeps the old file's mode: config.json stays
   assert.equal(JSON.parse(readFileSync(file, "utf8")).max_agents, 3);
   assert.deepEqual(temps(s.home), []);
 });
+
+
+test("T152: a foreign holder keeps its lock despite nearby boot times and local PID evidence", async () => {
+  const boot = 1_700_000_000_000, foreign = `${hostname()}-foreign`;
+  // Keep the boot reference fixed without changing Date.now(), which the lock uses for its wait budget.
+  const fixedBoot = uptimeIs(`() => (Date.now() - ${boot}) / 1000`);
+  const fakes = fakePs(), kills = join(fakes, "kills");
+  await Promise.all([-30_000, 0, 30_000].flatMap(offset => [null, 10_000].map(async started => {
+    const s = store(undefined, undefined, { PATH: `${fakes}:${process.env.PATH}`, SAGE_TEST_KILLS: kills, NODE_OPTIONS: fixedBoot });
+    s.ok("task", "add", "--title", "t", "--size", "small");
+    const ownerName = `${randomUUID()}.json`, ownerRecord = { pid: 424252, host: foreign, boot: boot + offset, start: 1000, at: 0 };
+    const lock = plant(s.dir, ownerName, ownerRecord), owner = join(lock, ownerName), before = readFileSync(owner, "utf8");
+    s.pids[ownerRecord.pid] = started; // dead here, or reused here: neither says anything about the foreign holder
+    const r = await s.go("task", "T1", "set", "branch=t1-foreign");
+    assert.equal(r.status, 1, `foreign boot offset ${offset}, local start ${started}: ${r.stdout}`);
+    assert.match(r.stderr, /^sage: the logbook is busy: pid 424252 on /);
+    assert.ok(r.stderr.includes(`on ${foreign} has held ${lock}`));
+    assert.equal(readFileSync(owner, "utf8"), before, "the foreign owner record stays unchanged");
+    assert.deepEqual(readdirSync(lock), [ownerName]);
+    assert.equal(rows(s.dir, "tasks")[0].branch, "", "the refused write changes no task");
+    // The same PID evidence remains valid for this host, including the delayed start-time check.
+    writeFileSync(owner, JSON.stringify({ ...ownerRecord, host: hostname() }));
+    const local = await s.go("task", "T1", "set", "branch=t1-local");
+    assert.equal(local.status, 0, local.stderr);
+    assert.equal(existsSync(lock), false);
+    assert.equal(rows(s.dir, "tasks")[0].branch, "t1-local");
+  })));
+  assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
+  assert.equal(existsSync(kills), false, "no command called process.kill");
+});
+
+test("T152: cleanup retains foreign waiters and removes only dead local waiters", () => {
+  const boot = 1_700_000_000_000, foreign = `${hostname()}-foreign`;
+  const fakes = fakePs(), kills = join(fakes, "kills");
+  const s = store(undefined, undefined, { PATH: `${fakes}:${process.env.PATH}`, SAGE_TEST_KILLS: kills, NODE_OPTIONS: uptimeIs(`() => (Date.now() - ${boot}) / 1000`) });
+  s.ok("task", "add", "--title", "t", "--size", "small");
+  const plantWaiter = (host, offset, pid) => {
+    const token = randomUUID(), ownerName = `${token}.json`, ownerRecord = { pid, host, boot: boot + offset, start: 1000, at: 0 };
+    const pending = join(s.dir, `.lock.${token}`);
+    renameSync(plant(s.dir, ownerName, ownerRecord), pending);
+    return { pending, owner: join(pending, ownerName), text: JSON.stringify(ownerRecord) };
+  };
+  const remote = [-30_000, 0, 30_000].map((offset, i) => {
+    const pid = 424260 + i;
+    s.pids[pid] = null;
+    return plantWaiter(foreign, offset, pid);
+  });
+  s.pids[424270] = null;
+  const dead = plantWaiter(hostname(), 0, 424270), alive = plantWaiter(hostname(), 0, 424271);
+  assert.match(s.ok("task", "T1", "set", "branch=t1-cleanup"), /^T1 framed/);
+  assert.equal(rows(s.dir, "tasks")[0].branch, "t1-cleanup");
+  for (const item of remote) {
+    assert.equal(existsSync(item.owner), true, "a foreign waiter's owner file is retained");
+    assert.equal(readFileSync(item.owner, "utf8"), item.text);
+  }
+  assert.equal(existsSync(dead.pending), false, "a dead local waiter is cleared");
+  assert.equal(readFileSync(alive.owner, "utf8"), alive.text, "a live local waiter remains");
+  assert.equal(existsSync(join(fakes, "calls")), false, "no command ran ps");
+  assert.equal(existsSync(kills), false, "no command called process.kill");
+});
